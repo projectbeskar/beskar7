@@ -23,9 +23,9 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
-	"github.com/stmcginnis/gofish/redfish"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

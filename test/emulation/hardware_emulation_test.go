@@ -32,10 +32,10 @@ import (
 
 	// metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/stmcginnis/gofish/redfish"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	"github.com/projectbeskar/beskar7/controllers"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	"github.com/stmcginnis/gofish/redfish"
 )
 
 func TestHardwareEmulation(t *testing.T) {
