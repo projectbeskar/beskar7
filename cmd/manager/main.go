@@ -37,10 +37,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
-	"github.com/wrkode/beskar7/api/v1beta1/webhooks"
-	"github.com/wrkode/beskar7/controllers"
-	internalmetrics "github.com/wrkode/beskar7/internal/metrics"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	"github.com/projectbeskar/beskar7/api/v1beta1/webhooks"
+	"github.com/projectbeskar/beskar7/controllers"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	//+kubebuilder:scaffold:imports
 )
 

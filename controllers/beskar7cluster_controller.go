@@ -35,8 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
-	internalmetrics "github.com/wrkode/beskar7/internal/metrics"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"

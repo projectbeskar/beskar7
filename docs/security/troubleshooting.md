@@ -646,7 +646,7 @@ When reporting security issues, include:
 
 ### Community Resources
 
-- **GitHub Issues**: https://github.com/wrkode/beskar7/issues
+- **GitHub Issues**: https://github.com/projectbeskar/beskar7/issues
 - **Security Advisory**: security@beskar7.io
 - **Community Slack**: #beskar7-security
 - **Documentation**: https://docs.beskar7.io/security/ 

@@ -305,7 +305,7 @@ If your hardware doesn't work with Beskar7, please report it!
    - Power management?
    - Boot source setting?
 
-Submit to: https://github.com/wrkode/beskar7/issues
+Submit to: https://github.com/projectbeskar/beskar7/issues
 
 ## Feature Support Matrix
 
@@ -359,7 +359,7 @@ Before deploying to production:
 After verifying hardware compatibility:
 
 1. Set up iPXE infrastructure - See [iPXE Setup Guide](ipxe-setup.md)
-2. Deploy inspector image - See [beskar7-inspector](https://github.com/wrkode/beskar7-inspector)
+2. Deploy inspector image - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
 3. Register hosts - See [examples](../examples/)
 4. Start provisioning - See [README](../README.md)
 

@@ -39,7 +39,7 @@ This example creates a fully functional cluster with:
 
 ```bash
 # Install Beskar7
-kubectl apply -f https://github.com/wrkode/beskar7/releases/download/v0.3.0/beskar7-manifests-v0.3.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.3.0/beskar7-manifests-v0.3.0.yaml
 
 # Verify installation
 kubectl get pods -n beskar7-system

@@ -197,7 +197,7 @@ spec:
         - --metrics-bind-address=:8080
         - --health-probe-bind-address=:8081
         - --v=2                                  # Verbose logging for development
-        image: ghcr.io/wrkode/beskar7/beskar7:${VERSION}
+        image: ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
         imagePullPolicy: IfNotPresent            # Use cached images in dev
         
         # Relaxed security context for debugging

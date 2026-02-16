@@ -492,7 +492,7 @@ curl -k -u admin:password https://BMC_IP/redfish/v1/ > redfish-test.json
 
 ### 2. Open an Issue
 
-https://github.com/wrkode/beskar7/issues
+https://github.com/projectbeskar/beskar7/issues
 
 Include:
 - Beskar7 version
@@ -505,7 +505,7 @@ Include:
 
 ### 3. Community Support
 
-- GitHub Discussions: https://github.com/wrkode/beskar7/discussions
+- GitHub Discussions: https://github.com/projectbeskar/beskar7/discussions
 - Check existing issues for similar problems
 - Join community chat (if available)
 
@@ -558,4 +558,4 @@ A: Remove the `-v=X` flag or set to `-v=1` for minimal logging.
 
 ---
 
-**Still stuck?** Open an issue: https://github.com/wrkode/beskar7/issues
+**Still stuck?** Open an issue: https://github.com/projectbeskar/beskar7/issues

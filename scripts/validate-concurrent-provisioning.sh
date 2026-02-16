@@ -80,7 +80,7 @@ done
 echo
 log_info "Test 2: Verifying coordination package integration"
 
-if grep -q "github.com/wrkode/beskar7/internal/coordination" cmd/manager/main.go; then
+if grep -q "github.com/projectbeskar/beskar7/internal/coordination" cmd/manager/main.go; then
     log_success "Coordination package imported in main.go"
 else
     log_error "Coordination package not imported in main.go"

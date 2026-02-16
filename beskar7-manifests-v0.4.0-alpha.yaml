@@ -12,7 +12,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/version: v0.4.0-alpha
@@ -142,7 +142,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/version: v0.4.0-alpha
@@ -289,7 +289,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/version: v0.4.0-alpha
@@ -365,7 +365,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert
-    controller-gen.kubebuilder.io/version: v0.19.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/version: v0.4.0-alpha
@@ -934,7 +934,7 @@ spec:
           valueFrom:
             resourceFieldRef:
               resource: limits.cpu
-        image: ghcr.io/wrkode/beskar7/beskar7:v0.4.0-alpha
+        image: ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha
         imagePullPolicy: Always
         livenessProbe:
           failureThreshold: 3

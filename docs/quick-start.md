@@ -35,7 +35,7 @@ kubectl get pods -n cert-manager
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/wrkode/beskar7.git
+    git clone https://github.com/projectbeskar/beskar7.git
     cd beskar7 
     ```
 
@@ -52,7 +52,7 @@ kubectl get pods -n cert-manager
     # echo $CR_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
     # Build and push the image 
-    # (Uses values from Makefile: ghcr.io/wrkode/beskar7/beskar7:v0.2.7 by default)
+    # (Uses values from Makefile: ghcr.io/projectbeskar/beskar7/beskar7:v0.2.7 by default)
     # This builds for linux/amd64 by default due to Makefile configuration.
     make docker-build docker-push 
     ```
@@ -77,7 +77,7 @@ kubectl get pods -n cert-manager
     make install
     ```
 3.  **Deploy the Controller Manager:**
-    This will deploy the controller using the image defined in the Makefile (`ghcr.io/wrkode/beskar7/beskar7:v0.2.7` by default).
+    This will deploy the controller using the image defined in the Makefile (`ghcr.io/projectbeskar/beskar7/beskar7:v0.2.7` by default).
     ```bash
     make deploy
     ```

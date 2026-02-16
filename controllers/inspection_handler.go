@@ -14,7 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 )
 
 // InspectionHandler handles HTTP requests from inspection images

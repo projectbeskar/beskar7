@@ -5,7 +5,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/wrkode/beskar7/beskar7
+  repository: ghcr.io/projectbeskar/beskar7/beskar7
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""
@@ -18,7 +18,7 @@ fullnameOverride: ""
 controllerManager:
   replicas: 1
   image:
-    repository: ghcr.io/wrkode/beskar7/beskar7
+    repository: ghcr.io/projectbeskar/beskar7/beskar7
     tag: "" # Will be set to Chart.appVersion by default
     pullPolicy: IfNotPresent
   resources:

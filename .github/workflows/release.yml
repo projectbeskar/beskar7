@@ -244,7 +244,7 @@ jobs:
         echo "" >> release-notes.md
         echo "### Using Kubectl" >> release-notes.md
         echo "\`\`\`bash" >> release-notes.md
-        echo "kubectl apply -f https://github.com/wrkode/beskar7/releases/download/$VERSION/beskar7-manifests-$VERSION.yaml" >> release-notes.md
+        echo "kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/$VERSION/beskar7-manifests-$VERSION.yaml" >> release-notes.md
         echo "\`\`\`" >> release-notes.md
         echo "" >> release-notes.md
         echo "### Using Helm" >> release-notes.md
@@ -331,7 +331,7 @@ jobs:
       run: |
         echo "✅ Release ${{ github.ref_name }} created successfully!"
         echo "🐳 Container image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
-        echo "📦 Release URL: https://github.com/wrkode/beskar7/releases/tag/${{ github.ref_name }}"
+        echo "Release URL: https://github.com/projectbeskar/beskar7/releases/tag/${{ github.ref_name }}"
         
     - name: Notify failure
       if: ${{ needs.release.result == 'failure' }}

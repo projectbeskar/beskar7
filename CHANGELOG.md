@@ -605,9 +605,9 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/wrkode/beskar7/compare/v0.4.0-alpha...HEAD
-[v0.4.0-alpha]: https://github.com/wrkode/beskar7/compare/v0.3.4-alpha...v0.4.0-alpha
-[v0.3.4-alpha]: https://github.com/wrkode/beskar7/compare/v0.2.7...v0.3.4-alpha
-[v0.2.7]: https://github.com/wrkode/beskar7/releases/tag/v0.2.7
-[v0.2.6]: https://github.com/wrkode/beskar7/releases/tag/v0.2.6
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...HEAD
+[v0.4.0-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.3.4-alpha...v0.4.0-alpha
+[v0.3.4-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.2.7...v0.3.4-alpha
+[v0.2.7]: https://github.com/projectbeskar/beskar7/releases/tag/v0.2.7
+[v0.2.6]: https://github.com/projectbeskar/beskar7/releases/tag/v0.2.6
 

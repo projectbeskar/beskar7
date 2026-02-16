@@ -23,5 +23,5 @@ labels:
 
 images:
 - name: controller
-  newName: ghcr.io/wrkode/beskar7/beskar7
+  newName: ghcr.io/projectbeskar/beskar7/beskar7
   newTag: v0.3.4-alpha-alpha

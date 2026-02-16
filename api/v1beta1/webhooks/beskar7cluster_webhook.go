@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	infrav1beta1 "github.com/wrkode/beskar7/api/v1beta1"
+	infrav1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 )
 
 // Beskar7ClusterWebhook implements a validating and defaulting webhook for Beskar7Cluster.

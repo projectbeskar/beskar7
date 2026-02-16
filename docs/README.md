@@ -88,7 +88,7 @@ For information about contributing to Beskar7, see the main repository documenta
 
 ## Support
 
-- **GitHub Issues**: https://github.com/wrkode/beskar7/issues
+- **GitHub Issues**: https://github.com/projectbeskar/beskar7/issues
 - **Documentation Issues**: Report problems with this documentation as GitHub issues
 
 ## Document Status

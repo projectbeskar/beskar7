@@ -201,7 +201,7 @@ Multiple security tools are integrated:
 gosec ./...
 
 # Scan container images
-trivy image ghcr.io/wrkode/beskar7/beskar7:latest
+trivy image ghcr.io/projectbeskar/beskar7/beskar7:latest
 ```
 
 ## 🚀 **Development Workflow**
@@ -246,7 +246,7 @@ trivy image ghcr.io/wrkode/beskar7/beskar7:latest
    make docker-build
    
    # Test container locally
-  docker run --rm ghcr.io/wrkode/beskar7/beskar7:${VERSION}
+  docker run --rm ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
    ```
 
 ### **Pull Request Workflow**

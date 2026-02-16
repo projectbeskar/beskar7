@@ -255,17 +255,17 @@ jobs:
         context: .
         platforms: linux/amd64
         push: false
-        tags: ghcr.io/wrkode/beskar7/beskar7:test
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
         load: true
         
     - name: Load test image into kind
       run: |
-        kind load docker-image ghcr.io/wrkode/beskar7/beskar7:test --name beskar7-test
+        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test --name beskar7-test
         
     - name: Update manifests to use test image
       run: |
         # Replace the CI version image tag with test tag and set imagePullPolicy to Never
-        sed -i 's|ghcr.io/wrkode/beskar7/beskar7:v0.0.0-ci|ghcr.io/wrkode/beskar7/beskar7:test|g' beskar7-manifests-v0.0.0-ci.yaml
+        sed -i 's|ghcr.io/projectbeskar/beskar7/beskar7:v0.0.0-ci|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test|g' beskar7-manifests-v0.0.0-ci.yaml
         sed -i 's|imagePullPolicy: Always|imagePullPolicy: Never|g' beskar7-manifests-v0.0.0-ci.yaml
         echo "=== Verifying manifest changes ==="
         grep -A2 -B2 "image.*beskar7.*test\|imagePullPolicy" beskar7-manifests-v0.0.0-ci.yaml

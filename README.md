@@ -38,14 +38,14 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 2. Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 3. cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 4. iPXE infrastructure - DHCP + HTTP server ([setup guide](docs/ipxe-setup.md))
-5. Inspection image - beskar7-inspector ([repository](https://github.com/wrkode/beskar7-inspector))
+5. Inspection image - beskar7-inspector ([repository](https://github.com/projectbeskar/beskar7-inspector))
 
 ### Quick Install
 
 **Using Helm (Recommended):**
 
 ```bash
-helm repo add beskar7 https://wrkode.github.io/beskar7
+helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 --namespace beskar7-system --create-namespace
 ```
@@ -53,7 +53,7 @@ helm install beskar7 beskar7/beskar7 --namespace beskar7-system --create-namespa
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/wrkode/beskar7/releases/download/v0.4.0-alpha/beskar7-manifests-v0.4.0-alpha.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha/beskar7-manifests-v0.4.0-alpha.yaml
 ```
 
 See [Quick Start Guide](docs/quick-start.md) for detailed installation instructions.
@@ -119,7 +119,7 @@ Works with **any Redfish-compliant BMC**. Tested with Dell, HPE, Lenovo, Supermi
 ## Development
 
 ```bash
-git clone https://github.com/wrkode/beskar7.git
+git clone https://github.com/projectbeskar/beskar7.git
 cd beskar7
 make build
 make test
@@ -139,11 +139,15 @@ Contributions are welcome! Please:
 
 Apache License 2.0 - See [LICENSE](LICENSE) file for details.
 
+## Migration
+
+Migrating from wrkode/beskar7? See [docs/migration-to-projectbeskar.md](docs/migration-to-projectbeskar.md).
+
 ## Support
 
-- **Issues:** https://github.com/wrkode/beskar7/issues
-- **Discussions:** https://github.com/wrkode/beskar7/discussions
-- **Documentation:** https://github.com/wrkode/beskar7/tree/main/docs
+- **Issues:** https://github.com/projectbeskar/beskar7/issues
+- **Discussions:** https://github.com/projectbeskar/beskar7/discussions
+- **Documentation:** https://github.com/projectbeskar/beskar7/tree/main/docs
 
 ## Acknowledgments
 

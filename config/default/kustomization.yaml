@@ -37,7 +37,7 @@ patchesStrategicMerge:
 # the name used in config/manager/manager.yaml.
 images:
 - name: controller
-  newName: ghcr.io/wrkode/beskar7/beskar7
+  newName: ghcr.io/projectbeskar/beskar7/beskar7
   newTag: v0.2.7
 
 # Replace VERSION placeholder with actual version

@@ -10,7 +10,7 @@
    kubectl get crd | grep infrastructure.cluster.x-k8s.io
 
 5. Create your first PhysicalHost:
-   Check the documentation at: https://github.com/wrkode/beskar7/tree/main/docs
+   Check the documentation at: https://github.com/projectbeskar/beskar7/tree/main/docs
 
 {{- if .Values.webhook.enabled }}
 6. Webhook is enabled - ensure cert-manager is installed and running:
@@ -21,4 +21,4 @@
 7. Monitoring is enabled - metrics are available at http://localhost:8080/metrics
 {{- end }}
 
-For more information, visit: https://github.com/wrkode/beskar7
+For more information, visit: https://github.com/projectbeskar/beskar7

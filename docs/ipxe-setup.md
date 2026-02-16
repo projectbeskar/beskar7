@@ -355,15 +355,15 @@ Deploy the beskar7-inspector Alpine image:
 cd /var/www/boot/inspector
 
 # Option 1: Build from source
-git clone https://github.com/wrkode/beskar7-inspector.git
+git clone https://github.com/projectbeskar/beskar7-inspector.git
 cd beskar7-inspector
 make build
 cp dist/vmlinuz /var/www/boot/inspector/
 cp dist/initrd.img /var/www/boot/inspector/
 
 # Option 2: Download pre-built (if available)
-wget https://github.com/wrkode/beskar7-inspector/releases/download/v1.0.0/vmlinuz
-wget https://github.com/wrkode/beskar7-inspector/releases/download/v1.0.0/initrd.img
+wget https://github.com/projectbeskar/beskar7-inspector/releases/download/v1.0.0/vmlinuz
+wget https://github.com/projectbeskar/beskar7-inspector/releases/download/v1.0.0/initrd.img
 ```
 
 ### 5. Operating System Images

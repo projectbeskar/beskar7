@@ -22,7 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 )
 
 // Utils tests are integrated into the main controller suite

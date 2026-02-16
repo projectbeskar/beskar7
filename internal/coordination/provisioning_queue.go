@@ -8,7 +8,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 )
 
 // ProvisioningQueue manages queued provisioning operations to prevent BMC overload

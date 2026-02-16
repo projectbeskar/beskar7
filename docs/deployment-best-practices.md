@@ -193,7 +193,7 @@ rules:
 replicaCount: 3
 
 image:
-  repository: ghcr.io/wrkode/beskar7/beskar7
+  repository: ghcr.io/projectbeskar/beskar7/beskar7
   tag: "${VERSION}"
   pullPolicy: IfNotPresent
 
@@ -270,7 +270,7 @@ podDisruptionBudget:
 **Using Helm (Recommended):**
 ```bash
 # Add Helm repository
-helm repo add beskar7 https://wrkode.github.io/beskar7
+helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
 
 # Install with production values
@@ -302,7 +302,7 @@ patchesStrategicMerge:
 - resource_limits.yaml
 
 images:
-- name: ghcr.io/wrkode/beskar7/beskar7
+- name: ghcr.io/projectbeskar/beskar7/beskar7
   newTag: ${VERSION}
 
 replicas:

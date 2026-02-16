@@ -1,4 +1,4 @@
-module github.com/wrkode/beskar7
+module github.com/projectbeskar/beskar7
 
 go 1.25.0
 
@@ -22,7 +22,7 @@ require (
 	golang.org/x/tools v0.32.0 // indirect
 )
 
-replace github.com/wrkode/beskar7 => ./
+replace github.com/projectbeskar/beskar7 => ./
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect

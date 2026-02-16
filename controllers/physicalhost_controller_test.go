@@ -17,8 +17,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
-	internalredfish "github.com/wrkode/beskar7/internal/redfish"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
 var _ = Describe("PhysicalHost Controller", func() {

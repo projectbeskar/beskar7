@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	infrastructurev1beta1 "github.com/wrkode/beskar7/api/v1beta1"
-	internalredfish "github.com/wrkode/beskar7/internal/redfish"
+	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"

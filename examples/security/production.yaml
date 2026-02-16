@@ -286,7 +286,7 @@ spec:
         - --security-scan-interval=30m
         - --metrics-bind-address=:8080
         - --health-probe-bind-address=:8081
-        image: ghcr.io/wrkode/beskar7/beskar7:${VERSION}
+        image: ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
         imagePullPolicy: Always
         
         # Maximum security context

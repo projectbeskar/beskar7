@@ -71,7 +71,7 @@ jobs:
         helm package charts/beskar7 --destination .helm-repo
         
         # Generate the index with all versions
-        helm repo index .helm-repo --url https://wrkode.github.io/beskar7 --merge gh-pages-repo/index.yaml 2>/dev/null || helm repo index .helm-repo --url https://wrkode.github.io/beskar7
+        helm repo index .helm-repo --url https://projectbeskar.github.io/beskar7 --merge gh-pages-repo/index.yaml 2>/dev/null || helm repo index .helm-repo --url https://projectbeskar.github.io/beskar7
         
         # Show what we have
         echo "Charts in repository:"

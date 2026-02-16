@@ -10,11 +10,12 @@ keywords:
   - bare-metal
   - redfish
   - kubernetes
-home: https://github.com/wrkode/beskar7
+home: https://github.com/projectbeskar/beskar7
 sources:
-  - https://github.com/wrkode/beskar7
+  - https://github.com/projectbeskar/beskar7
 maintainers:
-  - name: wrkode
-    url: https://github.com/wrkode
+  - name: projectbeskar
+    url: https://github.com/projectbeskar
 annotations:
   category: Infrastructure
+ucture
