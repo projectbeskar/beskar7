@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-01 — initial population from full code/security/docs review.
+> **Last meaningful update:** 2026-05-01 — D-001 closed; v0.4 stabilization plan ratified (D-002); PR-0.1 closed BLOCK-1.
 
 ---
 
@@ -56,7 +56,6 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 
 | ID | Area | Issue | Where |
 |---|---|---|---|
-| BLOCK-1 | controller | `RedfishClientFactory: nil` defaulted in `cmd/manager/main.go` but no fallback wired. Manager panics on first reconcile. | `cmd/manager/main.go:132,150`; consumers `controllers/physicalhost_controller.go:142`, `controllers/beskar7machine_controller.go:498` |
 | BLOCK-2 | CAPI conformance | `Beskar7MachineReconciler` never reads `Machine.Spec.Bootstrap.DataSecretName`. Provisioned hosts can't actually become Kubernetes nodes. | `controllers/beskar7machine_controller.go` (no references to bootstrap anywhere) |
 | BLOCK-3 | docs / chart | `charts/beskar7/crds/` ships v0.3 schema; `config/crd/bases/` is the v0.4 source of truth. Helm install reconciles against rejecting CRDs. Stray `charts/beskar7/crds/_.yaml` with empty `kind`. | `charts/beskar7/crds/*.yaml` |
 | BLOCK-4 | chart | Helm chart enables webhook plumbing but never passes `--enable-webhook=true` to the manager; also ships no `ValidatingWebhookConfiguration`. | `charts/beskar7/templates/deployment.yaml:66-72`, missing `vwc.yaml` |
@@ -142,6 +141,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 | Item | Resolution | Date |
 |---|---|---|
+| BLOCK-1 | PR-0.1: defaulted `RedfishClientFactory` to `internalredfish.NewClient` in each reconciler's `SetupWithManager` with a fail-fast non-nil guard; removed misleading `// Use default` from `cmd/manager/main.go`; added unit specs covering nil → default and explicit-factory-preserved for both reconcilers. | 2026-05-01 |
 | _initial population_ | review baseline established | 2026-05-01 |
 
 ---
@@ -150,16 +150,35 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 > Append-only. One entry per architectural call. Don't rewrite past entries — supersede with a new one.
 
-### D-001 — Dead-code packages: wire up or delete
+### D-001 — Dead-code packages: delete
 
-- **Date**: pending — needs decision before any further security/coordination work.
-- **Context**: `internal/coordination/provisioning_queue.go` (~580 LOC) and `internal/security/{monitor,rbac_validator,tls_validator}.go` (~1300 LOC) are both unreferenced from `cmd/manager/main.go`. Security docs advertise behaviors that depend on the latter being wired in.
-- **Options**:
-  1. Wire both in. Cost: requires fixing the stubbed `processClaim/processProvision` workers in the queue, and standing up the security monitor's dependencies (k8s client, namespace scope).
-  2. Delete both. Cost: lose ~1900 LOC of intent + must rewrite security docs to drop overclaims.
-  3. Wire in coordination (real value: per-BMC throttling), delete security (theatre).
-- **Decision**: **TBD** — `staff-architect` to make the call and record here.
-- **Status**: open.
+- **Date**: 2026-05-01.
+- **Decision**: Delete `internal/coordination/` and `internal/security/` in their entirety. Replace any future per-BMC throttling need with `MaxConcurrentReconciles` tuning + a small per-BMC `sync.Mutex` map at the call site, when measured to be necessary. Replace the security-monitor "controls" with real enforcement at the points they purport to cover (RBAC: a tightened `role.yaml`; TLS: a real CA bundle plumbed through `gofish_client.go`; runtime audit: existing controller-runtime structured logs + Prometheus metrics).
+- **Rationale**: Both packages are unreferenced from `cmd/manager/main.go`; the queue's worker bodies are stubs that `time.Sleep` and return success; the security packages are observation, not enforcement. Wiring them correctly requires design we have not done. Keeping them blocks the security-docs rewrite and rewards continued overclaiming. Cost of deletion is low (no callers); cost of keeping is ongoing drift.
+- **Implementation**: PR-6.1 in the v0.4 stabilization plan (D-002).
+- **Status**: closed.
+
+### D-002 — v0.4 stabilization plan
+
+- **Date**: 2026-05-01.
+- **Decision**: Adopt the 12-phase, 22-PR plan produced by `staff-architect` to resolve all findings from the v0.4.0-alpha review. Phases gate as follows: Phase 0 (BLOCK-1) gates everything; Phase 1 (CAPI conformance) and Phase 2 (host lifecycle) run in parallel after Phase 0; Phase 4 (chart parity) gates on Phase 1; Phase 5 (inspection endpoint security) gates on Phases 0+2; Phase 6 (dead-code delete) gates on D-001 (now closed); Phase 7 (RBAC) gates on Phase 6; Phase 9 (docs sweep) gates on Phases 1–7 so docs describe what ships; Phases 3, 8, 11 are independent.
+- **Phase summary**:
+  | Phase | Theme | Owner | Gating |
+  |---|---|---|---|
+  | 0 | Stop the panic (BLOCK-1) | golang-engineer | — |
+  | 1 | CAPI conformance: bootstrap data, ProviderID, FailureReason | golang-engineer | Phase 0 |
+  | 2 | Host lifecycle: patch helper, claim race, release path, watches | golang-engineer | Phase 0 (parallel with 1) |
+  | 3 | Redfish hardening: ctx, graceful power, TLS CA, no creds in logs | golang-engineer + security-engineer | independent |
+  | 4 | Chart parity: CRD regen, webhook wiring, expose port 8082 | golang-engineer + tech-writer | Phase 1 |
+  | 5 | Inspection endpoint security: per-host token, TLS, body cap | security-engineer | Phases 0+2 |
+  | 6 | Delete dead code (D-001) | golang-engineer | D-001 ratified |
+  | 7 | RBAC tightening: namespace-scoped Secret reads | security-engineer | Phase 6 |
+  | 8 | Cluster controller correctness | golang-engineer | independent |
+  | 9 | Docs + examples sweep (v0.4 rewrite) | tech-writer | Phases 1–7 |
+  | 10 | Test coverage backfill (envtest, drop PIt) | qa-engineer | Phases 1–2 |
+  | 11 | Hardening tail: digest pin, drop kube-rbac-proxy, zap flag | golang-engineer | independent |
+- **Decisions still owed**: bootstrap delivery mechanism (kernel cmdline vs ignition URL — recommend ignition URL); inspection token surface (header vs URL path — recommend `X-Beskar7-Inspection-Token` header). Resolve at Phase 1 / Phase 5 kickoff respectively.
+- **Status**: closed (active execution).
 
 ---
 

@@ -126,11 +126,12 @@ func main() {
 	}
 
 	// Setup controllers
+	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
+	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
 	if err = (&controllers.Beskar7MachineReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		RedfishClientFactory: nil, // Use default
-		Log:                  ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)
@@ -145,10 +146,9 @@ func main() {
 	}
 
 	if err = (&controllers.PhysicalHostReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		RedfishClientFactory: nil, // Use default
-		Log:                  ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PhysicalHost")
 		os.Exit(1)

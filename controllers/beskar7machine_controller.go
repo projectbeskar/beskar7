@@ -523,8 +523,26 @@ func parseProviderID(id string) (string, string, error) {
 
 // isPaused and isClusterPaused functions are in utils.go
 
+// defaultFactory sets RedfishClientFactory to the real gofish-backed constructor
+// when the caller left it nil. Separated from SetupWithManager to keep the defaulting
+// logic directly testable without spinning up a full controller-runtime Manager.
+func (r *Beskar7MachineReconciler) defaultFactory() error {
+	if r.RedfishClientFactory == nil {
+		r.RedfishClientFactory = internalredfish.NewClient
+	}
+	if r.RedfishClientFactory == nil {
+		// Should be unreachable, but guard against a future programming error
+		// that nilifies the field after this call.
+		return fmt.Errorf("Beskar7MachineReconciler: RedfishClientFactory is nil after defaulting")
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller.
 func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := r.defaultFactory(); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.Beskar7Machine{}).
 		Complete(r)

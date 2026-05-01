@@ -299,8 +299,26 @@ func (r *PhysicalHostReconciler) updateStatus(ph *infrastructurev1beta1.Physical
 	ph.Status.ErrorMessage = errorMsg
 }
 
+// defaultFactory sets RedfishClientFactory to the real gofish-backed constructor
+// when the caller left it nil. Separated from SetupWithManager to keep the defaulting
+// logic directly testable without spinning up a full controller-runtime Manager.
+func (r *PhysicalHostReconciler) defaultFactory() error {
+	if r.RedfishClientFactory == nil {
+		r.RedfishClientFactory = internalredfish.NewClient
+	}
+	if r.RedfishClientFactory == nil {
+		// Should be unreachable, but guard against a future programming error
+		// that nilifies the field after this call.
+		return fmt.Errorf("PhysicalHostReconciler: RedfishClientFactory is nil after defaulting")
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := r.defaultFactory(); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.PhysicalHost{}).
 		Watches(
