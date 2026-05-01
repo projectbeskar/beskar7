@@ -88,9 +88,3 @@ Create the controller manager image
 {{- printf "%s:%s" $repository $tag }}
 {{- end }}
 
-{{/*
-Create the kube-rbac-proxy image
-*/}}
-{{- define "beskar7.kubeRbacProxyImage" -}}
-{{- printf "%s:%s" .Values.kubeRbacProxy.image.repository .Values.kubeRbacProxy.image.tag }}
-{{- end }}

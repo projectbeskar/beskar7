@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-01 — D-001 closed; v0.4 stabilization plan ratified (D-002); PR-0.1 closed BLOCK-1.
+> **Last meaningful update:** 2026-05-01 — D-001 closed; v0.4 stabilization plan ratified (D-002); PR-0.1 closed BLOCK-1; PR-11.1 replaced kube-rbac-proxy with controller-runtime native metrics auth (Phase 11 partially complete).
 
 ---
 
@@ -107,7 +107,6 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 ### Medium / hardening
 
-- Replace deprecated `gcr.io/kubebuilder/kube-rbac-proxy:v0.15.0` with controller-runtime's filter-based metrics auth.
 - Pin Dockerfile base images by digest (currently `golang:1.25` and `gcr.io/distroless/static:nonroot` unpinned).
 - `cmd/manager/main.go:96` `Development: true` zap default — produces verbose logs in prod. Make it a flag.
 - Webhook private key `defaultMode` mismatch: kustomize `0400`, Helm chart `420` (decimal `0644`).
@@ -142,6 +141,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 | Item | Resolution | Date |
 |---|---|---|
 | BLOCK-1 | PR-0.1: defaulted `RedfishClientFactory` to `internalredfish.NewClient` in each reconciler's `SetupWithManager` with a fail-fast non-nil guard; removed misleading `// Use default` from `cmd/manager/main.go`; added unit specs covering nil → default and explicit-factory-preserved for both reconcilers. | 2026-05-01 |
+| kube-rbac-proxy removal (Phase 11, PR-11.1) | Deleted `config/default/manager_auth_proxy_patch.yaml` and the kube-rbac-proxy sidecar from the Helm chart; wired `filters.WithAuthenticationAndAuthorization` via `metricsserver.Options.FilterProvider`; metrics now served directly on `:8443` (HTTPS) with TokenReview/SAR-based auth; added `--secure-metrics` flag (default true) for local dev; added `config/rbac/metrics_auth_role.yaml`, `metrics_auth_role_binding.yaml`, `metrics_reader_role.yaml`; updated all overlay patches and networkpolicies to `:8443`. | 2026-05-01 |
 | _initial population_ | review baseline established | 2026-05-01 |
 
 ---
@@ -176,7 +176,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
   | 8 | Cluster controller correctness | golang-engineer | independent |
   | 9 | Docs + examples sweep (v0.4 rewrite) | tech-writer | Phases 1–7 |
   | 10 | Test coverage backfill (envtest, drop PIt) | qa-engineer | Phases 1–2 |
-  | 11 | Hardening tail: digest pin, drop kube-rbac-proxy, zap flag | golang-engineer | independent |
+  | 11 | Hardening tail: digest pin, zap flag (kube-rbac-proxy done in PR-11.1) | golang-engineer | independent |
 - **Decisions still owed**: bootstrap delivery mechanism (kernel cmdline vs ignition URL — recommend ignition URL); inspection token surface (header vs URL path — recommend `X-Beskar7-Inspection-Token` header). Resolve at Phase 1 / Phase 5 kickoff respectively.
 - **Status**: closed (active execution).
 

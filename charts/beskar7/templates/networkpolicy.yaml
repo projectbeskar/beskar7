@@ -31,7 +31,7 @@ spec:
           name: monitoring
     ports:
     - protocol: TCP
-      port: 8080
+      port: 8443
   
   # Allow health checks
   - from: []
@@ -122,6 +122,6 @@ spec:
           app: prometheus
     ports:
     - protocol: TCP
-      port: 8080
+      port: 8443
 {{- end }}
 
