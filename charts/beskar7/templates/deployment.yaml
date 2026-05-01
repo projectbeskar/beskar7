@@ -30,47 +30,20 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
-      - name: kube-rbac-proxy
-        image: {{ include "beskar7.kubeRbacProxyImage" . }}
-        imagePullPolicy: {{ .Values.kubeRbacProxy.image.pullPolicy }}
-        args:
-        - --secure-listen-address=0.0.0.0:8443
-        - --upstream=http://127.0.0.1:8080/
-        - --logtostderr=true
-        - --v=0
-        ports:
-        - containerPort: 8443
-          name: https
-          protocol: TCP
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: https
-            scheme: HTTPS
-          initialDelaySeconds: 15
-          periodSeconds: 20
-        readinessProbe:
-          httpGet:
-            path: /healthz
-            port: https
-            scheme: HTTPS
-          initialDelaySeconds: 5
-          periodSeconds: 10
-        resources:
-          {{- toYaml .Values.kubeRbacProxy.resources | nindent 10 }}
-        securityContext:
-          {{- toYaml .Values.securityContext | nindent 10 }}
       - name: manager
         image: {{ include "beskar7.controllerImage" . }}
         imagePullPolicy: {{ .Values.controllerManager.image.pullPolicy }}
         args:
         - --health-probe-bind-address=:8081
-        - --metrics-bind-address=127.0.0.1:8080
+        - --metrics-bind-address=:8443
         - --leader-elect
         {{- if .Values.webhook.enabled }}
         - --webhook-port=9443
         {{- end }}
         ports:
+        - containerPort: 8443
+          name: metrics
+          protocol: TCP
         - containerPort: 9443
           name: webhook-server
           protocol: TCP

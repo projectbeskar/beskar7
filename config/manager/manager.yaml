@@ -39,7 +39,7 @@ spec:
         args:
         - --leader-elect
         - --enable-webhook=true
-        - --metrics-bind-address=127.0.0.1:8080
+        - --metrics-bind-address=:8443
         - --health-probe-bind-address=:8081
         image: controller
         imagePullPolicy: Always
@@ -70,7 +70,7 @@ spec:
           mountPath: /tmp
           readOnly: false
         ports:
-        - containerPort: 8080
+        - containerPort: 8443
           name: metrics
           protocol: TCP
         - containerPort: 8081

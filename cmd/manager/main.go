@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
@@ -73,8 +74,9 @@ func main() {
 	var enableWebhook bool
 	var webhookPort int
 	var webhookCertDir string
+	var secureMetrics bool
 
-	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
+	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
@@ -91,6 +93,9 @@ func main() {
 		"Webhook server port.")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
 		"Webhook server certificate directory.")
+	flag.BoolVar(&secureMetrics, "secure-metrics", true,
+		"Serve metrics over HTTPS with authentication and authorization via the kube-apiserver. "+
+			"Set to false only for local development.")
 
 	opts := zap.Options{
 		Development: true,
@@ -109,9 +114,21 @@ func main() {
 		CertDir: webhookCertDir,
 	}
 
+	metricsOptions := metricsserver.Options{
+		BindAddress:   metricsAddr,
+		SecureServing: secureMetrics,
+	}
+	if secureMetrics {
+		// Authenticate and authorize /metrics via TokenReview/SubjectAccessReview delegated to
+		// the kube-apiserver. Requires the manager ServiceAccount to have the
+		// authentication.k8s.io:tokenreviews and authorization.k8s.io:subjectaccessreviews create
+		// verbs (see config/rbac/metrics_auth_role.yaml).
+		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+	}
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
+		Metrics:                metricsOptions,
 		WebhookServer:          webhook.NewServer(webhookServerOptions),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -126,11 +143,12 @@ func main() {
 	}
 
 	// Setup controllers
+	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
+	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
 	if err = (&controllers.Beskar7MachineReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		RedfishClientFactory: nil, // Use default
-		Log:                  ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)
@@ -145,10 +163,9 @@ func main() {
 	}
 
 	if err = (&controllers.PhysicalHostReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		RedfishClientFactory: nil, // Use default
-		Log:                  ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PhysicalHost")
 		os.Exit(1)

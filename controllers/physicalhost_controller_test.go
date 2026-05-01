@@ -21,6 +21,35 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
+var _ = Describe("PhysicalHostReconciler factory defaulting", func() {
+	It("should default RedfishClientFactory to internalredfish.NewClient when nil", func() {
+		r := &PhysicalHostReconciler{}
+		Expect(r.RedfishClientFactory).To(BeNil())
+
+		Expect(r.defaultFactory()).To(Succeed())
+
+		Expect(r.RedfishClientFactory).NotTo(BeNil(),
+			"factory must be non-nil after defaultFactory()")
+	})
+
+	It("should preserve an explicitly provided factory", func() {
+		sentinel := internalredfish.RedfishClientFactory(
+			func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+		)
+		r := &PhysicalHostReconciler{RedfishClientFactory: sentinel}
+
+		Expect(r.defaultFactory()).To(Succeed())
+
+		// Pointer equality is not directly comparable for func types in Go; verify
+		// the factory is still the one we set by calling it and checking the result type.
+		client, err := r.RedfishClientFactory(ctx, "", "", "", false)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(client).To(BeAssignableToTypeOf(&internalredfish.MockClient{}))
+	})
+})
+
 var _ = Describe("PhysicalHost Controller", func() {
 
 	const (
