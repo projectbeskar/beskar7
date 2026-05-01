@@ -16,7 +16,7 @@ spec:
         - --leader-elect-retry-period=2s
         - --leader-elect-release-on-cancel=true
         - --enable-security-monitoring=true
-        - --metrics-bind-address=:8080
+        - --metrics-bind-address=:8443
         - --health-probe-bind-address=:8081
         # Add resources optimized for large deployments
         resources:

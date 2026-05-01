@@ -18,7 +18,7 @@
 {{- end }}
 
 {{- if .Values.monitoring.enabled }}
-7. Monitoring is enabled - metrics are available at http://localhost:8080/metrics
+7. Monitoring is enabled - metrics are available at https://localhost:8443/metrics (HTTPS, requires auth)
 {{- end }}
 
 For more information, visit: https://github.com/projectbeskar/beskar7

@@ -33,19 +33,6 @@ controllerManager:
   # - name: CONTROLLER_LOG_LEVEL
   #   value: "info"
 
-# Kube RBAC Proxy configuration
-kubeRbacProxy:
-  image:
-    repository: gcr.io/kubebuilder/kube-rbac-proxy
-    tag: v0.15.0
-    pullPolicy: IfNotPresent
-  resources:
-    limits:
-      cpu: 500m
-      memory: 128Mi
-    requests:
-      cpu: 5m
-      memory: 64Mi
 
 serviceAccount:
   # Specifies whether a service account should be created
