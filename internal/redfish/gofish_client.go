@@ -279,6 +279,27 @@ func (c *gofishClient) SetBootSourcePXE(ctx context.Context) error {
 	return nil
 }
 
+// ClearBootSourceOverride disables any pending one-shot or persistent boot
+// source override so the next claimant is not surprised by a stale PXE-once
+// setting left from the previous provisioning run.
+func (c *gofishClient) ClearBootSourceOverride(ctx context.Context) error {
+	system, err := c.getSystemService(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get system to clear boot source override: %w", err)
+	}
+
+	boot := redfish.Boot{
+		BootSourceOverrideEnabled: redfish.DisabledBootSourceOverrideEnabled,
+	}
+	log.Info("Clearing boot source override")
+	if err := doWithCtx(ctx, func() error { return system.SetBoot(boot) }); err != nil {
+		log.Error(err, "Failed to clear boot source override")
+		return fmt.Errorf("failed to clear boot source override: %w", err)
+	}
+	log.Info("Successfully cleared boot source override")
+	return nil
+}
+
 // Reset performs a system reset.
 func (c *gofishClient) Reset(ctx context.Context) error {
 	system, err := c.getSystemService(ctx)

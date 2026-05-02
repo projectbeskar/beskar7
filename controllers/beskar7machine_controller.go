@@ -39,6 +39,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 const (
@@ -53,6 +55,11 @@ const (
 
 	// Inspection timeout
 	DefaultInspectionTimeout = 10 * time.Minute
+
+	// ForceReleaseAnnotation, when set to "true" on a Beskar7Machine being deleted,
+	// causes the controller to skip the Redfish power-off and boot-override clear
+	// during deletion. Use only when the BMC is permanently unreachable.
+	ForceReleaseAnnotation = "infrastructure.cluster.x-k8s.io/force-release"
 )
 
 // Beskar7MachineReconciler reconciles a Beskar7Machine object.
@@ -454,35 +461,78 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	return nil, ctrl.Result{}, nil
 }
 
-// reconcileDelete handles deletion.
+// reconcileDelete handles deletion. The sequence is:
+//  1. Best-effort Redfish cleanup (ClearBootSourceOverride + graceful power-off).
+//  2. Patch ConsumerRef = nil on the PhysicalHost spec.
+//  3. Remove the Beskar7Machine finalizer.
+//
+// Redfish cleanup is skipped when the ForceReleaseAnnotation is "true" (BMC
+// permanently unreachable) or when the credentials Secret no longer exists.
+// Neither case strands the finalizer: errors from Redfish are logged and
+// swallowed so that a dead BMC cannot block object deletion.
 func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (ctrl.Result, error) {
 	logger.Info("Reconciling deletion")
 
-	// Release the host via a spec-only patch (optimistic locking).
 	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
-		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
-		if err == nil {
+		ns, name, parseErr := parseProviderID(*b7machine.Spec.ProviderID)
+		if parseErr != nil {
+			// Malformed providerID — log and proceed; nothing useful we can do.
+			logger.V(1).Info("Cannot parse ProviderID during deletion; proceeding without host release", "err", parseErr)
+		} else {
 			host := &infrastructurev1beta1.PhysicalHost{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host); err == nil {
 				if host.Spec.ConsumerRef != nil && host.Spec.ConsumerRef.Name == b7machine.Name {
+					forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
+					if forceRelease {
+						logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
+					} else {
+						// Best-effort Redfish cleanup. Errors are logged but do not block release.
+						r.bestEffortReleaseRedfish(ctx, logger, host)
+					}
+					// Always clear ConsumerRef on the host spec.
 					base := host.DeepCopy()
 					host.Spec.ConsumerRef = nil
 					if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+						if apierrors.IsConflict(err) {
+							return ctrl.Result{Requeue: true}, nil
+						}
 						logger.Error(err, "Failed to release host")
 						return ctrl.Result{}, err
 					}
 					logger.Info("Released PhysicalHost", "host", name)
 				}
+			} else if !apierrors.IsNotFound(err) {
+				// Real error fetching host — surface and requeue.
+				return ctrl.Result{}, err
 			}
+			// host NotFound → already gone; nothing to release.
 		}
 	}
 
-	// Remove finalizer
 	if controllerutil.RemoveFinalizer(b7machine, Beskar7MachineFinalizer) {
 		logger.Info("Removing finalizer")
 	}
-
 	return ctrl.Result{}, nil
+}
+
+// bestEffortReleaseRedfish issues ClearBootSourceOverride and a graceful power-off
+// against the host's BMC. All errors are logged at Info and swallowed so a
+// dead BMC cannot strand the Beskar7Machine finalizer.
+// Missing credentials are treated identically — log a warning and return.
+func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context, logger logr.Logger, host *infrastructurev1beta1.PhysicalHost) {
+	rfClient, err := r.getRedfishClientForHost(ctx, logger, host)
+	if err != nil {
+		logger.Info("Could not get Redfish client during release; skipping power-off and boot clear", "err", err)
+		return
+	}
+	defer rfClient.Close(ctx)
+
+	if err := rfClient.ClearBootSourceOverride(ctx); err != nil {
+		logger.Info("Failed to clear boot source override during release; continuing", "err", err)
+	}
+	if err := rfClient.SetPowerState(ctx, redfish.OffPowerState); err != nil {
+		logger.Info("Failed to graceful power-off during release; continuing", "err", err)
+	}
 }
 
 // setInspectionRequestAnnotation patches only the annotations of a PhysicalHost to request
@@ -569,7 +619,33 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.Beskar7Machine{}).
+		Watches(
+			&infrastructurev1beta1.PhysicalHost{},
+			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine),
+		).
 		Complete(r)
+}
+
+// PhysicalHostToBeskar7Machine maps a PhysicalHost change to a reconcile
+// request for the Beskar7Machine that currently consumes it. PhysicalHosts
+// without a ConsumerRef, or with a ConsumerRef pointing at a non-Beskar7Machine
+// kind, produce no requests.
+func (r *Beskar7MachineReconciler) PhysicalHostToBeskar7Machine(ctx context.Context, obj client.Object) []reconcile.Request {
+	host, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+	if !ok {
+		r.Log.Error(nil, "Expected a PhysicalHost in PhysicalHostToBeskar7Machine map", "object", obj)
+		return nil
+	}
+	cr := host.Spec.ConsumerRef
+	if cr == nil {
+		return nil
+	}
+	if cr.Kind != "Beskar7Machine" || cr.APIVersion != InfrastructureAPIVersion {
+		return nil
+	}
+	return []reconcile.Request{
+		{NamespacedName: types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}},
+	}
 }
 
 // parseMemoryCapacityGB converts a BMC-reported capacity string to whole decimal gigabytes.

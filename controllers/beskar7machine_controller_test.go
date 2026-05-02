@@ -2,10 +2,12 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -13,6 +15,7 @@ import (
 	conditions "sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
@@ -314,43 +317,235 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			}, Timeout, Interval).Should(Succeed())
 		})
 
-		PIt("[SKIP - Hardware Testing] Should handle deletion and release host", func() {
-			By("Creating and provisioning machine")
-			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
+		// Converted from PIt "[SKIP - Hardware Testing] Should handle deletion and release host":
+		// The deletion path no longer requires a real CAPI Machine owner — reconcileDelete is
+		// called directly. We set up ProviderID + ConsumerRef manually and inject a MockClient.
+		It("Should clear boot source override and power off the host before clearing ConsumerRef", func() {
+			mockRf := internalredfish.NewMockClient()
+			mockRf.PowerState = redfish.OnPowerState
+			mockRf.BootSourceIsPXE = true
 
-			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
+			r := &Beskar7MachineReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    ctrl.Log.WithName("beskar7machine-delete-test"),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+					return mockRf, nil
+				},
+			}
 
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
+			By("Setting ConsumerRef on PhysicalHost")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			base := physicalHost.DeepCopy()
+			physicalHost.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "delete-test-machine",
+				Namespace:  testNs.Name,
+			}
+			Expect(k8sClient.Patch(ctx, physicalHost, client.MergeFrom(base))).To(Succeed())
+
+			By("Creating a Beskar7Machine with ProviderID pointing at the host")
+			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
+			b7m := &infrastructurev1beta1.Beskar7Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "delete-test-machine",
+					Namespace:  testNs.Name,
+					Finalizers: []string{Beskar7MachineFinalizer},
+				},
+				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					InspectionImageURL: "http://boot-server/inspect.ipxe",
+					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					ProviderID:         &provID,
+				},
+			}
+			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
+
+			By("Calling reconcileDelete directly")
+			_, err := r.reconcileDelete(ctx, r.Log, b7m)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying host was claimed")
-			claimedHost := &infrastructurev1beta1.PhysicalHost{}
-			hostKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, hostKey, claimedHost)).To(Succeed())
-				g.Expect(claimedHost.Spec.ConsumerRef).NotTo(BeNil())
-			}, Timeout, Interval).Should(Succeed())
+			By("Verifying ClearBootSourceOverride was called")
+			Expect(mockRf.ClearBootSourceOverrideCalled).To(BeTrue(),
+				"ClearBootSourceOverride must be called on clean release")
 
-			By("Deleting machine")
-			Expect(k8sClient.Delete(ctx, beskar7Machine)).To(Succeed())
+			By("Verifying SetPowerState(Off) was called")
+			Expect(mockRf.SetPowerStateCalled).To(BeTrue(),
+				"SetPowerState must be called on clean release")
+			Expect(mockRf.PowerState).To(Equal(redfish.OffPowerState))
 
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
+			By("Verifying ConsumerRef is nil on the host")
+			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
+			Expect(hostAfter.Spec.ConsumerRef).To(BeNil(), "ConsumerRef must be cleared after deletion")
+
+			By("Cleanup: remove finalizer so the machine can be GC'd")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: b7m.Name, Namespace: testNs.Name}, b7m)).To(Succeed())
+			b7mBase := b7m.DeepCopy()
+			b7m.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
+		})
+
+		It("Should skip Redfish ops when force-release annotation is set", func() {
+			mockRf := internalredfish.NewMockClient()
+
+			r := &Beskar7MachineReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    ctrl.Log.WithName("beskar7machine-forcerelease-test"),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+					return mockRf, nil
+				},
+			}
+
+			By("Setting ConsumerRef on PhysicalHost")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			base := physicalHost.DeepCopy()
+			physicalHost.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "force-release-machine",
+				Namespace:  testNs.Name,
+			}
+			Expect(k8sClient.Patch(ctx, physicalHost, client.MergeFrom(base))).To(Succeed())
+
+			By("Creating a Beskar7Machine with force-release annotation")
+			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
+			b7m := &infrastructurev1beta1.Beskar7Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "force-release-machine",
+					Namespace:  testNs.Name,
+					Finalizers: []string{Beskar7MachineFinalizer},
+					Annotations: map[string]string{
+						ForceReleaseAnnotation: "true",
+					},
+				},
+				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					InspectionImageURL: "http://boot-server/inspect.ipxe",
+					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					ProviderID:         &provID,
+				},
+			}
+			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
+
+			By("Calling reconcileDelete directly")
+			_, err := r.reconcileDelete(ctx, r.Log, b7m)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Verifying host was released")
-			Eventually(func(g Gomega) {
-				releasedHost := &infrastructurev1beta1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, hostKey, releasedHost)).To(Succeed())
-				g.Expect(releasedHost.Spec.ConsumerRef).To(BeNil())
-				g.Expect(releasedHost.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
-			}, Timeout, Interval).Should(Succeed())
+			By("Verifying ClearBootSourceOverride was NOT called")
+			Expect(mockRf.ClearBootSourceOverrideCalled).To(BeFalse(),
+				"ClearBootSourceOverride must be skipped on force-release")
 
-			By("Verifying machine is eventually deleted")
-			Eventually(func() bool {
-				deletedMachine := &infrastructurev1beta1.Beskar7Machine{}
-				err := k8sClient.Get(ctx, machineLookupKey, deletedMachine)
-				return client.IgnoreNotFound(err) == nil
-			}, Timeout*2, Interval).Should(BeTrue())
+			By("Verifying SetPowerState was NOT called")
+			Expect(mockRf.SetPowerStateCalled).To(BeFalse(),
+				"SetPowerState must be skipped on force-release")
+
+			By("Verifying ConsumerRef is still cleared on the host")
+			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
+			Expect(hostAfter.Spec.ConsumerRef).To(BeNil(), "ConsumerRef must be cleared even on force-release")
+
+			By("Cleanup: remove finalizer")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: b7m.Name, Namespace: testNs.Name}, b7m)).To(Succeed())
+			b7mBase := b7m.DeepCopy()
+			b7m.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
+		})
+
+		It("Should remove finalizer cleanly when the host is already gone", func() {
+			r := &Beskar7MachineReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    ctrl.Log.WithName("beskar7machine-hostgone-test"),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+					return internalredfish.NewMockClient(), nil
+				},
+			}
+
+			By("Creating a Beskar7Machine pointing at a non-existent host")
+			provID := "b7://" + testNs.Name + "/does-not-exist"
+			b7m := &infrastructurev1beta1.Beskar7Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "gone-host-machine",
+					Namespace:  testNs.Name,
+					Finalizers: []string{Beskar7MachineFinalizer},
+				},
+				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					InspectionImageURL: "http://boot-server/inspect.ipxe",
+					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					ProviderID:         &provID,
+				},
+			}
+			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
+
+			By("Calling reconcileDelete — should not error even though host is missing")
+			_, err := r.reconcileDelete(ctx, r.Log, b7m)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying finalizer was removed from the in-memory object")
+			Expect(controllerutil.ContainsFinalizer(b7m, Beskar7MachineFinalizer)).To(BeFalse())
+
+			By("Cleanup: patch finalizer list in the API server")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: b7m.Name, Namespace: testNs.Name}, b7m)).To(Succeed())
+			b7mBase := b7m.DeepCopy()
+			b7m.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
+		})
+
+		It("Should not block deletion when the BMC is unreachable", func() {
+			r := &Beskar7MachineReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Log:    ctrl.Log.WithName("beskar7machine-bmcfail-test"),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+					return nil, fmt.Errorf("BMC unreachable")
+				},
+			}
+
+			By("Setting ConsumerRef on PhysicalHost")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			base := physicalHost.DeepCopy()
+			physicalHost.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "bmc-fail-machine",
+				Namespace:  testNs.Name,
+			}
+			Expect(k8sClient.Patch(ctx, physicalHost, client.MergeFrom(base))).To(Succeed())
+
+			By("Creating a Beskar7Machine")
+			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
+			b7m := &infrastructurev1beta1.Beskar7Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "bmc-fail-machine",
+					Namespace:  testNs.Name,
+					Finalizers: []string{Beskar7MachineFinalizer},
+				},
+				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					InspectionImageURL: "http://boot-server/inspect.ipxe",
+					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					ProviderID:         &provID,
+				},
+			}
+			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
+
+			By("Calling reconcileDelete — should succeed despite BMC failure")
+			_, err := r.reconcileDelete(ctx, r.Log, b7m)
+			Expect(err).NotTo(HaveOccurred(), "deletion must not be blocked by an unreachable BMC")
+
+			By("Verifying ConsumerRef was still cleared on the host")
+			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
+			Expect(hostAfter.Spec.ConsumerRef).To(BeNil())
+
+			By("Verifying finalizer was removed from the in-memory object")
+			Expect(controllerutil.ContainsFinalizer(b7m, Beskar7MachineFinalizer)).To(BeFalse())
+
+			By("Cleanup: remove finalizer in API server")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: b7m.Name, Namespace: testNs.Name}, b7m)).To(Succeed())
+			b7mBase := b7m.DeepCopy()
+			b7m.Finalizers = nil
+			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
 		})
 
 		PIt("[SKIP - Hardware Testing] Should handle pause annotation", func() {
@@ -431,5 +626,72 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				g.Expect(cond.Reason).To(ContainSubstring("Validation"))
 			}, Timeout, Interval).Should(Succeed())
 		})
+	})
+})
+
+// PhysicalHostToBeskar7Machine mapping — pure unit tests; no envtest required.
+var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
+	var r *Beskar7MachineReconciler
+
+	BeforeEach(func() {
+		r = &Beskar7MachineReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("mapping-test"),
+		}
+	})
+
+	It("Should enqueue Beskar7Machine when host has matching ConsumerRef", func() {
+		host := &infrastructurev1beta1.PhysicalHost{
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "Beskar7Machine",
+					APIVersion: InfrastructureAPIVersion,
+					Name:       "my-machine",
+					Namespace:  "my-ns",
+				},
+			},
+		}
+		reqs := r.PhysicalHostToBeskar7Machine(context.Background(), host)
+		Expect(reqs).To(HaveLen(1))
+		Expect(reqs[0].NamespacedName).To(Equal(types.NamespacedName{Namespace: "my-ns", Name: "my-machine"}))
+	})
+
+	It("Should not enqueue when host has no ConsumerRef", func() {
+		host := &infrastructurev1beta1.PhysicalHost{
+			Spec: infrastructurev1beta1.PhysicalHostSpec{},
+		}
+		reqs := r.PhysicalHostToBeskar7Machine(context.Background(), host)
+		Expect(reqs).To(BeEmpty())
+	})
+
+	It("Should not enqueue when ConsumerRef is a different Kind", func() {
+		host := &infrastructurev1beta1.PhysicalHost{
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "SomeOtherKind",
+					APIVersion: InfrastructureAPIVersion,
+					Name:       "some-object",
+					Namespace:  "my-ns",
+				},
+			},
+		}
+		reqs := r.PhysicalHostToBeskar7Machine(context.Background(), host)
+		Expect(reqs).To(BeEmpty())
+	})
+
+	It("Should not enqueue when ConsumerRef APIVersion does not match", func() {
+		host := &infrastructurev1beta1.PhysicalHost{
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "Beskar7Machine",
+					APIVersion: "some.other.api/v1",
+					Name:       "my-machine",
+					Namespace:  "my-ns",
+				},
+			},
+		}
+		reqs := r.PhysicalHostToBeskar7Machine(context.Background(), host)
+		Expect(reqs).To(BeEmpty())
 	})
 })
