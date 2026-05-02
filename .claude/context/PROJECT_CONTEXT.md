@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-1.3 closed BUG-3 (`parseProviderID` rewritten with `strings.CutPrefix`+`strings.SplitN`; multi-segment name now rejected); PR-2.1 closed BUG-5 (PhysicalHost patch helper) and removed cross-controller PhysicalHost.Status writes from Beskar7Machine controller (BUG-1 partially closed); `InspectionRequestAnnotation` Pattern A adopted for inter-controller signalling.
+> **Last meaningful update:** 2026-05-02 — PR-1.3 closed BUG-3; PR-2.1 closed BUG-5 and partially BUG-1; D-003 / D-004 / D-005 ratified (bootstrap delivery, inspection token, handler-must-not-write-status); D-002 plan amended to split PR-1.1 into PR-1.1 + PR-5.3 and add PR-1.3 for `parseProviderID`.
 
 ---
 
@@ -177,8 +177,47 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
   | 9 | Docs + examples sweep (v0.4 rewrite) | tech-writer | Phases 1–7 |
   | 10 | Test coverage backfill (envtest, drop PIt) | qa-engineer | Phases 1–2 |
   | 11 | Hardening tail: digest pin, zap flag (kube-rbac-proxy done in PR-11.1) | golang-engineer | independent |
-- **Decisions still owed**: bootstrap delivery mechanism (kernel cmdline vs ignition URL — recommend ignition URL); inspection token surface (header vs URL path — recommend `X-Beskar7-Inspection-Token` header). Resolve at Phase 1 / Phase 5 kickoff respectively.
+- **PR breakdown amendment (2026-05-02, after D-003/D-004/D-005)**:
+  | PR | Phase | Title | Owner | Depends on |
+  |---|---|---|---|---|
+  | PR-1.1 | 1 | Beskar7Machine reads bootstrap secret + populates `PhysicalHost.Status.Bootstrap.URL` on inspection trigger | golang-engineer | PR-0.1 (closed) |
+  | PR-1.2 | 1 | Wire `FailureReason` / `FailureMessage` on terminal failures (closes BUG-8) | golang-engineer | PR-1.1 |
+  | PR-1.3 | 1 | Fix `parseProviderID` (closes BUG-3) — small, independent | golang-engineer | none |
+  | PR-2.1 | 2 | Patch helper + remove cross-controller status writes (BUG-5, BUG-1 partial) | golang-engineer | PR-0.1 → **closed in PR #37** |
+  | PR-2.2 | 2 | Atomic claim (BUG-2 full fix) | golang-engineer | PR-2.1 |
+  | PR-2.3 | 2 | Clean release on delete + watch PhysicalHost from Beskar7Machine (BUG-4, BUG-7) | golang-engineer | PR-2.1 |
+  | PR-3.1 | 3 | Graceful power-off + ctx + per-call HTTP timeout (BUG-6, BUG-10) | golang-engineer | independent |
+  | PR-3.2 | 3 | TLS CA bundle support on `RedfishConnection` (SEC-5) | security-engineer | independent |
+  | PR-3.3 | 3 | Stop logging BMC creds; fix memory parse (SEC-4, BUG-11) | golang-engineer | independent |
+  | PR-5.1 | 5 | CRD: add `PhysicalHostStatus.Bootstrap`; mint+verify token in `internal/auth` | security-engineer | PR-1.1, PR-2.x |
+  | PR-5.2 | 5 | Inspection handler: bearer auth, body cap, TLS, annotation handoff (closes SEC-1, BUG-1 fully via D-005) | security-engineer | PR-5.1 |
+  | PR-5.3 | 5 | Bootstrap GET endpoint with same auth (closes BLOCK-2 server side) | security-engineer | PR-5.1 |
 - **Status**: closed (active execution).
+
+### D-003 — Bootstrap delivery via authenticated manager HTTP endpoint
+
+- **Date**: 2026-05-02.
+- **Decision**: `Beskar7MachineReconciler` reads `Machine.Spec.Bootstrap.DataSecretName`, and the manager serves the secret bytes at `GET /api/v1/bootstrap/{ns}/{name}` on the existing inspection port `:8082` over HTTPS, gated by a per-host bearer token in the `Authorization` header. The plaintext token is rendered into the iPXE kernel cmdline; only its SHA-256 is persisted in `PhysicalHost.Status.Bootstrap`. Kernel-cmdline-inline (Option A) and virtual-media / configdrive (Option C) are rejected: A is size-bounded (~2-4 KB) and leaks user-data including kubeadm join tokens into BMC and Redfish audit logs; C requires infrastructure the project explicitly avoids.
+- **Rationale**: closes BLOCK-2 without a CRD schema break beyond an additive `PhysicalHostStatus.Bootstrap` sub-object. Reuses the existing `:8082` surface so chart Service / NetworkPolicy parity (BLOCK-5) is one fix instead of two. Token-on-header keeps user-data and join-tokens out of access logs. URL is deterministic from `(namespace, name)` so the reconciler is idempotent across manager restarts. The manager becoming a soft dependency of host bring-up matches the existing inspection-callback dependency — operational topology unchanged.
+- **Implementation**: PR-1.1 (controller-side: read secret, populate URL on `PhysicalHost.Status.Bootstrap`), PR-5.3 (server-side: serve the GET endpoint with bearer auth).
+- **Status**: closed.
+
+### D-004 — Inspection / bootstrap auth: per-host bearer token, hashed in status
+
+- **Date**: 2026-05-02.
+- **Decision**: At the start of `triggerInspection`, the manager mints a 32-byte random token per `PhysicalHost`. It stores `sha256(token)` plus `IssuedAt` and `ExpiresAt = IssuedAt + 30m` in `PhysicalHost.Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}`. The plaintext token is rendered into the iPXE kernel cmdline (`beskar7.token=<plaintext>`). Both the inspection POST (`POST /api/v1/inspection`) and the bootstrap GET (`GET /api/v1/bootstrap/{ns}/{name}`) authenticate via `Authorization: Bearer <token>`. Constant-time compare via `crypto/subtle`. Multi-use within window; revoked when `MachineProvisionedCondition=True` or on Beskar7Machine deletion.
+- **Alternatives rejected**: URL-path token (leaks into HTTP access logs and reverse-proxy logs); annotation storage (the hash belongs in observed-state on the Status subresource so only the controller's status writer can mutate it); custom `X-Beskar7-Inspection-Token` header (standard `Bearer` works with existing log scrubbers and proxies); one-shot tokens (fights the multi-fetch reality of inspector POST + bootstrap GET + cloud-init re-fetch).
+- **Rationale**: closes SEC-1. Hash-in-Status preserves the controller-only status-write boundary. `Bearer` over `Authorization` is the path of least surprise for proxies and log-scrubbers. 30-minute window is comfortably above `DefaultInspectionTimeout` (10 min) and gives operators headroom for slow BIOS POST + first-boot inspector + bootstrap fetch.
+- **Implementation**: PR-5.1 (CRD addition + `internal/auth` mint/verify), PR-5.2 (handler bearer-auth wiring + body cap + TLS), PR-5.3 (bootstrap GET endpoint reuses the same auth).
+- **Status**: closed.
+
+### D-005 — Inspection handler must not write `PhysicalHost.Status` directly
+
+- **Date**: 2026-05-02. Surfaced during D-004 design.
+- **Decision**: The inspection HTTP handler stores the validated `InspectionReport` on a ConfigMap referenced by an annotation `infrastructure.cluster.x-k8s.io/inspection-result-ref` on `PhysicalHost`. The `PhysicalHostReconciler` watches the annotation, reads the referenced ConfigMap, and is the sole writer of `PhysicalHost.Status.InspectionReport` and `Status.InspectionPhase`.
+- **Rationale**: today `controllers/inspection_handler.go:199` calls `h.Client.Status().Update(ctx, physicalHost)` — same boundary violation as the cross-controller writes that PR-2.1 just removed (BUG-1). Closes the remaining BUG-1 surface and is required by the boundary rule in `CLAUDE.md`. ConfigMap is preferred over a spec field because the inspection report is large (`[]CPUInfo`, `[]MemoryInfo`, `[]NIC`, `[]Disk`) and shouldn't bloat the PhysicalHost object.
+- **Implementation**: PR-5.2.
+- **Status**: closed.
 
 ---
 
