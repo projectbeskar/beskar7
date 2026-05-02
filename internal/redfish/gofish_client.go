@@ -2,14 +2,21 @@ package redfish
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/stmcginnis/gofish"
 	"github.com/stmcginnis/gofish/redfish"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+// defaultHTTPTimeout is the per-call HTTP timeout injected into the http.Client
+// passed to gofish. A wedged BMC will be abandoned after this duration; the
+// reconcile loop will requeue and retry.
+const defaultHTTPTimeout = 30 * time.Second
 
 // gofishClient implements the Client interface using the gofish library.
 type gofishClient struct {
@@ -18,6 +25,46 @@ type gofishClient struct {
 }
 
 var log = logf.Log.WithName("redfish-client")
+
+// newHTTPClient builds an *http.Client that mirrors gofish's internal transport
+// defaults while adding a per-call Timeout and honouring the insecure flag.
+// Callers who supply their own HTTPClient (e.g. custom CA) bypass this path.
+func newHTTPClient(insecure bool) *http.Client {
+	defaultTransport := http.DefaultTransport.(*http.Transport)
+	transport := &http.Transport{
+		Proxy:                 defaultTransport.Proxy,
+		DialContext:           defaultTransport.DialContext,
+		MaxIdleConns:          defaultTransport.MaxIdleConns,
+		IdleConnTimeout:       defaultTransport.IdleConnTimeout,
+		ExpectContinueTimeout: defaultTransport.ExpectContinueTimeout,
+		TLSHandshakeTimeout:   10 * time.Second,
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: insecure, // #nosec G402 — InsecureSkipVerify is operator-opt-in via Spec.RedfishConnection.InsecureSkipVerify
+		},
+	}
+	return &http.Client{
+		Timeout:   defaultHTTPTimeout,
+		Transport: transport,
+	}
+}
+
+// doWithCtx runs op in a goroutine and returns either op's result or ctx.Err()
+// if ctx is cancelled first. The goroutine continues to completion on cancellation
+// (we cannot interrupt a synchronous gofish call mid-flight); its result is
+// discarded. This is the simplest pattern that respects reconcile-context
+// cancellation without requiring upstream gofish ctx support.
+func doWithCtx(ctx context.Context, op func() error) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- op()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // NewClient creates a new Redfish client.
 func NewClient(ctx context.Context, address, username, password string, insecure bool) (Client, error) {
@@ -46,11 +93,12 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	endpointURL := parsedURL.String()
 
 	config := gofish.ClientConfig{
-		Endpoint:  endpointURL, // Use the processed URL
-		Username:  username,
-		Password:  password,
-		Insecure:  insecure,
-		BasicAuth: true,
+		Endpoint:   endpointURL, // Use the processed URL
+		Username:   username,
+		Password:   password,
+		Insecure:   insecure, // retained for documentation intent; HTTPClient below takes precedence
+		BasicAuth:  true,
+		HTTPClient: newHTTPClient(insecure),
 	}
 
 	// Log the final config before connecting. Username is omitted (SEC-4); use
@@ -76,11 +124,10 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	}, nil
 }
 
-// NewClientWithHTTPClient creates a new Redfish client using a custom HTTP client.
-// Note: The underlying gofish library does not currently accept a custom http.Client.
-// This function preserves API compatibility for tests and callers that wish to provide
-// a client (e.g., to disable TLS verification). The provided httpClient is ignored,
-// and the 'insecure' parameter is used to control TLS verification instead.
+// NewClientWithHTTPClient is a compatibility shim used by integration tests.
+// It forwards to NewClient and ignores the supplied httpClient argument;
+// NewClient now builds its own http.Client from the insecure flag.
+// SEC-5 will rewire this to actually use the supplied client (e.g. for custom CA bundles).
 func NewClientWithHTTPClient(
 	ctx context.Context,
 	address, username, password string,
@@ -90,11 +137,20 @@ func NewClientWithHTTPClient(
 	return NewClient(ctx, address, username, password, insecure)
 }
 
-// Close disconnects the client.
-func (c *gofishClient) Close(ctx context.Context) {
+// Close disconnects the client. It uses a fresh 5-second context so that a
+// partitioned BMC doesn't block a deferred Close indefinitely, even when the
+// caller's ctx is already cancelled.
+func (c *gofishClient) Close(_ context.Context) {
 	if c.gofishClient != nil {
 		log.Info("Disconnecting Redfish client", "address", c.apiEndpoint)
-		c.gofishClient.Logout()
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := doWithCtx(closeCtx, func() error {
+			c.gofishClient.Logout()
+			return nil
+		}); err != nil {
+			log.V(1).Info("Redfish logout did not complete cleanly", "address", c.apiEndpoint, "reason", err)
+		}
 		c.gofishClient = nil
 	}
 }
@@ -106,8 +162,12 @@ func (c *gofishClient) getSystemService(ctx context.Context) (*redfish.ComputerS
 		return nil, fmt.Errorf("redfish client is not connected")
 	}
 	service := c.gofishClient.Service
-	systems, err := service.Systems()
-	if err != nil {
+	var systems []*redfish.ComputerSystem
+	if err := doWithCtx(ctx, func() error {
+		var inner error
+		systems, inner = service.Systems()
+		return inner
+	}); err != nil {
 		log.Error(err, "Failed to retrieve systems from Redfish service root")
 		return nil, fmt.Errorf("failed to retrieve systems: %w", err)
 	}
@@ -149,6 +209,8 @@ func (c *gofishClient) GetPowerState(ctx context.Context) (redfish.PowerState, e
 }
 
 // SetPowerState sets the desired power state of the system.
+// Mapping Off → GracefulShutdown ensures the OS can flush state before power
+// is removed. Callers that need an immediate power-cut must use ForcePowerOff.
 func (c *gofishClient) SetPowerState(ctx context.Context, state redfish.PowerState) error {
 	system, err := c.getSystemService(ctx)
 	if err != nil {
@@ -160,7 +222,7 @@ func (c *gofishClient) SetPowerState(ctx context.Context, state redfish.PowerSta
 	case redfish.OnPowerState:
 		resetType = redfish.OnResetType
 	case redfish.OffPowerState:
-		resetType = redfish.ForceOffResetType
+		resetType = redfish.GracefulShutdownResetType
 	default:
 		// Try direct conversion if it matches a ResetType
 		switch redfish.ResetType(state) {
@@ -172,12 +234,27 @@ func (c *gofishClient) SetPowerState(ctx context.Context, state redfish.PowerSta
 	}
 
 	log.Info("Attempting to set power state", "desiredState", state, "resetType", resetType)
-	err = system.Reset(resetType)
-	if err != nil {
+	if err := doWithCtx(ctx, func() error { return system.Reset(resetType) }); err != nil {
 		log.Error(err, "Failed to set power state", "desiredState", state)
 		return fmt.Errorf("failed to set power state to %s: %w", state, err)
 	}
 	log.Info("Successfully requested power state change", "desiredState", state)
+	return nil
+}
+
+// ForcePowerOff forces an immediate power-off, bypassing OS shutdown.
+// Use only for unrecoverable error paths; prefer SetPowerState(Off) which
+// performs a graceful shutdown.
+func (c *gofishClient) ForcePowerOff(ctx context.Context) error {
+	system, err := c.getSystemService(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get system for force power-off: %w", err)
+	}
+	log.Info("Forcing system power-off (bypassing graceful shutdown)")
+	if err := doWithCtx(ctx, func() error { return system.Reset(redfish.ForceOffResetType) }); err != nil {
+		log.Error(err, "Failed to force power-off")
+		return fmt.Errorf("failed to force power-off: %w", err)
+	}
 	return nil
 }
 
@@ -193,8 +270,7 @@ func (c *gofishClient) SetBootSourcePXE(ctx context.Context) error {
 		BootSourceOverrideEnabled: redfish.OnceBootSourceOverrideEnabled,
 	}
 	log.Info("Attempting to set boot source override to PXE", "target", boot.BootSourceOverrideTarget, "enabled", boot.BootSourceOverrideEnabled)
-	err = system.SetBoot(boot)
-	if err != nil {
+	if err := doWithCtx(ctx, func() error { return system.SetBoot(boot) }); err != nil {
 		log.Error(err, "Failed to set boot source override to PXE")
 		return fmt.Errorf("failed to set boot source override to PXE: %w", err)
 	}
@@ -211,8 +287,7 @@ func (c *gofishClient) Reset(ctx context.Context) error {
 	}
 
 	log.Info("Attempting to reset system")
-	err = system.Reset(redfish.ForceRestartResetType)
-	if err != nil {
+	if err := doWithCtx(ctx, func() error { return system.Reset(redfish.ForceRestartResetType) }); err != nil {
 		log.Error(err, "Failed to reset system")
 		return fmt.Errorf("failed to reset system: %w", err)
 	}
@@ -233,8 +308,12 @@ func (c *gofishClient) GetNetworkAddresses(ctx context.Context) ([]NetworkAddres
 	var addresses []NetworkAddress
 
 	// Try to get EthernetInterfaces first (more common and reliable)
-	ethernetInterfaces, err := system.EthernetInterfaces()
-	if err != nil {
+	var ethernetInterfaces []*redfish.EthernetInterface
+	if err := doWithCtx(ctx, func() error {
+		var inner error
+		ethernetInterfaces, inner = system.EthernetInterfaces()
+		return inner
+	}); err != nil {
 		log.Error(err, "Failed to retrieve ethernet interfaces")
 		// Don't return error yet, try NetworkInterfaces as fallback
 	} else {
@@ -248,8 +327,12 @@ func (c *gofishClient) GetNetworkAddresses(ctx context.Context) ([]NetworkAddres
 	// If we didn't get addresses from EthernetInterfaces, try NetworkInterfaces
 	if len(addresses) == 0 {
 		log.Info("No addresses found via EthernetInterfaces, trying NetworkInterfaces fallback")
-		networkInterfaces, err := system.NetworkInterfaces()
-		if err != nil {
+		var networkInterfaces []*redfish.NetworkInterface
+		if err := doWithCtx(ctx, func() error {
+			var inner error
+			networkInterfaces, inner = system.NetworkInterfaces()
+			return inner
+		}); err != nil {
 			log.Error(err, "Failed to retrieve network interfaces")
 			return nil, fmt.Errorf("failed to retrieve both ethernet and network interfaces: %w", err)
 		}
@@ -312,8 +395,12 @@ func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context,
 	log.V(1).Info("Extracting addresses from NetworkInterface", "interface", netIntf.Name, "id", netIntf.ID)
 
 	// Try to get NetworkPorts from the NetworkInterface
-	networkPorts, err := netIntf.NetworkPorts()
-	if err != nil {
+	var networkPorts []*redfish.NetworkPort
+	if err := doWithCtx(ctx, func() error {
+		var inner error
+		networkPorts, inner = netIntf.NetworkPorts()
+		return inner
+	}); err != nil {
 		log.V(1).Info("Could not retrieve NetworkPorts from NetworkInterface", "interface", netIntf.Name, "error", err)
 	} else if len(networkPorts) > 0 {
 		log.V(1).Info("Found NetworkPorts", "interface", netIntf.Name, "count", len(networkPorts))
@@ -325,8 +412,12 @@ func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context,
 	}
 
 	// Try to get NetworkDeviceFunctions from the NetworkInterface
-	networkDeviceFunctions, err := netIntf.NetworkDeviceFunctions()
-	if err != nil {
+	var networkDeviceFunctions []*redfish.NetworkDeviceFunction
+	if err := doWithCtx(ctx, func() error {
+		var inner error
+		networkDeviceFunctions, inner = netIntf.NetworkDeviceFunctions()
+		return inner
+	}); err != nil {
 		log.V(1).Info("Could not retrieve NetworkDeviceFunctions from NetworkInterface", "interface", netIntf.Name, "error", err)
 	} else if len(networkDeviceFunctions) > 0 {
 		log.V(1).Info("Found NetworkDeviceFunctions", "interface", netIntf.Name, "count", len(networkDeviceFunctions))
