@@ -80,11 +80,8 @@ Create the namespace name
 Create the controller manager image
 */}}
 {{- define "beskar7.controllerImage" -}}
-{{- $repository := .Values.controllerManager.image.repository | default .Values.image.repository }}
-{{- $tag := .Values.controllerManager.image.tag }}
-{{- if not $tag }}
-  {{- $tag = .Values.image.tag | default .Chart.AppVersion }}
-{{- end }}
+{{- $repository := .Values.controllerManager.image.repository }}
+{{- $tag := .Values.controllerManager.image.tag | default .Chart.AppVersion }}
 {{- printf "%s:%s" $repository $tag }}
 {{- end }}
 

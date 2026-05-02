@@ -38,7 +38,13 @@ spec:
         - --metrics-bind-address=:8443
         - --leader-elect
         - --bootstrap-url-base={{ .Values.bootstrap.urlBase | default "https://beskar7-controller-manager.beskar7-system.svc:8082" }}
+        # The callback server (inspection POST + bootstrap GET) shares the cert
+        # mount with the webhook server because both run in the same Pod under
+        # the same DNS name. The cert dir is therefore always required; it is
+        # provided by cert-manager regardless of whether webhook admission is on.
+        - --inspection-cert-dir=/tmp/k8s-webhook-server/serving-certs
         {{- if .Values.webhook.enabled }}
+        - --enable-webhook=true
         - --webhook-port=9443
         {{- end }}
         ports:
@@ -59,23 +65,25 @@ spec:
           {{- toYaml .Values.controllerManager.resources | nindent 10 }}
         securityContext:
           {{- toYaml .Values.securityContext | nindent 10 }}
-        {{- if .Values.webhook.enabled }}
+        # The cert volume is mounted unconditionally because the callback server
+        # (inspection POST + bootstrap GET on :8082) requires TLS regardless of
+        # whether webhook admission is enabled. Both servers share the same cert
+        # issued by cert-manager. Operators must have certManager.enabled=true.
         volumeMounts:
         - mountPath: /tmp/k8s-webhook-server/serving-certs
           name: cert
           readOnly: true
-        {{- end }}
         {{- if .Values.controllerManager.env }}
         env:
           {{- toYaml .Values.controllerManager.env | nindent 10 }}
         {{- end }}
-      {{- if .Values.webhook.enabled }}
       volumes:
       - name: cert
         secret:
-          defaultMode: 420
+          # 0400 in octal = 256 in decimal. defaultMode 420 = 0644 in octal.
+          # Use 256 to match the kustomize config/manager/manager.yaml setting.
+          defaultMode: 256
           secretName: {{ .Values.certManager.certificate.secretName }}
-      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

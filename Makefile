@@ -45,6 +45,18 @@ rbac:
 crd:
 	$(CONTROLLER_GEN) crd:generateEmbeddedObjectMeta=true,maxDescLen=0,crdVersions=v1 paths="./api/..." output:crd:artifacts:config=config/crd/bases
 
+# Sync chart-bundled CRDs from the generated source of truth.
+# Run this after `make manifests` (or use `make manifests-and-sync`) so that
+# charts/beskar7/crds/ always matches config/crd/bases/. The stray _.yaml stub
+# is removed if present.
+sync-chart-crds:
+	cp config/crd/bases/*.yaml charts/beskar7/crds/
+	@rm -f charts/beskar7/crds/_.yaml
+
+# Convenience target: regenerate manifests then sync the chart CRDs.
+# Use this instead of plain `make manifests` when the chart is in scope.
+manifests-and-sync: manifests sync-chart-crds
+
 # Run tests
 test:
 	$(GO) test ./... -coverprofile cover.out
@@ -104,4 +116,4 @@ release-manifests:
 	git checkout config/overlays/ 2>/dev/null || true
 	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
 
-.PHONY: build generate manifests test docker-build docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests 
+.PHONY: build generate manifests test docker-build docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync

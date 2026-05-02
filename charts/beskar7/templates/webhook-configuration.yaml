@@ -1,0 +1,68 @@
+{{- if .Values.webhook.enabled }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "beskar7.fullname" . }}-mutating-webhook-configuration
+  annotations:
+    # cert-manager injects the CA bundle from the named Certificate's secret.
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "beskar7.namespace" .) .Values.certManager.certificate.name }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+webhooks:
+- admissionReviewVersions:
+    {{- toYaml .Values.webhook.admissionReviewVersions | nindent 4 }}
+  clientConfig:
+    service:
+      name: {{ .Values.webhook.service.name }}
+      namespace: {{ include "beskar7.namespace" . }}
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      port: {{ .Values.webhook.service.port }}
+  failurePolicy: {{ .Values.webhook.failurePolicy }}
+  matchPolicy: {{ .Values.webhook.matchPolicy }}
+  name: defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - beskar7clusters
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "beskar7.fullname" . }}-validating-webhook-configuration
+  annotations:
+    # cert-manager injects the CA bundle from the named Certificate's secret.
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "beskar7.namespace" .) .Values.certManager.certificate.name }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+webhooks:
+- admissionReviewVersions:
+    {{- toYaml .Values.webhook.admissionReviewVersions | nindent 4 }}
+  clientConfig:
+    service:
+      name: {{ .Values.webhook.service.name }}
+      namespace: {{ include "beskar7.namespace" . }}
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      port: {{ .Values.webhook.service.port }}
+  failurePolicy: {{ .Values.webhook.failurePolicy }}
+  matchPolicy: {{ .Values.webhook.matchPolicy }}
+  name: validation.beskar7cluster.infrastructure.cluster.x-k8s.io
+  rules:
+  - apiGroups:
+    - infrastructure.cluster.x-k8s.io
+    apiVersions:
+    - v1beta1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - beskar7clusters
+  sideEffects: None
+{{- end }}
