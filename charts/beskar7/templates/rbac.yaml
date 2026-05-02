@@ -9,30 +9,28 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
   - patch
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - cluster.x-k8s.io
   resources:
   - clusters
   - clusters/status
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cluster.x-k8s.io
-  resources:
   - machines
   - machines/status
   verbs:
@@ -40,9 +38,23 @@ rules:
   - list
   - watch
 - apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
   - beskar7clusters
+  - beskar7machines
+  - physicalhosts
   verbs:
   - create
   - delete
@@ -55,38 +67,16 @@ rules:
   - infrastructure.cluster.x-k8s.io
   resources:
   - beskar7clusters/finalizers
+  - beskar7machines/finalizers
+  - physicalhosts/finalizers
   verbs:
   - update
 - apiGroups:
   - infrastructure.cluster.x-k8s.io
   resources:
   - beskar7clusters/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - beskar7machines
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - beskar7machines/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
   - beskar7machines/status
+  - physicalhosts/status
   verbs:
   - get
   - patch
@@ -100,31 +90,14 @@ rules:
   - list
   - watch
 - apiGroups:
-  - infrastructure.cluster.x-k8s.io
+  - rbac.authorization.k8s.io
   resources:
-  - physicalhosts
+  - clusterrolebindings
+  - clusterroles
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - physicalhosts/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - physicalhosts/status
-  verbs:
-  - get
-  - patch
-  - update
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

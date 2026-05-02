@@ -7,37 +7,34 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
   - patch
 - apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
   - cluster.x-k8s.io
   resources:
   - clusters
   - clusters/status
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - cluster.x-k8s.io
-  resources:
   - machines
   - machines/status
   verbs:
   - get
   - list
   - watch
-  - watch // Needed to find control plane machine addresses
 - apiGroups:
   - coordination.k8s.io
   resources:
@@ -55,6 +52,7 @@ rules:
   resources:
   - beskar7clusters
   - beskar7machines
+  - physicalhosts
   verbs:
   - create
   - delete
@@ -81,19 +79,6 @@ rules:
   - get
   - patch
   - update
-- apiGroups:
-  - infrastructure.cluster.x-k8s.io
-  resources:
-  - physicalhosts
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-  - watch // Needed to discover failure domains
 - apiGroups:
   - rbac.authorization.k8s.io
   resources:

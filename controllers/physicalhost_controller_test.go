@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -368,6 +369,131 @@ var _ = Describe("PhysicalHost Controller", func() {
 				ph := &infrastructurev1beta1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OnPowerState)))
+			}, Timeout, Interval).Should(Succeed())
+		})
+
+		It("Should consume bootstrap-token annotation, persist hash+lifetime to Status.Bootstrap, and clear the annotation", func() {
+			By("Creating the PhysicalHost and making it Available")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+
+			By("Setting the bootstrap-token annotation (as Beskar7Machine controller would)")
+			fakeHash := "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+			now := metav1.Now()
+			expiresAt := metav1.NewTime(now.Add(30 * time.Minute))
+			value := BootstrapTokenAnnotationValue{
+				Hash:      fakeHash,
+				IssuedAt:  now,
+				ExpiresAt: expiresAt,
+			}
+			encoded, err := json.Marshal(value)
+			Expect(err).NotTo(HaveOccurred())
+
+			phPatch := ph.DeepCopy()
+			if phPatch.Annotations == nil {
+				phPatch.Annotations = map[string]string{}
+			}
+			phPatch.Annotations[BootstrapTokenAnnotation] = string(encoded)
+			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+
+			By("Reconciling — controller should consume annotation and persist to Status.Bootstrap")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
+				g.Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
+				g.Expect(got.Status.Bootstrap.IssuedAt).NotTo(BeNil())
+				g.Expect(got.Status.Bootstrap.ExpiresAt).NotTo(BeNil())
+				// Allow some skew between encoded and decoded times due to status round-trip.
+				g.Expect(got.Status.Bootstrap.ExpiresAt.Time.After(got.Status.Bootstrap.IssuedAt.Time)).To(BeTrue(),
+					"ExpiresAt must be after IssuedAt")
+				g.Expect(got.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation),
+					"bootstrap-token annotation must be removed after consumption")
+			}, Timeout, Interval).Should(Succeed())
+		})
+
+		It("Should consume inspection-result annotation, persist InspectionReport to Status, delete the ConfigMap, and clear the annotation", func() {
+			By("Creating the PhysicalHost and making it Available, with a ConsumerRef so we don't transition back to Available")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Creating the inspection-result ConfigMap that the handler would have written")
+			report := &infrastructurev1beta1.InspectionReport{
+				Timestamp:    metav1.Now(),
+				Manufacturer: "Acme",
+				Model:        "Test-1000",
+				SerialNumber: "SN-RESULT",
+				CPUs: []infrastructurev1beta1.CPUInfo{
+					{ID: "cpu0", Cores: 16},
+				},
+			}
+			body, err := json.Marshal(report)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmName := inspectionResultConfigMapName(physicalHost.Name)
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      cmName,
+					Namespace: physicalHost.Namespace,
+				},
+				Data: map[string]string{
+					inspectionResultDataKey: string(body),
+				},
+			}
+			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+
+			By("Setting the inspection-result annotation pointing at the ConfigMap")
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			phPatch := ph.DeepCopy()
+			if phPatch.Annotations == nil {
+				phPatch.Annotations = map[string]string{}
+			}
+			phPatch.Annotations[InspectionResultAnnotation] = cmName
+			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+
+			By("Reconciling — controller should consume the result, persist to Status, and delete the CM")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.InspectionReport).NotTo(BeNil(), "Status.InspectionReport must be set")
+				g.Expect(got.Status.InspectionReport.Manufacturer).To(Equal("Acme"))
+				g.Expect(got.Status.InspectionReport.Model).To(Equal("Test-1000"))
+				g.Expect(got.Status.InspectionReport.SerialNumber).To(Equal("SN-RESULT"))
+				g.Expect(got.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseComplete))
+				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeTrue(),
+					"HostInspectedCondition must be True after consuming the report")
+				// Annotation cleared.
+				g.Expect(got.Annotations).NotTo(HaveKey(InspectionResultAnnotation),
+					"inspection-result annotation must be removed after consumption")
+			}, Timeout, Interval).Should(Succeed())
+
+			By("Verifying the inspection-result ConfigMap was deleted (one-shot consumption)")
+			Eventually(func(g Gomega) {
+				got := &corev1.ConfigMap{}
+				err := k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: cmName}, got)
+				g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+				g.Expect(err).NotTo(BeNil(), "ConfigMap must be gone")
 			}, Timeout, Interval).Should(Succeed())
 		})
 

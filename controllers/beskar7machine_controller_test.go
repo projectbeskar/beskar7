@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -1113,3 +1114,112 @@ var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
 		Expect(reqs).To(BeEmpty())
 	})
 })
+
+// Mint-on-inspection wiring test (PR-5.2 / D-006). Proves that triggerInspection's
+// token-minting helper:
+//  1. Stores the plaintext in a per-host Secret (correct labels, owner-ref).
+//  2. Sets the bootstrap-token annotation with hash + lifetime (no plaintext).
+//  3. Does NOT write to PhysicalHost.Status.
+var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func() {
+	var (
+		testNs       *corev1.Namespace
+		physicalHost *infrastructurev1beta1.PhysicalHost
+		r            *Beskar7MachineReconciler
+	)
+
+	BeforeEach(func() {
+		testNs = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "mint-token-test-"},
+		}
+		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+
+		physicalHost = &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "mint-token-host",
+				Namespace: testNs.Name,
+			},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address:              "https://192.168.42.1",
+					CredentialsSecretRef: "irrelevant",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+		r = &Beskar7MachineReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("mint-token-test"),
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+			BootstrapURLBase: "https://test.svc:8082",
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
+	})
+
+	It("creates a per-host Secret with plaintext-token + sets the bootstrap-token annotation", func() {
+		By("Calling mintAndStoreBootstrapToken directly")
+		statusBefore := physicalHost.Status.DeepCopy()
+		Expect(r.mintAndStoreBootstrapToken(ctx, r.Log, physicalHost)).To(Succeed())
+
+		By("Verifying the per-host Secret was created with plaintext-token data and PhysicalHost owner reference")
+		secretName := bootstrapTokenSecretName(physicalHost.Name)
+		Eventually(func(g Gomega) {
+			s := &corev1.Secret{}
+			g.Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Namespace: physicalHost.Namespace, Name: secretName}, s)).To(Succeed())
+			g.Expect(s.Type).To(Equal(corev1.SecretTypeOpaque))
+			g.Expect(s.Data).To(HaveKey("plaintext-token"))
+			g.Expect(s.Data["plaintext-token"]).NotTo(BeEmpty(),
+				"plaintext-token must be non-empty")
+			// 32 random bytes → base64.RawURLEncoding → 43 chars.
+			g.Expect(len(s.Data["plaintext-token"])).To(Equal(43),
+				"plaintext token length must match auth.MintToken's contract (43 chars)")
+			// Owner ref so Secret is GC'd on host deletion.
+			g.Expect(s.OwnerReferences).NotTo(BeEmpty())
+			g.Expect(s.OwnerReferences[0].Kind).To(Equal("PhysicalHost"))
+			g.Expect(s.OwnerReferences[0].Name).To(Equal(physicalHost.Name))
+			// Labels for operator visibility + cleanup.
+			g.Expect(s.Labels).To(HaveKeyWithValue(inspectionResultLabelOwnedBy, "beskar7-controller-manager"))
+			g.Expect(s.Labels).To(HaveKeyWithValue(inspectionResultLabelHost, physicalHost.Name))
+		}, time.Second*5, time.Millisecond*100).Should(Succeed())
+
+		By("Verifying the bootstrap-token annotation was set with a JSON-encoded {hash, issuedAt, expiresAt}")
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
+		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation))
+
+		// Decode and validate the annotation.
+		raw := ph.Annotations[BootstrapTokenAnnotation]
+		Expect(raw).NotTo(BeEmpty())
+		var value BootstrapTokenAnnotationValue
+		Expect(json.Unmarshal([]byte(raw), &value)).To(Succeed())
+		Expect(value.Hash).To(HaveLen(64), "hash must be hex-encoded sha256 (64 chars)")
+		Expect(value.ExpiresAt.Time.After(value.IssuedAt.Time)).To(BeTrue(),
+			"expiresAt must be after issuedAt")
+		Expect(value.ExpiresAt.Time.Sub(value.IssuedAt.Time)).To(BeNumerically("~", 30*time.Minute, time.Second),
+			"lifetime must match auth.TokenLifetime (30 min)")
+
+		// Annotation must NOT contain the plaintext.
+		Expect(strings.Contains(raw, string(getSecretPlaintext(ctx, physicalHost.Namespace, secretName)))).To(BeFalse(),
+			"bootstrap-token annotation must not echo the plaintext")
+
+		By("Verifying PhysicalHost.Status was not written by the mint helper (BUG-1 invariant)")
+		Expect(ph.Status.Bootstrap).To(Equal(statusBefore.Bootstrap),
+			"mint helper must not write to PhysicalHost.Status — that is the PhysicalHost reconciler's job via the annotation")
+	})
+})
+
+// getSecretPlaintext reads the per-host bootstrap-token Secret and returns its
+// plaintext-token value. Used only by the mint-and-store test to verify that
+// the value is not echoed elsewhere; not used in production code.
+func getSecretPlaintext(ctx context.Context, ns, name string) []byte {
+	s := &corev1.Secret{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, s)).To(Succeed())
+	return s.Data["plaintext-token"]
+}

@@ -1,33 +1,95 @@
+/*
+Copyright 2024 The Beskar7 Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package controllers
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/api/errors"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-// InspectionHandler handles HTTP requests from inspection images
+const (
+	// inspectionMaxBodyBytes caps the request body the inspection handler will
+	// read. The real inspector payload (a few CPUs + DIMMs + NICs + disks) is on
+	// the order of low kilobytes; 1 MiB is far above that and far below the
+	// memory pressure point on the manager pod.
+	inspectionMaxBodyBytes = 1 << 20
+
+	// inspectionResultDataKey is the key inside the per-host result ConfigMap
+	// that holds the JSON-encoded InspectionReport.
+	inspectionResultDataKey = "report.json"
+
+	// inspectionResultLabelOwnedBy is set on each result ConfigMap so operators
+	// can grep for objects this controller owns and so a future cleanup pass
+	// can find orphans.
+	inspectionResultLabelOwnedBy = "infrastructure.cluster.x-k8s.io/owned-by"
+	// inspectionResultLabelHost links the ConfigMap back to its PhysicalHost by
+	// name (the namespace is implicit).
+	inspectionResultLabelHost = "infrastructure.cluster.x-k8s.io/host"
+)
+
+// InspectionHandler handles HTTP requests from inspection images.
+//
+// Authentication: callers must present "Authorization: Bearer <token>" with a
+// token whose SHA-256 matches the targeted PhysicalHost's
+// Status.Bootstrap.TokenHash and whose ExpiresAt is in the future.
+// Authentication is enforced by the auth.RequireBearer middleware wrapped around
+// this handler in SetupInspectionServer; ServeHTTP itself assumes the request has
+// already authenticated.
+//
+// Status ownership: this handler does NOT write to PhysicalHost.Status. It writes
+// the validated InspectionReport to a ConfigMap and patches an annotation onto
+// the PhysicalHost; the PhysicalHostReconciler is the sole writer of
+// Status.InspectionReport / Status.InspectionPhase (D-005).
 type InspectionHandler struct {
 	Client client.Client
 	Log    logr.Logger
 }
 
-// InspectionReportRequest represents the JSON payload from inspection image
+// InspectionReportRequest represents the JSON payload from inspection image.
+//
+// Note that namespace and hostName are NOT taken from the request body — they
+// come from the URL path and are validated by the bearer-auth middleware. The
+// JSON-body fields with those names exist for backward compat with older
+// inspectors but are ignored by ServeHTTP.
 type InspectionReportRequest struct {
-	// Namespace and name to identify the PhysicalHost
-	Namespace string `json:"namespace"`
-	HostName  string `json:"hostName"`
+	// Deprecated: Namespace is taken from the URL path. Retained in JSON for
+	// backward compat with legacy inspectors; ignored at decode time.
+	Namespace string `json:"namespace,omitempty"`
+	// Deprecated: HostName is taken from the URL path. Retained in JSON for
+	// backward compat with legacy inspectors; ignored at decode time.
+	HostName string `json:"hostName,omitempty"`
 
 	// Hardware information from inspection
 	Manufacturer string     `json:"manufacturer,omitempty"`
@@ -75,70 +137,110 @@ type NICData struct {
 	IPAddresses []string `json:"ipAddresses,omitempty"`
 }
 
-// ServeHTTP handles inspection report submissions
+// ServeHTTP handles inspection report submissions. It is invoked only after the
+// bearer-auth middleware has validated the caller against the targeted host's
+// Status.Bootstrap.TokenHash. The path values "namespace" and "hostName" come
+// from the registered route (POST /api/v1/inspection/{namespace}/{hostName}).
 func (h *InspectionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log := h.Log.WithValues("method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+	namespace := r.PathValue("namespace")
+	hostName := r.PathValue("hostName")
+	log := h.Log.WithValues("method", r.Method, "namespace", namespace, "host", hostName, "remote", r.RemoteAddr)
 
-	// Only accept POST requests
 	if r.Method != http.MethodPost {
 		log.Info("Method not allowed", "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Parse request body
+	// Cap the request body. http.MaxBytesReader transforms over-limit reads into
+	// errors that the JSON decoder surfaces; we map those to 413.
+	r.Body = http.MaxBytesReader(w, r.Body, inspectionMaxBodyBytes)
+	defer func() { _ = r.Body.Close() }()
+
 	var req InspectionReportRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Error(err, "Failed to decode inspection report")
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(&req); err != nil {
+		// MaxBytesReader returns *http.MaxBytesError on overflow.
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			log.Info("Inspection report exceeded body cap", "limit", inspectionMaxBodyBytes)
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		log.V(1).Info("Failed to decode inspection report", "err", err.Error())
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
-	log = log.WithValues("namespace", req.Namespace, "host", req.HostName)
 	log.Info("Received inspection report")
 
-	// Validate required fields
-	if req.Namespace == "" || req.HostName == "" {
-		log.Info("Missing required fields")
-		http.Error(w, "namespace and hostName are required", http.StatusBadRequest)
+	// Use the request context — the manager will cancel it on shutdown so
+	// in-flight handlers don't block graceful drain. (Replaces the previous
+	// context.Background() that ignored shutdown signals.)
+	ctx := r.Context()
+
+	if err := h.processInspectionReport(ctx, log, namespace, hostName, req); err != nil {
+		log.Error(err, "Failed to process inspection report")
+		// Do not echo internal error text to the client — could leak resource
+		// names or k8s API details. Generic 500.
+		http.Error(w, "Failed to process inspection report", http.StatusInternalServerError)
 		return
 	}
 
-	// Update PhysicalHost with inspection report
-	ctx := context.Background()
-	if err := h.updatePhysicalHost(ctx, req); err != nil {
-		log.Error(err, "Failed to update PhysicalHost")
-		http.Error(w, fmt.Sprintf("Failed to update PhysicalHost: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	log.Info("Successfully updated PhysicalHost with inspection report")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]string{
-		"status":  "success",
-		"message": "Inspection report received and processed",
-	}); err != nil {
-		log.Error(err, "Failed to encode response")
+	// 202 Accepted (not 200): the handler has stored the report and signalled
+	// the reconciler, but Status.InspectionReport / Status.InspectionPhase have
+	// not yet been written by the PhysicalHost controller. From the inspector's
+	// perspective the request is accepted; from the system's perspective it is
+	// still in flight. (D-005.)
+	log.Info("Inspection report accepted; signalled reconciler via annotation")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	if _, err := w.Write([]byte(`{"status":"accepted"}`)); err != nil {
+		log.V(1).Info("Failed to write response body", "err", err.Error())
 	}
 }
 
-// updatePhysicalHost updates the PhysicalHost with inspection report data
-func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req InspectionReportRequest) error {
-	// Get PhysicalHost
+// processInspectionReport stores the validated InspectionReport on a ConfigMap
+// and patches an annotation onto the PhysicalHost. It does NOT write to
+// PhysicalHost.Status — the PhysicalHostReconciler owns that (D-005).
+func (h *InspectionHandler) processInspectionReport(
+	ctx context.Context,
+	log logr.Logger,
+	namespace, hostName string,
+	req InspectionReportRequest,
+) error {
+	// Get PhysicalHost — verifies it exists and gives us a UID for owner-ref
+	// on the ConfigMap. The bearer middleware already ran the same Get to
+	// validate the token; we re-Get here for a fresh resourceVersion before
+	// patching, and to handle the (rare) case where the host was deleted
+	// between the auth check and now.
 	physicalHost := &infrastructurev1beta1.PhysicalHost{}
-	key := types.NamespacedName{
-		Namespace: req.Namespace,
-		Name:      req.HostName,
-	}
-
+	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, physicalHost); err != nil {
-		if errors.IsNotFound(err) {
-			return fmt.Errorf("PhysicalHost %s/%s not found", req.Namespace, req.HostName)
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("PhysicalHost %s/%s not found", namespace, hostName)
 		}
 		return fmt.Errorf("failed to get PhysicalHost: %w", err)
 	}
 
-	// Convert request data to InspectionReport
+	report := buildInspectionReport(req)
+
+	cmName, err := h.upsertResultConfigMap(ctx, log, physicalHost, report)
+	if err != nil {
+		return fmt.Errorf("upsert inspection-result ConfigMap: %w", err)
+	}
+
+	// Signal the PhysicalHost controller to consume the result. Patch the spec
+	// annotations only — never status.
+	if err := h.setInspectionResultAnnotation(ctx, log, physicalHost, cmName); err != nil {
+		return fmt.Errorf("set inspection-result annotation: %w", err)
+	}
+	return nil
+}
+
+// buildInspectionReport converts the request DTO to the API type. Keeping this
+// pure (no I/O) makes it trivially testable without a fake client.
+func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.InspectionReport {
 	report := &infrastructurev1beta1.InspectionReport{
 		Timestamp:        metav1.Now(),
 		Manufacturer:     req.Manufacturer,
@@ -147,8 +249,6 @@ func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req Inspecti
 		BootModeDetected: req.BootModeDetected,
 		FirmwareVersion:  req.FirmwareVersion,
 	}
-
-	// Convert CPUs
 	for _, cpu := range req.CPUs {
 		report.CPUs = append(report.CPUs, infrastructurev1beta1.CPUInfo{
 			ID:        cpu.ID,
@@ -159,8 +259,6 @@ func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req Inspecti
 			Frequency: cpu.Frequency,
 		})
 	}
-
-	// Convert Memory
 	for _, mem := range req.Memory {
 		report.Memory = append(report.Memory, infrastructurev1beta1.MemoryInfo{
 			ID:       mem.ID,
@@ -169,8 +267,6 @@ func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req Inspecti
 			Speed:    mem.Speed,
 		})
 	}
-
-	// Convert Disks
 	for _, disk := range req.Disks {
 		report.Disks = append(report.Disks, infrastructurev1beta1.DiskInfo{
 			Name:         disk.Name,
@@ -180,8 +276,6 @@ func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req Inspecti
 			SerialNumber: disk.SerialNumber,
 		})
 	}
-
-	// Convert NICs
 	for _, nic := range req.NICs {
 		report.NICs = append(report.NICs, infrastructurev1beta1.NICInfo{
 			Name:        nic.Name,
@@ -191,27 +285,122 @@ func (h *InspectionHandler) updatePhysicalHost(ctx context.Context, req Inspecti
 			IPAddresses: nic.IPAddresses,
 		})
 	}
+	return report
+}
 
-	// Update PhysicalHost status
-	physicalHost.Status.InspectionReport = report
-	physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionComplete
-
-	if err := h.Client.Status().Update(ctx, physicalHost); err != nil {
-		return fmt.Errorf("failed to update PhysicalHost status: %w", err)
+// upsertResultConfigMap writes the JSON-encoded InspectionReport to a per-host
+// ConfigMap, creating or updating idempotently. The ConfigMap is owned by the
+// PhysicalHost so it is GC'd if the host is deleted before the controller reads
+// the result. Returns the ConfigMap name.
+func (h *InspectionHandler) upsertResultConfigMap(
+	ctx context.Context,
+	log logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	report *infrastructurev1beta1.InspectionReport,
+) (string, error) {
+	body, err := json.Marshal(report)
+	if err != nil {
+		return "", fmt.Errorf("marshal inspection report: %w", err)
 	}
 
+	cmName := inspectionResultConfigMapName(physicalHost.Name)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      cmName,
+			Namespace: physicalHost.Namespace,
+		},
+	}
+
+	op, err := controllerutil.CreateOrUpdate(ctx, h.Client, cm, func() error {
+		if cm.Labels == nil {
+			cm.Labels = map[string]string{}
+		}
+		cm.Labels[inspectionResultLabelOwnedBy] = "beskar7-controller-manager"
+		cm.Labels[inspectionResultLabelHost] = physicalHost.Name
+		// Owner ref so the ConfigMap is GC'd on host deletion. We use the
+		// PhysicalHost as both owner and controller — this ConfigMap is
+		// transient state, not a separately-managed object.
+		if err := controllerutil.SetControllerReference(physicalHost, cm, h.Client.Scheme()); err != nil {
+			return fmt.Errorf("set controller reference on inspection-result ConfigMap: %w", err)
+		}
+		if cm.Data == nil {
+			cm.Data = map[string]string{}
+		}
+		cm.Data[inspectionResultDataKey] = string(body)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	log.V(1).Info("Inspection-result ConfigMap upsert", "configmap", cmName, "op", op)
+	return cmName, nil
+}
+
+// inspectionResultConfigMapName returns the deterministic name used for the
+// per-host inspection-result ConfigMap. Centralizing the format here so the
+// PhysicalHost reconciler and tests can reference the same convention.
+func inspectionResultConfigMapName(hostName string) string {
+	return hostName + "-inspection-result"
+}
+
+// setInspectionResultAnnotation patches PhysicalHost metadata.annotations with the
+// ConfigMap reference. Optimistic locking ensures concurrent annotation churn
+// from the Beskar7Machine controller never silently overwrites the result ref.
+func (h *InspectionHandler) setInspectionResultAnnotation(
+	ctx context.Context,
+	log logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	cmName string,
+) error {
+	base := physicalHost.DeepCopy()
+	if physicalHost.Annotations == nil {
+		physicalHost.Annotations = map[string]string{}
+	}
+	physicalHost.Annotations[InspectionResultAnnotation] = cmName
+	if err := h.Client.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("patch PhysicalHost annotation: %w", err)
+	}
+	log.V(1).Info("Inspection-result annotation set", "host", physicalHost.Name, "configmap", cmName)
 	return nil
 }
 
-// SetupInspectionServer sets up the HTTP server for inspection reports
-func SetupInspectionServer(mgr ctrl.Manager, port int) error {
-	handler := &InspectionHandler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("inspection-handler"),
+// SetupInspectionServer wires the inspection HTTPS server into the manager.
+//
+// Wraps the inspection handler in auth.RequireBearer. The verifier resolves the
+// targeted PhysicalHost from path values and validates the presented bearer
+// token against Status.Bootstrap.TokenHash + ExpiresAt. All authentication
+// failures return an opaque 401 — the verifier's specific error is logged at
+// V(1) only.
+//
+// TLS is mandatory. The handler is mounted on POST /api/v1/inspection/{namespace}/{hostName}
+// using Go 1.22+ ServeMux pattern matching, so the verifier can identify the
+// target host before the request body has been parsed.
+func SetupInspectionServer(mgr ctrl.Manager, port int, certDir string) error {
+	if certDir == "" {
+		return fmt.Errorf("inspection server cert dir is empty; set --inspection-cert-dir")
+	}
+	certPath := filepath.Join(certDir, "tls.crt")
+	keyPath := filepath.Join(certDir, "tls.key")
+	// Fail at setup, not at first request, so misconfiguration is loud.
+	if _, err := os.Stat(certPath); err != nil {
+		return fmt.Errorf("inspection server cert %q not readable: %w", certPath, err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		return fmt.Errorf("inspection server key %q not readable: %w", keyPath, err)
 	}
 
+	handlerLog := ctrl.Log.WithName("inspection-handler")
+	handler := &InspectionHandler{
+		Client: mgr.GetClient(),
+		Log:    handlerLog,
+	}
+
+	verifier := newInspectionVerifier(mgr.GetClient(), handlerLog)
+
 	mux := http.NewServeMux()
-	mux.Handle("/api/v1/inspection", handler)
+	// Go 1.22+ pattern matching: bind path values for the verifier and handler.
+	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}",
+		auth.RequireBearer(handlerLog, verifier, handler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
@@ -220,37 +409,77 @@ func SetupInspectionServer(mgr ctrl.Manager, port int) error {
 	})
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadTimeout:       15 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	// Start server in goroutine
 	go func() {
-		ctrl.Log.WithName("inspection-server").Info("Starting inspection HTTP server", "port", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			ctrl.Log.WithName("inspection-server").Error(err, "Failed to start inspection HTTP server")
+		ctrl.Log.WithName("inspection-server").Info("Starting inspection HTTPS server", "port", port)
+		if err := server.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			ctrl.Log.WithName("inspection-server").Error(err, "Failed to start inspection HTTPS server")
 		}
 	}()
 
-	// Register shutdown with manager
 	if err := mgr.Add(&inspectionServerRunnable{server: server}); err != nil {
 		return fmt.Errorf("failed to add inspection server to manager: %w", err)
 	}
-
 	return nil
 }
 
-// inspectionServerRunnable implements manager.Runnable for graceful shutdown
+// newInspectionVerifier constructs the auth.Verifier that the bearer middleware
+// runs for every inspection POST. It is a free function (not a method) so that
+// tests can compose a verifier against a fake client without standing up a
+// full server.
+//
+// Verification flow:
+//  1. Resolve {namespace,hostName} from path values. Reject if either empty.
+//  2. Get the PhysicalHost. NotFound → reject (no leak: same 401 as bad token).
+//  3. Reject if Status.Bootstrap is nil or TokenHash is empty (no token issued
+//     for this host yet — there is no valid token to present).
+//  4. Reject if ExpiresAt is set and in the past.
+//  5. Reject unless auth.Verify(presented, storedHash) returns true.
+//
+// Returned errors are descriptive for V(1) logging only — never echoed to the
+// client.
+func newInspectionVerifier(c client.Client, log logr.Logger) auth.Verifier {
+	return func(token string, r *http.Request) error {
+		namespace := r.PathValue("namespace")
+		hostName := r.PathValue("hostName")
+		if namespace == "" || hostName == "" {
+			return fmt.Errorf("missing namespace or hostName in request path")
+		}
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		if err := c.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
+			// Both NotFound and Forbidden produce the same 401 to the client; the
+			// distinction lives in V(1) logs.
+			return fmt.Errorf("get PhysicalHost: %w", err)
+		}
+		if ph.Status.Bootstrap == nil || ph.Status.Bootstrap.TokenHash == "" {
+			return fmt.Errorf("no bootstrap token issued for host %s/%s", namespace, hostName)
+		}
+		if ph.Status.Bootstrap.ExpiresAt != nil && time.Now().After(ph.Status.Bootstrap.ExpiresAt.Time) {
+			return fmt.Errorf("bootstrap token expired for host %s/%s", namespace, hostName)
+		}
+		if !auth.Verify(token, ph.Status.Bootstrap.TokenHash) {
+			return fmt.Errorf("bootstrap token mismatch for host %s/%s", namespace, hostName)
+		}
+		_ = log // log handle reserved for future per-verification debug; do not log token material.
+		return nil
+	}
+}
+
+// inspectionServerRunnable implements manager.Runnable for graceful shutdown.
 type inspectionServerRunnable struct {
 	server *http.Server
 }
 
 func (r *inspectionServerRunnable) Start(ctx context.Context) error {
 	<-ctx.Done()
-	ctrl.Log.WithName("inspection-server").Info("Shutting down inspection HTTP server")
+	ctrl.Log.WithName("inspection-server").Info("Shutting down inspection HTTPS server")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return r.server.Shutdown(shutdownCtx)
