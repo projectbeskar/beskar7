@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-1.3 closed BUG-3; PR-2.1 closed BUG-5 and partially BUG-1; D-003 / D-004 / D-005 ratified (bootstrap delivery, inspection token, handler-must-not-write-status); D-002 plan amended to split PR-1.1 into PR-1.1 + PR-5.3 and add PR-1.3 for `parseProviderID`.
+> **Last meaningful update:** 2026-05-02 — PR-3.3 closed SEC-4 (BMC username removed from INFO logs) and BUG-11 (memory capacity parse rewritten using `resource.ParseQuantity` + allowlist).
 
 ---
 
@@ -68,7 +68,6 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 | SEC-1 | inspection HTTP | Endpoint accepts unauthenticated POST that flips PhysicalHost to `InspectionComplete`/`Ready`, bypassing `HardwareRequirements` and injecting NICs/IPs into status. No `MaxBytesReader`. Plain HTTP. | `controllers/inspection_handler.go:79-204`, `cmd/manager/main.go:158` |
 | SEC-2 | RBAC | Cluster-wide read of all Secrets in all namespaces. | `config/rbac/role.yaml:14-21`, `charts/beskar7/templates/rbac.yaml:16-23` |
 | SEC-3 | RBAC generation | kubebuilder markers contain trailing `// comments` that emit literal verbs in generated YAML; RBAC linter skips them silently. | `controllers/beskar7cluster_controller.go:63-64` and similar |
-| SEC-4 | logging | BMC username + address logged together at INFO. | `internal/redfish/gofish_client.go:25, 57-62` |
 | SEC-5 | TLS | `NewClientWithHTTPClient(...)` accepts an `*http.Client` and silently discards it. Custom CA support is implied by name but does not work. | `internal/redfish/gofish_client.go:83-90` |
 
 ### Correctness — high priority
@@ -83,7 +82,6 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 | BUG-8 | controller | `FailureReason`/`FailureMessage` declared on the API but never set; hardware validation failures requeue forever. | `api/v1beta1/beskar7machine_types.go:96-104`, `controllers/beskar7machine_controller.go:329-363` |
 | BUG-9 | controller | `findControlPlaneEndpoint` ignores user-set `Spec.ControlPlaneEndpoint` and hardcodes port 6443. | `controllers/beskar7cluster_controller.go:278-298, 350-353` |
 | BUG-10 | redfish | gofish calls don't propagate `ctx`; wedged BMC hangs a worker forever. No per-call HTTP timeout in `gofish.ClientConfig`. | `internal/redfish/gofish_client.go:103-220` |
-| BUG-11 | controller | Memory parsing is fragile: `fmt.Sscanf("32 MB", "%d", ...)` returns 32 and treats as GB. | `controllers/beskar7machine_controller.go:340` |
 
 ### Documentation drift (release-relevant)
 
@@ -142,6 +140,8 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 | kube-rbac-proxy removal (Phase 11, PR-11.1) | Deleted `config/default/manager_auth_proxy_patch.yaml` and the kube-rbac-proxy sidecar from the Helm chart; wired `filters.WithAuthenticationAndAuthorization` via `metricsserver.Options.FilterProvider`; metrics now served directly on `:8443` (HTTPS) with TokenReview/SAR-based auth; added `--secure-metrics` flag (default true) for local dev; added `config/rbac/metrics_auth_role.yaml`, `metrics_auth_role_binding.yaml`, `metrics_reader_role.yaml`; updated all overlay patches and networkpolicies to `:8443`. | 2026-05-01 |
 | BUG-3 | PR-1.3: Replaced hand-rolled loop in `parseProviderID` with `strings.CutPrefix` + `strings.SplitN`. Now rejects missing prefix with informative message, conflates no-slash / empty-namespace / empty-name with a single clear error, and explicitly rejects multi-segment names (BUG-3 root cause: `b7://ns/name/extra` previously returned `("ns", "name/extra", nil)`). Table-driven `TestParseProviderID` added in `controllers/parse_provider_id_test.go` (9 subtests, race-clean). | 2026-05-02 |
 | BUG-5 | PR-2.1: `PhysicalHostReconciler.Reconcile` now uses `patch.NewHelper` deferred at top; `r.Update` (finalizer add/remove) and all `r.Status().Update` calls removed; a single `patchHelper.Patch(ctx, ph, patch.WithStatusObservedGeneration{})` handles both spec and status in one round-trip. `InspectionRequestAnnotation` constant exported for cross-controller use. 2 PIt blocks converted: "Should add finalizer via patch …" and "Should apply inspection-request annotation …". | 2026-05-02 |
+| SEC-4 | PR-3.3: Dropped `"username", username` from both INFO log calls in `NewClient` (`gofish_client.go:25, 57-62`); both calls also moved to `V(1)` debug since they fire on every reconcile. `PasswordProvided` bool retained at V(1) for diagnostics. No username appears in any log path. | 2026-05-02 |
+| BUG-11 | PR-3.3: Replaced `fmt.Sscanf(mem.Capacity, "%d", &memGB)` with `parseMemoryCapacityGB` helper in `controllers/beskar7machine_controller.go`. Helper uses `resource.ParseQuantity` after stripping trailing `B` from BMC unit strings, plus an explicit suffix allowlist (G/Gi/M/Mi/T/Ti) to reject bare integers and exotic SI prefixes. 15-case table test in `controllers/parse_memory_test.go`. | 2026-05-02 |
 | _initial population_ | review baseline established | 2026-05-01 |
 
 ---
