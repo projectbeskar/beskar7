@@ -31,6 +31,11 @@ type Client interface {
 
 	// GetNetworkAddresses retrieves network interface addresses
 	GetNetworkAddresses(ctx context.Context) ([]NetworkAddress, error)
+
+	// ForcePowerOff forces an immediate power-off, bypassing OS shutdown.
+	// Use only for unrecoverable error paths; prefer SetPowerState(Off) which
+	// performs a graceful shutdown.
+	ForcePowerOff(ctx context.Context) error
 }
 
 // SystemInfo contains basic system information

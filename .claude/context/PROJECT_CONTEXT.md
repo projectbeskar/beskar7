@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-3.3 closed SEC-4 (BMC username removed from INFO logs) and BUG-11 (memory capacity parse rewritten using `resource.ParseQuantity` + allowlist).
+> **Last meaningful update:** 2026-05-02 — PR-3.1 closed BUG-6 (graceful power-off default) and BUG-10 (per-call HTTP timeout + ctx propagation in gofish client).
 
 ---
 
@@ -77,11 +77,9 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 | BUG-1 | controller | Cross-controller status writes: **partially resolved in PR-2.1** — the three `r.Status().Update(physicalHost)` calls at the original lines 268, 291, 371 are removed. Replaced with annotation signal (`InspectionRequestAnnotation`). Residual risk: annotation processing happens one reconcile cycle after the Beskar7Machine sets it, introducing a brief window where PhysicalHost state lags. A concurrent PhysicalHost reconcile and annotation-clear could drop the signal if the PhysicalHost reconcile races with the annotation patch. Tracked here until a reconcile-triggered-by-annotation watch is wired. | `controllers/beskar7machine_controller.go` (signal path), `controllers/physicalhost_controller.go` (annotation consumer) |
 | BUG-2 | controller | Host claim is list-then-update with no resourceVersion precondition; two Beskar7Machines can claim the same Available host. | `controllers/beskar7machine_controller.go:425-442` |
 | BUG-4 | controller | `reconcileDelete` clears `ConsumerRef` but never powers off the host or clears the boot override. Strands hosts in `Once,Pxe,On`. | `controllers/beskar7machine_controller.go:449-476` |
-| BUG-6 | redfish | `SetPowerState(Off)` always uses `ForceOffResetType` — risk of data loss on workload nodes. Default to graceful. | `internal/redfish/gofish_client.go:160-163` |
 | BUG-7 | controller | `Beskar7Machine` doesn't watch `PhysicalHost`; state changes only propagate via 30s requeue. | `controllers/beskar7machine_controller.go:527-531` |
 | BUG-8 | controller | `FailureReason`/`FailureMessage` declared on the API but never set; hardware validation failures requeue forever. | `api/v1beta1/beskar7machine_types.go:96-104`, `controllers/beskar7machine_controller.go:329-363` |
 | BUG-9 | controller | `findControlPlaneEndpoint` ignores user-set `Spec.ControlPlaneEndpoint` and hardcodes port 6443. | `controllers/beskar7cluster_controller.go:278-298, 350-353` |
-| BUG-10 | redfish | gofish calls don't propagate `ctx`; wedged BMC hangs a worker forever. No per-call HTTP timeout in `gofish.ClientConfig`. | `internal/redfish/gofish_client.go:103-220` |
 
 ### Documentation drift (release-relevant)
 
@@ -142,6 +140,8 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 | BUG-5 | PR-2.1: `PhysicalHostReconciler.Reconcile` now uses `patch.NewHelper` deferred at top; `r.Update` (finalizer add/remove) and all `r.Status().Update` calls removed; a single `patchHelper.Patch(ctx, ph, patch.WithStatusObservedGeneration{})` handles both spec and status in one round-trip. `InspectionRequestAnnotation` constant exported for cross-controller use. 2 PIt blocks converted: "Should add finalizer via patch …" and "Should apply inspection-request annotation …". | 2026-05-02 |
 | SEC-4 | PR-3.3: Dropped `"username", username` from both INFO log calls in `NewClient` (`gofish_client.go:25, 57-62`); both calls also moved to `V(1)` debug since they fire on every reconcile. `PasswordProvided` bool retained at V(1) for diagnostics. No username appears in any log path. | 2026-05-02 |
 | BUG-11 | PR-3.3: Replaced `fmt.Sscanf(mem.Capacity, "%d", &memGB)` with `parseMemoryCapacityGB` helper in `controllers/beskar7machine_controller.go`. Helper uses `resource.ParseQuantity` after stripping trailing `B` from BMC unit strings, plus an explicit suffix allowlist (G/Gi/M/Mi/T/Ti) to reject bare integers and exotic SI prefixes. 15-case table test in `controllers/parse_memory_test.go`. | 2026-05-02 |
+| BUG-6 | PR-3.1: `SetPowerState(OffPowerState)` now maps to `GracefulShutdownResetType` instead of `ForceOffResetType`. New `ForcePowerOff` method on the `Client` interface (+ `gofishClient` impl + `MockClient` with `ForcePowerOffCalled` counter and `ShouldFail` support) for callers that need an immediate power-cut. | 2026-05-02 |
+| BUG-10 | PR-3.1: Added `defaultHTTPTimeout = 30s` const and `newHTTPClient(insecure bool)` helper; `NewClient` now passes a custom `*http.Client` with that timeout and TLS config into `gofish.ClientConfig.HTTPClient`. Added `doWithCtx` helper that races a synchronous gofish call against ctx cancellation. Applied to all gofish I/O call sites: `getSystemService`, `SetPowerState`, `SetBootSourcePXE`, `Reset`, `GetNetworkAddresses`, `extractAddressesFromNetworkInterface`. `Close` uses a derived 5-second context. 9 new unit tests in `internal/redfish/gofish_client_test.go`. | 2026-05-02 |
 | _initial population_ | review baseline established | 2026-05-01 |
 
 ---

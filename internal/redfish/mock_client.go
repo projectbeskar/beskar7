@@ -31,6 +31,7 @@ type MockClient struct {
 	SetBootSourcePXECalled    bool
 	ResetCalled               bool
 	GetNetworkAddressesCalled bool
+	ForcePowerOffCalled       bool
 }
 
 // NewMockClient creates a new mock client with default values.
@@ -152,4 +153,18 @@ func (m *MockClient) Close(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.CloseCalled = true
+}
+
+// ForcePowerOff mock implementation.
+func (m *MockClient) ForcePowerOff(ctx context.Context) error {
+	m.mu.Lock()
+	m.ForcePowerOffCalled = true
+	m.mu.Unlock()
+	if err := m.failIfNeeded("ForcePowerOff"); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PowerState = redfish.OffPowerState
+	return nil
 }
