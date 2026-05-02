@@ -292,9 +292,8 @@ type PhysicalHostStatus struct {
 	InspectionTimestamp *metav1.Time `json:"inspectionTimestamp,omitempty"`
 
 	// Bootstrap holds the per-host data the inspection image and target OS use
-	// to fetch bootstrap data (cloud-init / Ignition) from the manager.
-	// Only URL is populated in v0.4-alpha; Token fields will be added in a
-	// follow-up alongside server-side bearer authentication (PR-5.1).
+	// to fetch bootstrap data (cloud-init / Ignition) from the manager, plus
+	// the hashed credential the manager checks on each fetch.
 	// +optional
 	Bootstrap *BootstrapStatus `json:"bootstrap,omitempty"`
 
@@ -303,13 +302,32 @@ type PhysicalHostStatus struct {
 	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
 }
 
-// BootstrapStatus is the per-host bootstrap data fetch coordinates.
+// BootstrapStatus is the per-host bootstrap data fetch coordinates and the
+// hashed credential used to authenticate inspection POSTs and bootstrap GETs.
+// See decision D-004 in PROJECT_CONTEXT.md.
 type BootstrapStatus struct {
 	// URL is the manager-served HTTPS endpoint that returns the host's
 	// bootstrap secret bytes. Computed deterministically from the manager's
 	// bootstrap-url-base and the host's namespace+name.
 	// +optional
 	URL string `json:"url,omitempty"`
+
+	// TokenHash is the hex-encoded SHA-256 of the per-host bearer token
+	// used to authenticate inspection POSTs and bootstrap GETs. The
+	// plaintext token is never persisted on this object — only the hash.
+	// The hash by itself cannot be used to forge a valid bearer header,
+	// so its presence in reconcile logs is acceptable.
+	// +optional
+	TokenHash string `json:"tokenHash,omitempty"`
+
+	// IssuedAt is the time the current token was minted.
+	// +optional
+	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
+
+	// ExpiresAt is the time the current token stops being accepted.
+	// Defaults to IssuedAt + 30m at mint time (D-004).
+	// +optional
+	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 // Redfish conditions and reasons - simplified for power management only
