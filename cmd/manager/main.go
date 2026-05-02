@@ -76,6 +76,8 @@ func main() {
 	var webhookCertDir string
 	var secureMetrics bool
 	var bootstrapURLBase string
+	var inspectionPort int
+	var inspectionCertDir string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -100,6 +102,12 @@ func main() {
 	flag.BoolVar(&secureMetrics, "secure-metrics", true,
 		"Serve metrics over HTTPS with authentication and authorization via the kube-apiserver. "+
 			"Set to false only for local development.")
+	flag.IntVar(&inspectionPort, "inspection-port", 8082,
+		"Port the inspection HTTPS endpoint binds to.")
+	flag.StringVar(&inspectionCertDir, "inspection-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
+		"Directory containing tls.crt and tls.key for the inspection HTTPS endpoint. "+
+			"Defaults to the webhook cert dir; both endpoints are served from the same Pod and "+
+			"can share a cert covering the controller-manager Service DNS name.")
 
 	opts := zap.Options{
 		Development: true,
@@ -176,8 +184,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup inspection handler
-	if err := controllers.SetupInspectionServer(mgr, 8082); err != nil {
+	// Setup inspection handler. TLS is mandatory and the cert dir defaults to the
+	// webhook cert dir (same Pod, same DNS name, one Certificate via cert-manager).
+	if err := controllers.SetupInspectionServer(mgr, inspectionPort, inspectionCertDir); err != nil {
 		setupLog.Error(err, "unable to setup inspection server")
 		os.Exit(1)
 	}

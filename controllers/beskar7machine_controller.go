@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -25,11 +26,13 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	"github.com/projectbeskar/beskar7/internal/auth"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -86,7 +89,7 @@ type Beskar7MachineReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines/finalizers,verbs=update
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch;patch
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile handles Beskar7Machine reconciliation for iPXE + inspection workflow.
 func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
@@ -254,8 +257,19 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 }
 
 // triggerInspection initiates the inspection phase by booting the inspection image.
-// It signals the PhysicalHost controller via an annotation (Pattern A) rather than
-// writing to PhysicalHost.Status directly; PhysicalHost owns its own status.
+//
+// Sequence:
+//  1. Configure BMC for PXE boot and ensure power-on.
+//  2. Mint a per-host bearer token (D-004); store the plaintext in a per-host
+//     Secret (D-006) and signal the hash + lifetime to the PhysicalHost controller
+//     via an annotation. Both writes happen before the inspection-request
+//     annotation so the controller sees the token state at the same reconcile.
+//  3. Signal the PhysicalHost controller to transition to Inspecting via the
+//     inspection-request annotation (Pattern A; PhysicalHost owns its own status).
+//
+// We never write to PhysicalHost.Status here — both the token hash and the
+// inspection-request travel through metadata.annotations and are persisted to
+// status by the PhysicalHost reconciler on its next pass (BUG-1).
 func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Triggering inspection boot")
 
@@ -288,6 +302,16 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		logger.Info("Powered on system for inspection")
 	}
 
+	// Mint a fresh per-host bearer token. The plaintext is delivered to the
+	// inspector via a Secret (so it survives manager restart during the 30-min
+	// validity window — D-006); only the hash + lifetime are signalled to
+	// PhysicalHost via an annotation. The plaintext is never logged: even at
+	// V(1) we record only that the mint succeeded.
+	if err := r.mintAndStoreBootstrapToken(ctx, logger, physicalHost); err != nil {
+		logger.Error(err, "Failed to mint and store bootstrap token")
+		return ctrl.Result{}, err
+	}
+
 	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
 	// spec/annotations — never status — so this controller does not violate the
 	// "each controller owns its resource's status" rule (BUG-1).
@@ -299,6 +323,132 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	b7machine.Status.Phase = &phase
 	logger.Info("Inspection boot triggered successfully")
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// mintAndStoreBootstrapToken mints a fresh bearer token for the host, persists
+// the plaintext in a per-host Secret (so it survives manager restart during the
+// validity window — see D-006), and signals the hash + lifetime to the
+// PhysicalHost controller via an annotation. The plaintext is never logged.
+func (r *Beskar7MachineReconciler) mintAndStoreBootstrapToken(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+) error {
+	plaintext, hash, err := auth.MintToken()
+	if err != nil {
+		return fmt.Errorf("mint inspection token: %w", err)
+	}
+	issuedAt, expiresAt := auth.LifetimeFor(time.Now())
+
+	// Persist plaintext in a per-host Secret BEFORE writing the hash to the
+	// PhysicalHost annotation. If the Secret write fails we have not yet
+	// advertised a token to the inspector, and the next reconcile will simply
+	// mint a fresh one.
+	if err := r.upsertBootstrapTokenSecret(ctx, logger, physicalHost, plaintext); err != nil {
+		// Zero out plaintext from our local frame; the Go runtime can still hold
+		// the original on the stack but this minimises the lifetime of the
+		// reference held by this function.
+		plaintext = "" //nolint:ineffassign,wastedassign // intentional
+		return fmt.Errorf("store bootstrap token plaintext: %w", err)
+	}
+	plaintext = "" //nolint:ineffassign,wastedassign // intentional: drop plaintext reference ASAP
+
+	if err := r.setBootstrapTokenAnnotation(ctx, logger, physicalHost, hash, issuedAt, expiresAt); err != nil {
+		return err
+	}
+	logger.V(1).Info("Bootstrap token minted and stored", "host", physicalHost.Name)
+	return nil
+}
+
+// bootstrapTokenSecretName returns the deterministic name of the per-host
+// Secret holding the plaintext bearer token. Centralized so tests and the
+// future bootstrap-render code path agree on the name.
+func bootstrapTokenSecretName(hostName string) string {
+	return hostName + "-bootstrap-token"
+}
+
+// upsertBootstrapTokenSecret writes the plaintext bearer token to a per-host
+// Secret in the host's namespace. The Secret is owned by the PhysicalHost so
+// it is GC'd on host deletion. Idempotent via controllerutil.CreateOrUpdate —
+// re-minting (e.g. after a previous reconcile failed mid-flight) cleanly
+// overwrites the previous value.
+//
+// The plaintext is never logged here. The CreateOrUpdate operation type is
+// logged at V(1) but the Secret's data field is only ever passed by reference
+// into the mutation closure.
+func (r *Beskar7MachineReconciler) upsertBootstrapTokenSecret(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	plaintext string,
+) error {
+	secretName := bootstrapTokenSecretName(physicalHost.Name)
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: physicalHost.Namespace,
+		},
+	}
+	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+		if secret.Labels == nil {
+			secret.Labels = map[string]string{}
+		}
+		secret.Labels[inspectionResultLabelOwnedBy] = "beskar7-controller-manager"
+		secret.Labels[inspectionResultLabelHost] = physicalHost.Name
+		// PhysicalHost-owned: GC'd when the host is deleted.
+		if err := controllerutil.SetControllerReference(physicalHost, secret, r.Scheme); err != nil {
+			return fmt.Errorf("set controller reference on bootstrap-token Secret: %w", err)
+		}
+		secret.Type = corev1.SecretTypeOpaque
+		if secret.Data == nil {
+			secret.Data = map[string][]byte{}
+		}
+		// Single key. Future PR-5.3 (bootstrap GET endpoint) will also read this.
+		secret.Data["plaintext-token"] = []byte(plaintext)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	logger.V(1).Info("Bootstrap token Secret upsert", "secret", secretName, "op", op)
+	return nil
+}
+
+// setBootstrapTokenAnnotation patches PhysicalHost metadata.annotations with
+// the JSON-encoded BootstrapTokenAnnotationValue (hash + lifetime). The
+// PhysicalHost controller reads it on its next reconcile and persists the
+// values to Status.Bootstrap.{TokenHash,IssuedAt,ExpiresAt}, then clears the
+// annotation. Optimistic locking ensures we don't trample a concurrent annotation
+// write from another reconciler.
+func (r *Beskar7MachineReconciler) setBootstrapTokenAnnotation(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	hash string,
+	issuedAt, expiresAt metav1.Time,
+) error {
+	value := BootstrapTokenAnnotationValue{
+		Hash:      hash,
+		IssuedAt:  issuedAt,
+		ExpiresAt: expiresAt,
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal bootstrap-token annotation value: %w", err)
+	}
+	base := physicalHost.DeepCopy()
+	if physicalHost.Annotations == nil {
+		physicalHost.Annotations = map[string]string{}
+	}
+	physicalHost.Annotations[BootstrapTokenAnnotation] = string(encoded)
+	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("set bootstrap-token annotation on PhysicalHost %s: %w", physicalHost.Name, err)
+	}
+	// We log the host name and operation only — never the hash plaintext, never
+	// the encoded body (which is safe but contains the hash, kept off INFO out
+	// of caution).
+	logger.V(1).Info("Set bootstrap-token annotation", "host", physicalHost.Name)
+	return nil
 }
 
 // handleInspectingHost monitors the inspection phase.

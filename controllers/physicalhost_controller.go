@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -81,6 +82,7 @@ func NewPhysicalHostReconciler(
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/finalizers,verbs=update
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles PhysicalHost reconciliation.
@@ -230,6 +232,19 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
 	r.applyBootstrapURLAnnotation(logger, physicalHost)
 
+	// Consume the bootstrap-token annotation (PR-5.2 / D-004): the Beskar7Machine
+	// controller signals the freshly minted token's hash + lifetime here; we
+	// persist them to Status.Bootstrap so the inspection HTTPS handler can verify
+	// bearer tokens against the stored hash.
+	r.applyBootstrapTokenAnnotation(logger, physicalHost)
+
+	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
+	// HTTP handler stored the validated InspectionReport on a ConfigMap and
+	// pointed at it via this annotation. We persist the report to Status, mark
+	// HostInspectedCondition, transition state to Ready, then delete the
+	// ConfigMap and clear the annotation so we don't act on it twice.
+	r.applyInspectionResultAnnotation(ctx, logger, physicalHost)
+
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
 		// Host is claimed
@@ -308,6 +323,114 @@ func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger,
 
 	// Remove the annotation so we don't act on it again. The deferred patch persists this.
 	delete(physicalHost.Annotations, BootstrapURLAnnotation)
+}
+
+// applyBootstrapTokenAnnotation reads the BootstrapTokenAnnotation, JSON-decodes
+// the {hash, issuedAt, expiresAt} payload, and persists those values to
+// Status.Bootstrap. The plaintext token is delivered out-of-band via a Secret —
+// the annotation only carries the hash + lifetime.
+//
+// Same idempotent "annotation in, status out, annotation cleared" pattern as
+// applyBootstrapURLAnnotation. Malformed JSON is logged and the annotation is
+// left in place so the next reconcile (or operator) can investigate; clearing
+// would silently drop a token-state signal.
+func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	raw := physicalHost.Annotations[BootstrapTokenAnnotation]
+	if raw == "" {
+		return
+	}
+	var value BootstrapTokenAnnotationValue
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		logger.Error(err, "Failed to decode bootstrap-token annotation; leaving in place for investigation",
+			"host", physicalHost.Name)
+		return
+	}
+	if value.Hash == "" {
+		logger.Info("bootstrap-token annotation has empty hash; ignoring", "host", physicalHost.Name)
+		delete(physicalHost.Annotations, BootstrapTokenAnnotation)
+		return
+	}
+
+	if physicalHost.Status.Bootstrap == nil {
+		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+	}
+	// Copy the hash (safe to log later — see Status.Bootstrap.TokenHash docstring).
+	physicalHost.Status.Bootstrap.TokenHash = value.Hash
+	issuedAt := value.IssuedAt
+	expiresAt := value.ExpiresAt
+	physicalHost.Status.Bootstrap.IssuedAt = &issuedAt
+	physicalHost.Status.Bootstrap.ExpiresAt = &expiresAt
+	logger.Info("Applied bootstrap-token annotation to Status.Bootstrap", "host", physicalHost.Name)
+
+	delete(physicalHost.Annotations, BootstrapTokenAnnotation)
+}
+
+// applyInspectionResultAnnotation reads the InspectionResultAnnotation, fetches
+// the referenced ConfigMap, decodes the JSON-encoded InspectionReport, and
+// persists it to Status. Then transitions Status.InspectionPhase to Complete,
+// marks HostInspectedCondition true, and best-effort deletes the ConfigMap and
+// clears the annotation so the result is consumed exactly once (D-005).
+//
+// Errors fetching/decoding the ConfigMap are logged but not returned: the
+// reconcile's deferred patch still proceeds. The annotation is cleared only
+// after a successful read, so a missing or malformed ConfigMap doesn't strand
+// the state machine — the inspector can re-POST and replace it.
+func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	cmName := physicalHost.Annotations[InspectionResultAnnotation]
+	if cmName == "" {
+		return
+	}
+
+	cm := &corev1.ConfigMap{}
+	cmKey := types.NamespacedName{Namespace: physicalHost.Namespace, Name: cmName}
+	if err := r.Get(ctx, cmKey, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The handler created an annotation but the ConfigMap is gone (deleted
+			// by GC or out-of-band cleanup). Clear the annotation so we stop
+			// trying to consume it; the inspector can re-POST.
+			logger.Info("Inspection-result ConfigMap not found; clearing annotation",
+				"configmap", cmName)
+			delete(physicalHost.Annotations, InspectionResultAnnotation)
+			return
+		}
+		logger.Error(err, "Failed to fetch inspection-result ConfigMap; will retry on next reconcile",
+			"configmap", cmName)
+		return
+	}
+
+	raw, ok := cm.Data[inspectionResultDataKey]
+	if !ok {
+		logger.Info("Inspection-result ConfigMap missing report.json; ignoring", "configmap", cmName)
+		// Drop the bad CM and clear the annotation so the state machine is unblocked.
+		_ = r.Delete(ctx, cm)
+		delete(physicalHost.Annotations, InspectionResultAnnotation)
+		return
+	}
+
+	report := &infrastructurev1beta1.InspectionReport{}
+	if err := json.Unmarshal([]byte(raw), report); err != nil {
+		logger.Error(err, "Failed to decode inspection report from ConfigMap; deleting bad ConfigMap",
+			"configmap", cmName)
+		_ = r.Delete(ctx, cm)
+		delete(physicalHost.Annotations, InspectionResultAnnotation)
+		return
+	}
+
+	// Persist to Status. This is the SOLE place Status.InspectionReport is
+	// written by the controller — D-005 invariant.
+	physicalHost.Status.InspectionReport = report
+	physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
+	conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
+	logger.Info("Applied inspection report to Status.InspectionReport", "host", physicalHost.Name)
+
+	// One-shot consumption: delete the ConfigMap and clear the annotation.
+	// Errors deleting the ConfigMap are logged at V(1); the OwnerReference
+	// already guarantees GC if the host is later deleted.
+	if err := r.Delete(ctx, cm); err != nil && !apierrors.IsNotFound(err) {
+		logger.V(1).Info("Failed to delete inspection-result ConfigMap (will be retried by GC)",
+			"configmap", cmName, "err", err.Error())
+	}
+	delete(physicalHost.Annotations, InspectionResultAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.
