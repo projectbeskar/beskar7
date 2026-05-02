@@ -1,0 +1,27 @@
+---
+# Callback service: exposes the inspection POST and bootstrap GET endpoints
+# on port 8082 (HTTPS). This Service is always created — the callback server
+# is core to the provisioning flow and is independent of webhook admission.
+#
+# The default bootstrap.urlBase in values.yaml resolves to this Service when
+# the Helm release name is "beskar7" (release → "beskar7-controller-manager").
+# Operators using a different release name MUST override bootstrap.urlBase so
+# that hosts booting via iPXE can reach the manager at the correct address.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "beskar7.fullname" . }}-controller-manager
+  namespace: {{ include "beskar7.namespace" . }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+    app.kubernetes.io/component: callback-server
+    cluster.x-k8s.io/provider: beskar7
+spec:
+  ports:
+  - name: callback
+    port: 8082
+    targetPort: 8082
+    protocol: TCP
+  selector:
+    {{- include "beskar7.selectorLabels" . | nindent 4 }}
+    control-plane: controller-manager
