@@ -95,10 +95,13 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        # Pinned to v0.23.3: v0.24.x switches to a Go 1.26+ toolchain at runtime
-        # and the resulting envtest assets path may end up missing the etcd binary.
-        # Project is on Go 1.25; controller-runtime v0.20.4. Bump together.
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3
+        # setup-envtest is now a separate submodule inside controller-runtime;
+        # its tags do NOT match controller-runtime release tags. Use the
+        # release-0.20 branch which matches our controller-runtime v0.20.x.
+        # See https://github.com/kubernetes-sigs/controller-runtime/blob/main/tools/setup-envtest/README.md.
+        # @latest must NOT be used — it currently resolves to a Go 1.26-required
+        # build that ships envtest assets without the etcd binary.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
 
@@ -142,8 +145,8 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        # Pinned to v0.23.3: see unit-tests job for rationale.
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3
+        # See unit-tests job for the @release-0.20 rationale.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
 
