@@ -36,9 +36,9 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-// buildInspectionMux wires the inspection handler exactly as SetupInspectionServer
+// buildInspectionMux wires the inspection handler exactly as SetupCallbackServer
 // does, but bound to an httptest.Server we can drive directly. We avoid calling
-// SetupInspectionServer here because it requires a real cert dir; the handler
+// SetupCallbackServer here because it requires a real cert dir; the handler
 // behavior under test is everything below TLS.
 func buildInspectionMux() (*http.ServeMux, *InspectionHandler) {
 	log := ctrl.Log.WithName("inspection-handler-test")
@@ -46,7 +46,7 @@ func buildInspectionMux() (*http.ServeMux, *InspectionHandler) {
 		Client: k8sClient,
 		Log:    log,
 	}
-	verifier := newInspectionVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(k8sClient, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, handler))
