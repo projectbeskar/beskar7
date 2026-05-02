@@ -28,7 +28,6 @@ import (
 	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -227,6 +226,8 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 }
 
 // triggerInspection initiates the inspection phase by booting the inspection image.
+// It signals the PhysicalHost controller via an annotation (Pattern A) rather than
+// writing to PhysicalHost.Status directly; PhysicalHost owns its own status.
 func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Triggering inspection boot")
 
@@ -259,14 +260,10 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		logger.Info("Powered on system for inspection")
 	}
 
-	// Update PhysicalHost to Inspecting state
-	physicalHost.Status.State = infrastructurev1beta1.StateInspecting
-	physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseBooting
-	now := metav1.Now()
-	physicalHost.Status.InspectionTimestamp = &now
-
-	if err := r.Status().Update(ctx, physicalHost); err != nil {
-		logger.Error(err, "Failed to update PhysicalHost status to Inspecting")
+	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
+	// spec/annotations — never status — so this controller does not violate the
+	// "each controller owns its resource's status" rule (BUG-1).
+	if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect"); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -277,6 +274,8 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 }
 
 // handleInspectingHost monitors the inspection phase.
+// On timeout it signals the PhysicalHost controller via annotation rather than
+// writing to PhysicalHost.Status directly (BUG-1 fix).
 func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Monitoring inspection phase", "inspectionPhase", physicalHost.Status.InspectionPhase)
 
@@ -285,11 +284,10 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 		elapsed := time.Since(physicalHost.Status.InspectionTimestamp.Time)
 		if elapsed > DefaultInspectionTimeout {
 			logger.Error(nil, "Inspection timeout", "elapsed", elapsed)
-			physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseTimeout
-			physicalHost.Status.State = infrastructurev1beta1.StateError
-			physicalHost.Status.ErrorMessage = fmt.Sprintf("Inspection timeout after %v", elapsed)
-			if err := r.Status().Update(ctx, physicalHost); err != nil {
-				logger.Error(err, "Failed to update timeout status")
+			// Signal the PhysicalHost controller to record the timeout in Status.
+			// We patch only spec/annotations here; the PhysicalHost controller owns status.
+			if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "timeout"); err != nil {
+				logger.Error(err, "Failed to set inspection timeout annotation")
 			}
 			return ctrl.Result{}, fmt.Errorf("inspection timeout")
 		}
@@ -365,11 +363,11 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 
 	logger.Info("Hardware validation passed")
 
-	// Transition to Ready state
-	physicalHost.Status.State = infrastructurev1beta1.StateReady
-	conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
-	if err := r.Status().Update(ctx, physicalHost); err != nil {
-		logger.Error(err, "Failed to update PhysicalHost to Ready")
+	// Mark HostInspectedCondition on PhysicalHost via a spec annotation signal.
+	// PhysicalHost owns its own status; we must not call r.Status().Update on it here (BUG-1 fix).
+	// The "inspect-complete" value tells the PhysicalHost controller to set StateReady and
+	// MarkTrue(HostInspectedCondition) on its next reconcile.
+	if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect-complete"); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -425,16 +423,26 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	for i := range hostList.Items {
 		host := &hostList.Items[i]
 		if host.Status.State == infrastructurev1beta1.StateAvailable && host.Spec.ConsumerRef == nil {
-			// Claim this host
+			// Claim this host. Use a spec-only patch with optimistic locking so that a
+			// concurrent claim by another Beskar7Machine fails fast with a conflict error
+			// instead of silently winning (BUG-2 partial mitigation; full fix is PR-2.2).
 			logger.Info("Claiming available PhysicalHost", "host", host.Name)
+			base := host.DeepCopy()
 			host.Spec.ConsumerRef = &corev1.ObjectReference{
-				Kind:       b7machine.Kind,
-				APIVersion: b7machine.APIVersion,
+				// Use hardcoded kind/apiVersion constants: b7machine.Kind and
+				// b7machine.APIVersion are zero-valued on decoded objects (CLAUDE.md anti-pattern).
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
 				Name:       b7machine.Name,
 				Namespace:  b7machine.Namespace,
 				UID:        b7machine.UID,
 			}
-			if err := r.Update(ctx, host); err != nil {
+			if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				if apierrors.IsConflict(err) {
+					// Another reconciler won the race; requeue and try again.
+					logger.V(1).Info("Conflict claiming host, will retry", "host", host.Name)
+					return nil, ctrl.Result{Requeue: true}, nil
+				}
 				logger.Error(err, "Failed to claim host")
 				return nil, ctrl.Result{}, err
 			}
@@ -449,15 +457,16 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (ctrl.Result, error) {
 	logger.Info("Reconciling deletion")
 
-	// Release the host
+	// Release the host via a spec-only patch (optimistic locking).
 	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
 		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
 		if err == nil {
 			host := &infrastructurev1beta1.PhysicalHost{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host); err == nil {
 				if host.Spec.ConsumerRef != nil && host.Spec.ConsumerRef.Name == b7machine.Name {
+					base := host.DeepCopy()
 					host.Spec.ConsumerRef = nil
-					if err := r.Update(ctx, host); err != nil {
+					if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 						logger.Error(err, "Failed to release host")
 						return ctrl.Result{}, err
 					}
@@ -473,6 +482,23 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setInspectionRequestAnnotation patches only the annotations of a PhysicalHost to request
+// a state transition. The PhysicalHost controller reads the annotation on its next reconcile
+// and drives the Status transition, preserving status ownership (BUG-1 fix, Pattern A).
+// Uses optimistic locking via MergeFromWithOptions so a conflict causes a fast requeue.
+func (r *Beskar7MachineReconciler) setInspectionRequestAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost, value string) error {
+	base := physicalHost.DeepCopy()
+	if physicalHost.Annotations == nil {
+		physicalHost.Annotations = make(map[string]string)
+	}
+	physicalHost.Annotations[InspectionRequestAnnotation] = value
+	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("failed to set inspection-request annotation %q on PhysicalHost %s: %w", value, physicalHost.Name, err)
+	}
+	logger.V(1).Info("Set inspection-request annotation", "host", physicalHost.Name, "value", value)
+	return nil
 }
 
 // getRedfishClientForHost creates a Redfish client for the given PhysicalHost.

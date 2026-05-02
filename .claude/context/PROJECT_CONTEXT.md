@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-01 — D-001 closed; v0.4 stabilization plan ratified (D-002); PR-0.1 closed BLOCK-1; PR-11.1 replaced kube-rbac-proxy with controller-runtime native metrics auth (Phase 11 partially complete).
+> **Last meaningful update:** 2026-05-02 — PR-2.1 closed BUG-5 (PhysicalHost patch helper) and removed cross-controller PhysicalHost.Status writes from Beskar7Machine controller (BUG-1 partially closed); `InspectionRequestAnnotation` Pattern A adopted for inter-controller signalling.
 
 ---
 
@@ -75,11 +75,10 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 
 | ID | Area | Issue | Where |
 |---|---|---|---|
-| BUG-1 | controller | Cross-controller status writes: Beskar7Machine writes `PhysicalHost.Status` while PhysicalHost reconciler also writes it. Conflict storms; torn writes. | `controllers/beskar7machine_controller.go:268,291,371` |
+| BUG-1 | controller | Cross-controller status writes: **partially resolved in PR-2.1** — the three `r.Status().Update(physicalHost)` calls at the original lines 268, 291, 371 are removed. Replaced with annotation signal (`InspectionRequestAnnotation`). Residual risk: annotation processing happens one reconcile cycle after the Beskar7Machine sets it, introducing a brief window where PhysicalHost state lags. A concurrent PhysicalHost reconcile and annotation-clear could drop the signal if the PhysicalHost reconcile races with the annotation patch. Tracked here until a reconcile-triggered-by-annotation watch is wired. | `controllers/beskar7machine_controller.go` (signal path), `controllers/physicalhost_controller.go` (annotation consumer) |
 | BUG-2 | controller | Host claim is list-then-update with no resourceVersion precondition; two Beskar7Machines can claim the same Available host. | `controllers/beskar7machine_controller.go:425-442` |
 | BUG-3 | controller | `parseProviderID` mishandles names containing `/` and silently returns empty namespace on the `idx==0` path. Use `strings.SplitN`. | `controllers/beskar7machine_controller.go:506-522` |
 | BUG-4 | controller | `reconcileDelete` clears `ConsumerRef` but never powers off the host or clears the boot override. Strands hosts in `Once,Pxe,On`. | `controllers/beskar7machine_controller.go:449-476` |
-| BUG-5 | controller | `physicalhost_controller.go` mixes `r.Update` (finalizer) with `r.Status().Update` on the same in-memory object. Use `patch.NewHelper`. | `controllers/physicalhost_controller.go:103-110, 229` |
 | BUG-6 | redfish | `SetPowerState(Off)` always uses `ForceOffResetType` — risk of data loss on workload nodes. Default to graceful. | `internal/redfish/gofish_client.go:160-163` |
 | BUG-7 | controller | `Beskar7Machine` doesn't watch `PhysicalHost`; state changes only propagate via 30s requeue. | `controllers/beskar7machine_controller.go:527-531` |
 | BUG-8 | controller | `FailureReason`/`FailureMessage` declared on the API but never set; hardware validation failures requeue forever. | `api/v1beta1/beskar7machine_types.go:96-104`, `controllers/beskar7machine_controller.go:329-363` |
@@ -142,6 +141,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 |---|---|---|
 | BLOCK-1 | PR-0.1: defaulted `RedfishClientFactory` to `internalredfish.NewClient` in each reconciler's `SetupWithManager` with a fail-fast non-nil guard; removed misleading `// Use default` from `cmd/manager/main.go`; added unit specs covering nil → default and explicit-factory-preserved for both reconcilers. | 2026-05-01 |
 | kube-rbac-proxy removal (Phase 11, PR-11.1) | Deleted `config/default/manager_auth_proxy_patch.yaml` and the kube-rbac-proxy sidecar from the Helm chart; wired `filters.WithAuthenticationAndAuthorization` via `metricsserver.Options.FilterProvider`; metrics now served directly on `:8443` (HTTPS) with TokenReview/SAR-based auth; added `--secure-metrics` flag (default true) for local dev; added `config/rbac/metrics_auth_role.yaml`, `metrics_auth_role_binding.yaml`, `metrics_reader_role.yaml`; updated all overlay patches and networkpolicies to `:8443`. | 2026-05-01 |
+| BUG-5 | PR-2.1: `PhysicalHostReconciler.Reconcile` now uses `patch.NewHelper` deferred at top; `r.Update` (finalizer add/remove) and all `r.Status().Update` calls removed; a single `patchHelper.Patch(ctx, ph, patch.WithStatusObservedGeneration{})` handles both spec and status in one round-trip. `InspectionRequestAnnotation` constant exported for cross-controller use. 2 PIt blocks converted: "Should add finalizer via patch …" and "Should apply inspection-request annotation …". | 2026-05-02 |
 | _initial population_ | review baseline established | 2026-05-01 |
 
 ---
