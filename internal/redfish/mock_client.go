@@ -24,14 +24,15 @@ type MockClient struct {
 	GetNetworkAddressesFunc func(ctx context.Context) ([]NetworkAddress, error)
 
 	// Counters (optional, for verification)
-	CloseCalled               bool
-	GetSystemInfoCalled       bool
-	GetPowerStateCalled       bool
-	SetPowerStateCalled       bool
-	SetBootSourcePXECalled    bool
-	ResetCalled               bool
-	GetNetworkAddressesCalled bool
-	ForcePowerOffCalled       bool
+	CloseCalled                   bool
+	GetSystemInfoCalled           bool
+	GetPowerStateCalled           bool
+	SetPowerStateCalled           bool
+	SetBootSourcePXECalled        bool
+	ResetCalled                   bool
+	GetNetworkAddressesCalled     bool
+	ForcePowerOffCalled           bool
+	ClearBootSourceOverrideCalled bool
 }
 
 // NewMockClient creates a new mock client with default values.
@@ -166,5 +167,19 @@ func (m *MockClient) ForcePowerOff(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PowerState = redfish.OffPowerState
+	return nil
+}
+
+// ClearBootSourceOverride mock implementation.
+func (m *MockClient) ClearBootSourceOverride(ctx context.Context) error {
+	m.mu.Lock()
+	m.ClearBootSourceOverrideCalled = true
+	m.mu.Unlock()
+	if err := m.failIfNeeded("ClearBootSourceOverride"); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.BootSourceIsPXE = false
 	return nil
 }

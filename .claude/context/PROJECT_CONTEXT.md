@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-3.1 closed BUG-6 (graceful power-off default) and BUG-10 (per-call HTTP timeout + ctx propagation in gofish client).
+> **Last meaningful update:** 2026-05-02 — PR-2.3 closed BUG-4 (clean release on delete: ClearBootSourceOverride + graceful power-off + ForceReleaseAnnotation escape hatch), BUG-7 (Beskar7Machine now watches PhysicalHost), and the residual BUG-1 risk (latency from annotation-only signal eliminated by the new PhysicalHost watch).
 
 ---
 
@@ -74,10 +74,7 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 
 | ID | Area | Issue | Where |
 |---|---|---|---|
-| BUG-1 | controller | Cross-controller status writes: **partially resolved in PR-2.1** — the three `r.Status().Update(physicalHost)` calls at the original lines 268, 291, 371 are removed. Replaced with annotation signal (`InspectionRequestAnnotation`). Residual risk: annotation processing happens one reconcile cycle after the Beskar7Machine sets it, introducing a brief window where PhysicalHost state lags. A concurrent PhysicalHost reconcile and annotation-clear could drop the signal if the PhysicalHost reconcile races with the annotation patch. Tracked here until a reconcile-triggered-by-annotation watch is wired. | `controllers/beskar7machine_controller.go` (signal path), `controllers/physicalhost_controller.go` (annotation consumer) |
 | BUG-2 | controller | Host claim is list-then-update with no resourceVersion precondition; two Beskar7Machines can claim the same Available host. | `controllers/beskar7machine_controller.go:425-442` |
-| BUG-4 | controller | `reconcileDelete` clears `ConsumerRef` but never powers off the host or clears the boot override. Strands hosts in `Once,Pxe,On`. | `controllers/beskar7machine_controller.go:449-476` |
-| BUG-7 | controller | `Beskar7Machine` doesn't watch `PhysicalHost`; state changes only propagate via 30s requeue. | `controllers/beskar7machine_controller.go:527-531` |
 | BUG-8 | controller | `FailureReason`/`FailureMessage` declared on the API but never set; hardware validation failures requeue forever. | `api/v1beta1/beskar7machine_types.go:96-104`, `controllers/beskar7machine_controller.go:329-363` |
 | BUG-9 | controller | `findControlPlaneEndpoint` ignores user-set `Spec.ControlPlaneEndpoint` and hardcodes port 6443. | `controllers/beskar7cluster_controller.go:278-298, 350-353` |
 
@@ -134,6 +131,9 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 | Item | Resolution | Date |
 |---|---|---|
+| BUG-1 | PR-2.1 + PR-2.3: direct `r.Status().Update(physicalHost)` calls removed in PR-2.1; replaced with `InspectionRequestAnnotation` signal. Residual latency concern (one-cycle lag + race on annotation-clear) eliminated in PR-2.3 by adding `Watches(&PhysicalHost{}, ...)` to `Beskar7MachineReconciler.SetupWithManager` — PhysicalHost state changes now trigger an immediate Beskar7Machine reconcile. | 2026-05-02 |
+| BUG-4 | PR-2.3: `reconcileDelete` now issues `ClearBootSourceOverride` then graceful `SetPowerState(Off)` before clearing `ConsumerRef`. Both Redfish calls are best-effort — errors are logged and swallowed so a dead BMC cannot strand the finalizer. `ForceReleaseAnnotation = "infrastructure.cluster.x-k8s.io/force-release"` added as operator escape hatch (skips Redfish ops entirely). Missing-credentials path treated identically. `ClearBootSourceOverride` added to the `Client` interface, `gofishClient`, and `MockClient`. 4 new `It` blocks in `controllers/beskar7machine_controller_test.go`. | 2026-05-02 |
+| BUG-7 | PR-2.3: `Beskar7MachineReconciler.SetupWithManager` now calls `Watches(&PhysicalHost{}, handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine))`. The mapping function only enqueues requests where `ConsumerRef.Kind == "Beskar7Machine"` and `ConsumerRef.APIVersion == InfrastructureAPIVersion`, so unrelated consumers produce no spurious reconciles. 4 mapping unit tests added. | 2026-05-02 |
 | BLOCK-1 | PR-0.1: defaulted `RedfishClientFactory` to `internalredfish.NewClient` in each reconciler's `SetupWithManager` with a fail-fast non-nil guard; removed misleading `// Use default` from `cmd/manager/main.go`; added unit specs covering nil → default and explicit-factory-preserved for both reconcilers. | 2026-05-01 |
 | kube-rbac-proxy removal (Phase 11, PR-11.1) | Deleted `config/default/manager_auth_proxy_patch.yaml` and the kube-rbac-proxy sidecar from the Helm chart; wired `filters.WithAuthenticationAndAuthorization` via `metricsserver.Options.FilterProvider`; metrics now served directly on `:8443` (HTTPS) with TokenReview/SAR-based auth; added `--secure-metrics` flag (default true) for local dev; added `config/rbac/metrics_auth_role.yaml`, `metrics_auth_role_binding.yaml`, `metrics_reader_role.yaml`; updated all overlay patches and networkpolicies to `:8443`. | 2026-05-01 |
 | BUG-3 | PR-1.3: Replaced hand-rolled loop in `parseProviderID` with `strings.CutPrefix` + `strings.SplitN`. Now rejects missing prefix with informative message, conflates no-slash / empty-namespace / empty-name with a single clear error, and explicitly rejects multi-segment names (BUG-3 root cause: `b7://ns/name/extra` previously returned `("ns", "name/extra", nil)`). Table-driven `TestParseProviderID` added in `controllers/parse_provider_id_test.go` (9 subtests, race-clean). | 2026-05-02 |

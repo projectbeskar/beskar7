@@ -36,6 +36,11 @@ type Client interface {
 	// Use only for unrecoverable error paths; prefer SetPowerState(Off) which
 	// performs a graceful shutdown.
 	ForcePowerOff(ctx context.Context) error
+
+	// ClearBootSourceOverride disables any pending one-shot or persistent boot
+	// source override. Used during host release so the next claimant is not
+	// surprised by a stale PXE-once setting.
+	ClearBootSourceOverride(ctx context.Context) error
 }
 
 // SystemInfo contains basic system information
