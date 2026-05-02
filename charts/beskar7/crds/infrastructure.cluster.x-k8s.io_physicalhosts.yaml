@@ -103,6 +103,14 @@ spec:
                 type: array
               bootstrap:
                 properties:
+                  expiresAt:
+                    format: date-time
+                    type: string
+                  issuedAt:
+                    format: date-time
+                    type: string
+                  tokenHash:
+                    type: string
                   url:
                     type: string
                 type: object
