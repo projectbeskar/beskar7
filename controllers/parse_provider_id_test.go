@@ -25,11 +25,11 @@ func TestParseProviderID(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		in        string
-		wantNS    string
-		wantName  string
-		wantErr   bool
+		name        string
+		in          string
+		wantNS      string
+		wantName    string
+		wantErr     bool
 		errContains string
 	}{
 		{
