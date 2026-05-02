@@ -95,10 +95,16 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        # setup-envtest is now a separate submodule inside controller-runtime;
+        # its tags do NOT match controller-runtime release tags. Use the
+        # release-0.20 branch which matches our controller-runtime v0.20.x.
+        # See https://github.com/kubernetes-sigs/controller-runtime/blob/main/tools/setup-envtest/README.md.
+        # @latest must NOT be used — it currently resolves to a Go 1.26-required
+        # build that ships envtest assets without the etcd binary.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
-        
+
     - name: Run unit tests
       run: |
         # Run tests with coverage, excluding integration tests
@@ -139,10 +145,11 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        # See unit-tests job for the @release-0.20 rationale.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.20
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
-        
+
     - name: Run integration tests
       run: |
         go test -v -tags=integration ./test/integration/... -timeout=30m

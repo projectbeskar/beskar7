@@ -1223,3 +1223,83 @@ func getSecretPlaintext(ctx context.Context, ns, name string) []byte {
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, s)).To(Succeed())
 	return s.Data["plaintext-token"]
 }
+
+// bootstrapTokenStillValid no-re-mint guard tests (PR-5.3). Pure unit tests:
+// no envtest needed because the helper does not perform I/O.
+var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
+	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
+
+	It("returns false when host is nil", func() {
+		Expect(bootstrapTokenStillValid(nil, now)).To(BeFalse())
+	})
+
+	It("returns false when Status.Bootstrap is nil", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when TokenHash is empty", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when ExpiresAt is nil", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: nil,
+				},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when ExpiresAt is in the past", func() {
+		exp := metav1.NewTime(now.Add(-1 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when ExpiresAt equals now (boundary: must re-mint)", func() {
+		exp := metav1.NewTime(now)
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse(),
+			"now.Before(ExpiresAt) is false at equality — boundary must re-mint")
+	})
+
+	It("returns true when token is still within the validity window", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue())
+	})
+})

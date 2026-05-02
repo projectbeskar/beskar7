@@ -302,14 +302,27 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		logger.Info("Powered on system for inspection")
 	}
 
-	// Mint a fresh per-host bearer token. The plaintext is delivered to the
-	// inspector via a Secret (so it survives manager restart during the 30-min
+	// Mint a fresh per-host bearer token unless the existing one is still
+	// valid. Re-minting on every reconcile would invalidate any in-flight
+	// bearer headers the inspector or target OS already received via the iPXE
+	// kernel cmdline, and would force a re-render of the cmdline before each
+	// boot. The 30-minute validity window (D-004) is comfortably above the
+	// 10-minute DefaultInspectionTimeout, so reusing a still-valid token
+	// across reconciles is safe.
+	//
+	// Re-mint conditions: no Bootstrap status block, empty TokenHash, missing
+	// ExpiresAt, or ExpiresAt in the past. In any of those cases the existing
+	// token is unusable and we must mint fresh. The plaintext is delivered to
+	// the inspector via a Secret (so it survives manager restart during the
 	// validity window — D-006); only the hash + lifetime are signalled to
-	// PhysicalHost via an annotation. The plaintext is never logged: even at
-	// V(1) we record only that the mint succeeded.
-	if err := r.mintAndStoreBootstrapToken(ctx, logger, physicalHost); err != nil {
-		logger.Error(err, "Failed to mint and store bootstrap token")
-		return ctrl.Result{}, err
+	// PhysicalHost via an annotation. The plaintext is never logged.
+	if bootstrapTokenStillValid(physicalHost, time.Now()) {
+		logger.V(1).Info("Existing bootstrap token still valid; skipping mint")
+	} else {
+		if err := r.mintAndStoreBootstrapToken(ctx, logger, physicalHost); err != nil {
+			logger.Error(err, "Failed to mint and store bootstrap token")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
@@ -362,9 +375,31 @@ func (r *Beskar7MachineReconciler) mintAndStoreBootstrapToken(
 
 // bootstrapTokenSecretName returns the deterministic name of the per-host
 // Secret holding the plaintext bearer token. Centralized so tests and the
-// future bootstrap-render code path agree on the name.
+// bootstrap-render code path agree on the name.
 func bootstrapTokenSecretName(hostName string) string {
 	return hostName + "-bootstrap-token"
+}
+
+// bootstrapTokenStillValid reports whether the PhysicalHost's existing
+// Status.Bootstrap holds a usable bearer token at the given moment. A token is
+// reusable when:
+//   - Bootstrap status block is non-nil, AND
+//   - TokenHash is non-empty (a token was minted and the hash has been
+//     persisted to status — i.e. the PhysicalHost reconciler has already
+//     consumed our previous BootstrapTokenAnnotation), AND
+//   - ExpiresAt is set and strictly after now (still inside the validity
+//     window).
+//
+// Returning false forces a re-mint on the next call to triggerInspection,
+// which is the desired behaviour for an expired or never-issued token.
+func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) bool {
+	if physicalHost == nil ||
+		physicalHost.Status.Bootstrap == nil ||
+		physicalHost.Status.Bootstrap.TokenHash == "" ||
+		physicalHost.Status.Bootstrap.ExpiresAt == nil {
+		return false
+	}
+	return now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time)
 }
 
 // upsertBootstrapTokenSecret writes the plaintext bearer token to a per-host

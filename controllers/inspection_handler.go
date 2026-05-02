@@ -65,7 +65,7 @@ const (
 // token whose SHA-256 matches the targeted PhysicalHost's
 // Status.Bootstrap.TokenHash and whose ExpiresAt is in the future.
 // Authentication is enforced by the auth.RequireBearer middleware wrapped around
-// this handler in SetupInspectionServer; ServeHTTP itself assumes the request has
+// this handler in SetupCallbackServer; ServeHTTP itself assumes the request has
 // already authenticated.
 //
 // Status ownership: this handler does NOT write to PhysicalHost.Status. It writes
@@ -364,47 +364,64 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 	return nil
 }
 
-// SetupInspectionServer wires the inspection HTTPS server into the manager.
+// SetupCallbackServer wires the host-callback HTTPS server into the manager.
 //
-// Wraps the inspection handler in auth.RequireBearer. The verifier resolves the
-// targeted PhysicalHost from path values and validates the presented bearer
-// token against Status.Bootstrap.TokenHash + ExpiresAt. All authentication
-// failures return an opaque 401 — the verifier's specific error is logged at
-// V(1) only.
+// The server hosts two host-scoped endpoints, both gated by the same
+// per-PhysicalHost bearer-token middleware (auth.RequireBearer +
+// newBearerTokenVerifier):
 //
-// TLS is mandatory. The handler is mounted on POST /api/v1/inspection/{namespace}/{hostName}
-// using Go 1.22+ ServeMux pattern matching, so the verifier can identify the
-// target host before the request body has been parsed.
-func SetupInspectionServer(mgr ctrl.Manager, port int, certDir string) error {
+//   - POST /api/v1/inspection/{namespace}/{hostName}: receives inspection
+//     reports from the inspection image (handled by InspectionHandler).
+//   - GET  /api/v1/bootstrap/{namespace}/{hostName}: serves the bootstrap data
+//     Secret bytes for the Beskar7Machine that consumes the targeted host
+//     (handled by BootstrapHandler).
+//
+// All authentication failures return an opaque 401 — the verifier's specific
+// error is logged at V(1) only. TLS is mandatory; the cert dir defaults to the
+// webhook cert dir (same Pod, same DNS name, one cert via cert-manager).
+func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
 	if certDir == "" {
-		return fmt.Errorf("inspection server cert dir is empty; set --inspection-cert-dir")
+		return fmt.Errorf("callback server cert dir is empty; set --inspection-cert-dir")
 	}
 	certPath := filepath.Join(certDir, "tls.crt")
 	keyPath := filepath.Join(certDir, "tls.key")
 	// Fail at setup, not at first request, so misconfiguration is loud.
 	if _, err := os.Stat(certPath); err != nil {
-		return fmt.Errorf("inspection server cert %q not readable: %w", certPath, err)
+		return fmt.Errorf("callback server cert %q not readable: %w", certPath, err)
 	}
 	if _, err := os.Stat(keyPath); err != nil {
-		return fmt.Errorf("inspection server key %q not readable: %w", keyPath, err)
+		return fmt.Errorf("callback server key %q not readable: %w", keyPath, err)
 	}
 
-	handlerLog := ctrl.Log.WithName("inspection-handler")
-	handler := &InspectionHandler{
+	inspectionLog := ctrl.Log.WithName("inspection-handler")
+	inspectionHandler := &InspectionHandler{
 		Client: mgr.GetClient(),
-		Log:    handlerLog,
+		Log:    inspectionLog,
 	}
 
-	verifier := newInspectionVerifier(mgr.GetClient(), handlerLog)
+	bootstrapLog := ctrl.Log.WithName("bootstrap-handler")
+	bootstrapHandler := &BootstrapHandler{
+		Client: mgr.GetClient(),
+		Log:    bootstrapLog,
+	}
+
+	// Same verifier flavour for both endpoints: the bearer token authorises
+	// requests for a specific PhysicalHost, regardless of which host-scoped
+	// endpoint is being called. We construct one verifier per route so the
+	// V(1) log handle reflects the route.
+	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
+	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
 
 	mux := http.NewServeMux()
 	// Go 1.22+ pattern matching: bind path values for the verifier and handler.
 	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}",
-		auth.RequireBearer(handlerLog, verifier, handler))
+		auth.RequireBearer(inspectionLog, inspectionVerifier, inspectionHandler))
+	mux.Handle("GET /api/v1/bootstrap/{namespace}/{hostName}",
+		auth.RequireBearer(bootstrapLog, bootstrapVerifier, bootstrapHandler))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
-			ctrl.Log.WithName("inspection-server").Error(err, "Failed to write health check response")
+			ctrl.Log.WithName("callback-server").Error(err, "Failed to write health check response")
 		}
 	})
 
@@ -418,22 +435,22 @@ func SetupInspectionServer(mgr ctrl.Manager, port int, certDir string) error {
 	}
 
 	go func() {
-		ctrl.Log.WithName("inspection-server").Info("Starting inspection HTTPS server", "port", port)
+		ctrl.Log.WithName("callback-server").Info("Starting callback HTTPS server", "port", port)
 		if err := server.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			ctrl.Log.WithName("inspection-server").Error(err, "Failed to start inspection HTTPS server")
+			ctrl.Log.WithName("callback-server").Error(err, "Failed to start callback HTTPS server")
 		}
 	}()
 
-	if err := mgr.Add(&inspectionServerRunnable{server: server}); err != nil {
-		return fmt.Errorf("failed to add inspection server to manager: %w", err)
+	if err := mgr.Add(&callbackServerRunnable{server: server}); err != nil {
+		return fmt.Errorf("failed to add callback server to manager: %w", err)
 	}
 	return nil
 }
 
-// newInspectionVerifier constructs the auth.Verifier that the bearer middleware
-// runs for every inspection POST. It is a free function (not a method) so that
-// tests can compose a verifier against a fake client without standing up a
-// full server.
+// newBearerTokenVerifier constructs the auth.Verifier shared by every
+// host-scoped endpoint on the callback server (inspection POST + bootstrap
+// GET). It is a free function (not a method) so tests can compose a verifier
+// against a fake client without standing up a full server.
 //
 // Verification flow:
 //  1. Resolve {namespace,hostName} from path values. Reject if either empty.
@@ -445,7 +462,7 @@ func SetupInspectionServer(mgr ctrl.Manager, port int, certDir string) error {
 //
 // Returned errors are descriptive for V(1) logging only — never echoed to the
 // client.
-func newInspectionVerifier(c client.Client, log logr.Logger) auth.Verifier {
+func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 	return func(token string, r *http.Request) error {
 		namespace := r.PathValue("namespace")
 		hostName := r.PathValue("hostName")
@@ -472,14 +489,14 @@ func newInspectionVerifier(c client.Client, log logr.Logger) auth.Verifier {
 	}
 }
 
-// inspectionServerRunnable implements manager.Runnable for graceful shutdown.
-type inspectionServerRunnable struct {
+// callbackServerRunnable implements manager.Runnable for graceful shutdown.
+type callbackServerRunnable struct {
 	server *http.Server
 }
 
-func (r *inspectionServerRunnable) Start(ctx context.Context) error {
+func (r *callbackServerRunnable) Start(ctx context.Context) error {
 	<-ctx.Done()
-	ctrl.Log.WithName("inspection-server").Info("Shutting down inspection HTTPS server")
+	ctrl.Log.WithName("callback-server").Info("Shutting down callback HTTPS server")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return r.server.Shutdown(shutdownCtx)

@@ -184,10 +184,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup inspection handler. TLS is mandatory and the cert dir defaults to the
-	// webhook cert dir (same Pod, same DNS name, one Certificate via cert-manager).
-	if err := controllers.SetupInspectionServer(mgr, inspectionPort, inspectionCertDir); err != nil {
-		setupLog.Error(err, "unable to setup inspection server")
+	// Setup the host-callback HTTPS server. Hosts both the inspection POST and
+	// the bootstrap GET on the same port (default :8082), gated by the same
+	// per-host bearer-token middleware. TLS is mandatory and the cert dir
+	// defaults to the webhook cert dir (same Pod, same DNS name, one
+	// Certificate via cert-manager).
+	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir); err != nil {
+		setupLog.Error(err, "unable to setup callback server")
 		os.Exit(1)
 	}
 
