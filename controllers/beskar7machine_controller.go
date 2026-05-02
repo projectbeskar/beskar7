@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -530,21 +531,18 @@ func providerID(namespace, name string) string {
 }
 
 func parseProviderID(id string) (string, string, error) {
-	if len(id) <= len(ProviderIDPrefix) {
-		return "", "", fmt.Errorf("invalid provider ID format")
+	rest, ok := strings.CutPrefix(id, ProviderIDPrefix)
+	if !ok {
+		return "", "", fmt.Errorf("invalid provider ID %q: missing %q prefix", id, ProviderIDPrefix)
 	}
-	parts := id[len(ProviderIDPrefix):]
-	idx := 0
-	for i, c := range parts {
-		if c == '/' {
-			idx = i
-			break
-		}
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", fmt.Errorf("invalid provider ID %q: expected %s<namespace>/<name>", id, ProviderIDPrefix)
 	}
-	if idx == 0 {
-		return "", "", fmt.Errorf("invalid provider ID format")
+	if strings.Contains(parts[1], "/") {
+		return "", "", fmt.Errorf("invalid provider ID %q: name segment contains '/'", id)
 	}
-	return parts[:idx], parts[idx+1:], nil
+	return parts[0], parts[1], nil
 }
 
 // isPaused and isClusterPaused functions are in utils.go
