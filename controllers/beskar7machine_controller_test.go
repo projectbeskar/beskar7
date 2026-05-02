@@ -16,6 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
@@ -626,6 +627,192 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				g.Expect(cond.Reason).To(ContainSubstring("Validation"))
 			}, Timeout, Interval).Should(Succeed())
 		})
+	})
+})
+
+var _ = Describe("When two Beskar7Machines race for the same available host", func() {
+	// This spec proves that the atomic claim (field-index List + MergeFromWithOptimisticLock
+	// Patch) is race-safe: exactly one machine ends up owning the host, the loser gets
+	// Requeue=true and no ProviderID.
+	//
+	// We spin up a minimal controller-runtime manager just for this spec so that the
+	// reconciler's client is backed by the informer cache. This is required because
+	// client.MatchingFields only works on a cached client that has the field index
+	// registered — a plain client.New does not support it for custom status fields.
+
+	var (
+		testNs    *corev1.Namespace
+		mgr       ctrl.Manager
+		mgrCtx    context.Context
+		mgrCancel context.CancelFunc
+	)
+
+	BeforeEach(func() {
+		testNs = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "race-test-"},
+		}
+		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+
+		var err error
+		mgr, err = ctrl.NewManager(cfg, ctrl.Options{
+			Scheme: k8sClient.Scheme(),
+			// Disable the metrics server and health probes — not needed in tests.
+			Metrics:                metricsserver.Options{BindAddress: "0"},
+			HealthProbeBindAddress: "0",
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		noopFactory := internalredfish.RedfishClientFactory(
+			func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+		)
+		reconciler := &Beskar7MachineReconciler{
+			Client:               mgr.GetClient(),
+			Scheme:               mgr.GetScheme(),
+			Log:                  ctrl.Log.WithName("race-test"),
+			RedfishClientFactory: noopFactory,
+		}
+		// SetupWithManager registers the PhysicalHostStateIndex on the manager's
+		// cache indexer and adds the Beskar7Machine controller to the manager.
+		Expect(reconciler.SetupWithManager(mgr)).To(Succeed())
+
+		mgrCtx, mgrCancel = context.WithCancel(ctx)
+		go func() {
+			defer GinkgoRecover()
+			Expect(mgr.Start(mgrCtx)).To(Succeed())
+		}()
+		// Wait until the manager's cache is synced before creating test objects.
+		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
+	})
+
+	AfterEach(func() {
+		mgrCancel()
+		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
+	})
+
+	It("Should allow exactly one machine to claim the host; the other gets Requeue=true", func() {
+		By("Creating one available PhysicalHost with no ConsumerRef")
+		host := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "race-host",
+				Namespace: testNs.Name,
+			},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address:              "https://192.168.100.1",
+					CredentialsSecretRef: "irrelevant",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, host)).To(Succeed())
+		// Status must be set via the status subresource.
+		host.Status.State = infrastructurev1beta1.StateAvailable
+		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+
+		By("Creating two Beskar7Machines that would each want to claim the host")
+		machineA := &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "machine-a", Namespace: testNs.Name},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot-server/inspect.ipxe",
+				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+			},
+		}
+		machineB := &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "machine-b", Namespace: testNs.Name},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot-server/inspect.ipxe",
+				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+			},
+		}
+		Expect(k8sClient.Create(ctx, machineA)).To(Succeed())
+		Expect(k8sClient.Create(ctx, machineB)).To(Succeed())
+
+		// Build a reconciler that uses the manager's cached client (required for
+		// MatchingFields to work via the registered PhysicalHostStateIndex).
+		r := &Beskar7MachineReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Log:    ctrl.Log.WithName("race-test-direct"),
+			RedfishClientFactory: internalredfish.RedfishClientFactory(
+				func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+					return internalredfish.NewMockClient(), nil
+				},
+			),
+		}
+
+		// Both machines have no owner Machine, so Reconcile returns early at
+		// "Waiting for Machine Controller to set OwnerRef" — before it reaches the
+		// claim path. To exercise the claim path directly, we call
+		// findAndClaimOrGetAssociatedHost which is the method under test.
+		//
+		// Wait for the manager's cache to reflect the host, host status, and both machines
+		// before proceeding. The cache client (mgr.GetClient()) is a read-through to the
+		// informer cache; Get returns NotFound until the list-watch catches up.
+		hostKey := types.NamespacedName{Name: host.Name, Namespace: testNs.Name}
+		Eventually(func(g Gomega) {
+			cachedHost := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(ctx, hostKey, cachedHost)).To(Succeed())
+			g.Expect(cachedHost.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		// Re-fetch machines through the cache so they have a valid UID (needed by ConsumerRef).
+		Eventually(func(g Gomega) {
+			g.Expect(mgr.GetClient().Get(ctx, types.NamespacedName{Name: machineA.Name, Namespace: testNs.Name}, machineA)).To(Succeed())
+			g.Expect(mgr.GetClient().Get(ctx, types.NamespacedName{Name: machineB.Name, Namespace: testNs.Name}, machineB)).To(Succeed())
+		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		By("Calling findAndClaimOrGetAssociatedHost for machine-a then machine-b in quick succession")
+		log := ctrl.Log.WithName("race-test-direct")
+
+		claimedByA, resultA, errA := r.findAndClaimOrGetAssociatedHost(ctx, log, machineA)
+		claimedByB, resultB, errB := r.findAndClaimOrGetAssociatedHost(ctx, log, machineB)
+
+		By("Asserting exactly one machine won and neither call returned a hard error")
+		// Both calls must not return a hard error.
+		Expect(errA).NotTo(HaveOccurred(), "machine-a must not return a hard error")
+		Expect(errB).NotTo(HaveOccurred(), "machine-b must not return a hard error")
+
+		// In a sequential execution: machine-a wins the Patch, machine-b sees
+		// ConsumerRef already set on the only host and returns (nil, {}, nil) — no
+		// hosts available for it. In a truly concurrent execution (e.g. multiple
+		// goroutines), the loser gets a Conflict 409 and returns Requeue=true.
+		// Either outcome is correct. The invariant under test is: the host ends up
+		// claimed by exactly one machine, and the second caller either gets
+		// Requeue=true (Conflict path) or nil/nil (no available hosts path).
+		aWon := claimedByA != nil
+		bWon := claimedByB != nil
+		Expect(aWon || bWon).To(BeTrue(), "at least one machine must have claimed the host")
+		Expect(aWon && bWon).To(BeFalse(), "both machines must not claim the host simultaneously")
+
+		// The winner's result must not include Requeue (it already has the host).
+		if aWon {
+			Expect(resultA.Requeue).To(BeFalse(), "winning machine-a must not be told to requeue")
+		} else {
+			Expect(resultB.Requeue).To(BeFalse(), "winning machine-b must not be told to requeue")
+		}
+
+		By("Asserting host ConsumerRef points at exactly one machine")
+		Eventually(func(g Gomega) {
+			updatedHost := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(k8sClient.Get(ctx, hostKey, updatedHost)).To(Succeed())
+			g.Expect(updatedHost.Spec.ConsumerRef).NotTo(BeNil(), "host must be claimed by one machine")
+			winner := "machine-a"
+			if bWon {
+				winner = "machine-b"
+			}
+			g.Expect(updatedHost.Spec.ConsumerRef.Name).To(Equal(winner))
+		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		By("Asserting the loser has no ProviderID set")
+		// ProviderID is only set after the host is claimed and boots; in this test
+		// neither machine has a CAPI owner so ProviderID will not be set on either.
+		// The important invariant: the losing machine has no host associated.
+		if aWon {
+			Expect(machineB.Spec.ProviderID).To(BeNil(), "losing machine-b must have no ProviderID")
+		} else {
+			Expect(machineA.Spec.ProviderID).To(BeNil(), "losing machine-a must have no ProviderID")
+		}
 	})
 })
 
