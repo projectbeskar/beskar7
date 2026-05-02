@@ -225,6 +225,11 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// keeping status ownership inside this controller.
 	r.applyInspectionRequest(ctx, logger, physicalHost)
 
+	// Consume the bootstrap-url annotation set by the Beskar7Machine controller and
+	// persist the value to Status.Bootstrap.URL. This keeps status ownership inside
+	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
+	r.applyBootstrapURLAnnotation(logger, physicalHost)
+
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
 		// Host is claimed
@@ -284,6 +289,25 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 
 	// Remove the annotation so we don't act on it again. The deferred patch persists this.
 	delete(physicalHost.Annotations, InspectionRequestAnnotation)
+}
+
+// applyBootstrapURLAnnotation reads the BootstrapURLAnnotation and, when present,
+// persists the URL to Status.Bootstrap.URL and removes the annotation so it is
+// not acted on again. Mirrors the pattern of applyInspectionRequest.
+func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	url := physicalHost.Annotations[BootstrapURLAnnotation]
+	if url == "" {
+		return
+	}
+
+	if physicalHost.Status.Bootstrap == nil {
+		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+	}
+	physicalHost.Status.Bootstrap.URL = url
+	logger.Info("Applied bootstrap-url annotation to Status.Bootstrap.URL", "host", physicalHost.Name)
+
+	// Remove the annotation so we don't act on it again. The deferred patch persists this.
+	delete(physicalHost.Annotations, BootstrapURLAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.

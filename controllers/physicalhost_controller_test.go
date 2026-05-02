@@ -370,6 +370,47 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OnPowerState)))
 			}, Timeout, Interval).Should(Succeed())
 		})
+
+		It("Should consume bootstrap-url annotation, persist to Status.Bootstrap.URL, and clear the annotation", func() {
+			By("Creating the PhysicalHost and making it Available")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+
+			// Two reconciles: first adds finalizer, second drives to Available.
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+
+			By("Setting the bootstrap-url annotation (as Beskar7Machine controller would)")
+			const expectedURL = "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/test-physicalhost"
+			phPatch := ph.DeepCopy()
+			if phPatch.Annotations == nil {
+				phPatch.Annotations = map[string]string{}
+			}
+			phPatch.Annotations[BootstrapURLAnnotation] = expectedURL
+			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+
+			By("Reconciling — controller should consume annotation and persist to Status.Bootstrap.URL")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
+				g.Expect(got.Status.Bootstrap.URL).To(Equal(expectedURL),
+					"Status.Bootstrap.URL must equal the annotation value")
+				// Annotation must be cleared so it is not acted on again.
+				g.Expect(got.Annotations).NotTo(HaveKey(BootstrapURLAnnotation),
+					"bootstrap-url annotation must be removed after consumption")
+			}, Timeout, Interval).Should(Succeed())
+		})
 	})
 
 	Describe("PhysicalHost pause functionality", func() {

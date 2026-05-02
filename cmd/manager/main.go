@@ -75,9 +75,13 @@ func main() {
 	var webhookPort int
 	var webhookCertDir string
 	var secureMetrics bool
+	var bootstrapURLBase string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&bootstrapURLBase, "bootstrap-url-base", "https://beskar7-controller-manager.beskar7-system.svc:8082",
+		"Base URL operators expose for the bootstrap and inspection callback endpoints. "+
+			"Used to compute per-machine bootstrap URLs.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -146,9 +150,10 @@ func main() {
 	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
 	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
 	if err = (&controllers.Beskar7MachineReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		Log:              ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		BootstrapURLBase: bootstrapURLBase,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)

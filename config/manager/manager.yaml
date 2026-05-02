@@ -41,6 +41,7 @@ spec:
         - --enable-webhook=true
         - --metrics-bind-address=:8443
         - --health-probe-bind-address=:8081
+        - --bootstrap-url-base=https://beskar7-controller-manager.beskar7-system.svc:8082
         image: controller
         imagePullPolicy: Always
         name: manager

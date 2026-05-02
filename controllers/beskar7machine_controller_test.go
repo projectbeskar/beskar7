@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -672,6 +673,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("race-test"),
 			RedfishClientFactory: noopFactory,
+			BootstrapURLBase:     "https://test-mgr.beskar7-system.svc:8082",
 		}
 		// SetupWithManager registers the PhysicalHostStateIndex on the manager's
 		// cache indexer and adds the Beskar7Machine controller to the manager.
@@ -813,6 +815,235 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		} else {
 			Expect(machineA.Spec.ProviderID).To(BeNil(), "losing machine-a must have no ProviderID")
 		}
+	})
+})
+
+// Bootstrap data secret tests — envtest + unit level.
+var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
+	const (
+		bootstrapURLBase = "https://beskar7-controller-manager.beskar7-system.svc:8082"
+		Timeout          = time.Second * 10
+		Interval         = time.Millisecond * 250
+	)
+
+	var (
+		testNs       *corev1.Namespace
+		physicalHost *infrastructurev1beta1.PhysicalHost
+		b7machine    *infrastructurev1beta1.Beskar7Machine
+		machine      *clusterv1.Machine
+		r            *Beskar7MachineReconciler
+	)
+
+	BeforeEach(func() {
+		testNs = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "bootstrap-test-"},
+		}
+		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+
+		// Create a PhysicalHost already associated (ConsumerRef set, State=InUse).
+		physicalHost = &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bootstrap-test-host",
+				Namespace: testNs.Name,
+			},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address:              "https://192.168.1.200",
+					CredentialsSecretRef: "irrelevant",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+		physicalHost.Status.State = infrastructurev1beta1.StateInUse
+		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+
+		b7machine = &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bootstrap-test-b7machine",
+				Namespace: testNs.Name,
+			},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot-server/inspect.ipxe",
+				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+			},
+		}
+		Expect(k8sClient.Create(ctx, b7machine)).To(Succeed())
+
+		// Build a minimal CAPI Machine (no owner cluster; we only need Spec.Bootstrap).
+		machine = &clusterv1.Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "bootstrap-test-machine",
+				Namespace: testNs.Name,
+			},
+			Spec: clusterv1.MachineSpec{
+				ClusterName: "fake-cluster",
+				Bootstrap:   clusterv1.Bootstrap{},
+			},
+		}
+
+		r = &Beskar7MachineReconciler{
+			Client:           k8sClient,
+			Scheme:           k8sClient.Scheme(),
+			Log:              ctrl.Log.WithName("bootstrap-test"),
+			BootstrapURLBase: bootstrapURLBase,
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
+	})
+
+	It("Should mark BootstrapDataReadyCondition=False/WaitingForBootstrapData when DataSecretName is nil", func() {
+		By("Calling ensureBootstrapDataReady with no DataSecretName")
+		// machine.Spec.Bootstrap.DataSecretName is nil (zero value)
+		result, err := r.ensureBootstrapDataReady(ctx, r.Log, b7machine, machine, physicalHost)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(30*time.Second),
+			"should requeue after 30s while waiting for bootstrap data secret name")
+
+		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
+		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(infrastructurev1beta1.WaitingForBootstrapDataReason))
+
+		By("Verifying no bootstrap-url annotation was set on PhysicalHost")
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		Expect(ph.Annotations).NotTo(HaveKey(BootstrapURLAnnotation))
+	})
+
+	It("Should set FailureReason=BootstrapDataUnavailable when the named Secret is missing", func() {
+		By("Setting DataSecretName to a non-existent secret")
+		missingName := "does-not-exist"
+		machine.Spec.Bootstrap.DataSecretName = &missingName
+
+		result, err := r.ensureBootstrapDataReady(ctx, r.Log, b7machine, machine, physicalHost)
+
+		By("Expecting a terminal (zero requeue, no error returned) result")
+		Expect(err).NotTo(HaveOccurred(),
+			"terminal failures must return nil error so CAPI surfaces FailureReason/FailureMessage")
+		Expect(result.IsZero()).To(BeTrue(),
+			"terminal failure must not requeue")
+
+		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
+		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(infrastructurev1beta1.BootstrapDataUnavailableReason))
+
+		Expect(b7machine.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set")
+		Expect(*b7machine.Status.FailureReason).To(Equal(infrastructurev1beta1.BootstrapDataUnavailableReason))
+		Expect(b7machine.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be non-empty")
+		Expect(*b7machine.Status.FailureMessage).NotTo(BeEmpty())
+	})
+
+	It("Should set BootstrapDataReadyCondition=True and annotate PhysicalHost when Secret exists", func() {
+		By("Creating the bootstrap data secret")
+		secretName := "real-bootstrap-secret"
+		bootstrapSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      secretName,
+				Namespace: testNs.Name,
+			},
+			Data: map[string][]byte{
+				"value": []byte("#cloud-config\nhostname: test-node"),
+			},
+		}
+		Expect(k8sClient.Create(ctx, bootstrapSecret)).To(Succeed())
+
+		By("Setting DataSecretName on the Machine")
+		machine.Spec.Bootstrap.DataSecretName = &secretName
+
+		result, err := r.ensureBootstrapDataReady(ctx, r.Log, b7machine, machine, physicalHost)
+
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsZero()).To(BeTrue(), "should return empty result when bootstrap data is ready")
+
+		By("Verifying BootstrapDataReadyCondition=True")
+		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+
+		By("Verifying the bootstrap-url annotation was set on the PhysicalHost")
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		expectedURL := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s",
+			bootstrapURLBase, physicalHost.Namespace, physicalHost.Name)
+		Expect(ph.Annotations).To(HaveKeyWithValue(BootstrapURLAnnotation, expectedURL))
+	})
+
+	It("Should not re-annotate PhysicalHost when Status.Bootstrap.URL already matches", func() {
+		By("Pre-seeding Status.Bootstrap.URL to the expected value")
+		expectedURL := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s",
+			bootstrapURLBase, physicalHost.Namespace, physicalHost.Name)
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{URL: expectedURL}
+		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+
+		By("Creating the bootstrap secret")
+		secretName := "bootstrap-idempotent-secret"
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNs.Name},
+			Data:       map[string][]byte{"value": []byte("data")},
+		})).To(Succeed())
+		machine.Spec.Bootstrap.DataSecretName = &secretName
+
+		By("Calling ensureBootstrapDataReady")
+		result, err := r.ensureBootstrapDataReady(ctx, r.Log, b7machine, machine, physicalHost)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.IsZero()).To(BeTrue())
+
+		By("Verifying no bootstrap-url annotation was added (already up to date)")
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		Expect(ph.Annotations).NotTo(HaveKey(BootstrapURLAnnotation),
+			"annotation must not be re-set when Status.Bootstrap.URL already matches")
+	})
+})
+
+// validateAndDefault tests — pure unit, no envtest needed.
+var _ = Describe("Beskar7MachineReconciler.validateAndDefault", func() {
+	It("should fail when BootstrapURLBase is empty", func() {
+		r := &Beskar7MachineReconciler{
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+		}
+		Expect(r.validateAndDefault()).To(MatchError(ContainSubstring("BootstrapURLBase is empty")))
+	})
+
+	It("should succeed when BootstrapURLBase is set", func() {
+		r := &Beskar7MachineReconciler{
+			BootstrapURLBase: "https://example.com:8082",
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+		}
+		Expect(r.validateAndDefault()).To(Succeed())
+	})
+})
+
+// bootstrapURL formatting — pure unit tests for trailing-slash correctness.
+var _ = Describe("Bootstrap URL formatting", func() {
+	buildURL := func(base, ns, name string) string {
+		return fmt.Sprintf("%s/api/v1/bootstrap/%s/%s",
+			strings.TrimRight(base, "/"), ns, name)
+	}
+
+	It("should produce the same URL with and without a trailing slash in base", func() {
+		withSlash := buildURL("https://beskar7-controller-manager.beskar7-system.svc:8082/", "default", "my-host")
+		withoutSlash := buildURL("https://beskar7-controller-manager.beskar7-system.svc:8082", "default", "my-host")
+		Expect(withSlash).To(Equal(withoutSlash))
+		Expect(withSlash).To(Equal("https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/my-host"))
+	})
+
+	It("should encode namespace and name correctly in path segments", func() {
+		url := buildURL("https://mgr:8082", "my-ns", "host-01")
+		Expect(url).To(Equal("https://mgr:8082/api/v1/bootstrap/my-ns/host-01"))
 	})
 })
 

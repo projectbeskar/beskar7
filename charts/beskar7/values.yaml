@@ -140,6 +140,14 @@ readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10
 
+bootstrap:
+  # Base URL operators expose for the bootstrap and inspection callback endpoints.
+  # Beskar7 computes per-machine bootstrap URLs from this base. Set to whatever
+  # FQDN+port your hosts can reach the manager on (typically the in-cluster
+  # service DNS, but may be a Service of type LoadBalancer or an external Ingress
+  # for hosts that boot before joining the cluster network).
+  urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+
 # Additional labels
 labels: {}
 

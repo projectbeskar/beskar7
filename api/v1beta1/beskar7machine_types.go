@@ -13,6 +13,10 @@ const (
 	PhysicalHostAssociatedCondition clusterv1.ConditionType = "PhysicalHostAssociated"
 	// MachineProvisionedCondition indicates whether the machine has been provisioned
 	MachineProvisionedCondition clusterv1.ConditionType = "MachineProvisioned"
+	// BootstrapDataReadyCondition indicates the bootstrap data secret named by
+	// Machine.Spec.Bootstrap.DataSecretName is present and the per-host bootstrap
+	// URL has been signaled to the PhysicalHost.
+	BootstrapDataReadyCondition clusterv1.ConditionType = "BootstrapDataReady"
 )
 
 // Reasons for condition failures
@@ -34,6 +38,12 @@ const (
 	// ReleasePhysicalHostFailedReason (Severity=Warning) indicates that releasing the
 	// associated PhysicalHost failed during deletion.
 	ReleasePhysicalHostFailedReason string = "ReleasePhysicalHostFailed"
+	// WaitingForBootstrapDataReason (Severity=Info) indicates that
+	// Machine.Spec.Bootstrap.DataSecretName is not yet set by the bootstrap provider.
+	WaitingForBootstrapDataReason string = "WaitingForBootstrapData"
+	// BootstrapDataUnavailableReason (Severity=Error, terminal) indicates that the named
+	// bootstrap data Secret was not found in the Beskar7Machine's namespace.
+	BootstrapDataUnavailableReason string = "BootstrapDataUnavailable"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.
