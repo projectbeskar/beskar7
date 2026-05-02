@@ -37,6 +37,7 @@ spec:
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8443
         - --leader-elect
+        - --bootstrap-url-base={{ .Values.bootstrap.urlBase | default "https://beskar7-controller-manager.beskar7-system.svc:8082" }}
         {{- if .Values.webhook.enabled }}
         - --webhook-port=9443
         {{- end }}

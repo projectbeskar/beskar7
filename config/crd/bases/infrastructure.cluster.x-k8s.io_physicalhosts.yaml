@@ -101,6 +101,11 @@ spec:
                   - type
                   type: object
                 type: array
+              bootstrap:
+                properties:
+                  url:
+                    type: string
+                type: object
               conditions:
                 items:
                   properties:

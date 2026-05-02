@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-2.2 closed BUG-2 (atomic host claim: server-side field index on PhysicalHost.Status.State + MergeFromWithOptimisticLock Patch; race envtest added). Phase 2 is now fully closed (BUG-1, BUG-2, BUG-4, BUG-5, BUG-7 all done).
+> **Last meaningful update:** 2026-05-02 — PR-1.1 partially closes BLOCK-2: `Beskar7MachineReconciler` now reads `Machine.Spec.Bootstrap.DataSecretName`, verifies the Secret exists, computes a deterministic per-host bootstrap URL, and signals it to `PhysicalHost` via `BootstrapURLAnnotation`. `PhysicalHost` reconciler consumes the annotation and persists to `Status.Bootstrap.URL`. Full BLOCK-2 closure still requires PR-5.1 (token fields) + PR-5.3 (serve the GET endpoint).
 
 ---
 
@@ -56,7 +56,7 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 
 | ID | Area | Issue | Where |
 |---|---|---|---|
-| BLOCK-2 | CAPI conformance | `Beskar7MachineReconciler` never reads `Machine.Spec.Bootstrap.DataSecretName`. Provisioned hosts can't actually become Kubernetes nodes. | `controllers/beskar7machine_controller.go` (no references to bootstrap anywhere) |
+| BLOCK-2 | CAPI conformance | **Partially closed by PR-1.1** (controller reads bootstrap secret, signals URL via annotation, PhysicalHost persists to `Status.Bootstrap.URL`). Full closure still requires PR-5.1 (CRD: token fields in `BootstrapStatus`) + PR-5.3 (manager serves `GET /api/v1/bootstrap/{ns}/{name}`). | `controllers/beskar7machine_controller.go`, `controllers/physicalhost_controller.go` |
 | BLOCK-3 | docs / chart | `charts/beskar7/crds/` ships v0.3 schema; `config/crd/bases/` is the v0.4 source of truth. Helm install reconciles against rejecting CRDs. Stray `charts/beskar7/crds/_.yaml` with empty `kind`. | `charts/beskar7/crds/*.yaml` |
 | BLOCK-4 | chart | Helm chart enables webhook plumbing but never passes `--enable-webhook=true` to the manager; also ships no `ValidatingWebhookConfiguration`. | `charts/beskar7/templates/deployment.yaml:66-72`, missing `vwc.yaml` |
 | BLOCK-5 | chart / docs | Inspection endpoint port `:8082` is not exposed by the chart's Service or NetworkPolicy. Inspection workflow non-functional on Helm installs. | `charts/beskar7/templates/{service.yaml,networkpolicy.yaml}` |

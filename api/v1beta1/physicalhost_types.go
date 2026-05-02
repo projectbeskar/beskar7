@@ -291,9 +291,25 @@ type PhysicalHostStatus struct {
 	// +optional
 	InspectionTimestamp *metav1.Time `json:"inspectionTimestamp,omitempty"`
 
+	// Bootstrap holds the per-host data the inspection image and target OS use
+	// to fetch bootstrap data (cloud-init / Ignition) from the manager.
+	// Only URL is populated in v0.4-alpha; Token fields will be added in a
+	// follow-up alongside server-side bearer authentication (PR-5.1).
+	// +optional
+	Bootstrap *BootstrapStatus `json:"bootstrap,omitempty"`
+
 	// Conditions defines current service state of the PhysicalHost
 	// +optional
 	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+}
+
+// BootstrapStatus is the per-host bootstrap data fetch coordinates.
+type BootstrapStatus struct {
+	// URL is the manager-served HTTPS endpoint that returns the host's
+	// bootstrap secret bytes. Computed deterministically from the manager's
+	// bootstrap-url-base and the host's namespace+name.
+	// +optional
+	URL string `json:"url,omitempty"`
 }
 
 // Redfish conditions and reasons - simplified for power management only
@@ -391,6 +407,11 @@ func (in *PhysicalHostStatus) DeepCopyInto(out *PhysicalHostStatus) {
 	if in.InspectionTimestamp != nil {
 		in, out := &in.InspectionTimestamp, &out.InspectionTimestamp
 		*out = (*in).DeepCopy()
+	}
+	if in.Bootstrap != nil {
+		in, out := &in.Bootstrap, &out.Bootstrap
+		*out = new(BootstrapStatus)
+		**out = **in
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions

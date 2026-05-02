@@ -74,6 +74,11 @@ type Beskar7MachineReconciler struct {
 	Scheme               *runtime.Scheme
 	RedfishClientFactory internalredfish.RedfishClientFactory
 	Log                  logr.Logger
+	// BootstrapURLBase is the scheme+host+port of the manager's bootstrap/inspection
+	// endpoint. Used to compute deterministic per-host bootstrap URLs of the form
+	// <BootstrapURLBase>/api/v1/bootstrap/<namespace>/<name>. Must be non-empty;
+	// validated in SetupWithManager.
+	BootstrapURLBase string
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines,verbs=get;list;watch;create;update;patch;delete
@@ -81,6 +86,7 @@ type Beskar7MachineReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines/finalizers,verbs=update
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch;patch
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile handles Beskar7Machine reconciliation for iPXE + inspection workflow.
 func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
@@ -195,6 +201,14 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	}
 
 	logger = logger.WithValues("physicalhost", physicalHost.Name)
+
+	// Bootstrap data must be available before we boot the inspection image, so
+	// the host can fetch it during cloud-init / Ignition. We do not fetch the
+	// bytes here (that's the server-side bootstrap endpoint's job) — only verify
+	// the Secret exists and signal the URL to PhysicalHost.
+	if result, err := r.ensureBootstrapDataReady(ctx, logger, b7machine, machine, physicalHost); err != nil || !result.IsZero() {
+		return result, err
+	}
 
 	// Handle based on PhysicalHost state and inspection status
 	return r.handlePhysicalHostState(ctx, logger, b7machine, physicalHost)
@@ -567,6 +581,87 @@ func (r *Beskar7MachineReconciler) setInspectionRequestAnnotation(ctx context.Co
 	return nil
 }
 
+// ensureBootstrapDataReady verifies that the bootstrap Secret named by
+// Machine.Spec.Bootstrap.DataSecretName exists, then signals the computed per-host
+// bootstrap URL to PhysicalHost via an annotation. Returns a non-zero ctrl.Result to
+// short-circuit the reconcile when bootstrap data is not yet available.
+//
+// We verify the Secret exists but do not read its bytes — the server-side bootstrap
+// endpoint (PR-5.3) fetches the bytes at request time, which correctly handles
+// secret rotation between claim and boot.
+func (r *Beskar7MachineReconciler) ensureBootstrapDataReady(
+	ctx context.Context,
+	logger logr.Logger,
+	b7machine *infrastructurev1beta1.Beskar7Machine,
+	machine *clusterv1.Machine,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+) (ctrl.Result, error) {
+	if machine.Spec.Bootstrap.DataSecretName == nil {
+		logger.Info("Waiting for bootstrap data secret name to be set on Machine.Spec.Bootstrap")
+		conditions.MarkFalse(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition,
+			infrastructurev1beta1.WaitingForBootstrapDataReason, clusterv1.ConditionSeverityInfo,
+			"Waiting for Machine.Spec.Bootstrap.DataSecretName to be set")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	secretName := *machine.Spec.Bootstrap.DataSecretName
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{Namespace: b7machine.Namespace, Name: secretName}
+	if err := r.Get(ctx, secretKey, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Terminal: the bootstrap provider set a secret name that doesn't exist.
+			msg := fmt.Sprintf("bootstrap data secret %q not found in namespace %q", secretName, b7machine.Namespace)
+			logger.Error(err, msg)
+			conditions.MarkFalse(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition,
+				infrastructurev1beta1.BootstrapDataUnavailableReason, clusterv1.ConditionSeverityError,
+				"%s", msg)
+			reason := infrastructurev1beta1.BootstrapDataUnavailableReason
+			b7machine.Status.FailureReason = &reason
+			b7machine.Status.FailureMessage = &msg
+			// Don't requeue — this is terminal until the operator resolves it.
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("failed to get bootstrap data secret %q: %w", secretName, err)
+	}
+
+	// Compute the deterministic per-host bootstrap URL and signal it to the
+	// PhysicalHost controller via an annotation if it hasn't been set yet.
+	bootstrapURL := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s",
+		strings.TrimRight(r.BootstrapURLBase, "/"),
+		physicalHost.Namespace, physicalHost.Name)
+
+	if physicalHost.Status.Bootstrap == nil || physicalHost.Status.Bootstrap.URL != bootstrapURL {
+		if err := r.setBootstrapURLAnnotation(ctx, logger, physicalHost, bootstrapURL); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	conditions.MarkTrue(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+	return ctrl.Result{}, nil
+}
+
+// setBootstrapURLAnnotation patches PhysicalHost metadata annotations with the
+// per-host bootstrap URL. The PhysicalHost controller consumes this annotation
+// and writes the value to Status.Bootstrap.URL, then clears the annotation.
+// We patch only spec/annotations here — never status — preserving status ownership.
+func (r *Beskar7MachineReconciler) setBootstrapURLAnnotation(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	url string,
+) error {
+	base := physicalHost.DeepCopy()
+	if physicalHost.Annotations == nil {
+		physicalHost.Annotations = make(map[string]string)
+	}
+	physicalHost.Annotations[BootstrapURLAnnotation] = url
+	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return fmt.Errorf("failed to set bootstrap-url annotation on PhysicalHost %s: %w", physicalHost.Name, err)
+	}
+	logger.V(1).Info("Set bootstrap-url annotation", "host", physicalHost.Name)
+	return nil
+}
+
 // getRedfishClientForHost creates a Redfish client for the given PhysicalHost.
 func (r *Beskar7MachineReconciler) getRedfishClientForHost(ctx context.Context, logger logr.Logger, host *infrastructurev1beta1.PhysicalHost) (internalredfish.Client, error) {
 	// Get credentials
@@ -620,16 +715,30 @@ func (r *Beskar7MachineReconciler) defaultFactory() error {
 		r.RedfishClientFactory = internalredfish.NewClient
 	}
 	if r.RedfishClientFactory == nil {
-		// Should be unreachable, but guard against a future programming error
+		// Should be unreachable, but guards against a future programming error
 		// that nilifies the field after this call.
 		return fmt.Errorf("Beskar7MachineReconciler: RedfishClientFactory is nil after defaulting")
 	}
 	return nil
 }
 
+// validateAndDefault defaults the RedfishClientFactory and validates that
+// BootstrapURLBase is non-empty. Both are required for normal operation;
+// failing fast at setup time prevents the first reconcile from panicking or
+// producing a confusing error.
+func (r *Beskar7MachineReconciler) validateAndDefault() error {
+	if err := r.defaultFactory(); err != nil {
+		return err
+	}
+	if r.BootstrapURLBase == "" {
+		return fmt.Errorf("Beskar7MachineReconciler: BootstrapURLBase is empty; set --bootstrap-url-base")
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller.
 func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := r.defaultFactory(); err != nil {
+	if err := r.validateAndDefault(); err != nil {
 		return err
 	}
 	// Register a cache field index on PhysicalHost.Status.State so that
