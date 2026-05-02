@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — PR-2.3 closed BUG-4 (clean release on delete: ClearBootSourceOverride + graceful power-off + ForceReleaseAnnotation escape hatch), BUG-7 (Beskar7Machine now watches PhysicalHost), and the residual BUG-1 risk (latency from annotation-only signal eliminated by the new PhysicalHost watch).
+> **Last meaningful update:** 2026-05-02 — PR-2.2 closed BUG-2 (atomic host claim: server-side field index on PhysicalHost.Status.State + MergeFromWithOptimisticLock Patch; race envtest added). Phase 2 is now fully closed (BUG-1, BUG-2, BUG-4, BUG-5, BUG-7 all done).
 
 ---
 
@@ -31,7 +31,7 @@ When you start work, scan the **In flight** section to avoid stepping on someone
 - **Branch state**: `main` is the trunk. The current worktree is `claude/vibrant-euclid-4405f3` for review work.
 - **Test posture**: envtest set up in `controllers/suite_test.go`; many `PIt` (pending) blocks in controller tests; integration tests gated by `-tags integration` (CI does set this).
 - **Lint**: `golangci-lint v1.64.8` with errcheck/gosimple/govet/ineffassign/staticcheck/typecheck/unused.
-- **Critical paths exercised by no automated test today**: bootstrap data secret consumption, host claim race between two Beskar7Machines, finalizer ordering on delete (host power-off + boot-override clear), inspection timeout firing, inspection late-arrival.
+- **Critical paths exercised by no automated test today**: bootstrap data secret consumption, finalizer ordering on delete (host power-off + boot-override clear), inspection timeout firing, inspection late-arrival. (Host claim race covered by PR-2.2 envtest.)
 
 ## Architecture (Now)
 
@@ -74,7 +74,6 @@ Two unwired internal packages (decision pending, see Decisions log entry D-001):
 
 | ID | Area | Issue | Where |
 |---|---|---|---|
-| BUG-2 | controller | Host claim is list-then-update with no resourceVersion precondition; two Beskar7Machines can claim the same Available host. | `controllers/beskar7machine_controller.go:425-442` |
 | BUG-8 | controller | `FailureReason`/`FailureMessage` declared on the API but never set; hardware validation failures requeue forever. | `api/v1beta1/beskar7machine_types.go:96-104`, `controllers/beskar7machine_controller.go:329-363` |
 | BUG-9 | controller | `findControlPlaneEndpoint` ignores user-set `Spec.ControlPlaneEndpoint` and hardcodes port 6443. | `controllers/beskar7cluster_controller.go:278-298, 350-353` |
 
@@ -131,6 +130,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 | Item | Resolution | Date |
 |---|---|---|
+| BUG-2 | PR-2.2: Full atomic claim. Registered a `PhysicalHostStateIndex = "status.state"` cache field index in `Beskar7MachineReconciler.SetupWithManager` via `mgr.GetFieldIndexer().IndexField`. `findAndClaimOrGetAssociatedHost` now filters server-side with `client.MatchingFields{PhysicalHostStateIndex: StateAvailable}` instead of listing all hosts. The in-loop `ConsumerRef == nil` guard is retained defensively. The Patch continues to use `MergeFromWithOptimisticLock` (added in PR-2.1) so simultaneous claims fail fast with Conflict and the loser requeues. New envtest spec "When two Beskar7Machines race for the same available host" proves exactly one machine claims the host. Phase 2 is now fully closed (BUG-1, BUG-2, BUG-4, BUG-5, BUG-7 all done). | 2026-05-02 |
 | BUG-1 | PR-2.1 + PR-2.3: direct `r.Status().Update(physicalHost)` calls removed in PR-2.1; replaced with `InspectionRequestAnnotation` signal. Residual latency concern (one-cycle lag + race on annotation-clear) eliminated in PR-2.3 by adding `Watches(&PhysicalHost{}, ...)` to `Beskar7MachineReconciler.SetupWithManager` — PhysicalHost state changes now trigger an immediate Beskar7Machine reconcile. | 2026-05-02 |
 | BUG-4 | PR-2.3: `reconcileDelete` now issues `ClearBootSourceOverride` then graceful `SetPowerState(Off)` before clearing `ConsumerRef`. Both Redfish calls are best-effort — errors are logged and swallowed so a dead BMC cannot strand the finalizer. `ForceReleaseAnnotation = "infrastructure.cluster.x-k8s.io/force-release"` added as operator escape hatch (skips Redfish ops entirely). Missing-credentials path treated identically. `ClearBootSourceOverride` added to the `Client` interface, `gofishClient`, and `MockClient`. 4 new `It` blocks in `controllers/beskar7machine_controller_test.go`. | 2026-05-02 |
 | BUG-7 | PR-2.3: `Beskar7MachineReconciler.SetupWithManager` now calls `Watches(&PhysicalHost{}, handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine))`. The mapping function only enqueues requests where `ConsumerRef.Kind == "Beskar7Machine"` and `ConsumerRef.APIVersion == InfrastructureAPIVersion`, so unrelated consumers produce no spurious reconciles. 4 mapping unit tests added. | 2026-05-02 |

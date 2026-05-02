@@ -60,6 +60,11 @@ const (
 	// causes the controller to skip the Redfish power-off and boot-override clear
 	// during deletion. Use only when the BMC is permanently unreachable.
 	ForceReleaseAnnotation = "infrastructure.cluster.x-k8s.io/force-release"
+
+	// PhysicalHostStateIndex is the cache field index key for PhysicalHost.Status.State.
+	// Registered in SetupWithManager; used in findAndClaimOrGetAssociatedHost to filter
+	// Available hosts server-side instead of listing all hosts and filtering in Go.
+	PhysicalHostStateIndex = "status.state"
 )
 
 // Beskar7MachineReconciler reconciles a Beskar7Machine object.
@@ -422,18 +427,28 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		}
 	}
 
-	// Find available host
+	// Find available hosts. The field index filters server-side to StateAvailable,
+	// so only hosts the cache has indexed as Available are returned.
 	hostList := &infrastructurev1beta1.PhysicalHostList{}
-	if err := r.List(ctx, hostList, client.InNamespace(b7machine.Namespace)); err != nil {
+	if err := r.List(ctx, hostList,
+		client.InNamespace(b7machine.Namespace),
+		client.MatchingFields{PhysicalHostStateIndex: string(infrastructurev1beta1.StateAvailable)},
+	); err != nil {
 		return nil, ctrl.Result{}, err
 	}
 
 	for i := range hostList.Items {
 		host := &hostList.Items[i]
-		if host.Status.State == infrastructurev1beta1.StateAvailable && host.Spec.ConsumerRef == nil {
-			// Claim this host. Use a spec-only patch with optimistic locking so that a
-			// concurrent claim by another Beskar7Machine fails fast with a conflict error
-			// instead of silently winning (BUG-2 partial mitigation; full fix is PR-2.2).
+		// ConsumerRef is on Spec (not indexed); keep the in-loop guard defensively.
+		// A host can be Available in the index but have a stale ConsumerRef that has
+		// not yet been cleared, so this check prevents a double-claim.
+		if host.Spec.ConsumerRef == nil {
+			// Claim this host. The List above is filtered server-side via the
+			// status.state field index. The Patch uses MergeFromWithOptimisticLock
+			// so a concurrent claim from another Beskar7Machine fails fast with a
+			// Conflict; the loser requeues and re-lists, which now sees the
+			// updated state and either picks another host or returns empty.
+			// BUG-2 closed.
 			logger.Info("Claiming available PhysicalHost", "host", host.Name)
 			base := host.DeepCopy()
 			host.Spec.ConsumerRef = &corev1.ObjectReference{
@@ -616,6 +631,23 @@ func (r *Beskar7MachineReconciler) defaultFactory() error {
 func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := r.defaultFactory(); err != nil {
 		return err
+	}
+	// Register a cache field index on PhysicalHost.Status.State so that
+	// findAndClaimOrGetAssociatedHost can filter Available hosts server-side
+	// instead of listing all hosts in the namespace and filtering in Go.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&infrastructurev1beta1.PhysicalHost{},
+		PhysicalHostStateIndex,
+		func(obj client.Object) []string {
+			host, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+			if !ok {
+				return nil
+			}
+			return []string{string(host.Status.State)}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index PhysicalHost.status.state: %w", err)
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.Beskar7Machine{}).
