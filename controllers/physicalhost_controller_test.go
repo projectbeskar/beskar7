@@ -162,6 +162,121 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(mockRfClient.GetPowerStateCalled).To(BeTrue())
 		})
 
+		// Converted from PIt: verifies that the patch-helper deferred finalizer add and
+		// remove are idempotent and do not cause spurious API conflicts.
+		It("Should add finalizer via patch on first reconcile and remove it on delete", func() {
+			By("Creating the PhysicalHost resource")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+
+			By("First reconcile adds finalizer through deferred patch")
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			Expect(ph.Finalizers).To(ContainElement(PhysicalHostFinalizer),
+				"finalizer must be present after first reconcile")
+
+			By("Second reconcile (status update) is idempotent — no conflict expected")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
+			Expect(ph2.Finalizers).To(ContainElement(PhysicalHostFinalizer),
+				"finalizer must still be present after second reconcile")
+			Expect(ph2.Status.State).To(Equal(infrastructurev1beta1.StateAvailable),
+				"status must be persisted by the deferred patch")
+
+			By("Deleting the PhysicalHost")
+			Expect(k8sClient.Delete(ctx, physicalHost)).To(Succeed())
+
+			By("Reconciling to handle deletion — finalizer removed via patch")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Ensuring PhysicalHost is eventually deleted (finalizer gone)")
+			Eventually(func() bool {
+				ph := &infrastructurev1beta1.PhysicalHost{}
+				errGet := k8sClient.Get(ctx, phLookupKey, ph)
+				return client.IgnoreNotFound(errGet) == nil
+			}, Timeout*2, Interval).Should(BeTrue())
+		})
+
+		// Converted from PIt "[SKIP - Hardware Testing] Should handle inspection phase transitions":
+		// The original test directly mutated PhysicalHost.Status which is no longer valid.
+		// This version verifies the annotation-based inspection signalling introduced by PR-2.1:
+		// when the InspectionRequestAnnotation is set to "inspect", the reconciler transitions
+		// state and clears the annotation; "inspect-complete" transitions to StateReady.
+		It("Should apply inspection-request annotation and drive state transitions", func() {
+			By("Creating the PhysicalHost resource and making it Available")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+
+			// Two reconciles: first adds finalizer, second drives to Available.
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+
+			By("Setting ConsumerRef and inspect annotation (as Beskar7Machine controller would)")
+			phPatch := ph.DeepCopy()
+			if phPatch.Annotations == nil {
+				phPatch.Annotations = map[string]string{}
+			}
+			phPatch.Annotations[InspectionRequestAnnotation] = "inspect"
+			phPatch.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "test-machine",
+				Namespace:  ph.Namespace,
+			}
+			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+
+			By("Reconciling — controller should consume annotation and transition to Inspecting")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+				g.Expect(got.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseBooting))
+				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
+				// Annotation must be cleared so it is not acted on again.
+				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+			}, Timeout, Interval).Should(Succeed())
+
+			By("Setting inspect-complete annotation (as Beskar7Machine controller would after validation)")
+			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
+			ph2Patch := ph2.DeepCopy()
+			if ph2Patch.Annotations == nil {
+				ph2Patch.Annotations = map[string]string{}
+			}
+			ph2Patch.Annotations[InspectionRequestAnnotation] = "inspect-complete"
+			Expect(k8sClient.Patch(ctx, ph2Patch, client.MergeFrom(ph2))).To(Succeed())
+
+			By("Reconciling — controller should transition to StateReady")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateReady))
+				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeTrue())
+				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+			}, Timeout, Interval).Should(Succeed())
+		})
+
 		It("Should handle deletion gracefully", func() {
 			By("Creating the PhysicalHost resource")
 			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
@@ -253,66 +368,6 @@ var _ = Describe("PhysicalHost Controller", func() {
 				ph := &infrastructurev1beta1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OnPowerState)))
-			}, Timeout, Interval).Should(Succeed())
-		})
-
-		PIt("[SKIP - Hardware Testing] Should handle inspection phase transitions", func() {
-			By("Creating PhysicalHost")
-			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
-
-			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-
-			By("Making host Available")
-			_, err := reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Setting inspection phase")
-			ph := &infrastructurev1beta1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			ph.Status.InspectionPhase = infrastructurev1beta1.InspectionPending
-			Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-
-			By("Simulating inspection in progress")
-			ph.Status.InspectionPhase = infrastructurev1beta1.InspectionInProgress
-			Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-
-			By("Simulating inspection complete with report")
-			ph.Status.InspectionPhase = infrastructurev1beta1.InspectionComplete
-			ph.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
-				Timestamp:    metav1.Now(),
-				Manufacturer: "Dell Inc.",
-				Model:        "PowerEdge R750",
-				SerialNumber: "TEST123",
-				CPUs: []infrastructurev1beta1.CPUInfo{
-					{
-						ID:        "0",
-						Vendor:    "Intel",
-						Model:     "Xeon Gold 6254",
-						Cores:     18,
-						Threads:   36,
-						Frequency: "3.1GHz",
-					},
-				},
-				Memory: []infrastructurev1beta1.MemoryInfo{
-					{
-						ID:       "DIMM0",
-						Type:     "DDR4",
-						Capacity: "32GB",
-						Speed:    "3200MHz",
-					},
-				},
-			}
-			Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-
-			By("Verifying inspection report is stored")
-			Eventually(func(g Gomega) {
-				updatedPh := &infrastructurev1beta1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, phLookupKey, updatedPh)).To(Succeed())
-				g.Expect(updatedPh.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionComplete))
-				g.Expect(updatedPh.Status.InspectionReport).NotTo(BeNil())
-				g.Expect(updatedPh.Status.InspectionReport.Manufacturer).To(Equal("Dell Inc."))
 			}, Timeout, Interval).Should(Succeed())
 		})
 	})

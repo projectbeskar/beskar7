@@ -26,22 +26,28 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	conditions "sigs.k8s.io/cluster-api/util/conditions"
+	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	conditions "sigs.k8s.io/cluster-api/util/conditions"
 )
 
 const (
 	// PhysicalHostFinalizer allows PhysicalHostReconciler to clean up resources before removal
 	PhysicalHostFinalizer = "physicalhost.infrastructure.cluster.x-k8s.io"
+
+	// InspectionRequestAnnotation is set by Beskar7Machine to signal an inspection intent.
+	// The PhysicalHost controller reads it and drives InspectionPhase / State accordingly.
+	// Valid values: "inspect", "timeout".
+	InspectionRequestAnnotation = "infrastructure.cluster.x-k8s.io/inspection-request"
 )
 
 // PhysicalHostReconciler reconciles a PhysicalHost object.
@@ -79,7 +85,7 @@ func NewPhysicalHostReconciler(
 
 // Reconcile handles PhysicalHost reconciliation.
 // Simplified workflow: Connect via Redfish → Verify connection → Report ready.
-func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
 	logger := r.Log.WithValues("physicalhost", req.NamespacedName)
 	logger.Info("Starting reconciliation")
 
@@ -94,18 +100,32 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// Initialize patch helper. A single deferred Patch replaces both r.Update (finalizer)
+	// and r.Status().Update calls — controller-runtime merges spec and status in one round-trip.
+	patchHelper, err := patch.NewHelper(physicalHost, r.Client)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to init patch helper for PhysicalHost: %w", err)
+	}
+	defer func() {
+		if perr := patchHelper.Patch(ctx, physicalHost,
+			patch.WithStatusObservedGeneration{},
+		); perr != nil {
+			logger.Error(perr, "failed to patch PhysicalHost")
+			if reterr == nil {
+				reterr = perr
+			}
+		}
+		logger.Info("Finished reconciliation")
+	}()
+
 	// Handle deletion
 	if !physicalHost.ObjectMeta.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, logger, physicalHost)
 	}
 
-	// Add finalizer if not present
-	if !controllerutil.ContainsFinalizer(physicalHost, PhysicalHostFinalizer) {
-		controllerutil.AddFinalizer(physicalHost, PhysicalHostFinalizer)
-		if err := r.Update(ctx, physicalHost); err != nil {
-			logger.Error(err, "Failed to add finalizer")
-			return ctrl.Result{}, err
-		}
+	// Add finalizer if not present; the deferred patch persists it.
+	if controllerutil.AddFinalizer(physicalHost, PhysicalHostFinalizer) {
+		logger.Info("Adding finalizer")
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -125,10 +145,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
 			"Failed to retrieve credentials: %v", err)
-		if updateErr := r.Status().Update(ctx, physicalHost); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status")
-			return ctrl.Result{}, updateErr
-		}
+		// The deferred patch will persist the error status; return the error so the
+		// caller can decide whether to requeue.
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 
@@ -151,9 +169,6 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
 			"Connection failed: %v", err)
-		if updateErr := r.Status().Update(ctx, physicalHost); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status")
-		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 	defer rfClient.Close(ctx)
@@ -166,9 +181,6 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
 			"Query failed: %v", err)
-		if updateErr := r.Status().Update(ctx, physicalHost); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status")
-		}
 		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
 	}
 
@@ -207,6 +219,12 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// Connection successful - mark as ready
 	conditions.MarkTrue(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition)
 
+	// Act on inspection-request annotation set by Beskar7Machine controller.
+	// The Beskar7Machine controller writes only to PhysicalHost.Spec.Annotations (a spec
+	// write via MergeFrom patch); we read it here and drive the Status transition ourselves,
+	// keeping status ownership inside this controller.
+	r.applyInspectionRequest(ctx, logger, physicalHost)
+
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
 		// Host is claimed
@@ -225,14 +243,47 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		}
 	}
 
-	// Update status
-	if err := r.Status().Update(ctx, physicalHost); err != nil {
-		logger.Error(err, "Failed to update status")
-		return ctrl.Result{}, err
-	}
-
 	logger.Info("Reconciliation complete", "state", physicalHost.Status.State, "ready", physicalHost.Status.Ready)
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+// applyInspectionRequest reads the InspectionRequestAnnotation and, when present, drives
+// Status.State and Status.InspectionPhase accordingly, then removes the annotation so it
+// is not acted on twice.
+func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	ann := physicalHost.Annotations[InspectionRequestAnnotation]
+	if ann == "" {
+		return
+	}
+
+	switch ann {
+	case "inspect":
+		logger.Info("Applying inspection-request annotation: starting inspection")
+		if physicalHost.Status.InspectionTimestamp == nil {
+			t := metav1.Now()
+			physicalHost.Status.InspectionTimestamp = &t
+		}
+		physicalHost.Status.State = infrastructurev1beta1.StateInspecting
+		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseBooting
+
+	case "inspect-complete":
+		logger.Info("Applying inspection-request annotation: marking inspection complete")
+		physicalHost.Status.State = infrastructurev1beta1.StateReady
+		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
+		conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
+
+	case "timeout":
+		logger.Info("Applying inspection-request annotation: recording inspection timeout")
+		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseTimeout
+		physicalHost.Status.State = infrastructurev1beta1.StateError
+		physicalHost.Status.ErrorMessage = "Inspection timed out"
+
+	default:
+		logger.Info("Unknown inspection-request annotation value, ignoring", "value", ann)
+	}
+
+	// Remove the annotation so we don't act on it again. The deferred patch persists this.
+	delete(physicalHost.Annotations, InspectionRequestAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.
@@ -246,13 +297,8 @@ func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger log
 			fmt.Sprintf("Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name))
 	}
 
-	// Remove finalizer
-	if controllerutil.ContainsFinalizer(physicalHost, PhysicalHostFinalizer) {
-		controllerutil.RemoveFinalizer(physicalHost, PhysicalHostFinalizer)
-		if err := r.Update(ctx, physicalHost); err != nil {
-			logger.Error(err, "Failed to remove finalizer")
-			return ctrl.Result{}, err
-		}
+	// Remove finalizer; the deferred patch persists this.
+	if controllerutil.RemoveFinalizer(physicalHost, PhysicalHostFinalizer) {
 		logger.Info("Finalizer removed")
 	}
 
