@@ -22,7 +22,7 @@ var log = logf.Log.WithName("redfish-client")
 // NewClient creates a new Redfish client.
 func NewClient(ctx context.Context, address, username, password string, insecure bool) (Client, error) {
 	logger := logf.Log.WithName("redfish-client")
-	logger.Info("Creating new Redfish client", "rawAddress", address, "username", username, "insecure", insecure)
+	logger.V(1).Info("Creating new Redfish client", "rawAddress", address, "insecure", insecure)
 
 	// Parse and validate the address URL
 	parsedURL, err := url.Parse(address)
@@ -53,10 +53,11 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 		BasicAuth: true,
 	}
 
-	// Log the final config before connecting
-	logger.Info("Attempting gofish.ConnectContext with config",
+	// Log the final config before connecting. Username is omitted (SEC-4); use
+	// PasswordProvided (bool) to diagnose "did the secret get read at all" without
+	// emitting credentials.
+	logger.V(1).Info("Attempting gofish.ConnectContext with config",
 		"Endpoint", config.Endpoint,
-		"Username", config.Username,
 		"PasswordProvided", (config.Password != ""),
 		"Insecure", config.Insecure,
 		"BasicAuth", config.BasicAuth)

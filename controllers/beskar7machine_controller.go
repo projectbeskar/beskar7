@@ -29,6 +29,7 @@ import (
 	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -334,9 +335,8 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		// Calculate total memory from all DIMMs
 		totalMemoryGB := 0
 		for _, mem := range report.Memory {
-			// Parse capacity string (e.g., "32GB" -> 32)
-			var memGB int
-			if _, err := fmt.Sscanf(mem.Capacity, "%d", &memGB); err != nil {
+			memGB, err := parseMemoryCapacityGB(mem.Capacity)
+			if err != nil {
 				logger.Error(err, "Failed to parse memory capacity", "capacity", mem.Capacity)
 				continue
 			}
@@ -570,4 +570,70 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrastructurev1beta1.Beskar7Machine{}).
 		Complete(r)
+}
+
+// parseMemoryCapacityGB converts a BMC-reported capacity string to whole decimal gigabytes.
+//
+// Convention: IEC binary suffixes (GiB, MiB, TiB) are treated as powers of 1024; SI suffixes
+// (GB, MB, TB) are treated as powers of 1000. Both are converted to decimal GB (÷1e9) so that
+// the resulting integer aligns with the operator-supplied MinMemoryGB threshold (which users
+// express in round decimal numbers, e.g. "32 GB" on a datasheet). Fractional GB is truncated.
+//
+// Accepts: "32GB", "32 GB", "32GiB", "32 GiB", "32768MB", "32768 MiB", "1TB", "1TiB".
+// Rejects: bare numbers without unit ("32"), unknown/unsupported units, empty string.
+//
+// Implementation: strip a trailing 'B' so that "32GB"→"32G" and "32GiB"→"32Gi", validate
+// the resulting suffix against an explicit allowlist, then hand the normalised string to
+// resource.ParseQuantity, which handles both SI (G=1e9) and IEC (Gi=2^30) correctly.
+// The trailing-B strip and allowlist are both necessary: Kubernetes Quantity syntax uses G/Gi
+// (not GB/GiB), and resource.ParseQuantity accepts any prefix letter (e.g. 'P' for peta)
+// which we do not want to silently accept.
+func parseMemoryCapacityGB(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty capacity string")
+	}
+
+	// Strip internal spaces (e.g. "32 GB" → "32GB"), then normalise the unit suffix.
+	noSpace := strings.ReplaceAll(s, " ", "")
+
+	// Strip trailing 'B' so "32GB"→"32G", "32GiB"→"32Gi", "32MB"→"32M", "32MiB"→"32Mi".
+	// Only strip when the character before 'B' is also a letter — this avoids turning a
+	// hypothetical bare "32B" (32 bytes) into "32", which resource.ParseQuantity would
+	// accept as 32 bytes instead of returning an error.
+	quantityStr := noSpace
+	if len(quantityStr) >= 2 && quantityStr[len(quantityStr)-1] == 'B' {
+		prev := quantityStr[len(quantityStr)-2]
+		if (prev >= 'A' && prev <= 'Z') || (prev >= 'a' && prev <= 'z') {
+			quantityStr = quantityStr[:len(quantityStr)-1]
+		}
+	}
+
+	// Validate the suffix against an explicit allowlist. This prevents:
+	//  - bare integers ("32" → resource.ParseQuantity returns 32 bytes silently)
+	//  - unsupported SI prefixes ("32P" = peta, accepted by resource.ParseQuantity)
+	// Allowed suffixes after trailing-B strip: G, Gi, M, Mi, T, Ti.
+	allowedSuffixes := []string{"Gi", "Mi", "Ti", "G", "M", "T"}
+	suffixOK := false
+	for _, sfx := range allowedSuffixes {
+		if strings.HasSuffix(quantityStr, sfx) {
+			suffixOK = true
+			break
+		}
+	}
+	if !suffixOK {
+		return 0, fmt.Errorf("capacity %q has unsupported unit suffix; expected GB, GiB, MB, MiB, TB, or TiB", s)
+	}
+
+	q, err := resource.ParseQuantity(quantityStr)
+	if err != nil {
+		return 0, fmt.Errorf("cannot parse memory capacity %q: %w", s, err)
+	}
+
+	bytes := q.Value() // exact int64 bytes (SI G = 1e9, IEC Gi = 2^30)
+	if bytes <= 0 {
+		return 0, fmt.Errorf("memory capacity %q parsed to non-positive value %d", s, bytes)
+	}
+
+	return int(bytes / 1_000_000_000), nil
 }
