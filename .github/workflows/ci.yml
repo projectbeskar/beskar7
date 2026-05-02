@@ -95,10 +95,13 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        # Pinned to v0.23.3: v0.24.x switches to a Go 1.26+ toolchain at runtime
+        # and the resulting envtest assets path may end up missing the etcd binary.
+        # Project is on Go 1.25; controller-runtime v0.20.4. Bump together.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
-        
+
     - name: Run unit tests
       run: |
         # Run tests with coverage, excluding integration tests
@@ -139,10 +142,11 @@ jobs:
       
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
-        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+        # Pinned to v0.23.3: see unit-tests job for rationale.
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3
         export KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.x -p path)
         echo "KUBEBUILDER_ASSETS=$KUBEBUILDER_ASSETS" >> $GITHUB_ENV
-        
+
     - name: Run integration tests
       run: |
         go test -v -tags=integration ./test/integration/... -timeout=30m

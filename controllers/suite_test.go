@@ -71,7 +71,10 @@ var _ = BeforeSuite(func() {
 	// Ensure envtest assets are available
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		By("resolving envtest assets via setup-envtest")
-		cmd := exec.Command("bash", "-lc", "go run sigs.k8s.io/controller-runtime/tools/setup-envtest@latest use 1.31.x -p path")
+		// Pinned to v0.23.3: v0.24.x requires Go 1.26+ at toolchain-resolution
+		// time and the resulting envtest assets path may end up missing the etcd
+		// binary. Project is on Go 1.25; controller-runtime v0.20.4.
+		cmd := exec.Command("bash", "-lc", "go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.23.3 use 1.31.x -p path")
 		cmd.Env = os.Environ()
 		output, err := cmd.CombinedOutput()
 		Expect(err).NotTo(HaveOccurred(), string(output))
