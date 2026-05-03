@@ -1,10 +1,12 @@
 # Monitoring and Metrics
 
-Beskar7 provides comprehensive monitoring and observability through Prometheus metrics. This document describes the available metrics, how to set up monitoring, and how to interpret the data.
+Beskar7 exposes Prometheus metrics for the controllers and the host-callback endpoint. This page lists what's actually registered (source of truth: `internal/metrics/metrics.go`), how to scrape them, and which ones are useful for alerting.
 
 ## Overview
 
-The Beskar7 controllers expose metrics on the `/metrics` endpoint (default port 8080) that can be scraped by Prometheus. These metrics provide insights into:
+The manager serves `/metrics` on `:8443` (HTTPS, authenticated via TokenReview/SubjectAccessReview delegated to the kube-apiserver — see [Security Configuration](security/configuration.md)). Scrapers must authenticate as a SA bound to the `metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
+
+The metrics provide insights into:
 
 - Controller reconciliation performance
 - PhysicalHost provisioning success/failure rates
@@ -62,13 +64,14 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 **Labels:** `state`, `namespace`  
 **Description:** Number of PhysicalHosts in each state.
 
-**States:**
-- `available` - Host is available for provisioning
-- `claimed` - Host has been claimed by a machine
-- `provisioning` - Host is being provisioned
-- `provisioned` - Host has been successfully provisioned
-- `deprovisioning` - Host is being cleaned up
-- `error` - Host is in an error state
+**States** (match the `Status.State` strings — see `api/v1beta1/physicalhost_types.go:10-26`):
+- `Available`
+- `InUse`
+- `Inspecting`
+- `Ready`
+- `Error`
+- `Enrolling`
+- `Unknown`
 
 #### `beskar7_controller_physicalhost_provisioning_total`
 **Type:** Counter  
@@ -150,20 +153,22 @@ These metrics track cluster-level operations and failure domain discovery.
 
 ### Prometheus Configuration
 
-Add the following scrape configuration to your Prometheus config:
+Metrics are HTTPS-only and require a Kubernetes-authenticated bearer token. The simplest path is via the Prometheus Operator's `ServiceMonitor` with a SA bound to `metrics-reader`:
 
 ```yaml
-scrape_configs:
-  - job_name: 'beskar7-controller'
-    static_configs:
-      - targets: ['<beskar7-controller-service>:8080']
-    metrics_path: /metrics
-    scrape_interval: 30s
-```
-
-### ServiceMonitor (Prometheus Operator)
-
-```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: prometheus
+  namespace: monitoring
+roleRef:
+  kind: ClusterRole
+  name: metrics-reader
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -172,12 +177,17 @@ metadata:
 spec:
   selector:
     matchLabels:
-      control-plane: beskar7-controller-manager
+      app.kubernetes.io/name: beskar7
   endpoints:
-  - port: metrics
-    interval: 30s
-    path: /metrics
+    - port: https-metrics            # match the chart's Service port name
+      scheme: https
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true     # cert-manager-issued cert covers the in-cluster Service DNS
+      interval: 30s
 ```
+
+For static scrape configs (no Operator), point Prometheus at the manager Service over HTTPS on port 8443 with bearer-token auth using the Prometheus SA's token.
 
 ### Grafana Dashboard
 

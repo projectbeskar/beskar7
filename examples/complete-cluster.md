@@ -1,85 +1,43 @@
 # Complete Cluster Deployment Example
 
-This example demonstrates a complete Kubernetes cluster deployment using Beskar7 with bare-metal machines managed via Redfish API.
-
-## Overview
-
-This example creates a fully functional cluster with:
-- **1 Control Plane Node** - Running Kubernetes control plane components
-- **2 Worker Nodes** - Running workload pods
-- **Kairos OS** - Immutable Linux distribution optimized for Kubernetes
-- **Cluster API Integration** - Full integration with CAPI resources
-
-## Architecture
-
-```
-
-                    Beskar7 Controller                       
-              (Manages PhysicalHosts & Machines)             
-
-                            
-                
-                                      
-       v      v
-        PhysicalHost         PhysicalHost   
-        control-plane          worker-01    
-        (172.16.56.101)      (172.16.56.102)
-             
-                           
-                   v
-                    PhysicalHost   
-                      worker-02    
-                    (172.16.56.103)
-                   
-```
+This walkthrough deploys a 1-control-plane + 2-worker Kubernetes cluster on bare metal using Beskar7 v0.4.0-alpha. The accompanying YAML is [`complete-cluster.yaml`](complete-cluster.yaml).
 
 ## Prerequisites
 
-### 1. Beskar7 Installed
+1. **Beskar7 controller installed and Ready.** Either Helm (`helm install beskar7 beskar7/beskar7 --namespace beskar7-system --create-namespace`) or release manifests. Verify:
+   ```bash
+   kubectl get pods -n beskar7-system
+   ```
+2. **Cluster API core + KubeadmControlPlane + KubeadmBootstrap providers.**
+   ```bash
+   clusterctl init
+   ```
+3. **cert-manager.** See [Quick Start](../docs/quick-start.md#prerequisites).
+4. **iPXE infrastructure.** DHCP + HTTP boot server reachable from the bare-metal nodes' management network. See [iPXE Setup](../docs/ipxe-setup.md).
+5. **The beskar7-inspector image and target OS image hosted on the boot server.**
+6. **Three bare-metal servers with Redfish-compatible BMCs**, with credentials and IP addresses for each BMC.
 
-```bash
-# Install Beskar7
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.3.0/beskar7-manifests-v0.3.0.yaml
+## What the manifest deploys
 
-# Verify installation
-kubectl get pods -n beskar7-system
-```
+| Object | Count | Purpose |
+|---|---|---|
+| `Secret/bmc-credentials` | 1 | BMC username + password. |
+| `PhysicalHost` | 3 | One per bare-metal server. |
+| `Beskar7Cluster` | 1 | CAPI infra-cluster; tracks control-plane endpoint and failure domains. |
+| `Cluster` (CAPI) | 1 | The CAPI Cluster that owns Beskar7Cluster. |
+| `Beskar7MachineTemplate` (control plane) | 1 | Schema for the control-plane Beskar7Machines. |
+| `KubeadmControlPlane` | 1 | Drives `replicas: 1` control-plane Machine. |
+| `Beskar7MachineTemplate` (workers) | 1 | Schema for the worker Beskar7Machines. |
+| `MachineDeployment` | 1 | Drives `replicas: 2` worker Machines. |
+| `KubeadmConfigTemplate` | 1 | Worker bootstrap config (kubeadm join). |
 
-### 2. Cluster API Core Components
+Each `Beskar7Machine` claims a `PhysicalHost`, runs the iPXE inspection workflow, validates hardware against `hardwareRequirements`, then kexecs into the target OS.
 
-```bash
-# Install Cluster API
-clusterctl init
+## Configuration steps
 
-# Verify CAPI is ready
-kubectl get pods -n capi-system
-kubectl get pods -n capi-kubeadm-bootstrap-system
-kubectl get pods -n capi-kubeadm-control-plane-system
-```
+### 1. Update BMC credentials
 
-### 3. cert-manager
-
-```bash
-# Install cert-manager
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-
-# Verify cert-manager is ready
-kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
-```
-
-### 4. Physical Infrastructure
-
-You need:
-- **3 bare-metal servers** with Redfish-compatible BMC
-- **Network connectivity** from Kubernetes cluster to BMC IPs
-- **BMC credentials** (username/password)
-- **Web server** hosting Kairos configuration files (or use PreBakedISO mode)
-
-## Configuration Steps
-
-### Step 1: Update BMC Credentials
-
-Edit the `bmc-credentials` Secret in the manifest:
+Edit the Secret:
 
 ```yaml
 apiVersion: v1
@@ -89,355 +47,145 @@ metadata:
   namespace: default
 type: Opaque
 stringData:
-  username: "admin"          # Your BMC username
-  password: "your-password"  # Your BMC password
+  username: "admin"
+  password: "your-password"
 ```
 
-### Step 2: Update BMC IP Addresses
+### 2. Update BMC IP addresses
 
-Update the `redfishConnection.address` in each `PhysicalHost`:
+Update `spec.redfishConnection.address` on each `PhysicalHost`:
 
 ```yaml
 spec:
   redfishConnection:
-    address: "https://172.16.56.101"  # Replace with actual BMC IP
+    address: "https://172.16.56.101"   # actual BMC IP
     credentialsSecretRef: "bmc-credentials"
-    insecureSkipVerify: true
+    insecureSkipVerify: true            # set to false in production
 ```
 
-### Step 3: Update Control Plane Endpoint
+For TLS-verified BMC connections in production, see [Security Configuration](../docs/security/configuration.md) — provide a `caBundleSecretRef` and leave `insecureSkipVerify: false`.
 
-Update the `controlPlaneEndpoint` in `Beskar7Cluster`:
+### 3. Update the control-plane endpoint
+
+Update `Beskar7Cluster.spec.controlPlaneEndpoint.host`:
 
 ```yaml
 spec:
   controlPlaneEndpoint:
-    host: "172.16.56.10"  # Your VIP or load balancer IP
+    host: "172.16.56.10"  # VIP / load balancer
     port: 6443
 ```
 
-This can be:
-- A static IP on the control plane node
-- A virtual IP managed by keepalived/kube-vip
-- A load balancer IP
+This must be a stable address that survives a control-plane node move — typically a virtual IP managed by `kube-vip`/`keepalived`, or an external load balancer.
 
-### Step 4: Configure Kairos Config URLs
+### 4. Update image URLs
 
-Update the `configURL` in `Beskar7Machine` and `Beskar7MachineTemplate` resources:
+Update `inspectionImageURL`, `targetImageURL`, and `configurationURL` on the two `Beskar7MachineTemplate` objects. Each must match `^https?://.*` and be reachable from the bare-metal nodes' boot network. Examples:
 
 ```yaml
-spec:
-  provisioningMode: "RemoteConfig"
-  configURL: "https://your-server.com/config/control-plane-config.yaml"
+inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
 ```
 
-**Alternative**: Use `PreBakedISO` mode:
+For details on how the kernel cmdline is constructed from these URLs, see [iPXE Setup: kernel cmdline](../docs/ipxe-setup.md).
+
+### 5. Adjust hardware requirements
+
+Each template carries a `hardwareRequirements` block. The inspection workflow validates the report against these — if any minimum is violated, the Beskar7Machine fails terminally with `HardwareRequirementsNotMet`. Tune them to match your actual hardware:
 
 ```yaml
-spec:
-  provisioningMode: "PreBakedISO"
-  imageURL: "https://your-server.com/custom-images/control-plane.iso"
+hardwareRequirements:
+  minCPUCores: 4    # summed across all CPUs in the report
+  minMemoryGB: 16   # summed across all DIMMs (decimal GB; "16GB" or "16GiB" both accepted)
+  minDiskGB:   100  # summed across all disks
 ```
 
-## Kairos Configuration Files
-
-### Control Plane Configuration
-
-Create `control-plane-config.yaml`:
-
-```yaml
-#cloud-config
-
-hostname: control-plane-{{ trunc 4 .MachineID }}
-
-stages:
-  rootfs:
-    - name: "Setup SSH"
-      authorized_keys:
-        - "ssh-rsa AAAA... your-ssh-key"
-
-  initramfs:
-    - name: "Setup networking"
-      commands:
-        - |
-          cat > /etc/systemd/network/20-wired.network <<EOF
-          [Match]
-          Name=eth*
-
-          [Network]
-          DHCP=yes
-          EOF
-
-  boot:
-    - name: "Install Kubernetes"
-      commands:
-        - kubeadm init --config /etc/kubernetes/kubeadm-config.yaml
-```
-
-### Worker Configuration
-
-Create `worker-config.yaml`:
-
-```yaml
-#cloud-config
-
-hostname: worker-{{ trunc 4 .MachineID }}
-
-stages:
-  rootfs:
-    - name: "Setup SSH"
-      authorized_keys:
-        - "ssh-rsa AAAA... your-ssh-key"
-
-  initramfs:
-    - name: "Setup networking"
-      commands:
-        - |
-          cat > /etc/systemd/network/20-wired.network <<EOF
-          [Match]
-          Name=eth*
-
-          [Network]
-          DHCP=yes
-          EOF
-
-  boot:
-    - name: "Join Kubernetes cluster"
-      commands:
-        - kubeadm join {{ .ControlPlaneEndpoint }} --token {{ .Token }} --discovery-token-ca-cert-hash {{ .CACertHash }}
-```
-
-## Deployment
-
-### Deploy the Complete Cluster
+## Deploy
 
 ```bash
-# Apply the complete manifest
 kubectl apply -f examples/complete-cluster.yaml
-
-# Watch the deployment progress
-watch kubectl get physicalhost,beskar7machine,beskar7cluster,cluster
 ```
 
-### Monitor Progress
+Watch progress:
 
 ```bash
-# Check PhysicalHost status
-kubectl get physicalhost -w
-
-# Expected output:
-# NAME                STATE       POWER   BOOT
-# control-plane-01    Available   On      ISO
-# worker-01           Available   On      ISO
-# worker-02           Available   On      ISO
-
-# Check Beskar7Machine status
-kubectl get beskar7machine -w
-
-# Check cluster status
-kubectl get cluster my-cluster -o yaml
+kubectl get physicalhost,beskar7machine,beskar7cluster,cluster -n default -w
 ```
 
-### Verify Cluster Creation
+Expected sequence per host:
+
+```
+NAME             STATE         READY
+control-plane-01 Available     true       # BMC reachable
+control-plane-01 InUse         true       # Beskar7Machine claimed it
+control-plane-01 Inspecting    true       # iPXE booted the inspection image
+control-plane-01 Ready         true       # report validated, ready for kexec
+```
+
+## Verify the cluster
+
+Once the control-plane node reports `Ready` and joined as a Kubernetes node, fetch its kubeconfig and check status:
 
 ```bash
-# Get the kubeconfig for the new cluster
-clusterctl get kubeconfig my-cluster > my-cluster.kubeconfig
-
-# Check nodes in the new cluster
+clusterctl get kubeconfig my-cluster -n default > my-cluster.kubeconfig
 kubectl --kubeconfig=my-cluster.kubeconfig get nodes
-
-# Expected output:
-# NAME                        STATUS   ROLES           AGE   VERSION
-# my-cluster-control-plane-0  Ready    control-plane   10m   v1.31.0
-# my-cluster-workers-abc123   Ready    <none>          8m    v1.31.0
-# my-cluster-workers-def456   Ready    <none>          8m    v1.31.0
 ```
 
-## Customization Options
+## Scaling
 
-### Scaling Workers
-
-To add more worker nodes:
+### More workers
 
 ```bash
-# Edit the MachineDeployment
-kubectl edit machinedeployment my-cluster-workers
-
-# Change spec.replicas to desired count
-spec:
-  replicas: 5  # Scale to 5 workers
+kubectl scale machinedeployment my-cluster-workers --replicas=5 -n default
 ```
 
-### High Availability Control Plane
+The `MachineDeployment` mints additional `Beskar7Machine` objects. Each claims an `Available` `PhysicalHost`. If no host is `Available`, the new machines stay in `WaitingForPhysicalHost` until one is freed or registered.
 
-To create an HA control plane with 3 nodes:
+### HA control plane
 
-```yaml
-apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-kind: KubeadmControlPlane
-metadata:
-  name: my-cluster-control-plane
-spec:
-  replicas: 3  # Change from 1 to 3
-```
-
-Make sure you have 3 PhysicalHosts labeled for control-plane role.
-
-### Custom Kubernetes Version
-
-```yaml
-apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-kind: KubeadmControlPlane
-spec:
-  version: v1.30.0  # Change Kubernetes version
-```
-
-### Different OS Family
-
-Replace `kairos` with other supported OS families:
+Edit `KubeadmControlPlane.spec.replicas`:
 
 ```yaml
 spec:
-  osFamily: "flatcar"
-  imageURL: "https://stable.release.flatcar-linux.net/amd64-usr/current/flatcar_production_iso_image.iso"
+  replicas: 3
 ```
 
-Supported OS families:
-- `kairos` - Kairos (recommended)
-- `flatcar` - Flatcar Container Linux
-- `LeapMicro` - openSUSE Leap Micro
-
-## Troubleshooting
-
-### PhysicalHost Not Becoming Available
-
-```bash
-# Check PhysicalHost status
-kubectl describe physicalhost control-plane-01
-
-# Check controller logs
-kubectl logs -n beskar7-system deployment/controller-manager -c manager -f
-```
-
-Common issues:
-- BMC credentials incorrect
-- BMC not reachable from cluster
-- Redfish API not enabled on BMC
-
-### Machine Not Provisioning
-
-```bash
-# Check Beskar7Machine status
-kubectl describe beskar7machine my-cluster-control-plane-0
-
-# Check events
-kubectl get events --sort-by='.lastTimestamp'
-```
-
-Common issues:
-- No available PhysicalHost with matching labels
-- ISO URL not accessible from server
-- Config URL not accessible (RemoteConfig mode)
-
-### Cluster Not Becoming Ready
-
-```bash
-# Check cluster status
-kubectl describe cluster my-cluster
-
-# Check control plane status
-kubectl describe kubeadmcontrolplane my-cluster-control-plane
-```
-
-Common issues:
-- Control plane endpoint not reachable
-- kubeadm init/join failures
-- Network plugin not installed
+Make sure you have at least three `PhysicalHost` objects available; a control-plane VIP (`172.16.56.10` in this example) that fronts the API server; and `certSANs` on `kubeadmConfigSpec.clusterConfiguration.apiServer` covering all control-plane addresses.
 
 ## Cleanup
 
-To delete the cluster and all resources:
+```bash
+kubectl delete cluster my-cluster -n default
+kubectl wait --for=delete cluster/my-cluster -n default --timeout=600s
+```
+
+CAPI walks the owner chain: deleting `Cluster` deletes `KubeadmControlPlane`, `MachineDeployment`, `Machine`, and `Beskar7Machine`. Each Beskar7Machine deletion runs the BMC release flow (best-effort `ClearBootSourceOverride` + `SetPowerState(Off)` graceful) before clearing `ConsumerRef` on the host. The `PhysicalHost` then transitions back to `Available`.
+
+If a BMC is unreachable and a Beskar7Machine deletion is stuck, set the force-release annotation before deleting:
 
 ```bash
-# Delete the cluster (this will also delete machines and infrastructure)
-kubectl delete cluster my-cluster
-
-# Wait for cleanup to complete
-kubectl wait --for=delete cluster/my-cluster --timeout=600s
-
-# PhysicalHosts will be released and become Available again
-kubectl get physicalhost
-
-# Delete the secret
-kubectl delete secret bmc-credentials
+kubectl annotate beskar7machine <name> \
+  -n default \
+  infrastructure.cluster.x-k8s.io/force-release=true
 ```
 
-## Advanced Scenarios
+## Troubleshooting
 
-### Using PreBakedISO Mode
+| Symptom | Likely cause | Where to look |
+|---|---|---|
+| `PhysicalHost` stuck in `Enrolling` | BMC unreachable or wrong credentials. | `kubectl describe physicalhost <name>` — check `RedfishConnectionReady` reason. |
+| `Beskar7Machine` stuck in `WaitingForPhysicalHost` | No `Available` host with matching namespace. | `kubectl get physicalhost`. Register more hosts or release one. |
+| `PhysicalHost` stuck in `Inspecting` | iPXE not delivering the inspection image, or the inspector cannot reach the manager's callback endpoint on `:8082`. | Server serial console; `kubectl logs -n beskar7-system deployment/beskar7-controller-manager`. |
+| `FailureReason: HardwareRequirementsNotMet` | Inspection report below the configured minimums. | `kubectl get physicalhost <name> -o jsonpath='{.status.inspectionReport}' \| jq` and compare with `hardwareRequirements`. |
+| `FailureReason: BootstrapDataUnavailable` | The Secret named by `Machine.Spec.Bootstrap.DataSecretName` does not exist. | Wait for the bootstrap provider to reconcile, or check the `KubeadmConfig` for the missing config. |
 
-For faster provisioning with pre-configured ISOs:
+See [Troubleshooting](../docs/troubleshooting.md) for deeper coverage.
 
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Machine
-spec:
-  osFamily: "kairos"
-  provisioningMode: "PreBakedISO"
-  imageURL: "https://your-server.com/images/control-plane-node.iso"
-  # configURL not needed in PreBakedISO mode
-```
+## See also
 
-### Using Different Boot Modes
-
-```yaml
-spec:
-  bootMode: "Legacy"  # For Legacy BIOS boot
-  # or
-  bootMode: "UEFI"    # For UEFI boot (default)
-```
-
-### Network Segmentation
-
-To use different networks for control plane and workers:
-
-```yaml
-# Control plane template
-spec:
-  template:
-    spec:
-      networkConfig:
-        interfaces:
-          - name: eth0
-            addresses:
-              - 172.16.56.10/24
-
-# Worker template
-spec:
-  template:
-    spec:
-      networkConfig:
-        interfaces:
-          - name: eth0
-            addresses:
-              - 172.16.57.10/24
-```
-
-## Next Steps
-
-After your cluster is running:
-
-1. **Install CNI**: Deploy a network plugin (Calico, Cilium, etc.)
-2. **Install CSI**: Deploy storage drivers for persistent volumes
-3. **Install Ingress**: Deploy ingress controller for external access
-4. **Deploy Workloads**: Start deploying your applications
-
-## See Also
-
-- [PhysicalHost Documentation](../docs/physicalhost.md)
-- [Beskar7Machine Documentation](../docs/beskar7machine.md)
-- [Beskar7Cluster Documentation](../docs/beskar7cluster.md)
-- [Troubleshooting Guide](../docs/troubleshooting.md)
-- [Vendor-Specific Support](../docs/vendor-specific-support.md)
-
+- [PhysicalHost](../docs/physicalhost.md)
+- [Beskar7Machine](../docs/beskar7machine.md)
+- [State Management](../docs/state-management.md)
+- [iPXE Setup](../docs/ipxe-setup.md)
+- [Security Configuration](../docs/security/configuration.md)

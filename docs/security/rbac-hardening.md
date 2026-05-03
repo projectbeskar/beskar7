@@ -1,255 +1,136 @@
-# RBAC Security Hardening
+# RBAC Hardening
 
-This document describes the RBAC (Role-Based Access Control) security hardening implemented for Beskar7, which replaces dangerous wildcard permissions with minimal, specific permissions following the principle of least privilege.
+This page documents the ClusterRole that ships with Beskar7, the rationale behind each rule, and what to verify before exposing the controller to a multi-tenant or untrusted environment.
 
-## Security Issue Resolved
+The deployed ClusterRole is generated from kubebuilder markers on the controllers in `controllers/*.go` plus a few markers in `cmd/manager/main.go`. The resulting YAML is `config/rbac/role.yaml` (kustomize) and `charts/beskar7/templates/rbac.yaml` (Helm).
 
-### Previous Security Vulnerability
-
-The original RBAC configuration contained **CRITICAL** security vulnerability:
+## Default ClusterRole
 
 ```yaml
-# DANGEROUS - DO NOT USE
-- apiGroups:
-  - '*'
-  resources:
-  - '*'
-  verbs:
-  - '*'
-```
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
 
-This granted **cluster-admin equivalent permissions**, allowing the Beskar7 controller to:
-- No Access ALL Kubernetes resources 
-- No Perform ANY operation (create, delete, modify)
-- No Access sensitive resources like secrets, nodes, RBAC
-- No Potentially escalate privileges
-- No Bypass all security controls
+# ConfigMaps: only fetched by name (inspection-result handoff) and
+# created/updated/deleted by the controllers. No informer; list/watch are
+# intentionally omitted.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["create", "delete", "get", "patch", "update"]
 
-**Risk Level:** **CRITICAL** - This configuration is unsuitable for production use and violates security best practices.
+# Events: emitted by the controllers for major lifecycle changes.
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
 
-### Security Hardening Solution
-
-The RBAC configuration has been completely rewritten to follow the **principle of least privilege**:
-
-## Current Secure RBAC Configuration
-
-### ClusterRole: `manager-role`
-
-The Beskar7 controller now has only the minimal permissions required for operation:
-
-#### Core Kubernetes Resources (Read-Only)
-```yaml
-# Secrets - Read-only access for Redfish credentials
+# Secrets: get for BMC credentials, bootstrap data, and CA bundles (all by name);
+# create/update/patch/delete for the per-host bootstrap-token Secret. list/watch
+# are required because PhysicalHostReconciler.SetupWithManager registers a
+# Watches(&Secret{}, ...) informer for credential rotation.
 - apiGroups: [""]
   resources: ["secrets"]
-  verbs: ["get", "list", "watch"]
-
-# Events - Write access for logging/monitoring
-- apiGroups: [""]
-  resources: ["events"] 
-  verbs: ["create", "patch"]
-```
-
-#### Cluster API Resources (Read-Only)
-```yaml
-# Cluster API clusters - Read-only monitoring
-- apiGroups: ["cluster.x-k8s.io"]
-  resources: ["clusters", "clusters/status"]
-  verbs: ["get", "list", "watch"]
-
-# Cluster API machines - Read-only monitoring
-- apiGroups: ["cluster.x-k8s.io"]
-  resources: ["machines", "machines/status"]
-  verbs: ["get", "list", "watch"]
-```
-
-#### Beskar7 Infrastructure Resources (Full Management)
-```yaml
-# Full management of Beskar7 CRDs
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: 
-    - "beskar7clusters"
-    - "beskar7machines" 
-    - "beskar7machinetemplates"
-    - "physicalhosts"
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 
-# Status subresource management
+# Cluster API: read-only on Cluster and Machine for owner-walks and endpoint
+# derivation.
+- apiGroups: ["cluster.x-k8s.io"]
+  resources: ["clusters", "clusters/status", "machines", "machines/status"]
+  verbs: ["get", "list", "watch"]
+
+# Leases: leader election.
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+
+# Beskar7 CRDs: full management.
 - apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources:
-    - "beskar7clusters/status"
-    - "beskar7machines/status"
-    - "beskar7machinetemplates/status"
-    - "physicalhosts/status"
+  resources: ["beskar7clusters", "beskar7machines", "physicalhosts"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
+- apiGroups: ["infrastructure.cluster.x-k8s.io"]
+  resources: ["beskar7clusters/finalizers", "beskar7machines/finalizers", "physicalhosts/finalizers"]
+  verbs: ["update"]
+- apiGroups: ["infrastructure.cluster.x-k8s.io"]
+  resources: ["beskar7clusters/status", "beskar7machines/status", "physicalhosts/status"]
   verbs: ["get", "patch", "update"]
 
-# Finalizer management
+# Beskar7MachineTemplate: read-only — there is no template controller, just CAPI
+# walks via shared informer cache.
 - apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources:
-    - "beskar7clusters/finalizers"
-    - "beskar7machines/finalizers"
-    - "beskar7machinetemplates/finalizers"
-    - "physicalhosts/finalizers"
-  verbs: ["update"]
-```
+  resources: ["beskar7machinetemplates"]
+  verbs: ["get", "list", "watch"]
 
-#### Security Monitoring (Read-Only)
-```yaml
-# RBAC monitoring for security validation
+# RBAC introspection: required for the controller to read its own ClusterRole at
+# startup (logged for diagnostics).
 - apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["clusterroles", "clusterrolebindings"]
+  resources: ["clusterrolebindings", "clusterroles"]
   verbs: ["get", "list", "watch"]
 ```
 
-### Namespace Role: `manager-role` (beskar7-system)
+(The Helm chart variant is identical apart from name templating; the chart does not relax any rule.)
 
-Limited namespace-scoped permissions for webhook certificate management:
+## What is intentionally absent
 
-```yaml
-# Certificate and webhook management in beskar7-system namespace
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["rolebindings", "roles"]
-  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
-```
+- No `*` apiGroups, resources, or verbs.
+- No `secrets: create/update/patch/delete` cluster-wide. The controller writes Secrets only via `controllerutil.CreateOrUpdate` on a deterministic name (`<host>-bootstrap-token`) in the host's namespace.
+- No write access to `cluster.x-k8s.io` resources. Beskar7 only reads CAPI Cluster and Machine.
+- No `nodes`, `pods`, `services`, `serviceaccounts`, `roles`, or `rolebindings`. The controller does not need them.
+- No `impersonate` verb on any resource.
 
-## Security Validation
+## Per-controller breakdown
 
-The RBAC configuration has been validated using Beskar7's internal security monitoring system:
+| Controller | What it accesses | Why |
+|---|---|---|
+| `PhysicalHostReconciler` | `physicalhosts`, `physicalhosts/status`, `physicalhosts/finalizers`, `secrets` (get + list/watch via informer), `configmaps` (get + create/delete/patch/update), `events` | Manage the host's lifecycle, fetch BMC credentials, consume the inspection-result ConfigMap. |
+| `Beskar7MachineReconciler` | `beskar7machines`, `beskar7machines/status`, `beskar7machines/finalizers`, `physicalhosts` (get + patch), `secrets` (get + create/update/patch/delete), `machines` / `machines/status` (read), `cluster.x-k8s.io` resources (read) | Claim a host, read bootstrap data, mint per-host token Secret, walk to owner Machine. |
+| `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `machines` (read), `physicalhosts` (read for failure-domain discovery) | Derive the control-plane endpoint and failure domains. |
 
-### Validation Results
-- **No CRITICAL security issues**
-- **No HIGH security issues**
-- **No overly broad permissions**
-- **No wildcard permissions**
-- **Follows principle of least privilege**
+## Residual cluster-wide scope
 
-### Security Monitoring Integration
+The Secret `list, watch` verbs are cluster-wide, not namespace-scoped. This is required by the controller-runtime informer registered by `PhysicalHostReconciler` to trigger reconciles on credential rotation. The data path of every controller fetches Secrets by name only; the cluster-wide scope is for the watch only.
 
-The controller includes built-in security monitoring that:
-- Validates RBAC configurations at runtime
-- Detects overly broad permissions
-- Monitors for security violations
-- Reports security findings via Kubernetes events
+This residual scope is tracked as `SEC-2` (the partial closure decision is `D-007`) in `.claude/context/PROJECT_CONTEXT.md`. A label-selected partial cache is the planned v0.5 follow-up: change the informer to watch only Secrets carrying a Beskar7-owned label, narrowing the cache to BMC-credentials + bootstrap-token Secrets.
 
-## Implementation Details
+## Verification
 
-### Code Changes
+After install, confirm the deployed ClusterRole:
 
-1. **Removed wildcard annotations in `cmd/manager/main.go`:**
-   ```diff
-   - //+kubebuilder:rbac:groups=*,resources=*,verbs=*
-   + //+kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles;clusterrolebindings,verbs=get;list;watch
-   + //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-   ```
-
-2. **Updated `config/rbac/role.yaml`** with minimal permissions
-
-3. **Regenerated manifests** using `make manifests`
-
-### Controller Requirements Analysis
-
-Each permission was justified based on actual controller functionality:
-
-- **Secrets (read-only):** Required for Redfish BMC credentials
-- **Events (create/patch):** Required for logging and monitoring
-- **Cluster API resources (read-only):** Required for monitoring machine states
-- **Beskar7 CRDs (full):** Required for primary controller functionality
-- **RBAC (read-only):** Required for security monitoring
-- **Namespace RBAC:** Required for webhook certificate management
-
-## Deployment Impact
-
-### Production Benefits
-
-- **Significantly reduced attack surface**
-- **Compliance with security best practices**  
-- **Suitable for production environments**
-- **Passes security audits**
-- **Prevents privilege escalation**
-
-### No Functional Impact
-
-- *All controller functionality preserved**
-- **No breaking changes to APIs**
-- **Existing deployments continue to work**
-- **All webhooks function normally**
-
-## Verification Commands
-
-### Validate Current Permissions
 ```bash
-# Check ClusterRole permissions
+# Helm install:
+kubectl get clusterrole -l app.kubernetes.io/name=beskar7 -o yaml
+
+# Kustomize install:
 kubectl get clusterrole manager-role -o yaml
-
-# Check ClusterRoleBinding
 kubectl get clusterrolebinding manager-rolebinding -o yaml
-
-# Verify no wildcard permissions
-kubectl get clusterrole manager-role -o jsonpath='{.rules[*].resources}' | grep -c '\*' || echo "No wildcards found"
 ```
 
-### Security Monitoring
+Look for any wildcards or unexpected verbs:
+
 ```bash
-# Check security monitoring status
-kubectl logs -n beskar7-system -l control-plane=beskar7-controller-manager | grep "security"
-
-# Check for security events
-kubectl get events -n beskar7-system --field-selector reason=RBACSecurityIssue
+kubectl get clusterrole manager-role -o jsonpath='{range .rules[*]}{.apiGroups}{" / "}{.resources}{" / "}{.verbs}{"\n"}{end}' | grep -E "\\*|impersonate"
 ```
 
-## Comparison with Industry Standards
+That command should return nothing.
 
-| Security Aspect | Before | After | Industry Standard |
-|------------------|--------|-------|-------------------|
-| Wildcard Permissions | No Full wildcards | Yes None | Yes None allowed |
-| Privilege Level | No Cluster Admin | Yes Minimal required | Yes Least privilege |
-| Resource Scope | No All resources | Yes Specific resources | Yes Scoped access |
-| Verb Scope | No All operations | Yes Required operations | Yes Limited verbs |
-| Security Monitoring | No None | Yes Built-in | Yes Recommended |
+Test what the controller can do as its ServiceAccount:
 
-## Migration Guide
+```bash
+kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
+```
 
-### For Existing Deployments
+## Customising
 
-1. **Update manifests:** New deployments automatically use secure RBAC
-2. **Existing deployments:** Upgrade using Helm or apply new manifests
-3. **No manual intervention required:** Changes are backward compatible
+There is no Helm value to relax or extend the ClusterRole at install time. To grant additional access:
 
-### For Custom Deployments
+1. Edit `charts/beskar7/templates/rbac.yaml` (Helm) or `config/rbac/role.yaml` (kustomize) directly.
+2. Re-render and apply.
+3. Add a kubebuilder marker on the controller that needs the access, so `make manifests` regenerates the YAML correctly on the next round-trip.
 
-If you have customized RBAC configurations:
+Do **not** add `*` rules. Reviewers will reject them; production operators will not deploy them.
 
-1. **Review your changes** against the new secure baseline
-2. **Remove any wildcard permissions** (`*` in apiGroups, resources, or verbs)
-3. **Apply principle of least privilege**
-4. **Test functionality** in development environment first
+## See also
 
-## Best Practices for RBAC Security
-
-### Do's
-- Grant only minimum required permissions
-- Use specific resource names when possible
-- Regular security audits of RBAC configurations
-- Monitor for security violations
-- Document permission requirements
-
-### Don'ts  
-- Never use wildcard permissions (`*`) in production
-- Never grant cluster-admin unless absolutely necessary
-- Never grant broad cross-namespace access
-- Never ignore security monitoring alerts
-- Never deploy without security review
-
-## Related Security Features
-
-- **TLS Security Configuration** - TLS certificate validation (see configuration.md)
-- **Credential Management** - Secure credential handling (see configuration.md)
-- **Network Policies** - Network segmentation (see configuration.md)
-- **Security Monitoring** - Continuous security validation (see troubleshooting.md)
-
-## References
-
-- [Kubernetes RBAC Documentation](https://kubernetes.io/docs/reference/access-authn-authz/rbac/)
-- [Principle of Least Privilege](https://en.wikipedia.org/wiki/Principle_of_least_privilege)
-- [CIS Kubernetes Benchmark](https://www.cisecurity.org/benchmark/kubernetes)
-- [Pod Security Standards](https://kubernetes.io/docs/concepts/security/pod-security-standards/) 
+- [Security](README.md)
+- [Configuration](configuration.md)
+- [Security Troubleshooting](troubleshooting.md)

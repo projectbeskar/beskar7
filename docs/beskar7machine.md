@@ -1,95 +1,84 @@
 # Beskar7Machine
 
-The `Beskar7Machine` resource represents a machine in the Beskar7 infrastructure provider.
+`Beskar7Machine` is the Beskar7 CRD that implements the CAPI infrastructure-machine contract. The reconciler that owns it is `controllers/beskar7machine_controller.go`. One Beskar7Machine maps to one Kubernetes node.
 
-## API Version
+For the full field reference, see [API Reference: Beskar7Machine](api-reference.md#beskar7machine). This page covers operational behavior — the reconcile flow, what conditions mean, how failures surface.
 
-`infrastructure.cluster.x-k8s.io/v1beta1`
+## Identity
 
-## Kind
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **Kind:** `Beskar7Machine`
+- **Scope:** Namespaced
+- **Categories:** `cluster-api`
 
-`Beskar7Machine`
+## Spec at a glance
 
-## Namespaced
+```yaml
+spec:
+  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  configurationURL:   "http://boot-server.local/configs/worker.yaml"   # optional
+  hardwareRequirements:                                                 # optional
+    minCPUCores: 4
+    minMemoryGB: 8
+    minDiskGB:   50
+  # providerID is set by the controller on claim — do not set manually
+```
 
-Yes
+All three URL fields must match `^https?://.*`. There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, or `configURL` — those v0.3 fields were removed in v0.4.
 
-## Specification
+## Reconcile flow
 
-### Required Fields
+The reconciler runs through these phases. Each phase corresponds to a state of the claimed `PhysicalHost`.
 
-#### imageURL
-- **imageURL** (string, required): URL of the machine image to use
+1. **Wait for owner Machine.** If the owning CAPI `Machine` does not have an `OwnerReference` to this Beskar7Machine yet, requeue.
+2. **Bootstrap data check.** Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and set `FailureReason` (terminal).
+3. **Claim a host.** `findAndClaimOrGetAssociatedHost` lists `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available`. The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
+4. **Signal the bootstrap URL.** Compute the URL deterministically as `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and patch `infrastructure.cluster.x-k8s.io/bootstrap-url` onto the host's annotations. The host reconciler persists it to `Status.Bootstrap.URL`.
+5. **Trigger inspection.** When the host transitions to `InUse`:
+    - Open a Redfish client with the host's credentials.
+    - `SetBootSourcePXE` then `SetPowerState(On)` if not already powered on.
+    - Mint a per-host bearer token unless an unexpired one is already in `Status.Bootstrap` (re-using avoids invalidating in-flight kernel cmdlines). The plaintext goes into a per-host Secret (`<host>-bootstrap-token`); only the SHA-256 hash and lifetime ride the `bootstrap-token` annotation. See `internal/auth/token.go` and decision D-004.
+    - Patch the `inspection-request` annotation on the host with value `inspect`. The host reconciler transitions to `Inspecting`.
+6. **Wait for inspection.** While the host is `Inspecting`, monitor `Status.InspectionPhase`. If `Status.InspectionTimestamp` is older than `DefaultInspectionTimeout` (10 minutes), call `markTerminalFailure(InspectionTimedOut, ...)` and stop. Inspection timeout is terminal — the operator must investigate (likely an iPXE misconfiguration) and delete-and-recreate.
+7. **Validate hardware.** When `Status.InspectionPhase == Complete`, sum CPU cores across `report.cpus[]`, parse memory across `report.memory[]` (using the `parseMemoryCapacityGB` helper for `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` suffixes), and sum disk size across `report.disks[]`. If any minimum is violated, call `markTerminalFailure(HardwareRequirementsNotMet, ...)`. Hardware-validation failures are terminal — the BMC's hardware does not change at runtime.
+8. **Mark ready.** When validation passes, signal the host (`inspection-request: inspect-complete`) which moves the host to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, and sets `InfrastructureReady=True` and `Status.Ready=true`.
 
-#### osFamily
-- **osFamily** (string, required): The operating system family to use. Must be one of:
-  - `kairos` - Kairos cloud-native OS (recommended)
-  - `flatcar` - Flatcar Container Linux
-  - `LeapMicro` - openSUSE Leap Micro
+## Conditions
 
-**Note:** Only the OS families listed above are currently supported with full RemoteConfig provisioning capabilities.
+| Type | Meaning | Common reasons |
+|---|---|---|
+| `InfrastructureReady` | Standard CAPI infra-ready condition. Summary across the others. | – |
+| `PhysicalHostAssociated` | A host has been claimed. | `WaitingForPhysicalHost`, `PhysicalHostAssociationFailed`. |
+| `MachineProvisioned` | Host is `Ready` and `ProviderID` is set. | – |
+| `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
 
-### Optional Fields
+## Terminal failures
 
-#### configURL
-- **configURL** (string, optional): URL of the configuration to use for the machine. Required when provisioningMode is "RemoteConfig".
+These set `Status.FailureReason` and `Status.FailureMessage`. Once set, the controller stops requeueing — operator must intervene. CAPI surfaces both fields in `kubectl describe machine`.
 
-#### providerID
-- **providerID** (string, optional): Provider-specific identifier for the machine. Automatically set by the controller.
+| Reason | Trigger |
+|---|---|
+| `BootstrapDataUnavailable` | The Secret named by `Machine.Spec.Bootstrap.DataSecretName` does not exist. |
+| `HardwareRequirementsNotMet` | Inspection report falls below `hardwareRequirements`. |
+| `InspectionTimedOut` | No inspection report received within `DefaultInspectionTimeout` (10 min). |
 
-#### provisioningMode
-- **provisioningMode** (string, optional, default: "RemoteConfig"): The mode to use for provisioning. Must be one of:
-  - `RemoteConfig` - Boot generic ISO with configuration URL (requires configURL)
-  - `PreBakedISO` - Boot pre-configured ISO (configURL should not be set). Use this when the OS config is embedded into the ISO.
-  - `PXE` - PXE network boot (requires external PXE infrastructure)
-  - `iPXE` - iPXE network boot (requires external iPXE infrastructure)
+To recover, delete the Beskar7Machine (and its owner `Machine`); the host returns to `Available` and a fresh attempt can be made.
 
-#### bootMode
-- **bootMode** (string, optional, default: "UEFI"): The firmware boot mode to use. Must be one of:
-  - `UEFI` - UEFI boot mode (recommended for modern systems)
-  - `Legacy` - Legacy BIOS boot mode
+## Deletion
 
-## Status
+`reconcileDelete` runs:
 
-### addresses
-Array of machine addresses:
-- **address** (string, required): The address value
-- **type** (string, required): The type of address. Must be one of:
-  - `Hostname`
-  - `ExternalIP`
-  - `InternalIP`
-  - `ExternalDNS`
-  - `InternalDNS`
+1. If a `ProviderID` is set and the parsed host exists with `ConsumerRef.Name == this.Name`:
+    - Best-effort: open the Redfish client and call `ClearBootSourceOverride` then `SetPowerState(Off)` (graceful). All errors are logged and swallowed so a dead BMC cannot strand the finalizer.
+    - Patch `ConsumerRef = nil` on the host with optimistic locking.
+2. Remove the finalizer (`beskar7machine.infrastructure.cluster.x-k8s.io`).
 
-### conditions
-Array of conditions representing the latest available observations of the object's state:
-- **lastTransitionTime** (string, required): Last time the condition transitioned
-- **message** (string, required): Human-readable message indicating details about the transition
-- **reason** (string, required): One-word CamelCase reason for the condition's last transition
-- **severity** (string): Severity level of the condition
-- **status** (string, required): Status of the condition
-- **type** (string, required): Type of the condition
+The `infrastructure.cluster.x-k8s.io/force-release: "true"` annotation skips the Redfish steps entirely. Use only when the BMC is permanently unreachable.
 
-### failureMessage
-- **failureMessage** (string): Error message describing any failure
+## ProviderID format
 
-### failureReason
-- **failureReason** (string): Reason for any failure
-
-### phase
-- **phase** (string): Current phase of the machine
-
-### ready
-- **ready** (boolean): Indicates if the machine is ready
-
-## Additional Printer Columns
-
-- **Cluster**: Cluster to which this Beskar7Machine belongs
-- **State**: Current state of the Beskar7Machine
-- **Ready**: Machine ready status
-- **ProviderID**: Provider ID
-- **Machine**: Machine object which owns this Beskar7Machine
-- **Age**: Creation timestamp
+The provider ID is `b7://<namespace>/<name>`. The parser uses `strings.CutPrefix` + `strings.SplitN(rest, "/", 2)` and rejects empty segments and multi-segment names. See `controllers/beskar7machine_controller.go:parseProviderID`.
 
 ## Example
 
@@ -100,46 +89,26 @@ metadata:
   name: control-plane-01
   namespace: default
   labels:
-    cluster.x-k8s.io/cluster-name: "my-cluster"
-    cluster.x-k8s.io/control-plane: ""
+    cluster.x-k8s.io/cluster-name: production-cluster
+    cluster.x-k8s.io/control-plane: "true"
 spec:
-  imageURL: "https://releases.kairos.io/v2.8.1/kairos-alpine-v2.8.1-amd64.iso"
-  configURL: "https://config.example.com/control-plane.yaml"
-  osFamily: "kairos"
-  provisioningMode: "RemoteConfig"
-status:
-  ready: true
-  phase: "Running"
-  addresses:
-    - type: "InternalIP"
-      address: "10.0.1.10"
-    - type: "ExternalIP"
-      address: "203.0.113.10"
-  conditions:
-    - type: "InfrastructureReady"
-      status: "True"
-      lastTransitionTime: "2024-01-01T00:00:00Z"
-      reason: "ProvisioningComplete"
-      message: "Infrastructure is ready"
-    - type: "PhysicalHostAssociated"
-      status: "True"
-      lastTransitionTime: "2024-01-01T00:00:00Z"
-      reason: "HostClaimed"
-      message: "Successfully associated with PhysicalHost server-01"
+  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
+  hardwareRequirements:
+    minCPUCores: 4
+    minMemoryGB: 16
+    minDiskGB:   100
 ```
 
-## Fields
+## Print columns
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.providerID` | `string` | The unique identifier as specified by the cloud provider. |
-| `spec.imageURL` | `string` | The URL of the OS image to use for the machine. |
-| `spec.configURL` | `string` | The URL of the configuration to use for the machine. |
-| `spec.osFamily` | `string` | The operating system family to use for the machine. |
-| `spec.provisioningMode` | `string` | The mode to use for provisioning the machine. |
-| `status.ready` | `bool` | Indicates that the machine is ready. |
-| `status.addresses` | `[]MachineAddress` | The associated addresses for the machine. |
-| `status.phase` | `string` | The current phase of machine actuation. |
-| `status.failureReason` | `string` | A succinct value suitable for machine interpretation in case of terminal problems. |
-| `status.failureMessage` | `string` | A more verbose string suitable for logging and human consumption in case of terminal problems. |
-| `status.conditions` | `Conditions` | Current service state of the Beskar7Machine. | 
+`kubectl get beskar7machine` shows `Cluster`, `Machine`, `Phase`, and `Age`.
+
+## See also
+
+- [API Reference: Beskar7Machine](api-reference.md#beskar7machine)
+- [State Management](state-management.md)
+- [Architecture](architecture.md)
+- [Beskar7MachineTemplate](beskar7machinetemplate.md)
+- [Troubleshooting](troubleshooting.md)

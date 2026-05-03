@@ -52,11 +52,13 @@ kubectl rollout restart deployment/beskar7-controller-manager -n beskar7-system
 
 **Symptom:**
 ```
-failed calling webhook "mutation.physicalhost.infrastructure.cluster.x-k8s.io"
+failed calling webhook "validation.beskar7cluster.infrastructure.cluster.x-k8s.io"
 x509: certificate signed by unknown authority
 ```
 
-**Cause:** cert-manager not installed or not ready
+There is exactly one webhook in v0.4: the Beskar7Cluster validating webhook (`api/v1beta1/webhooks/beskar7cluster_webhook.go`). If your error mentions `physicalhost`, `beskar7machine`, or `beskar7machinetemplate` webhooks, those are stale `ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration` objects left over from a v0.3 install — see step 3 below.
+
+**Cause:** cert-manager not installed or not ready, or webhook serving cert not issued.
 
 **Solution:**
 ```bash
@@ -66,15 +68,36 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 # Wait for it to be ready
 kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
 
+# Verify the chart's Certificate is Ready
+kubectl get certificate -n beskar7-system
+
 # Restart Beskar7
 kubectl rollout restart deployment/beskar7-controller-manager -n beskar7-system
 
-# Verify webhook is working
-kubectl get validatingwebhookconfigurations
-kubectl get mutatingwebhookconfigurations
+# Verify the only expected webhook is registered
+kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7
 ```
 
-### 3. PhysicalHost Stuck in "Enrolling"
+### 3. Stale v0.3 webhooks blocking admission
+
+**Symptom:** `kubectl apply` of any resource returns `failed calling webhook "mutation.physicalhost..."` or similar.
+
+**Cause:** v0.4 removed the PhysicalHost defaulting/validating webhooks. If you upgraded from v0.3.x, the `ValidatingWebhookConfiguration` and `MutatingWebhookConfiguration` objects can survive. With `failurePolicy: Fail`, the apiserver tries to call a path that no longer exists and rejects the request.
+
+**Diagnosis:**
+```bash
+kubectl get validatingwebhookconfigurations | grep -i physicalhost
+kubectl get mutatingwebhookconfigurations | grep -i physicalhost
+```
+
+**Solution:**
+```bash
+# Delete any orphaned webhook configs that reference physicalhost / beskar7machine / beskar7machinetemplate paths
+kubectl delete validatingwebhookconfigurations <name>
+kubectl delete mutatingwebhookconfigurations <name>
+```
+
+### 4. PhysicalHost Stuck in "Enrolling"
 
 **Symptom:** Host never transitions to Available
 
@@ -120,7 +143,7 @@ kubectl get secret <secret-name> -o jsonpath='{.data.password}' | base64 -d
 - HPE iLO: Network -> iLO RESTful API -> Enable
 - Supermicro: Configuration -> Redfish API -> Enable
 
-### 4. Inspection Phase Stuck in "Pending" or "Booting"
+### 5. Inspection Phase Stuck in "Pending" or "Booting"
 
 **Symptom:** InspectionPhase never progresses to "Complete"
 
@@ -173,7 +196,7 @@ kubectl get beskar7machine <name> -o jsonpath='{.status.phase}'
 - Check firewall rules
 - Monitor server serial console for boot errors
 
-### 5. Inspection Times Out
+### 6. Inspection Times Out
 
 **Symptom:** InspectionPhase changes to "Timeout" after 10 minutes
 
@@ -203,7 +226,7 @@ sudo tail -f /var/log/nginx/boot-access.log
 - Verify inspection image is working
 - Increase timeout if hardware is slow
 
-### 6. Hardware Validation Failed
+### 7. Hardware Validation Failed
 
 **Symptom:** Machine stuck with validation error
 
@@ -229,7 +252,7 @@ spec:
 
 Option 2: Use different hardware that meets requirements
 
-### 7. Power Operations Fail
+### 8. Power Operations Fail
 
 **Symptom:** Can't power on/off server
 
@@ -266,7 +289,7 @@ kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep -i p
 - Check physical power button isn't locked
 - Verify power supplies are connected
 
-### 8. Machine Never Becomes Ready
+### 9. Machine Never Becomes Ready
 
 **Symptom:** Beskar7Machine stays in "Provisioning" or "Inspecting" phase
 
@@ -291,6 +314,45 @@ kubectl describe physicalhost <name>
 ```
 
 **Solution:** Depends on which step failed (see above sections)
+
+### 10. Inspection or bootstrap callback returns 401 Unauthorized
+
+**Symptom:** The inspector logs `401` from `https://<manager>:8082/api/v1/inspection/<ns>/<host>`, or the host fails to fetch bootstrap data.
+
+The callback endpoint authenticates every request via per-host bearer tokens. Failures collapse to an opaque `401` body — the verifier's specific reason is logged on the manager at V(1).
+
+**Diagnosis:**
+```bash
+# Tail manager logs for verifier output. Add --zap-devel=true to manager args
+# temporarily to surface V(1) lines.
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep -i bearer
+```
+
+**Common causes:**
+
+| V(1) message | Cause | Fix |
+|---|---|---|
+| `no bootstrap token issued for host ...` | The Beskar7Machine reconciler has not minted a token yet. | Wait, or check `kubectl describe beskar7machine <name>` for the current phase. |
+| `bootstrap token expired for host ...` | More than 30 minutes elapsed since the token was minted (`auth.TokenLifetime`). | Delete the per-host Secret `<host>-bootstrap-token`; the controller mints a fresh one and re-renders the cmdline on next reconcile. The booted host must re-PXE to pick up the new plaintext. |
+| `bootstrap token mismatch for host ...` | Plaintext on the wire does not hash to `Status.Bootstrap.TokenHash`. | Stale iPXE cmdline. Compare the token in the kernel cmdline against `kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`. Re-PXE if they diverge. |
+
+Clock skew (> 30 min) between the manager pod and the BMC-managed host can also cause `expired` results — verify NTP on both sides.
+
+### 11. PhysicalHost in Error: `InsecureCABundleConflict` or `CABundleFetchFailed`
+
+**Symptom:**
+```bash
+kubectl get physicalhost <name> -o jsonpath='{.status.errorMessage}'
+```
+returns either `redfishConnection.insecureSkipVerify=true is mutually exclusive with caBundleSecretRef` or `CA bundle secret ... not found / has no usable ca.crt or tls.crt data key`.
+
+**`InsecureCABundleConflict`:** the spec has both `insecureSkipVerify: true` and `caBundleSecretRef` set. Pick one. See [Security Configuration](security/configuration.md#bmc-tls).
+
+**`CABundleFetchFailed`:** the named Secret does not exist in the host's namespace, or the data is missing. The expected data keys are `ca.crt` (preferred) or `tls.crt`. Check the Secret:
+```bash
+kubectl get secret <ca-bundle-secret> -n <namespace> -o yaml
+```
+Populate `data.ca.crt` (base64 PEM) and re-apply.
 
 ## Debugging Tools
 
@@ -435,17 +497,9 @@ kubectl get beskar7machine -o custom-columns=NAME:.metadata.name,PHASE:.status.p
 
 ### Slow Reconciliation
 
-**Symptom:** Resources take long time to update
+**Symptom:** Resources take long time to update.
 
-**Solution:**
-```bash
-# Increase worker count
-kubectl edit deployment -n beskar7-system beskar7-controller-manager
-
-# Add to container args:
-- --max-concurrent-reconciles-physicalhost=5  # Default: 1
-- --max-concurrent-reconciles-beskar7machine=5
-```
+There is no per-controller `--max-concurrent-reconciles-*` flag in v0.4. The reconcilers use controller-runtime's default (`MaxConcurrentReconciles = 1`). If you genuinely need to raise concurrency, the change is in code — `controllers/<kind>_controller.go:SetupWithManager` — not configuration. Open an issue with your scaling profile if the default is a real constraint.
 
 ### High CPU/Memory Usage
 

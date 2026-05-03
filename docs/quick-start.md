@@ -4,7 +4,7 @@ This guide provides the steps to get the Beskar7 controller manager built, deplo
 
 ## Prerequisites
 
-*   [Go](https://golang.org/dl/) (version 1.24 or later required)
+*   [Go](https://golang.org/dl/) 1.25 (matches `go.mod` and the CI toolchain in `.github/workflows/ci.yml`)
 *   [Docker](https://docs.docker.com/get-docker/) (for building the manager image)
 *   `docker buildx` configured for multi-arch builds (if needed, e.g., Mac M1/M2 building for amd64):
     ```bash
@@ -51,10 +51,10 @@ kubectl get pods -n cert-manager
     # export CR_PAT=YOUR_GITHUB_PAT # Use a PAT with write:packages scope for GHCR
     # echo $CR_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
-    # Build and push the image 
-    # (Uses values from Makefile: ghcr.io/projectbeskar/beskar7/beskar7:v0.2.7 by default)
-    # This builds for linux/amd64 by default due to Makefile configuration.
-    make docker-build docker-push 
+    # Build and push the image. The default tag is set in the Makefile:
+    #   IMG ?= ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha
+    # Builds for linux/amd64 by default.
+    make docker-build docker-push
     ```
     *(Note: If using a different registry/repo/tag, override Makefile variables: `make docker-push IMG=my-registry/my-repo:my-tag`)*
 
@@ -77,11 +77,19 @@ kubectl get pods -n cert-manager
     make install
     ```
 3.  **Deploy the Controller Manager:**
-    This will deploy the controller using the image defined in the Makefile (`ghcr.io/projectbeskar/beskar7/beskar7:v0.2.7` by default).
+    This will deploy the controller using the image defined in the Makefile (`ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha` by default — see `Makefile:15`).
     ```bash
     make deploy
     ```
     *(Note: If you pushed the image to a different location than specified in the Makefile, ensure the `IMG` variable was set correctly during the `make deploy` step, or modify the deployment manifests manually/via kustomize before applying).*
+
+    **Helm install (alternative):**
+    ```bash
+    helm repo add beskar7 https://projectbeskar.github.io/beskar7
+    helm repo update
+    helm install beskar7 beskar7/beskar7 --namespace beskar7-system --create-namespace
+    ```
+    The chart's default `bootstrap.urlBase` value is `https://beskar7-controller-manager.beskar7-system.svc:8082`, which matches the Service name created when the release is named `beskar7`. If you install with a different release name (e.g. `helm install b7 ...`), pass `--set bootstrap.urlBase=https://b7-controller-manager.beskar7-system.svc:8082` so the per-host bootstrap URL on `PhysicalHost.Status.Bootstrap.URL` resolves correctly.
 
 4.  **Verify Deployment:**
     Check that the controller manager pod is running in the `beskar7-system` namespace:

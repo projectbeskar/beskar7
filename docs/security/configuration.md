@@ -1,647 +1,206 @@
-# Security Configuration Guide
+# Security Configuration
 
-This guide provides detailed configuration options for Beskar7's security features.
+How to configure the security features Beskar7 actually enforces. For an inventory of those features, see [Security](README.md).
 
-## Security Policy Configuration
+## BMC TLS
 
-The security policy is defined in a ConfigMap and controls all security behavior.
-
-### Location
-
-```bash
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml
-```
-
-### Full Configuration Reference
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: beskar7-security-policy
-  namespace: beskar7-system
-data:
-  policy.yaml: |
-    security:
-      # TLS Security Configuration
-      tls:
-        # Enforce certificate validation (recommended: true for production)
-        enforce_certificate_validation: true
-        
-        # Allow insecureSkipVerify (recommended: false for production)
-        allow_insecure_skip_verify: false
-        
-        # Minimum TLS version (options: "1.0", "1.1", "1.2", "1.3")
-        min_tls_version: "1.2"
-        
-        # Certificate expiry warning thresholds (days)
-        expiry_warning_days: 30
-        expiry_critical_days: 7
-        
-        # Trusted certificate authorities
-        trusted_cas:
-          - system  # Use system CA bundle
-          # Add custom CAs:
-          # - custom-ca-secret
-        
-        # Certificate validation requirements
-        require_hostname_verification: true
-        require_valid_certificate_chain: true
-        
-      # RBAC Security Configuration
-      rbac:
-        # Enforce principle of least privilege
-        enforce_least_privilege: true
-        
-        # Prohibited permissions (never allow)
-        prohibited_permissions:
-          - apiGroups: ["*"]
-            resources: ["*"]
-            verbs: ["*"]
-          - apiGroups: ["rbac.authorization.k8s.io"]
-            resources: ["*"]
-            verbs: ["*"]
-          - verbs: ["impersonate"]
-        
-        # Maximum allowed permissions
-        max_allowed_permissions:
-          beskar7-controller:
-            - apiGroups: ["infrastructure.cluster.x-k8s.io"]
-              resources: ["physicalhosts", "beskar7machines", "beskar7clusters"]
-              verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-```
-
-## TLS Configuration
-
-### Basic TLS Setup
+### Strict verification (default, recommended)
 
 ```yaml
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
   name: server-01
+  namespace: default
 spec:
   redfishConnection:
     address: "https://bmc.example.com"
-    credentialsSecretRef:
-      name: bmc-credentials
-    # Basic TLS settings
-    insecureSkipVerify: false  # Always validate certificates
+    credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: false   # default
 ```
 
-### Custom CA Certificate
+The manager uses the system root CA pool. If the BMC presents a certificate that the system pool trusts, this works out of the box.
 
-For private CAs or self-signed certificates:
+### Custom CA bundle
+
+When the BMC's certificate chains to an organisation-internal CA:
 
 ```yaml
-# 1. Create CA certificate secret
 apiVersion: v1
 kind: Secret
 metadata:
-  name: custom-ca-cert
-  namespace: beskar7-system
+  name: bmc-ca-bundle
+  namespace: default
 type: Opaque
 data:
-  ca.crt: LS0tLS1CRUdJTi... # Base64 encoded CA certificate
-
+  ca.crt: <base64 PEM>          # preferred key
+  # tls.crt: <base64 PEM>       # fallback key, used only if ca.crt is absent
 ---
-# 2. Reference in PhysicalHost
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
   name: server-01
+  namespace: default
 spec:
   redfishConnection:
-    address: "https://bmc.internal.com"
-    credentialsSecretRef:
-      name: bmc-credentials
-    caCertificateSecretRef:
-      name: custom-ca-cert
+    address: "https://bmc.internal.example.com"
+    credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: false
+    caBundleSecretRef:
+      name: bmc-ca-bundle
 ```
 
-### TLS Version Control
-
-Configure minimum TLS version in security policy:
+Cert-manager-driven equivalent (auto-rotates the CA Secret):
 
 ```yaml
-security:
-  tls:
-    min_tls_version: "1.2"  # Options: "1.0", "1.1", "1.2", "1.3"
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bmc-ca-bundle
+  namespace: default
+spec:
+  secretName: bmc-ca-bundle      # data["ca.crt"] holds the issued CA cert
+  isCA: true
+  commonName: "BMC Issuing CA"
+  issuerRef:
+    name: my-root-issuer
+    kind: ClusterIssuer
 ```
 
-### Certificate Expiry Monitoring
+The CA bundle Secret must live in the same namespace as the PhysicalHost. The reconciler refreshes its TLS roots on each reconcile, so rotating the Secret takes effect at the next reconcile cycle (default 5 minutes; trigger sooner with a no-op `kubectl annotate physicalhost <name> reconcile-now=...`).
 
-Configure certificate expiry warnings:
+If the Secret is missing or has empty `ca.crt`/`tls.crt`, the controller marks `RedfishConnectionReady=False (CABundleFetchFailed)` and the host moves to `Error`.
+
+### Skipping verification (development only)
 
 ```yaml
-security:
-  tls:
-    expiry_warning_days: 30   # Warning threshold
-    expiry_critical_days: 7   # Critical threshold
+spec:
+  redfishConnection:
+    insecureSkipVerify: true
 ```
 
-## Credential Configuration
+`insecureSkipVerify: true` and `caBundleSecretRef` together is a hard error: the controller marks `RedfishConnectionReady=False (InsecureCABundleConflict)` and stops reconciling until you fix the spec.
 
-### Password Policy
+## BMC credentials
 
-Configure password requirements:
-
-```yaml
-security:
-  credentials:
-    password_policy:
-      min_length: 12                    # Minimum password length
-      require_uppercase: true           # Require uppercase letters
-      require_lowercase: true           # Require lowercase letters
-      require_numbers: true             # Require numbers
-      require_special_chars: true       # Require special characters
-      prohibited_common_passwords: true # Block common passwords
-```
-
-### Credential Rotation
-
-Configure rotation policies:
-
-```yaml
-security:
-  credentials:
-    rotation_policy:
-      max_age_days: 90           # Maximum credential age
-      warning_age_days: 60       # Warning threshold
-      force_rotation_age_days: 365  # Force rotation threshold
-```
-
-### Credential Storage
-
-Enforce secure storage:
-
-```yaml
-security:
-  credentials:
-    storage_policy:
-      require_encryption_at_rest: true
-      require_kubernetes_secrets: true
-      prohibit_plaintext_storage: true
-```
-
-### Creating Secure Credentials
-
-```bash
-# Generate strong password
-PASSWORD=$(openssl rand -base64 32)
-
-# Create credential secret
-kubectl create secret generic bmc-credentials \
-  --from-literal=username=admin \
-  --from-literal=password="$PASSWORD" \
-  --namespace=default
-```
-
-## RBAC Configuration
-
-### Service Account Setup
+Required Secret shape:
 
 ```yaml
 apiVersion: v1
-kind: ServiceAccount
+kind: Secret
 metadata:
-  name: beskar7-controller-manager
-  namespace: beskar7-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: manager-role
-rules:
-# Minimal required permissions
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["physicalhosts", "beskar7machines", "beskar7clusters"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["physicalhosts/status", "beskar7machines/status", "beskar7clusters/status"]
-  verbs: ["get", "update", "patch"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: manager-rolebinding
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: manager-role
-subjects:
-- kind: ServiceAccount
-  name: beskar7-controller-manager
-  namespace: beskar7-system
+  name: bmc-credentials
+  namespace: default
+type: Opaque
+stringData:
+  username: "admin"
+  password: "..."
 ```
 
-### RBAC Validation
-
-Enable RBAC security validation:
-
-```yaml
-security:
-  rbac:
-    enforce_least_privilege: true
-    
-    # Define prohibited permissions
-    prohibited_permissions:
-      - apiGroups: ["*"]
-        resources: ["*"]
-        verbs: ["*"]
-      - verbs: ["impersonate"]
-```
-
-## Network Security Configuration
-
-### Network Policies
-
-#### Manager Network Policy
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: beskar7-manager-policy
-  namespace: beskar7-system
-spec:
-  podSelector:
-    matchLabels:
-      control-plane: beskar7-controller-manager
-  policyTypes:
-  - Ingress
-  - Egress
-  
-  ingress:
-  # Webhook traffic from API server
-  - from:
-    - namespaceSelector: {}
-    ports:
-    - protocol: TCP
-      port: 9443
-  
-  # Metrics scraping
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: monitoring
-    ports:
-    - protocol: TCP
-      port: 8080
-  
-  egress:
-  # DNS resolution
-  - to: []
-    ports:
-    - protocol: UDP
-      port: 53
-  
-  # Kubernetes API
-  - to: []
-    ports:
-    - protocol: TCP
-      port: 443
-  
-  # BMC communication
-  - to: []
-    ports:
-    - protocol: TCP
-      port: 443
-    - protocol: TCP
-      port: 8443
-```
-
-#### Default Deny Policy
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-all
-  namespace: beskar7-system
-spec:
-  podSelector: {}
-  policyTypes:
-  - Ingress
-  - Egress
-```
-
-### BMC Network Configuration
-
-Configure BMC network access:
-
-```yaml
-security:
-  network:
-    # Default to secure communication
-    default_tls: true
-    
-    # Prohibited protocols
-    prohibited_protocols:
-      - http
-      - telnet
-      - ftp
-    
-    # Required encryption for BMC
-    bmc_encryption: true
-```
-
-## Container Security Configuration
-
-### Security Context
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: controller-manager
-spec:
-  template:
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      
-      containers:
-      - name: manager
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          runAsUser: 65532
-          capabilities:
-            drop: ["ALL"]
-          seccompProfile:
-            type: RuntimeDefault
-```
-
-### Resource Limits
-
-```yaml
-security:
-  container:
-    resource_limits:
-      enforce_resource_limits: true
-      default_cpu_limit: "500m"
-      default_memory_limit: "512Mi"
-      max_cpu_limit: "2000m"
-      max_memory_limit: "4Gi"
-```
-
-## Monitoring Configuration
-
-### Security Monitoring
-
-Enable/disable security monitoring:
-
-```yaml
-# Via command line arguments
-args:
-- --enable-security-monitoring=true
-- --security-scan-interval=1h
-
-# Via security policy
-security:
-  monitoring:
-    security_monitoring:
-      enabled: true
-      scan_interval: "1h"
-      alert_on_critical: true
-      alert_on_high: true
-```
-
-### Metrics Configuration
-
-Configure security metrics:
-
-```yaml
-security:
-  monitoring:
-    metrics:
-      expose_security_metrics: true
-      alert_on_policy_violations: true
-      alert_on_certificate_expiry: true
-      alert_on_credential_age: true
-```
-
-### Audit Logging
-
-Enable audit logging:
-
-```yaml
-security:
-  monitoring:
-    audit_logging:
-      enabled: true
-      log_failed_authentications: true
-      log_privilege_escalations: true
-      log_secret_access: true
-      log_rbac_changes: true
-```
-
-## Environment-Specific Configurations
-
-### Production Environment
-
-```yaml
-security:
-  tls:
-    enforce_certificate_validation: true
-    allow_insecure_skip_verify: false
-    min_tls_version: "1.2"
-  
-  rbac:
-    enforce_least_privilege: true
-  
-  credentials:
-    password_policy:
-      min_length: 16
-      require_complexity: true
-    rotation_policy:
-      max_age_days: 90
-  
-  monitoring:
-    security_monitoring:
-      enabled: true
-      scan_interval: "30m"
-      alert_on_critical: true
-      alert_on_high: true
-  
-  compliance:
-    standards:
-      cis_kubernetes: true
-      nist_cybersecurity: true
-      soc2: true
-```
-
-### Development Environment
-
-```yaml
-security:
-  # Enable development exceptions
-  exceptions:
-    development:
-      allow_insecure_skip_verify: true
-      allow_self_signed_certificates: true
-      reduced_password_requirements: true
-      extended_credential_rotation: true
-  
-  # Relaxed monitoring
-  monitoring:
-    security_monitoring:
-      enabled: true
-      scan_interval: "4h"
-      alert_on_critical: true
-      alert_on_high: false
-```
-
-### Testing Environment
-
-```yaml
-security:
-  exceptions:
-    testing:
-      allow_test_credentials: true
-      allow_mock_certificates: true
-      relaxed_rbac_validation: true
-  
-  monitoring:
-    security_monitoring:
-      enabled: false
-```
-
-## Advanced Configuration
-
-### Custom Security Validators
-
-Extend security validation with custom validators:
-
-```yaml
-security:
-  custom_validators:
-    - name: "corporate-policy"
-      type: "rbac"
-      config:
-        max_permissions_per_role: 10
-        require_justification: true
-    
-    - name: "certificate-pinning"
-      type: "tls"
-      config:
-        pinned_certificates:
-          - fingerprint: "sha256:..."
-            hosts: ["bmc.internal.com"]
-```
-
-### Integration with External Systems
-
-#### LDAP/Active Directory
-
-```yaml
-security:
-  authentication:
-    ldap:
-      enabled: true
-      server: "ldap.corporate.com"
-      base_dn: "dc=corporate,dc=com"
-      user_filter: "(uid=%s)"
-      tls_config:
-        min_version: "1.2"
-        certificate_validation: true
-```
-
-#### External Secret Management
-
-```yaml
-security:
-  credentials:
-    external_secret_manager:
-      enabled: true
-      provider: "vault"  # Options: vault, aws-secrets, azure-keyvault
-      config:
-        vault_address: "https://vault.corporate.com"
-        vault_role: "beskar7"
-        secret_path: "secret/beskar7/bmc-credentials"
-```
-
-## Troubleshooting Configuration
-
-### Debug Mode
-
-Enable debug logging for security components:
-
-```yaml
-# In deployment args
-args:
-- --v=2  # Verbose logging
-- --security-debug=true
-
-# Environment variables
-env:
-- name: BESKAR7_SECURITY_DEBUG
-  value: "true"
-```
-
-### Configuration Validation
-
-Validate security configuration:
+Generate strong passwords externally (Beskar7 does not enforce any strength policy). Example:
 
 ```bash
-# Validate security policy
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml | yq eval '.data."policy.yaml"'
-
-# Check current security status
-kubectl get events -n beskar7-system --field-selector type=Warning
-
-# Test RBAC permissions
-kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:controller-manager
+PASS=$(openssl rand -base64 32)
+kubectl create secret generic bmc-credentials \
+  --from-literal=username=admin \
+  --from-literal=password="$PASS" \
+  -n default
 ```
 
-### Common Configuration Issues
+To rotate, update the Secret. The PhysicalHost reconciler watches the Secret and re-reconciles on change; the manager rebuilds the gofish client with the new credentials on the next reconcile.
 
-1. **Certificate Validation Failures**
-   ```yaml
-   # Fix: Add custom CA or disable validation for testing
-   insecureSkipVerify: true  # Only for development!
-   ```
+## Bearer-token authentication on the callback endpoint
 
-2. **RBAC Permission Denied**
-   ```bash
-   # Fix: Check and update ClusterRole permissions
-   kubectl get clusterrole manager-role -o yaml
-   ```
+This is automatic — the operator does not configure it directly. Per host:
 
-3. **Network Policy Blocking Traffic**
-   ```bash
-   # Fix: Review and update network policies
-   kubectl get networkpolicy -n beskar7-system
-   ```
+1. The `Beskar7Machine` reconciler mints a 32-byte token (`internal/auth/token.go:MintToken`).
+2. The plaintext is written to a per-host Secret named `<host-name>-bootstrap-token`, owner-ref'd to the PhysicalHost.
+3. The SHA-256 hash is signalled to the PhysicalHost via the `infrastructure.cluster.x-k8s.io/bootstrap-token` annotation, then persisted to `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}`.
+4. The iPXE infrastructure renders the plaintext into the kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](../ipxe-setup.md).
+5. The inspector and target OS present `Authorization: Bearer <token>` on every call to `:8082`.
+6. After 30 minutes, or on Beskar7Machine deletion, the token Secret is GC'd.
 
-4. **Resource Limits Too Restrictive**
-   ```yaml
-   # Fix: Increase resource limits
-   resources:
-     limits:
-       memory: "1Gi"  # Increase from default
-   ```
+The plaintext is never logged at any verbosity. The hash on Status is safe to log — it cannot be used to forge a valid bearer header.
 
-## Configuration Best Practices
+## Manager flags relevant to security
 
-1. **Start Secure**: Begin with restrictive settings and relax as needed
-2. **Environment Separation**: Use different configurations for dev/test/prod
-3. **Regular Updates**: Review and update security configurations regularly
-4. **Validate Changes**: Test configuration changes in non-production first
-5. **Monitor Impact**: Watch for security events after configuration changes
-6. **Document Exceptions**: Clearly document any security exceptions and their justification
+The manager flags that affect security posture (`cmd/manager/main.go`):
 
-## Configuration Examples
+| Flag | Default | Purpose |
+|---|---|---|
+| `--metrics-bind-address` | `:8443` | Metrics endpoint. |
+| `--secure-metrics` | `true` | When true, `/metrics` requires a TokenReview-validated SA bearer; metrics_reader role required. Set false only for local dev. |
+| `--bootstrap-url-base` | `https://beskar7-controller-manager.beskar7-system.svc:8082` | Base URL for the per-host bootstrap URL written to `PhysicalHost.Status.Bootstrap.URL`. Override when the manager Service has a non-default DNS name (e.g. you installed with a release name other than `beskar7`). |
+| `--inspection-port` | `8082` | Port the callback HTTPS endpoint listens on. |
+| `--inspection-cert-dir` | `/tmp/k8s-webhook-server/serving-certs` | Directory containing `tls.crt` + `tls.key` for the callback endpoint. Defaults to the webhook cert dir; both endpoints share a cert covering the controller-manager Service DNS name when cert-manager issues the chart's Certificate. |
+| `--enable-webhook` | `false` | Run the Beskar7Cluster webhook server. |
+| `--webhook-port` | `9443` | Webhook server port. |
+| `--webhook-cert-dir` | `/tmp/k8s-webhook-server/serving-certs` | Webhook cert dir. |
 
-See the `examples/security/` directory for complete configuration examples:
+## RBAC
 
-- `examples/security/production.yaml` - Production security configuration
-- `examples/security/development.yaml` - Development configuration
-- `examples/security/high-security.yaml` - High-security environment configuration 
+Beskar7 follows the principle of least privilege by default. See [RBAC Hardening](rbac-hardening.md) for the full ClusterRole.
+
+### Verifying the deployed RBAC
+
+```bash
+kubectl get clusterrole -l app.kubernetes.io/name=beskar7 -o yaml
+kubectl get clusterrolebinding -l app.kubernetes.io/name=beskar7 -o yaml
+```
+
+Or, if you installed via the kustomize overlay:
+
+```bash
+kubectl get clusterrole manager-role -o yaml
+kubectl get clusterrolebinding manager-rolebinding -o yaml
+```
+
+There is no Helm value or operator flag to relax the ClusterRole at install time. To extend it (e.g. to add a custom resource the controller needs to read), edit `config/rbac/role.yaml` or the chart's `templates/rbac.yaml` directly and re-deploy.
+
+## NetworkPolicy
+
+The Helm chart ships a NetworkPolicy in `templates/networkpolicy.yaml` that allows ingress on `:8443` (metrics), `:9443` (webhook), and `:8082` (callback). Egress is unrestricted by default (Beskar7 needs to reach BMCs at arbitrary IPs, the kube-apiserver, and DNS).
+
+To narrow egress to a known BMC subnet, edit the NetworkPolicy in your installation:
+
+```yaml
+egress:
+  # DNS
+  - ports:
+      - protocol: UDP
+        port: 53
+  # Kubernetes API
+  - to:
+      - namespaceSelector: {}
+    ports:
+      - protocol: TCP
+        port: 443
+  # BMC subnet only
+  - to:
+      - ipBlock:
+          cidr: 10.100.0.0/16
+    ports:
+      - protocol: TCP
+        port: 443
+      - protocol: TCP
+        port: 5000
+```
+
+## Pod security
+
+The `Deployment` template (kustomize and Helm) sets `runAsNonRoot: true`, `runAsUser: 65532`, `readOnlyRootFilesystem: true`, drops all capabilities, and uses the `RuntimeDefault` seccomp profile. None of this is configurable via Helm values; if you need to relax it (e.g. to debug with an ephemeral container), patch the Deployment after install.
+
+## Auditing
+
+There is no built-in security-scanning or compliance-reporting CronJob. Use your platform's normal tooling:
+
+- Kubernetes audit logs from the kube-apiserver.
+- A workload-CVE scanner (e.g. Trivy, Grype) against the manager image.
+- A Pod Security Admission profile (`baseline` or `restricted`) on the `beskar7-system` namespace.
+
+## See also
+
+- [Security](README.md)
+- [RBAC Hardening](rbac-hardening.md)
+- [Security Troubleshooting](troubleshooting.md)
+- [Quick Start](../quick-start.md)

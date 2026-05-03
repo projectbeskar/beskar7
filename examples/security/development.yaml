@@ -1,331 +1,56 @@
-# Development Security Configuration for Beskar7
-# This example demonstrates a development-friendly configuration with relaxed security settings
+# Development-style security configuration for Beskar7 v0.4.0-alpha.
+#
+# Loosens TLS verification for self-signed BMC certs typical in lab setups.
+# Do NOT use this configuration in production.
+#
+# See docs/security/configuration.md for the production equivalent.
 
 ---
 apiVersion: v1
-kind: ConfigMap
+kind: Namespace
 metadata:
-  name: beskar7-security-policy
-  namespace: beskar7-system
-data:
-  policy.yaml: |
-    # Development Security Policy - Relaxed settings for development
-    security:
-      # Relaxed TLS for development environments
-      tls:
-        enforce_certificate_validation: false  # Allow self-signed certs
-        allow_insecure_skip_verify: true       # Allow skipping verification
-        min_tls_version: "1.0"                # More permissive TLS version
-        expiry_warning_days: 7                 # Shorter warning period
-        expiry_critical_days: 1                # Shorter critical period
-        trusted_cas:
-          - system
-        require_hostname_verification: false   # Allow hostname mismatches
-        require_valid_certificate_chain: false # Allow invalid chains
-        
-      # Relaxed RBAC for development
-      rbac:
-        enforce_least_privilege: false  # Allow broader permissions for development
-        prohibited_permissions: []      # No prohibited permissions in dev
-        
-      # Relaxed credential requirements
-      credentials:
-        password_policy:
-          min_length: 8                        # Shorter passwords OK
-          require_uppercase: false             # Not required in dev
-          require_lowercase: false             # Not required in dev
-          require_numbers: false               # Not required in dev
-          require_special_chars: false         # Not required in dev
-          prohibited_common_passwords: false   # Allow common passwords in dev
-        rotation_policy:
-          max_age_days: 365                    # Longer rotation period
-          warning_age_days: 300                # Longer warning period
-          force_rotation_age_days: 999         # Very long force rotation
-        storage_policy:
-          require_encryption_at_rest: false    # Not required in dev
-          require_kubernetes_secrets: false    # Allow other storage methods
-          prohibit_plaintext_storage: false    # Allow plaintext for dev
-          
-      # Network security - more permissive
-      network:
-        default_tls: false                     # Allow HTTP for development
-        prohibited_protocols: []               # No prohibited protocols
-        bmc_encryption: false                  # Not required in dev
-        require_network_policies: false       # Optional network policies
-        
-      # Container security - relaxed
-      container:
-        security_context:
-          run_as_non_root: false               # Allow root for debugging
-          read_only_root_filesystem: false     # Allow writable filesystem
-          allow_privilege_escalation: true     # Allow for debugging
-          drop_all_capabilities: false         # Keep capabilities for debugging
-          seccomp_profile: unconfined          # More permissive seccomp
-        resource_limits:
-          enforce_resource_limits: false       # No resource limits enforcement
-          
-      # Development monitoring - less frequent
-      monitoring:
-        security_monitoring:
-          enabled: true                        # Still monitor, but relaxed
-          scan_interval: "4h"                  # Less frequent scans
-          alert_on_critical: true              # Only critical alerts
-          alert_on_high: false                 # Skip high severity alerts
-          alert_on_medium: false               # Skip medium severity alerts
-        audit_logging:
-          enabled: false                       # Disable audit logging in dev
-        metrics:
-          expose_security_metrics: true        # Still expose metrics
-          alert_on_policy_violations: false    # Don't alert on violations
-          alert_on_certificate_expiry: false   # Don't alert on expiry
-          alert_on_credential_age: false       # Don't alert on old credentials
-          
-      # Development exceptions
-      exceptions:
-        development:
-          allow_insecure_skip_verify: true
-          allow_self_signed_certificates: true
-          allow_http_communication: true
-          allow_weak_passwords: true
-          allow_test_credentials: true
-          relaxed_rbac_validation: true
-          extended_credential_rotation: true
+  name: beskar7-dev
 
 ---
-# Development PhysicalHost Example with relaxed security
+# Throwaway BMC credentials for a lab. Generate a real password externally.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bmc-credentials
+  namespace: beskar7-dev
+type: Opaque
+stringData:
+  username: "admin"
+  password: "changeme"
+
+---
+# Lab PhysicalHost: skip TLS verification because the BMC has a self-signed
+# cert. NEVER do this in production — use caBundleSecretRef instead.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
   name: dev-server-01
-  namespace: default
-  annotations:
-    # Mark as development environment
-    beskar7.io/environment: "development"
-    beskar7.io/security-profile: "relaxed"
+  namespace: beskar7-dev
 spec:
   redfishConnection:
-    address: "https://dev-bmc-01.local"
-    credentialsSecretRef:
-      name: dev-bmc-credentials
-    # Skip certificate verification for development
-    insecureSkipVerify: true
-  
-  # Development hardware specs
-  serverSpecs:
-    manufacturer: "Generic"
-    model: "Development Server"
-    cpu: "Intel Core i5"
-    memory: "32GB"
-    storage: "500GB SSD"
+    address: "https://192.168.1.100"
+    credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: true       # Development only — accepts any BMC cert.
 
 ---
-# Development BMC Credentials (simple password)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: dev-bmc-credentials
-  namespace: default
-  annotations:
-    # Mark as development credentials
-    beskar7.io/environment: "development"
-    beskar7.io/credential-type: "development"
-type: Opaque
-data:
-  username: YWRtaW4=    # admin
-  password: cGFzc3dvcmQ=  # password (simple for development)
-
----
-# Minimal Network Policy for Development (optional)
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: beskar7-development-policy
-  namespace: beskar7-system
-spec:
-  podSelector:
-    matchLabels:
-      control-plane: beskar7-controller-manager
-  policyTypes:
-  - Egress
-  
-  egress:
-  # Allow all egress for development
-  - to: []
-
----
-# Development Deployment with Relaxed Security
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: beskar7-controller-manager
-  namespace: beskar7-system
-  labels:
-    control-plane: beskar7-controller-manager
-spec:
-  selector:
-    matchLabels:
-      control-plane: beskar7-controller-manager
-  replicas: 1  # Single replica for development
-  template:
-    metadata:
-      annotations:
-        kubectl.kubernetes.io/default-container: manager
-      labels:
-        control-plane: beskar7-controller-manager
-    spec:
-      # Relaxed security context for development
-      securityContext:
-        runAsNonRoot: false  # Allow root for debugging
-        runAsUser: 0         # Run as root for development
-        fsGroup: 0
-      
-      volumes:
-      - name: webhook-server-cert
-        secret:
-          secretName: beskar7-webhook-server-cert
-      - name: tmp
-        emptyDir: {}
-      
-      containers:
-      - name: manager
-        command:
-        - /manager
-        args:
-        - --leader-elect=false                    # Disable leader election for single replica
-        - --enable-security-monitoring=true      # Keep monitoring but relaxed
-        - --security-scan-interval=4h            # Less frequent scans
-        - --metrics-bind-address=:8080
-        - --health-probe-bind-address=:8081
-        - --v=2                                  # Verbose logging for development
-        image: ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
-        imagePullPolicy: IfNotPresent            # Use cached images in dev
-        
-        # Relaxed security context for debugging
-        securityContext:
-          allowPrivilegeEscalation: true         # Allow for debugging
-          readOnlyRootFilesystem: false          # Allow writing for debugging
-          runAsNonRoot: false                    # Allow root for debugging
-          runAsUser: 0                           # Run as root
-          capabilities:
-            add: ["SYS_PTRACE"]                  # Add debugging capabilities
-        
-        # Development environment variables
-        env:
-        - name: BESKAR7_ENVIRONMENT
-          value: "development"
-        - name: BESKAR7_SECURITY_STRICT
-          value: "false"
-        - name: BESKAR7_DEBUG
-          value: "true"
-        - name: BESKAR7_LOG_LEVEL
-          value: "debug"
-        
-        volumeMounts:
-        - name: webhook-server-cert
-          mountPath: /tmp/k8s-webhook-server/serving-certs
-          readOnly: true
-        - name: tmp
-          mountPath: /tmp
-        
-        ports:
-        - containerPort: 8080
-          name: metrics
-          protocol: TCP
-        - containerPort: 8081
-          name: healthz
-          protocol: TCP
-        - containerPort: 9443
-          name: webhook
-          protocol: TCP
-        
-        # Relaxed health checks for development
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8081
-          initialDelaySeconds: 15
-          periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 5
-        
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 8081
-          initialDelaySeconds: 5
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        
-        # Generous resource limits for development
-        resources:
-          limits:
-            cpu: 2000m          # More CPU for development
-            memory: 2Gi         # More memory for development
-            ephemeral-storage: 5Gi
-          requests:
-            cpu: 100m           # Low requests for resource efficiency
-            memory: 128Mi
-            ephemeral-storage: 100Mi
-      
-      serviceAccountName: controller-manager
-      terminationGracePeriodSeconds: 10  # Shorter grace period for development
-      automountServiceAccountToken: true
-      enableServiceLinks: true           # Enable service links for development
-      hostNetwork: false
-      hostPID: false
-      hostIPC: false
-      dnsPolicy: ClusterFirst
-      restartPolicy: Always
-
----
-# Development-specific RBAC with broader permissions
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: manager-role-dev
-rules:
-# All our CRDs
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["*"]
-  verbs: ["*"]
-
-# Cluster API resources
-- apiGroups: ["cluster.x-k8s.io"]
-  resources: ["*"]
-  verbs: ["*"]
-
-# Core resources for development
-- apiGroups: [""]
-  resources: ["secrets", "configmaps", "events", "pods", "services"]
-  verbs: ["*"]
-
-# Additional permissions for development debugging
-- apiGroups: ["apps"]
-  resources: ["deployments", "replicasets"]
-  verbs: ["get", "list", "watch"]
-
-# Webhook permissions
-- apiGroups: ["admissionregistration.k8s.io"]
-  resources: ["validatingwebhookconfigurations", "mutatingwebhookconfigurations"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
-
-# Leader election for development
-- apiGroups: ["coordination.k8s.io"]
-  resources: ["leases"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-
----
-# Development Service Account with broader permissions
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: manager-rolebinding-dev
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: manager-role-dev  # Use development role
-subjects:
-- kind: ServiceAccount
-  name: beskar7-controller-manager
-  namespace: beskar7-system 
+# Helm values for a development install. Apply with:
+#   helm install beskar7 beskar7/beskar7 -n beskar7-system --create-namespace -f values-dev.yaml
+#
+# values-dev.yaml:
+#
+#   webhook:
+#     enabled: false              # skip the Beskar7Cluster webhook in dev
+#   certManager:
+#     enabled: true               # callback endpoint still needs serving certs
+#   bootstrap:
+#     urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+#   controllerManager:
+#     # Verbose logging via the controller-runtime zap dev encoder. Adds stack
+#     # traces from Warn and a console (not JSON) encoder.
+#     extraArgs:
+#       - --zap-devel=true

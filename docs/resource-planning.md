@@ -169,14 +169,17 @@ Memory Limit = (Host Count × 0.5MB) + (Webhook Concurrency × 10MB) + 100MB (ba
 Configure reconciliation intervals based on your needs:
 
 ```yaml
+# Real flags accepted by cmd/manager/main.go in v0.4.0-alpha.
 args:
-- --leader-elect
-- --enable-security-monitoring=true
-- --metrics-bind-address=:8080
+- --leader-elect=true
+- --metrics-bind-address=:8443
+- --secure-metrics=true
 - --health-probe-bind-address=:8081
-- --max-concurrent-reconciles=5          # Increase for large deployments
-- --reconciliation-interval=30s           # Adjust based on requirements
+- --inspection-port=8082
+- --bootstrap-url-base=https://beskar7-controller-manager.beskar7-system.svc:8082
 ```
+
+There is no `--max-concurrent-reconciles*` or `--reconciliation-interval` flag; the controller-runtime defaults apply (one reconciler per controller; per-resource requeue intervals encoded in the controllers themselves). Per-controller concurrency would have to be raised in code in `controllers/<kind>_controller.go:SetupWithManager`.
 
 ### Health Check Tuning
 
