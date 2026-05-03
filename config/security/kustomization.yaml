@@ -1,5 +1,4 @@
 resources:
-- security-policy.yaml
 - network-policy.yaml
 
 commonLabels:

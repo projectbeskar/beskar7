@@ -2,7 +2,7 @@
 
 > **Read this file before starting any non-trivial change.** Update it whenever you close a tracked item or discover a new one. This is the project's working memory between Claude sessions.
 >
-> **Last meaningful update:** 2026-05-02 — Phase 4 chart parity (PR-4): BLOCK-3, BLOCK-4, BLOCK-5 all closed. Chart CRDs regenerated from `config/crd/bases/`; stray `_.yaml` deleted; `sync-chart-crds` and `manifests-and-sync` Makefile targets added to prevent future drift. `--enable-webhook=true` now wired in Deployment args when `webhook.enabled=true`; `--inspection-cert-dir` always set (callback server requires TLS regardless of webhook). New `webhook-configuration.yaml` template ships MutatingWebhookConfiguration and ValidatingWebhookConfiguration for Beskar7Cluster only (no machine/machinetemplate paths — they have no Go handlers). New `service-callback.yaml` always creates a `<release>-controller-manager` Service on port 8082 (matches the default `bootstrap.urlBase`). NetworkPolicy ingress rule added for 8082. Certificate and ClusterIssuer templates de-coupled from `webhook.enabled` (now gated on `certManager.enabled` alone, because the callback server needs TLS even without webhook admission). Cert volume mount made unconditional in the Deployment. `Chart.yaml` trailing garbage fixed. Orphan top-level `image:`, `replicaCount:`, `service:`, `resources:` removed from `values.yaml`; `webhook.service.namespace` hardcode removed. `defaultMode` corrected to 256 (0400 octal) to match kustomize. The v0.4-alpha is now functionally installable end-to-end via Helm.
+> **Last meaningful update:** 2026-05-02 — PR-6.1 deletes the dead `internal/coordination/` and `internal/security/` packages per D-001; companion cleanup removes the orphan provisioning-queue + claim-coordinator metrics from `internal/metrics/metrics.go` and the unread `config/security/security-policy.yaml` ConfigMap. Phase 6 fully closed. **Phase 4 chart parity (PR-4)**: BLOCK-3, BLOCK-4, BLOCK-5 all closed. Chart CRDs regenerated from `config/crd/bases/`; stray `_.yaml` deleted; `sync-chart-crds` and `manifests-and-sync` Makefile targets added to prevent future drift. `--enable-webhook=true` now wired in Deployment args when `webhook.enabled=true`; `--inspection-cert-dir` always set (callback server requires TLS regardless of webhook). New `webhook-configuration.yaml` template ships MutatingWebhookConfiguration and ValidatingWebhookConfiguration for Beskar7Cluster only (no machine/machinetemplate paths — they have no Go handlers). New `service-callback.yaml` always creates a `<release>-controller-manager` Service on port 8082 (matches the default `bootstrap.urlBase`). NetworkPolicy ingress rule added for 8082. Certificate and ClusterIssuer templates de-coupled from `webhook.enabled` (now gated on `certManager.enabled` alone, because the callback server needs TLS even without webhook admission). Cert volume mount made unconditional in the Deployment. `Chart.yaml` trailing garbage fixed. Orphan top-level `image:`, `replicaCount:`, `service:`, `resources:` removed from `values.yaml`; `webhook.service.namespace` hardcode removed. `defaultMode` corrected to 256 (0400 octal) to match kustomize. The v0.4-alpha is now functionally installable end-to-end via Helm.
 
 ---
 
@@ -43,10 +43,7 @@ Three reconcilers + one HTTP handler + one webhook:
 - `InspectionHandler` (`controllers/inspection_handler.go`) — HTTP server on `:8082` accepting POSTs from the inspection image.
 - `Beskar7ClusterWebhook` (`api/v1beta1/webhooks/beskar7cluster_webhook.go`) — only webhook in the codebase.
 
-Two unwired internal packages (decision pending, see Decisions log entry D-001):
-
-- `internal/coordination/provisioning_queue.go` (~580 LOC) — was meant for per-BMC throttling.
-- `internal/security/{monitor,rbac_validator,tls_validator}.go` (~1300 LOC) — was meant for runtime security checks.
+`internal/auth/` provides per-host bearer-token primitives (D-004) consumed by the inspection POST and bootstrap GET handlers. `internal/redfish/` wraps the gofish client. `internal/metrics/` registers Prometheus instrumentation. `internal/coordination/` and `internal/security/` previously held unwired scaffolding and were deleted in PR-6.1 per D-001.
 
 ---
 
@@ -96,11 +93,6 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 - `inspection_handler.go:108` discards request context (`ctx := context.Background()`).
 - No exponential backoff on PhysicalHost reconcile failures — misconfigured address pings BMC every 60s indefinitely.
 
-### Dead code (decision pending)
-
-- `internal/coordination/provisioning_queue.go` — never imported. Worker stubs `time.Sleep` and return success. See D-001.
-- `internal/security/{monitor,rbac_validator,tls_validator}.go` — never instantiated by main. Advertised in `docs/security/` as enforcing controls. See D-001.
-
 ---
 
 ## In flight
@@ -119,6 +111,7 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 
 | Item | Resolution | Date |
 |---|---|---|
+| Phase 6 / D-001 — dead-code packages deleted | PR-6.1: Deleted `internal/coordination/` (provisioning queue, ~580 LOC, never imported, worker stubs `time.Sleep` and return success) and `internal/security/{monitor,rbac_validator,tls_validator}.go` (~1300 LOC, never instantiated by `cmd/manager/main.go`). Companion cleanup: stripped orphan provisioning-queue + claim-coordinator metric definitions, registrations, and `Record*` helpers from `internal/metrics/metrics.go` (no external callers). Deleted unread `config/security/security-policy.yaml` ConfigMap and de-registered it from `config/security/kustomization.yaml` (live `network-policy.yaml` retained). Verified: `go build ./...`, `go vet ./...`, `go test -race ./...`, `gofmt -s -d` all clean; `kustomize build config/default` still produces the expected NetworkPolicy. The "comprehensive security framework" advertised in `docs/security/` is now formally a docs-only overclaim — Phase 9 doc sweep will rewrite. | 2026-05-02 |
 | BLOCK-3 | PR-4: Deleted stray `charts/beskar7/crds/_.yaml`; copied all four CRDs from `config/crd/bases/` to `charts/beskar7/crds/`. Added `sync-chart-crds` Makefile target and `manifests-and-sync` convenience target to prevent future drift. | 2026-05-02 |
 | BLOCK-4 | PR-4: Added `--enable-webhook=true` to Deployment args (gated on `webhook.enabled`). Added `--inspection-cert-dir=/tmp/k8s-webhook-server/serving-certs` unconditionally (callback server requires TLS). Created `charts/beskar7/templates/webhook-configuration.yaml` shipping MWC + VWC for Beskar7Cluster only (the sole webhook handler in the codebase). | 2026-05-02 |
 | BLOCK-5 | PR-4: Created `charts/beskar7/templates/service-callback.yaml` — a new always-on Service named `<release>-controller-manager` exposing port 8082, matching the default `bootstrap.urlBase`. Added port 8082 ingress rule to NetworkPolicy with an explanatory comment (bearer-token + TLS provide access control; bare-metal IPs cannot be allow-listed). | 2026-05-02 |
@@ -152,8 +145,8 @@ All of these need a doc rewrite when the v0.4 doc sweep happens. Tracked togethe
 - **Date**: 2026-05-01.
 - **Decision**: Delete `internal/coordination/` and `internal/security/` in their entirety. Replace any future per-BMC throttling need with `MaxConcurrentReconciles` tuning + a small per-BMC `sync.Mutex` map at the call site, when measured to be necessary. Replace the security-monitor "controls" with real enforcement at the points they purport to cover (RBAC: a tightened `role.yaml`; TLS: a real CA bundle plumbed through `gofish_client.go`; runtime audit: existing controller-runtime structured logs + Prometheus metrics).
 - **Rationale**: Both packages are unreferenced from `cmd/manager/main.go`; the queue's worker bodies are stubs that `time.Sleep` and return success; the security packages are observation, not enforcement. Wiring them correctly requires design we have not done. Keeping them blocks the security-docs rewrite and rewards continued overclaiming. Cost of deletion is low (no callers); cost of keeping is ongoing drift.
-- **Implementation**: PR-6.1 in the v0.4 stabilization plan (D-002).
-- **Status**: closed.
+- **Implementation**: PR-6.1 (commit on `pr-6.1-delete-dead-code` branch) — both directories removed; orphan provisioning-queue and claim-coordinator metric definitions/registrations/helpers stripped from `internal/metrics/metrics.go`; the unread `config/security/security-policy.yaml` ConfigMap deleted and de-registered from `config/security/kustomization.yaml`. Live `network-policy.yaml` retained.
+- **Status**: closed and implemented (2026-05-02).
 
 ### D-002 — v0.4 stabilization plan
 
