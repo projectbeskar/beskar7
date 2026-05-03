@@ -81,8 +81,20 @@ func NewPhysicalHostReconciler(
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/finalizers,verbs=update
+// Secret access is read-only and restricted to BMC credential lookup
+// (see getRedfishCredentials). list/watch are required because
+// SetupWithManager registers a .Watches(&corev1.Secret{}, ...) informer
+// to trigger reconciles on credential rotation; controller-runtime's
+// cached client backs that informer with a list+watch on the cluster.
+// SEC-2 (D-007): the cluster-wide list/watch on Secret is the residual
+// scope after PR-7. Eliminating it requires either dropping the watch
+// or replacing it with a label-selected partial cache (v0.5 follow-up).
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
-//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+// ConfigMaps are only ever fetched by name (the inspection-result
+// ConfigMap referenced from the InspectionResultAnnotation) and
+// upserted/deleted by the inspection handler. There is no informer over
+// ConfigMaps, so list/watch are intentionally omitted (SEC-2 / D-007).
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles PhysicalHost reconciliation.

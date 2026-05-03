@@ -89,7 +89,18 @@ type Beskar7MachineReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines/finalizers,verbs=update
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch;patch
-//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// Secret access in this controller is by name only:
+//   - getRedfishClientForHost: r.Get on the BMC credentials Secret named
+//     by host.Spec.RedfishConnection.CredentialsSecretRef.
+//   - reconcileBootstrapData: r.Get on the bootstrap-data Secret named by
+//     machine.Spec.Bootstrap.DataSecretName.
+//   - upsertBootstrapTokenSecret: CreateOrUpdate on the per-host bootstrap
+//     token Secret (deterministic name; PhysicalHost-owned).
+// No code path performs List or Watch over Secrets here, so list/watch
+// are intentionally omitted (SEC-2 / D-007). The aggregate ClusterRole
+// will still grant secrets:list,watch because PhysicalHostReconciler's
+// SetupWithManager registers a Secret informer.
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
 
 // Reconcile handles Beskar7Machine reconciliation for iPXE + inspection workflow.
 func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Result, reterr error) {
