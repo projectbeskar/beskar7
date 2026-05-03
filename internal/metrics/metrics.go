@@ -406,9 +406,15 @@ func RecordNetworkAddress(namespace string, outcome ProvisioningOutcome, errorTy
 	PhysicalHostProvisioningTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
 }
 
-// RecordPowerOperation records a power operation
-func RecordPowerOperation(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	operation := PowerOperationOn // Default, could be parameterized if needed
+// RecordPowerOperation records a power operation against the
+// PhysicalHostPowerOperationsTotal counter, parameterised by the actual
+// operation type. Previously the helper hardcoded PowerOperationOn so every
+// call landed on the "On" label regardless of intent — by-design dead today
+// (no external callers) but actively wrong if the helper were ever wired up.
+// errorType is currently unused; retained on the signature for API parity
+// with the other Record* helpers and for a future error-type label.
+func RecordPowerOperation(operation PowerOperation, namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
+	_ = errorType
 	RecordPhysicalHostPowerOperation(operation, namespace, outcome)
 }
 

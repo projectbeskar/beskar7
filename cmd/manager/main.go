@@ -109,8 +109,14 @@ func main() {
 			"Defaults to the webhook cert dir; both endpoints are served from the same Pod and "+
 			"can share a cert covering the controller-manager Service DNS name.")
 
+	// Default to production-safe zap config: structured JSON output, no stack
+	// traces below Error, level-based encoding. Operators who want
+	// development-style output (console encoder, stack traces from Warn,
+	// uncolored timestamps) opt in with --zap-devel=true. opts.BindFlags
+	// registers --zap-devel and the rest of the controller-runtime zap flags;
+	// the field below sets the default that flag would otherwise pick up.
 	opts := zap.Options{
-		Development: true,
+		Development: false,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
