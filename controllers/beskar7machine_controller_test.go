@@ -13,10 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	conditions "sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -55,10 +58,12 @@ var _ = Describe("Beskar7MachineReconciler factory defaulting", func() {
 
 var _ = Describe("Beskar7Machine Controller", func() {
 
-	const (
-		Timeout  = time.Second * 10
-		Interval = time.Millisecond * 250
-	)
+	// Note: the Timeout / Interval constants previously declared at this scope
+	// were used by the v0.3-era PIt blocks that PR-10 converted or deleted.
+	// The remaining specs in this Describe either don't need Eventually polling
+	// or use literal "5s" / "100ms" timeouts inline. The block-scoped Timeout /
+	// Interval constants below (around line 951) belong to the bootstrap-data
+	// Describe and remain in use.
 
 	Context("When reconciling a Beskar7Machine", func() {
 		var beskar7Machine *infrastructurev1beta1.Beskar7Machine
@@ -209,116 +214,67 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(after.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect"))
 		})
 
-		PIt("[SKIP - Hardware Testing] Should transition host to Inspecting state", func() {
-			By("Creating and claiming machine")
+		// "[SKIP - Hardware Testing] Should transition host to Inspecting state"
+		// was deleted: the spec immediately above
+		// ("Should not write to PhysicalHost.Status from Beskar7Machine controller")
+		// covers the same surface — the Beskar7Machine controller signals the
+		// transition via the InspectionRequestAnnotation rather than writing
+		// PhysicalHost.Status itself (PR-2.1 / BUG-1). Asserting the post-
+		// annotation StateInspecting transition belongs in the PhysicalHost
+		// controller test (where applyInspectionRequest is exercised).
+
+		// Rewritten from "[SKIP - Hardware Testing] Should handle inspection completion".
+		// The original spec referenced the removed StateProvisioned constant. In
+		// v0.4 the flow is: validateInspectionReport runs against the report,
+		// passes hardware checks, and signals "inspect-complete" to PhysicalHost
+		// via setInspectionRequestAnnotation. PhysicalHost owns its status
+		// (PR-2.1 / BUG-1), so we assert the annotation handoff, not a
+		// direct StateReady write.
+		It("Should signal inspect-complete via annotation when validateInspectionReport passes hardware checks", func() {
+			beskar7Machine.Namespace = testNs.Name
+			beskar7Machine.Spec.HardwareRequirements = &infrastructurev1beta1.HardwareRequirements{
+				MinCPUCores: 8,
+				MinMemoryGB: 16,
+				MinDiskGB:   100,
+			}
 			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
 
-			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Reconciling again to start inspection")
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Verifying host transitioned to Inspecting")
-			Eventually(func(g Gomega) {
-				inspectingHost := &infrastructurev1beta1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, inspectingHost)).To(Succeed())
-				g.Expect(inspectingHost.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
-				g.Expect(inspectingHost.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPending))
-			}, Timeout, Interval).Should(Succeed())
-		})
-
-		PIt("[SKIP - Hardware Testing] Should handle inspection completion", func() {
-			By("Creating and claiming machine")
-			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
-
-			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Simulating inspection complete")
-			inspectedHost := &infrastructurev1beta1.PhysicalHost{}
-			hostKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-			Expect(k8sClient.Get(ctx, hostKey, inspectedHost)).To(Succeed())
-
-			inspectedHost.Status.InspectionPhase = infrastructurev1beta1.InspectionComplete
-			inspectedHost.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
+			// Build a report that comfortably satisfies the requirements.
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
+			physicalHost.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
 				Timestamp:    metav1.Now(),
 				Manufacturer: "Dell Inc.",
-				Model:        "PowerEdge R750",
-				SerialNumber: "ABC123",
-				CPUs: []infrastructurev1beta1.CPUInfo{
-					{
-						ID:        "0",
-						Vendor:    "Intel",
-						Model:     "Xeon Gold 6254",
-						Cores:     18,
-						Threads:   36,
-						Frequency: "3.1GHz",
-					},
-				},
-				Memory: []infrastructurev1beta1.MemoryInfo{
-					{
-						ID:       "DIMM0",
-						Type:     "DDR4",
-						Capacity: "32GB",
-						Speed:    "3200MHz",
-					},
-				},
+				Model:        "PowerEdge R650",
+				CPUs:         []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 18, Threads: 36}},
+				Memory:       []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "32GB"}},
+				Disks:        []infrastructurev1beta1.DiskInfo{{Name: "sda", SizeGB: 500}},
 			}
-			Expect(k8sClient.Status().Update(ctx, inspectedHost)).To(Succeed())
+			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
-			By("Reconciling after inspection complete")
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, beskar7Machine, physicalHost)
+			Expect(err).NotTo(HaveOccurred(), "passing hardware checks must not error")
+			Expect(result.Requeue).To(BeTrue(), "post-inspection should requeue once to observe the new state")
 
-			By("Verifying machine marked as provisioned")
-			Eventually(func(g Gomega) {
-				provisionedMachine := &infrastructurev1beta1.Beskar7Machine{}
-				g.Expect(k8sClient.Get(ctx, machineLookupKey, provisionedMachine)).To(Succeed())
-				g.Expect(provisionedMachine.Status.Ready).To(BeTrue())
-				g.Expect(conditions.IsTrue(provisionedMachine, infrastructurev1beta1.InfrastructureReadyCondition)).To(BeTrue())
-			}, Timeout, Interval).Should(Succeed())
+			// FailureReason must NOT be set on a passing report.
+			Expect(beskar7Machine.Status.FailureReason).To(BeNil(),
+				"successful validation must leave FailureReason unset")
 
-			By("Verifying host transitioned to Provisioned")
-			Eventually(func(g Gomega) {
-				provisionedHost := &infrastructurev1beta1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, hostKey, provisionedHost)).To(Succeed())
-				g.Expect(provisionedHost.Status.State).To(Equal(infrastructurev1beta1.StateProvisioned))
-			}, Timeout, Interval).Should(Succeed())
+			// Annotation handoff: validateInspectionReport calls
+			// setInspectionRequestAnnotation("inspect-complete") on success.
+			updated := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, updated)).To(Succeed())
+			Expect(updated.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"),
+				"validateInspectionReport must signal inspect-complete via annotation; PhysicalHost owns the status transition")
 		})
 
-		PIt("[SKIP - Hardware Testing] Should handle no available hosts", func() {
-			By("Making all hosts unavailable")
-			unavailableHost := physicalHost.DeepCopy()
-			unavailableHost.Status.State = infrastructurev1beta1.StateInUse
-			unavailableHost.Status.Ready = false
-			Expect(k8sClient.Status().Update(ctx, unavailableHost)).To(Succeed())
-
-			By("Creating machine when no hosts available")
-			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
-
-			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
-
-			By("Reconciling should requeue")
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-
-			By("Verifying condition reflects no hosts available")
-			Eventually(func(g Gomega) {
-				waitingMachine := &infrastructurev1beta1.Beskar7Machine{}
-				g.Expect(k8sClient.Get(ctx, machineLookupKey, waitingMachine)).To(Succeed())
-				cond := conditions.Get(waitingMachine, infrastructurev1beta1.MachineProvisionedCondition)
-				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				g.Expect(cond.Reason).To(Equal(infrastructurev1beta1.WaitingForPhysicalHostReason))
-			}, Timeout, Interval).Should(Succeed())
-		})
+		// Note: "[SKIP - Hardware Testing] Should handle no available hosts"
+		// (the original PIt) is now covered by the
+		// "Should return no host and no error when zero PhysicalHosts are Available"
+		// spec in the race-test Describe block below. The race-test block has a
+		// manager-backed cache with PhysicalHostStateIndex registered, which is
+		// required by the client.MatchingFields filter that
+		// findAndClaimOrGetAssociatedHost uses.
 
 		// Converted from PIt "[SKIP - Hardware Testing] Should handle deletion and release host":
 		// The deletion path no longer requires a real CAPI Machine owner — reconcileDelete is
@@ -551,8 +507,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
 		})
 
-		PIt("[SKIP - Hardware Testing] Should handle pause annotation", func() {
-			By("Creating paused machine")
+		// Converted from PIt "[SKIP - Hardware Testing] Should handle pause annotation".
+		// pause is honored on the Beskar7Machine path (controllers/utils.go isPaused
+		// is called from Reconcile at controllers/beskar7machine_controller.go:123).
+		// When paused, Reconcile returns immediately with no error and no requeue,
+		// and never reaches the claim path.
+		It("Should skip reconciliation when the pause annotation is set", func() {
+			beskar7Machine.Namespace = testNs.Name
 			beskar7Machine.Annotations = map[string]string{
 				clusterv1.PausedAnnotation: "true",
 			}
@@ -560,16 +521,15 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
 
-			By("Reconciling paused machine")
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result).To(Equal(ctrl.Result{}))
+			Expect(result).To(Equal(ctrl.Result{}), "paused reconcile must return zero Result")
 
-			By("Verifying no host was claimed")
+			// The PhysicalHost must remain unclaimed: paused Reconcile never
+			// reaches findAndClaimOrGetAssociatedHost.
 			unchangedHost := &infrastructurev1beta1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, unchangedHost)).To(Succeed())
-			Expect(unchangedHost.Spec.ConsumerRef).To(BeNil())
-			Expect(unchangedHost.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, unchangedHost)).To(Succeed())
+			Expect(unchangedHost.Spec.ConsumerRef).To(BeNil(), "paused reconcile must not claim a host")
 		})
 
 		// Converted from "[SKIP - Hardware Testing] Should validate hardware requirements".
@@ -765,11 +725,17 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 		var err error
+		skipNameValidation := true
 		mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 			Scheme: k8sClient.Scheme(),
 			// Disable the metrics server and health probes — not needed in tests.
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: "0",
+			// Multiple specs in this Describe each spin up a fresh manager and
+			// register the same Beskar7Machine controller name; without this,
+			// the second BeforeEach errors on "controller with name X already
+			// exists" because controller-runtime's metric registry is global.
+			Controller: config.Controller{SkipNameValidation: &skipNameValidation},
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -925,6 +891,58 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		} else {
 			Expect(machineA.Spec.ProviderID).To(BeNil(), "losing machine-a must have no ProviderID")
 		}
+	})
+
+})
+
+// Converted from PIt "[SKIP - Hardware Testing] Should handle no available hosts".
+// Uses controller-runtime's fake client with the PhysicalHostStateIndex field
+// indexer registered. This is lighter than the manager-backed setup the race
+// test uses, and importantly it avoids the controller-name collision that
+// happens when multiple managers register the same controller in the same
+// process.
+var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func() {
+	It("Should return no host and no error when zero PhysicalHosts are Available", func() {
+		host := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-avail-host", Namespace: "default"},
+			Status:     infrastructurev1beta1.PhysicalHostStatus{State: infrastructurev1beta1.StateInUse},
+		}
+		machine := &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "no-avail-machine", Namespace: "default"},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot/inspect.ipxe",
+				TargetImageURL:     "http://boot/kairos.tar.gz",
+			},
+		}
+
+		fakeC := fake.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithObjects(machine).
+			WithStatusSubresource(host).
+			// Same indexer SetupWithManager registers on the real cache.
+			WithIndex(&infrastructurev1beta1.PhysicalHost{}, PhysicalHostStateIndex, func(obj client.Object) []string {
+				h, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+				if !ok {
+					return nil
+				}
+				return []string{string(h.Status.State)}
+			}).
+			Build()
+		// Add the host with its status set; fake client requires the status
+		// to be applied via the status subresource path.
+		Expect(fakeC.Create(context.Background(), host)).To(Succeed())
+		Expect(fakeC.Status().Update(context.Background(), host)).To(Succeed())
+
+		r := &Beskar7MachineReconciler{
+			Client: fakeC,
+			Scheme: scheme.Scheme,
+			Log:    ctrl.Log.WithName("no-avail-test"),
+		}
+
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, machine)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeNil(), "no Available host means no host to return")
+		Expect(result).To(Equal(ctrl.Result{}), "the helper does not requeue itself; the caller does")
 	})
 })
 
