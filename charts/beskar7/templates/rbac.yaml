@@ -6,10 +6,34 @@ metadata:
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
 rules:
+# ConfigMaps: only fetched by name (inspection-result handoff) and
+# create/update/delete on the same. No informer; list/watch intentionally
+# omitted (SEC-2 / D-007).
 - apiGroups:
   - ""
   resources:
   - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+# Secrets: get for BMC credentials and bootstrap data (by name);
+# create/update/patch/delete for the per-host bootstrap-token Secret.
+# list/watch are required because PhysicalHostReconciler.SetupWithManager
+# registers a .Watches(&corev1.Secret{}, ...) informer for credential
+# rotation. SEC-2 residual scope after PR-7 (D-007).
+- apiGroups:
+  - ""
+  resources:
   - secrets
   verbs:
   - create
@@ -19,13 +43,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - patch
 - apiGroups:
   - cluster.x-k8s.io
   resources:
