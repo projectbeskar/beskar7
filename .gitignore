@@ -26,6 +26,10 @@ manager
 .idea/
 .vscode/
 
+# Local development tooling configuration (per-developer, not shared)
+/.claude/
+/CLAUDE.md
+
 # OS generated files
 .DS_Store
 ._*
