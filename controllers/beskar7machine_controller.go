@@ -503,17 +503,23 @@ func (r *Beskar7MachineReconciler) setBootstrapTokenAnnotation(
 func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Monitoring inspection phase", "inspectionPhase", physicalHost.Status.InspectionPhase)
 
-	// Check for timeout
+	// Check for timeout. Inspection timeout is terminal: we cannot recover
+	// automatically — the operator must investigate (likely an iPXE
+	// misconfiguration or unreachable callback endpoint) and either
+	// delete-and-recreate the Beskar7Machine or fix the iPXE setup.
 	if physicalHost.Status.InspectionTimestamp != nil {
 		elapsed := time.Since(physicalHost.Status.InspectionTimestamp.Time)
 		if elapsed > DefaultInspectionTimeout {
-			logger.Error(nil, "Inspection timeout", "elapsed", elapsed)
-			// Signal the PhysicalHost controller to record the timeout in Status.
-			// We patch only spec/annotations here; the PhysicalHost controller owns status.
+			logger.Info("Inspection timed out (terminal)", "elapsed", elapsed, "timeout", DefaultInspectionTimeout)
+			// Best-effort signal to the PhysicalHost controller. Don't block the
+			// terminal marking on the annotation patch — the PhysicalHost catches
+			// up on its next reconcile regardless.
 			if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "timeout"); err != nil {
 				logger.Error(err, "Failed to set inspection timeout annotation")
 			}
-			return ctrl.Result{}, fmt.Errorf("inspection timeout")
+			msg := fmt.Sprintf("Inspection did not complete within %s", DefaultInspectionTimeout)
+			r.markTerminalFailure(b7machine, infrastructurev1beta1.InspectionTimedOutReason, msg)
+			return ctrl.Result{}, nil
 		}
 	}
 
@@ -548,10 +554,16 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 			totalCores += cpu.Cores
 		}
 
+		// Hardware-validation failures are terminal. The BMC's hardware does not
+		// change at runtime; requeueing forever would just churn. Operator must
+		// lower the requirements, allocate to a different host, or replace the
+		// hardware. CAPI surfaces FailureReason/FailureMessage in
+		// `kubectl describe machine`.
 		if reqs.MinCPUCores > 0 && totalCores < reqs.MinCPUCores {
-			err := fmt.Errorf("insufficient CPU cores: found %d, required %d", totalCores, reqs.MinCPUCores)
-			logger.Error(err, "Hardware validation failed")
-			return ctrl.Result{}, err
+			msg := fmt.Sprintf("insufficient CPU cores: found %d, required %d", totalCores, reqs.MinCPUCores)
+			logger.Info("Hardware validation failed (terminal)", "check", "MinCPUCores", "found", totalCores, "required", reqs.MinCPUCores)
+			r.markTerminalFailure(b7machine, infrastructurev1beta1.HardwareRequirementsNotMetReason, msg)
+			return ctrl.Result{}, nil
 		}
 
 		// Calculate total memory from all DIMMs
@@ -566,9 +578,10 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		}
 
 		if reqs.MinMemoryGB > 0 && totalMemoryGB < reqs.MinMemoryGB {
-			err := fmt.Errorf("insufficient memory: found %d GB, required %d GB", totalMemoryGB, reqs.MinMemoryGB)
-			logger.Error(err, "Hardware validation failed")
-			return ctrl.Result{}, err
+			msg := fmt.Sprintf("insufficient memory: found %d GB, required %d GB", totalMemoryGB, reqs.MinMemoryGB)
+			logger.Info("Hardware validation failed (terminal)", "check", "MinMemoryGB", "found", totalMemoryGB, "required", reqs.MinMemoryGB)
+			r.markTerminalFailure(b7machine, infrastructurev1beta1.HardwareRequirementsNotMetReason, msg)
+			return ctrl.Result{}, nil
 		}
 
 		if reqs.MinDiskGB > 0 {
@@ -577,9 +590,10 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 				totalDisk += disk.SizeGB
 			}
 			if totalDisk < reqs.MinDiskGB {
-				err := fmt.Errorf("insufficient disk space: found %d GB, required %d GB", totalDisk, reqs.MinDiskGB)
-				logger.Error(err, "Hardware validation failed")
-				return ctrl.Result{}, err
+				msg := fmt.Sprintf("insufficient disk space: found %d GB, required %d GB", totalDisk, reqs.MinDiskGB)
+				logger.Info("Hardware validation failed (terminal)", "check", "MinDiskGB", "found", totalDisk, "required", reqs.MinDiskGB)
+				r.markTerminalFailure(b7machine, infrastructurev1beta1.HardwareRequirementsNotMetReason, msg)
+				return ctrl.Result{}, nil
 			}
 		}
 	}
@@ -758,6 +772,26 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	if err := rfClient.SetPowerState(ctx, redfish.OffPowerState); err != nil {
 		logger.Info("Failed to graceful power-off during release; continuing", "err", err)
 	}
+}
+
+// markTerminalFailure sets FailureReason/FailureMessage on the Beskar7Machine,
+// flips Status.Ready to false and Phase to "Failed", and marks
+// InfrastructureReadyCondition=False with the same reason at Severity=Error.
+// CAPI surfaces FailureReason/FailureMessage in `kubectl describe machine`.
+//
+// Once set, FailureReason indicates the resource needs operator intervention.
+// Subsequent reconciles must NOT clear it — clearing on success would mask
+// history and the operator wouldn't know the resource ever failed. Callers
+// should return ctrl.Result{}, nil after invoking this helper to stop the
+// requeue cycle (CAPI does not auto-recover from FailureReason).
+func (r *Beskar7MachineReconciler) markTerminalFailure(b7machine *infrastructurev1beta1.Beskar7Machine, reason, message string) {
+	b7machine.Status.FailureReason = &reason
+	b7machine.Status.FailureMessage = &message
+	b7machine.Status.Ready = false
+	phase := "Failed"
+	b7machine.Status.Phase = &phase
+	conditions.MarkFalse(b7machine, infrastructurev1beta1.InfrastructureReadyCondition,
+		reason, clusterv1.ConditionSeverityError, "%s", message)
 }
 
 // setInspectionRequestAnnotation patches only the annotations of a PhysicalHost to request
