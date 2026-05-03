@@ -3,10 +3,10 @@ package webhooks
 import (
 	"context"
 	"net"
-	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -125,19 +125,21 @@ func (webhook *Beskar7ClusterWebhook) validateControlPlaneEndpoint(endpoint clus
 func (webhook *Beskar7ClusterWebhook) validateHost(host string, fieldPath *field.Path) field.ErrorList {
 	var allErrs field.ErrorList
 
-	// Check if it's a valid IP address
+	// IPv4 / IPv6 literal — net.ParseIP handles both. Brackets-around-IPv6
+	// (e.g. "[::1]") aren't accepted here because clusterv1.APIEndpoint.Host
+	// is the host portion only; brackets are an authority-component construct.
 	if ip := net.ParseIP(host); ip != nil {
-		// Valid IP address
 		return allErrs
 	}
 
-	// Check if it's a valid hostname/FQDN
-	if !webhook.isValidHostname(host) {
-		allErrs = append(allErrs, field.Invalid(
-			fieldPath,
-			host,
-			"must be a valid IP address or hostname",
-		))
+	// Otherwise it must be a DNS-1123 subdomain (RFC 1123 with the
+	// underscore-rejection clarification). validation.IsDNS1123Subdomain
+	// returns a list of human-readable problems; concatenate them into a
+	// single field.Error detail so the operator sees the actual reason
+	// rather than a generic "must be a valid hostname".
+	if errs := validation.IsDNS1123Subdomain(host); len(errs) > 0 {
+		detail := "must be a valid IP address or DNS subdomain (RFC 1123): " + errs[0]
+		allErrs = append(allErrs, field.Invalid(fieldPath, host, detail))
 	}
 
 	return allErrs
@@ -159,42 +161,6 @@ func (webhook *Beskar7ClusterWebhook) validatePort(port int32, fieldPath *field.
 	// but are not considered validation errors
 
 	return allErrs
-}
-
-func (webhook *Beskar7ClusterWebhook) isValidHostname(hostname string) bool {
-	// Basic hostname validation
-	if hostname == "" || len(hostname) > 253 {
-		return false
-	}
-
-	// Check for invalid characters like consecutive dots
-	if strings.Contains(hostname, "..") {
-		return false
-	}
-
-	// Check each label in the hostname
-	labels := strings.Split(hostname, ".")
-	for _, label := range labels {
-		if !webhook.isValidHostnameLabel(label) {
-			return false
-		}
-	}
-
-	return true
-}
-
-// isValidHostnameLabel validates a single hostname label
-func (webhook *Beskar7ClusterWebhook) isValidHostnameLabel(label string) bool {
-	if label == "" || len(label) > 63 {
-		return false
-	}
-	// Check for valid characters (alphanumeric and hyphens, but not starting/ending with hyphen)
-	for i, r := range label {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && (r != '-' || i == 0 || i == len(label)-1) {
-			return false
-		}
-	}
-	return true
 }
 
 func (webhook *Beskar7ClusterWebhook) defaultBeskar7Cluster(cluster *infrav1beta1.Beskar7Cluster) error {

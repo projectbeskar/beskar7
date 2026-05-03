@@ -135,7 +135,8 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 
 			_, err := webhook.ValidateCreate(ctx, cluster)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("must be a valid IP address or hostname"))
+			// PR-8.1 reworded: "must be a valid IP address or DNS subdomain (RFC 1123): <reason>".
+			Expect(err.Error()).To(ContainSubstring("must be a valid IP address or DNS subdomain"))
 		})
 
 		It("should reject invalid port (too low)", func() {
