@@ -1,58 +1,60 @@
 # Beskar7Cluster
 
-The `Beskar7Cluster` resource represents a cluster in the Beskar7 infrastructure provider.
+`Beskar7Cluster` is the Beskar7 CRD that implements the CAPI infrastructure-cluster contract. The reconciler that owns it is `controllers/beskar7cluster_controller.go`. It is the only Beskar7 resource with an admission webhook (`api/v1beta1/webhooks/beskar7cluster_webhook.go`).
 
-## API Version
+For the full field reference, see [API Reference: Beskar7Cluster](api-reference.md#beskar7cluster). This page covers operational behavior — what the controller derives, when it sets which condition.
 
-`infrastructure.cluster.x-k8s.io/v1beta1`
+## Identity
 
-## Kind
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **Kind:** `Beskar7Cluster`
+- **Scope:** Namespaced
+- **Categories:** `cluster-api`
 
-`Beskar7Cluster`
+## Spec
 
-## Short Name
+```yaml
+spec:
+  controlPlaneEndpoint:
+    host: "10.0.1.10"   # optional; controller derives if unset
+    port: 6443          # optional
+```
 
-`b7c`
+## What the reconciler does
 
-## Namespaced
+### Control-plane endpoint
 
-Yes
+The controller derives the endpoint by:
 
-## Categories
+1. Listing CAPI `Machine` objects with the `cluster.x-k8s.io/cluster-name=<this-cluster>` label and the `cluster.x-k8s.io/control-plane` label.
+2. Picking a `Machine` whose `InfrastructureRef` points at a Beskar7Machine and whose status reports an `InternalIP` (with `ExternalIP` as fallback).
+3. Writing that address to `Status.ControlPlaneEndpoint`.
 
-- cluster-api
+If `Spec.ControlPlaneEndpoint.Host` is non-empty, the controller honors it authoritatively and skips discovery. If only `Spec.ControlPlaneEndpoint.Port` is set, discovery still finds the host but the user's port wins. The default port when neither is supplied is `6443`.
 
-## Specification
+### Failure domains
 
-### Required Fields
+The controller lists `PhysicalHost` resources in the same namespace, extracts unique values from the `topology.kubernetes.io/zone` label, and populates `Status.FailureDomains`:
 
-#### controlPlaneEndpoint
-- **host** (string, required): The hostname or IP address of the control plane endpoint
-- **port** (integer, required): The port number of the control plane endpoint
+```yaml
+metadata:
+  labels:
+    topology.kubernetes.io/zone: rack-1
+```
 
-### Optional Fields
+CAPI uses these for placement.
 
-#### failureDomains
-Map of failure domains with their attributes:
-- **attributes** (map[string]string): Key-value pairs of domain attributes
-- **controlPlane** (boolean): Whether this domain can host control plane nodes
+## Conditions
 
-## Status
+| Type | Meaning | Common reasons |
+|---|---|---|
+| `ControlPlaneEndpointReady` | The endpoint is populated. | `ControlPlaneEndpointNotSet`. |
 
-### ready
-- **ready** (boolean): Indicates if the cluster infrastructure is ready for bootstrapping
+## Webhook
 
-### failureDomains
-Map of failure domains with their current status:
-- **attributes** (map[string]string): Key-value pairs of domain attributes
-- **controlPlane** (boolean): Whether this domain can host control plane nodes
+`Beskar7Cluster` has a validating webhook that checks `controlPlaneEndpoint.host` (IP or hostname) and `port` (1–65535). The webhook ships with `failurePolicy: Fail`, so a Pods/Beskar7Cluster admission attempt without a healthy webhook service is rejected.
 
-## Additional Printer Columns
-
-- **Cluster**: Cluster to which this Beskar7Cluster belongs
-- **Endpoint**: Control Plane Endpoint Host
-- **Ready**: Cluster infrastructure is ready for bootstrapping
-- **Age**: Creation timestamp
+There are no defaulting webhooks. The other CRDs (`PhysicalHost`, `Beskar7Machine`, `Beskar7MachineTemplate`) have no webhooks at all.
 
 ## Example
 
@@ -60,58 +62,47 @@ Map of failure domains with their current status:
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: Beskar7Cluster
 metadata:
-  name: my-cluster
+  name: production-cluster
   namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: production-cluster
 spec:
   controlPlaneEndpoint:
-    host: 192.168.1.100
+    host: "10.0.1.10"
     port: 6443
 ```
 
-## Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.controlPlaneEndpoint` | `APIEndpoint` | The endpoint used to communicate with the control plane. |
-| `status.ready` | `bool` | Indicates that the cluster is ready. |
-| `status.controlPlaneEndpoint` | `APIEndpoint` | The endpoint used to communicate with the control plane. |
-| `status.failureDomains` | `FailureDomains` | A list of failure domain objects synced from the infrastructure provider. |
-| `status.conditions` | `Conditions` | Current service state of the Beskar7Cluster. |
+Pair with a CAPI `Cluster`:
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Cluster
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
 metadata:
-  name: example-cluster
+  name: production-cluster
   namespace: default
-  labels:
-    cluster.x-k8s.io/cluster-name: example-cluster
 spec:
-  controlPlaneEndpoint:
-    host: "192.168.1.100"
-    port: 6443
-  failureDomains:
-    rack-1:
-      attributes:
-        rack: "1"
-        row: "A"
-      controlPlane: true
-    rack-2:
-      attributes:
-        rack: "2"
-        row: "A"
-      controlPlane: false
-status:
-  ready: true
-  failureDomains:
-    rack-1:
-      attributes:
-        rack: "1"
-        row: "A"
-      controlPlane: true
-    rack-2:
-      attributes:
-        rack: "2"
-        row: "A"
-      controlPlane: false
-``` 
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+    services:
+      cidrBlocks: ["10.96.0.0/12"]
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Beskar7Cluster
+    name: production-cluster
+  controlPlaneRef:
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    kind: KubeadmControlPlane
+    name: production-cluster-control-plane
+```
+
+## Print columns
+
+`kubectl get beskar7cluster` shows `Cluster`, `Ready`, `Endpoint`, and `Age`.
+
+## See also
+
+- [API Reference: Beskar7Cluster](api-reference.md#beskar7cluster)
+- [Beskar7Machine](beskar7machine.md)
+- [Architecture](architecture.md)
+- [Examples](../examples/)

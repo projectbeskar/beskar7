@@ -139,10 +139,6 @@ Contributions are welcome! Please:
 
 Apache License 2.0 - See [LICENSE](LICENSE) file for details.
 
-## Migration
-
-Migrating from wrkode/beskar7? See [docs/migration-to-projectbeskar.md](docs/migration-to-projectbeskar.md).
-
 ## Support
 
 - **Issues:** https://github.com/projectbeskar/beskar7/issues

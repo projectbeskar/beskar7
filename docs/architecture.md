@@ -286,15 +286,17 @@ The inspection image is a lightweight Alpine Linux environment with hardware det
 - Scripts: Hardware detection, report generation, kexec boot
 - Size: <100 MB
 
-**Kernel Parameters:**
+**Kernel Parameters** (the iPXE infrastructure renders these per host — see [iPXE Setup](ipxe-setup.md)):
+
 ```
-beskar7.api=http://controller.cluster.local:8082
-beskar7.token=secret-inspection-token
+beskar7.api=https://beskar7-controller-manager.beskar7-system.svc:8082
 beskar7.namespace=default
 beskar7.host=server-01
-beskar7.target=http://boot-server/images/kairos.tar.gz
-beskar7.config=http://boot-server/configs/node-config.yaml
+beskar7.bootstrap-url=https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/server-01
+beskar7.token=<plaintext-bearer-token>
 ```
+
+The inspector POSTs to `${beskar7.api}/api/v1/inspection/${beskar7.namespace}/${beskar7.host}` with `Authorization: Bearer ${beskar7.token}`. The target OS, after kexec, fetches bootstrap data from `${beskar7.bootstrap-url}` with the same `Authorization` header.
 
 ## API Types
 
@@ -320,35 +322,46 @@ status:
   inspectionPhase: Complete  # Pending, Booting, InProgress, Complete, Failed, Timeout
   inspectionReport:
     timestamp: "2025-11-27T10:00:00Z"
+    manufacturer: "Dell Inc."
+    model: "PowerEdge R730"
+    serialNumber: "ABC1234"
+    bootModeDetected: "UEFI"
+    firmwareVersion: "2.15.0"
     cpus:
-      count: 2
-      cores: 16
-      threads: 32
-      model: "Intel Xeon E5-2640 v4"
-      architecture: "x86_64"
-      mhz: 2400
+      - id: cpu0
+        vendor: "GenuineIntel"
+        model: "Intel Xeon E5-2640 v4"
+        cores: 8
+        threads: 16
+        frequency: "2.4GHz"
+      - id: cpu1
+        vendor: "GenuineIntel"
+        model: "Intel Xeon E5-2640 v4"
+        cores: 8
+        threads: 16
+        frequency: "2.4GHz"
     memory:
-      totalBytes: 68719476736
-      totalGB: 64
+      - id: DIMM0
+        type: DDR4
+        capacity: "32GB"
+        speed: "2400MHz"
+      - id: DIMM1
+        type: DDR4
+        capacity: "32GB"
+        speed: "2400MHz"
     disks:
-    - device: "/dev/sda"
-      sizeBytes: 500107862016
-      sizeGB: 500
-      type: "SSD"
-      model: "Samsung 870 EVO"
-      serial: "S5H1NS0T123456"
+      - name: "/dev/sda"
+        model: "Samsung 870 EVO"
+        sizeGB: 500
+        type: SSD
+        serialNumber: "S5H1NS0T123456"
     nics:
-    - interface: "eth0"
-      macAddress: "00:25:90:f0:79:00"
-      linkStatus: "up"
-      speedMbps: 1000
-      driver: "ixgbe"
-    system:
-      manufacturer: "Dell Inc."
-      model: "PowerEdge R730"
-      serialNumber: "ABC1234"
-      biosVersion: "2.15.0"
-      bmcAddress: "192.168.1.100"
+      - name: eth0
+        macAddress: "00:25:90:f0:79:00"
+        driver: ixgbe
+        speed: "1Gbps"
+        ipAddresses:
+          - "192.168.1.50"
 ```
 
 ### Beskar7Machine
@@ -357,28 +370,20 @@ status:
 
 ```yaml
 spec:
-  # Inspection image URL (iPXE boot script or kernel/initrd)
-  inspectionImage: "http://boot-server/ipxe/inspect.ipxe"
-  
-  # Final OS image URL (for kexec)
-  targetOSImage: "http://boot-server/images/kairos-v2.8.1.tar.gz"
-  
-  # Optional: OS configuration
-  configurationURL: "http://boot-server/configs/worker-config.yaml"
-  
-  # Hardware requirements (optional)
+  inspectionImageURL: "http://boot-server/ipxe/inspect.ipxe"   # iPXE boot script or kernel/initrd
+  targetImageURL:     "http://boot-server/images/kairos-v2.8.1.tar.gz"
+  configurationURL:   "http://boot-server/configs/worker-config.yaml"   # optional
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 8
-    minDiskGB: 50
+    minDiskGB:   50
 
 status:
-  phase: Provisioned  # Pending, Claiming, Inspecting, Validating, Provisioning, Provisioned, Failed
+  phase: Provisioned   # Pending, Inspecting, Provisioned, Failed
   ready: true
   conditions:
-  - type: MachineProvisioned
-    status: "True"
-    reason: InspectionComplete
+    - type: MachineProvisioned
+      status: "True"
 ```
 
 ### Beskar7Cluster
@@ -477,13 +482,16 @@ If BMC connection fails:
 
 ## Security Considerations
 
-### Inspection Token
+### Inspection / bootstrap bearer token
 
-The inspection token is used to authenticate inspection reports:
-- Generated per PhysicalHost
-- Passed via iPXE kernel parameters
-- Validated by Inspection Handler
-- Short-lived (10 minute timeout)
+The same per-host bearer token authenticates the inspection POST and the bootstrap GET on `:8082`:
+
+- 32 bytes from `crypto/rand`, encoded as base64-raw-url (43 chars).
+- SHA-256 hash persisted on `PhysicalHost.Status.Bootstrap.TokenHash` (64 hex chars).
+- Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`); GC'd on host delete via owner-ref.
+- Lifetime: 30 minutes (`auth.TokenLifetime` in `internal/auth/token.go`).
+- Constant-time SHA-256 compare (`crypto/subtle`) on every request.
+- The plaintext travels on the iPXE kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](ipxe-setup.md).
 
 ### BMC Credentials
 
@@ -503,11 +511,7 @@ Recommended network topology:
 
 ### Metrics
 
-Prometheus metrics exposed on port 8080:
-- `beskar7_physicalhost_state` - Host state gauge
-- `beskar7_inspection_duration_seconds` - Inspection duration histogram
-- `beskar7_provisioning_duration_seconds` - Total provisioning duration
-- `beskar7_inspection_failures_total` - Inspection failure counter
+Prometheus metrics exposed on `:8443` (HTTPS, authenticated). For the full surface, see [Metrics](metrics.md). The metrics endpoint authenticates requests via TokenReview/SubjectAccessReview delegated to the kube-apiserver; scrapers need the `metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
 
 ### Logs
 

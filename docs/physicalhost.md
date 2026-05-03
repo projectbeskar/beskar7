@@ -1,134 +1,115 @@
 # PhysicalHost
 
-The `PhysicalHost` resource represents a physical host in the Beskar7 infrastructure provider.
+`PhysicalHost` is the Beskar7 CRD that represents one bare-metal server and its BMC connection. The reconciler that owns it is `controllers/physicalhost_controller.go`.
 
-## API Version
+For the full field reference, see [API Reference: PhysicalHost](api-reference.md#physicalhost). This page covers operational behavior — when fields move, what conditions mean, how the lifecycle works.
 
-`infrastructure.cluster.x-k8s.io/v1beta1`
+## Identity
 
-## Kind
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **Kind:** `PhysicalHost`
+- **Short name:** `ph`
+- **Scope:** Namespaced
+- **Categories:** `cluster-api` (so `clusterctl move` walks it)
 
-`PhysicalHost`
+## Spec at a glance
 
-## Short Name
+```yaml
+spec:
+  redfishConnection:
+    address: "https://192.168.1.100"
+    credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: false        # default
+    # caBundleSecretRef:             # optional, mutually exclusive with insecureSkipVerify=true
+    #   name: bmc-ca-bundle
+  # consumerRef is set by the Beskar7Machine controller; do not set manually
+```
 
-`ph`
+The credentials Secret must contain `username` and `password` keys (Opaque). It must live in the same namespace as the PhysicalHost.
 
-## Namespaced
+When `caBundleSecretRef` is set, the manager builds an HTTP client whose TLS roots include the CA bundle. The Secret data must contain a `ca.crt` (preferred) or `tls.crt` key with PEM bytes. Setting `caBundleSecretRef` together with `insecureSkipVerify: true` is rejected — the controller marks `RedfishConnectionReady = False (InsecureCABundleConflict)` and stops reconciling until the operator fixes the spec.
 
-Yes
+## Lifecycle
 
-## Specification
+The reconciler drives `Status.State` through these transitions:
 
-### Required Fields
+```
+created → Available           (BMC reachable, no consumer)
+Available → InUse             (Beskar7Machine claims via spec.consumerRef)
+InUse → Inspecting            (Beskar7Machine sets the inspection-request annotation)
+Inspecting → Ready            (inspection report consumed from ConfigMap)
+Ready → InUse                 (back to InUse after the host stays claimed)
+any → Error                   (BMC unreachable, TLS conflict, inspection timeout)
+Error → Available             (operator fixes spec, BMC recovers)
+Ready/InUse → Available       (Beskar7Machine deletion clears consumerRef)
+```
 
-#### redfishConnection
-- **address** (string, required): URL of the Redfish API endpoint (e.g., https://192.168.1.100)
-- **credentialsSecretRef** (string, required): Reference to a Secret containing username and password for Redfish authentication
-- **insecureSkipVerify** (boolean, optional): Whether to skip TLS certificate verification
+For the diagram and the full transition table, see [State Management](state-management.md).
 
-### Optional Fields
+## Bootstrap signaling
 
-#### consumerRef
-Reference to the Beskar7Machine that is using this host. Contains standard Kubernetes object reference fields:
-- **apiVersion** (string)
-- **kind** (string)
-- **name** (string)
-- **namespace** (string)
-- **fieldPath** (string)
-- **resourceVersion** (string)
-- **uid** (string)
+When the Beskar7Machine controller has bootstrap data ready, it patches two annotations on the PhysicalHost. The PhysicalHost reconciler reads them on its next pass, persists the values to status, and clears the annotation:
 
-#### bootIsoSource
-- **bootIsoSource** (string, optional): URL of the ISO image to use for provisioning. Set by the consumer (Beskar7Machine controller) to trigger provisioning.
+| Annotation | Persisted to | Source code |
+|---|---|---|
+| `infrastructure.cluster.x-k8s.io/bootstrap-url` | `Status.Bootstrap.URL` | `controllers/physicalhost_controller.go:applyBootstrapURLAnnotation` |
+| `infrastructure.cluster.x-k8s.io/bootstrap-token` | `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}` | `controllers/physicalhost_controller.go:applyBootstrapTokenAnnotation` |
 
-#### userDataSecretRef
-- **name** (string, optional): Reference to a secret containing cloud-init user data
+The plaintext bearer token is delivered out-of-band via a Secret named `<host-name>-bootstrap-token`, owned by the PhysicalHost (so it is GC'd when the host is deleted). The Secret has a single key: `plaintext-token`.
 
-## Status
+## Inspection result handoff
 
-### ready
-- **ready** (boolean, default: false): Indicates if the host is ready and enrolled
+The inspection HTTP handler does not write to `PhysicalHost.Status` directly. Instead, it stores the validated `InspectionReport` on a ConfigMap named `<host>-inspection-result` (owner-ref → PhysicalHost) and patches an `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the host. The reconciler consumes the ConfigMap, writes the report to `Status.InspectionReport`, marks `HostInspected=True`, deletes the ConfigMap, and clears the annotation. This keeps the controller as the sole writer of the host's status (decision D-005 in `.claude/context/PROJECT_CONTEXT.md`).
 
-### state
-- **state** (string): Current provisioning state, which can be one of:
-  - `""` (empty string) - StateNone: Default state before reconciliation
-  - `"Enrolling"` - StateEnrolling: Controller is trying to establish connection
-  - `"Available"` - StateAvailable: Host is ready to be claimed
-  - `"Claimed"` - StateClaimed: Host is reserved by a consumer
-  - `"Provisioning"` - StateProvisioning: Host is being configured
-  - `"Provisioned"` - StateProvisioned: Host has been successfully configured
-  - `"Deprovisioning"` - StateDeprovisioning: Host is being cleaned up
-  - `"Error"` - StateError: Host is in an error state
-  - `"Unknown"` - StateUnknown: Host state could not be determined
+## Conditions
 
-### observedPowerState
-- **observedPowerState** (string): Last observed power state from Redfish endpoint
+| Type | Meaning | Common reasons |
+|---|---|---|
+| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `HostAvailable` | Host has no consumer claim. | – |
+| `HostInspected` | An inspection report has been persisted. | – |
 
-### errorMessage
-- **errorMessage** (string): Details on the last error encountered
+## Deletion
 
-### hardwareDetails
-- **manufacturer** (string): Manufacturer of the physical host
-- **model** (string): Model of the physical host
-- **serialNumber** (string): Serial number of the physical host
-- **status** (object):
-  - **Health** (string): Health status of the host
-  - **HealthRollup** (string): Overall health status
-  - **State** (string): Current state of the host
+`reconcileDelete` removes the finalizer and lets Kubernetes garbage-collect the host. The PhysicalHost reconciler does NOT call Redfish during deletion; that is the job of the consuming `Beskar7Machine` (best-effort `ClearBootSourceOverride` + graceful `SetPowerState(Off)` before clearing `ConsumerRef`). If a host is deleted while still claimed, the controller emits a warning event but does not block.
 
-### conditions
-Array of conditions representing the latest available observations of the object's state.
+## Operator escape hatches
 
-## Additional Printer Columns
-
-- **State**: Current state of the Physical Host
-- **Ready**: Whether the host is ready
-- **Age**: Creation timestamp
+- **Force release:** Set `infrastructure.cluster.x-k8s.io/force-release: "true"` on the consuming `Beskar7Machine` before deletion. The Beskar7Machine controller will skip the BMC power-off / boot-clear during release. Use only when the BMC is permanently unreachable.
 
 ## Example
 
 ```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bmc-credentials
+  namespace: default
+type: Opaque
+stringData:
+  username: "admin"
+  password: "changeme"
+---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
-  name: my-host
+  name: server-01
   namespace: default
+  labels:
+    topology.kubernetes.io/zone: rack-1   # consumed by Beskar7Cluster failure domains
 spec:
   redfishConnection:
     address: "https://192.168.1.100"
-    credentialsSecretRef: "redfish-credentials"
-    insecureSkipVerify: false
-  bootIsoSource: "http://example.com/boot.iso"
-  userDataSecretRef:
-    name: "user-data"
-status:
-  ready: true
-  state: "Available"
-  observedPowerState: "On"
-  hardwareDetails:
-    manufacturer: "Example Corp"
-    model: "Server-123"
-    serialNumber: "SN123456"
-    status:
-      Health: "OK"
-      HealthRollup: "OK"
-      State: "Enabled"
-  addresses:
-    - type: InternalIP
-      address: 192.168.1.100
+    credentialsSecretRef: "bmc-credentials"
 ```
 
-## Fields
+## Print columns
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `spec.redfishConnection` | `RedfishConnection` | The Redfish connection configuration. |
-| `spec.bootIsoSource` | `string` | The URL of the ISO image to use for provisioning. |
-| `spec.userDataSecretRef` | `ObjectReference` | Reference to a secret containing cloud-init user data. |
-| `status.ready` | `boolean` | Indicates if the host is ready and enrolled. |
-| `status.state` | `string` | The current state of the host. |
-| `status.observedPowerState` | `string` | The last observed power state from the Redfish endpoint. |
-| `status.hardwareDetails` | `HardwareDetails` | Details about the hardware of the physical host. |
-| `status.errorMessage` | `string` | Error message if the host is in an error state. |
-| `status.addresses` | `[]MachineAddress` | The associated addresses for the host. | 
+`kubectl get physicalhost` shows `State`, `Ready`, and `Age`.
+
+## See also
+
+- [API Reference: PhysicalHost](api-reference.md#physicalhost)
+- [State Management](state-management.md)
+- [Architecture](architecture.md)
+- [Troubleshooting](troubleshooting.md)

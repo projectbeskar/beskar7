@@ -5,7 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
 ## [Unreleased]
-- Future enhancements and planned features
+
+Work landed since the v0.4.0-alpha entry below. See `.claude/context/PROJECT_CONTEXT.md` for the full punch-list and PR history.
+
+### Added
+- TLS CA bundle support on `RedfishConnection` via `caBundleSecretRef` (PR-3.2 / SEC-5). Mutually exclusive with `insecureSkipVerify=true`; conflict reported as `RedfishConnectionReady=False (InsecureCABundleConflict)`.
+- Per-host bearer-token authentication on the host callback endpoint `:8082` (PR-5.1, PR-5.2 / D-004). 32-byte random token, SHA-256 hash on `PhysicalHost.Status.Bootstrap.TokenHash`, plaintext in a per-host Secret named `<host>-bootstrap-token` (PR-5.2 / D-006).
+- Bootstrap GET endpoint `GET /api/v1/bootstrap/{ns}/{name}` on `:8082`, gated by the same bearer-token middleware as the inspection POST (PR-5.3 / D-003). The reconciler reads `Machine.Spec.Bootstrap.DataSecretName` and signals the per-host URL to the host via the `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation (PR-1.1).
+- `BootstrapStatus` sub-object on `PhysicalHostStatus` with `URL`, `TokenHash`, `IssuedAt`, `ExpiresAt` (PR-5.1).
+- `--bootstrap-url-base`, `--inspection-port`, `--inspection-cert-dir`, `--secure-metrics` manager flags (PR-5.x, PR-11.1).
+- `ForceReleaseAnnotation` (`infrastructure.cluster.x-k8s.io/force-release=true`) on Beskar7Machine to skip Redfish power-off / boot-clear during deletion (PR-2.3 / BUG-4).
+- Watch on `PhysicalHost` from the `Beskar7Machine` reconciler so host state changes trigger immediate machine reconciles (PR-2.3 / BUG-7).
+- Cache field index on `PhysicalHost.Status.State` so the `Beskar7Machine` reconciler filters `Available` hosts server-side (PR-2.2 / BUG-2).
+- Helm chart parity: `--enable-webhook` wired in Deployment args; webhook configuration template ships MWC + VWC for Beskar7Cluster only; always-on `<release>-controller-manager` Service on port 8082; NetworkPolicy ingress for 8082; CRDs synced from `config/crd/bases/`; `sync-chart-crds` and `manifests-and-sync` Makefile targets (PR-4 / BLOCK-3,4,5).
+
+### Changed
+- Metrics now served directly on `:8443` (HTTPS) with TokenReview/SubjectAccessReview authentication via controller-runtime's `WithAuthenticationAndAuthorization` (PR-11.1). The `kube-rbac-proxy` sidecar has been removed; metrics auth runs in-process. Scrapers need the `metrics-reader` ClusterRole.
+- `PhysicalHost` state machine simplified to `Available` / `InUse` / `Inspecting` / `Ready` / `Error` (the v0.3 `Claimed`/`Provisioning`/`Provisioned`/`Deprovisioning` strings are gone; deprecated Go aliases map them all to the new strings).
+- `PhysicalHost.Status.InspectionReport` is now an array-of-structs shape: `cpus []CPUInfo`, `memory []MemoryInfo`, `disks []DiskInfo`, `nics []NICInfo`. The flat-object shape from earlier drafts is gone.
+- `Beskar7MachineSpec` simplified to `inspectionImageURL`, `targetImageURL`, `configurationURL`, `hardwareRequirements`. The v0.3 fields (`imageURL`, `osFamily`, `provisioningMode`, `bootMode`, `configURL`) are removed.
+- Controllers use `patch.NewHelper` deferred at the top of `Reconcile`; no `r.Update`/`r.Status().Update` in the same reconcile cycle (PR-2.1 / BUG-5).
+- The inspection HTTP handler no longer writes to `PhysicalHost.Status` directly. It writes the validated `InspectionReport` to a ConfigMap and patches an annotation; the `PhysicalHost` reconciler is the sole writer of `Status.InspectionReport`/`Status.InspectionPhase` (PR-5.2 / D-005).
+- `SetPowerState(OffPowerState)` issues `GracefulShutdown` (was `ForceOff`); a separate `ForcePowerOff` method is available for callers that need an immediate cut (PR-3.1 / BUG-6).
+- All gofish I/O calls now race against `ctx` cancellation with a 30-second per-call HTTP timeout (PR-3.1 / BUG-10).
+- Memory-capacity parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` and rejects bare integers and exotic SI prefixes (PR-3.3 / BUG-11).
+- BMC username and password no longer logged at any verbosity (PR-3.3 / SEC-4). At V(1), the structured logger emits `passwordProvided` (boolean) only.
+- RBAC: cluster-wide ClusterRole, but Secret reads in the controllers are by name only. Cluster-wide `secrets: list,watch` retained for the credentials-rotation informer (residual scope tracked as SEC-2 / D-007).
+
+### Removed
+- Dead-code packages `internal/coordination/` and `internal/security/{monitor,rbac_validator,tls_validator}.go` (PR-6.1 / D-001). Companion cleanup removed unused metric definitions, the `config/security/security-policy.yaml` ConfigMap, and references in `config/security/kustomization.yaml`.
+- `kube-rbac-proxy` sidecar (PR-11.1). Metrics auth is now in-process.
+- Documentation overclaims: the `beskar7-security-policy` ConfigMap, the `--enable-security-monitoring` flag, the `beskar7-security-monitor` CronJob, and CIS/NIST/SOC2/ISO27001 compliance claims have been removed from the security docs (none of these were ever shipped).
+
+### Fixed
+- `parseProviderID` rejects malformed and multi-segment provider IDs (PR-1.3 / BUG-3).
+- Atomic host claim — concurrent claims are resolved server-side via `MergeFromWithOptimisticLock`; exactly one Beskar7Machine wins (PR-2.2 / BUG-2).
+- Clean release on Beskar7Machine deletion: `ClearBootSourceOverride` + graceful power-off before clearing `ConsumerRef`; errors are logged and swallowed so a dead BMC cannot strand the finalizer (PR-2.3 / BUG-4).
+
+### Security
+- Inspection POST endpoint now requires TLS and `Authorization: Bearer <token>`. Body capped at 1 MiB; over-limit returns 413; auth failures return opaque 401 (PR-5.2 / SEC-1).
+- Bootstrap GET endpoint requires the same per-host bearer token; chain-walk failures collapse to opaque 404 to avoid leaking host topology (PR-5.3).
 
 ## [v0.4.0-alpha] - 2025-11-27
 
@@ -71,12 +110,12 @@ This release represents a complete architectural redesign of Beskar7, moving fro
 #### API Enhancements
 
 ##### PhysicalHost API
-- **InspectionReport Type**: New structured hardware information
-  - CPU details (count, cores, threads, model, architecture, MHz)
-  - Memory details (total, available, in bytes and GB)
-  - Disk information (device, size, type: SSD/HDD/NVMe, model, serial)
-  - Network interfaces (interface name, MAC, link status, speed, driver)
-  - System information (manufacturer, model, serial, BIOS version, BMC address)
+- **InspectionReport Type**: New structured hardware information (array of structs per category)
+  - `cpus []CPUInfo`: per-CPU `id`, `vendor`, `model`, `cores`, `threads`, `frequency`
+  - `memory []MemoryInfo`: per-DIMM `id`, `type`, `capacity` (string with `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`), `speed`
+  - `disks []DiskInfo`: per-disk `name`, `model`, `sizeGB`, `type` (SSD/HDD/NVMe), `serialNumber`
+  - `nics []NICInfo`: per-NIC `name`, `macAddress`, `driver`, `speed`, `ipAddresses []string`
+  - System metadata: `manufacturer`, `model`, `serialNumber`, `bootModeDetected`, `firmwareVersion`
 - **InspectionPhase Enum**: New phase tracking
   - `Pending`: Inspection not yet started
   - `Booting`: iPXE boot in progress
@@ -94,12 +133,11 @@ This release represents a complete architectural redesign of Beskar7, moving fro
   - `InspectionImage`: URL for iPXE boot to inspection environment
   - `TargetOSImage`: URL for final OS image (kexec target)
   - `BootMode`: Removed (UEFI only)
-- **Condition Constants**: Added missing condition types
+- **Condition Constants**: Added condition types
   - `MachineProvisionedCondition`
   - `WaitingForHostReason`
-  - `InspectionInProgressReason`
-  - `InspectionCompleteReason`
   - `InspectionFailedReason`
+  - `InspectionTimedOutReason`
 
 ### Enhancements
 

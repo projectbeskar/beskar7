@@ -1,115 +1,84 @@
 # Beskar7 Documentation
 
-Welcome to the Beskar7 documentation! This directory contains comprehensive documentation for the Beskar7 Cluster API infrastructure provider.
+This directory contains the user-facing documentation for the Beskar7 Cluster API infrastructure provider. The source of truth for everything described here is the code in `api/v1beta1/`, `controllers/`, `cmd/manager/`, and `internal/`. If a doc and the code disagree, the code wins.
 
-## Getting Started
+## Getting started
 
-- [**Introduction**](introduction.md) - Overview of Beskar7 and its purpose
-- [**Quick Start Guide**](quick-start.md) - Get Beskar7 up and running quickly
-- [**🚀 NEW: Quick Start - Vendor Support**](quick-start-vendor-support.md) - Get started with automatic vendor detection
-- [**Architecture**](architecture.md) - Understand how Beskar7 components work together
+- [Introduction](introduction.md) — what Beskar7 does and where it fits.
+- [Quick Start Guide](quick-start.md) — install + first PhysicalHost.
+- [Architecture](architecture.md) — controllers, callback endpoint, inspection workflow.
 
-## API Documentation
+## API reference
 
-- [**API Reference**](api-reference.md) - Complete reference for all Beskar7 CRDs
-- [**PhysicalHost**](physicalhost.md) - Detailed documentation for PhysicalHost resources
-- [**Beskar7Machine**](beskar7machine.md) - Detailed documentation for Beskar7Machine resources
-- [**Beskar7Cluster**](beskar7cluster.md) - Detailed documentation for Beskar7Cluster resources
-- [**Beskar7MachineTemplate**](beskar7machinetemplate.md) - Detailed documentation for template resources
+- [API Reference](api-reference.md) — every CRD field in `v1beta1`.
+- [PhysicalHost](physicalhost.md) — operational notes for the host CRD.
+- [Beskar7Machine](beskar7machine.md) — operational notes for the machine CRD.
+- [Beskar7Cluster](beskar7cluster.md) — operational notes for the cluster CRD.
+- [Beskar7MachineTemplate](beskar7machinetemplate.md) — template schema; consumed by KubeadmControlPlane / MachineDeployment.
 
-## Deployment and Operations
+## Operations
 
-- [**Deployment Best Practices**](deployment-best-practices.md) - Production deployment guidelines
-- [**Advanced Usage**](advanced-usage.md) - Advanced configuration and usage scenarios
-- [**🚀 NEW: State Management**](state-management.md) - State machine operations and recovery
-- [**Troubleshooting**](troubleshooting.md) - Common issues and solutions
+- [State Management](state-management.md) — PhysicalHost lifecycle, transition rules, recovery.
+- [Deployment Best Practices](deployment-best-practices.md) — production deployment guidance.
+- [iPXE Setup](ipxe-setup.md) — DHCP, HTTP boot server, kernel cmdline variables consumed by inspection and bootstrap.
+- [Advanced Usage](advanced-usage.md) — bootstrap-data flow, hardware requirements.
+- [Troubleshooting](troubleshooting.md) — diagnostic procedures for common failures.
+- [Resource Planning](resource-planning.md) — sizing the controller and the inspection footprint.
 
-## Hardware and Compatibility
+## Hardware and compatibility
 
-- [**Hardware Compatibility Matrix**](hardware-compatibility.md) - Vendor support and compatibility information
-- [**🚀 NEW: Vendor-Specific Support**](vendor-specific-support.md) - Automatic vendor detection and configuration
+- [Hardware Compatibility Matrix](hardware-compatibility.md) — Redfish-compliant BMCs that have been exercised.
 
-## Monitoring and Observability
+## Observability
 
-- [**Metrics**](metrics.md) - Available metrics and monitoring setup
+- [Metrics](metrics.md) — Prometheus surface and how to scrape it.
 
-## Documentation Organization
+## Security
 
-### For New Users
-1. Start with [Introduction](introduction.md) to understand Beskar7's purpose
-2. **NEW:** Check out [Quick Start - Vendor Support](quick-start-vendor-support.md) for automatic hardware support
-3. Follow the [Quick Start Guide](quick-start.md) to deploy your first setup
-4. Review [Hardware Compatibility](hardware-compatibility.md) for your specific hardware
+- [Security overview](security/README.md) — what the operator actually enforces.
+- [Security configuration](security/configuration.md) — TLS, credentials, manager flags.
+- [RBAC hardening](security/rbac-hardening.md) — the deployed ClusterRole and rationale.
+- [Security troubleshooting](security/troubleshooting.md) — diagnosing security-control failures.
 
-### For Operators
-1. Review [Deployment Best Practices](deployment-best-practices.md) for production deployments
-2. **NEW:** Understand [State Management](state-management.md) for operational procedures
-3. Set up monitoring using [Metrics](metrics.md) documentation
-4. Familiarize yourself with [Troubleshooting](troubleshooting.md) procedures
+## Development
 
-### For Developers
-1. Understand the [Architecture](architecture.md) and component interactions
-2. Use the [API Reference](api-reference.md) for comprehensive field documentation
-3. Explore [Advanced Usage](advanced-usage.md) for complex scenarios
+- [CI/CD and Testing](ci-cd-and-testing.md) — build, test, lint expectations.
 
-## Key Concepts
+## Examples
 
-### Resources
-- **PhysicalHost**: Represents a physical server manageable via Redfish
-- **Beskar7Machine**: Infrastructure provider for CAPI Machine resources
-- **Beskar7Cluster**: Infrastructure provider for CAPI Cluster resources
-- **Beskar7MachineTemplate**: Template for creating machine configurations
+- [`examples/`](../examples/) — working YAML for a minimal test, a single-host smoke test, and a complete cluster.
 
-### Provisioning Modes
-- **RemoteConfig**: Boot generic ISO with remote configuration URL (requires configURL)
-- **PreBakedISO**: Boot pre-configured ISO with embedded settings
-- **PXE**: Network boot using PXE (requires external PXE infrastructure)
-- **iPXE**: Network boot using iPXE (requires external iPXE infrastructure)
+## Reading order
 
-### Supported Operating Systems
-The following immutable OS families are currently supported with full RemoteConfig capabilities:
-- **Kairos** (recommended) - Cloud-native, immutable OS with built-in cluster provisioning
-- **Flatcar Container Linux** - Minimal, secure container-optimized OS
-- **openSUSE Leap Micro** - Lightweight immutable OS for containers and edge computing
+If you are new to Beskar7:
 
-## Hardware Support
+1. [Introduction](introduction.md)
+2. [Quick Start Guide](quick-start.md)
+3. [Hardware Compatibility](hardware-compatibility.md)
+4. [iPXE Setup](ipxe-setup.md)
+5. The CRD docs you'll be editing: [PhysicalHost](physicalhost.md), [Beskar7Machine](beskar7machine.md), [Beskar7Cluster](beskar7cluster.md).
 
-Beskar7 works with any Redfish-compliant BMC. See the [Hardware Compatibility Matrix](hardware-compatibility.md) for vendor-specific information and known limitations.
+If you are operating an existing install:
 
-**Tested Vendors:**
-- Dell Technologies (iDRAC)
-- HPE (iLO)
-- Lenovo (XCC)
-- Supermicro (BMC)
+1. [Deployment Best Practices](deployment-best-practices.md)
+2. [State Management](state-management.md)
+3. [Metrics](metrics.md)
+4. [Troubleshooting](troubleshooting.md)
+
+## Vendor notes
+
+Beskar7 uses only the universally-supported portions of Redfish (power state, one-time PXE boot source, system info, network interface enumeration). It does not require vendor-specific extensions and does not ship vendor-specific code paths.
+
+| Vendor | BMC product | Tested | Notes |
+|---|---|---|---|
+| Dell EMC | iDRAC 8/9 | Yes | Redfish must be enabled in iDRAC settings. |
+| HPE | iLO 5 | Yes | Requires an iLO Advanced license for some power operations. |
+| Lenovo | XCC | Yes | – |
+| Supermicro | BMC | Yes | Redfish API enable in Configuration → Redfish API. |
+| Other Redfish-compliant BMCs | – | – | Should work; please report results. |
+
+For BMC-specific configuration tips, see [Hardware Compatibility](hardware-compatibility.md).
 
 ## Contributing
 
-For information about contributing to Beskar7, see the main repository documentation.
-
-## Support
-
-- **GitHub Issues**: https://github.com/projectbeskar/beskar7/issues
-- **Documentation Issues**: Report problems with this documentation as GitHub issues
-
-## Document Status
-
-| Document | Status | Last Updated |
-|----------|--------|--------------|
-| Introduction | Yes Complete | Current |
-| Quick Start Guide | Yes Complete | Current |
-| **🚀 Quick Start - Vendor Support** | **Yes NEW** | **Current** |
-| **🚀 Vendor-Specific Support** | **Yes NEW** | **Current** |
-| Architecture | Yes Complete | Current |
-| API Reference | Yes Complete | Current |
-| PhysicalHost | Yes Complete | Current |
-| Beskar7Machine | Yes Complete | Current |
-| Beskar7Cluster | Yes Complete | Current |
-| Beskar7MachineTemplate | Yes Complete | Current |
-| Deployment Best Practices | Yes Complete | Current |
-| Advanced Usage | Yes Complete | Current |
-| Hardware Compatibility | Yes Complete | Current |
-| Troubleshooting | Yes Complete | Current |
-| **🚀 State Management** | **Yes NEW** | **Current** |
-| Metrics | Yes Complete | Current |
-
-All documentation is current and comprehensive as of the latest release. 
+For information about contributing, see the main repository documentation.

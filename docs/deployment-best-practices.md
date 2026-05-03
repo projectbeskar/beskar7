@@ -238,10 +238,10 @@ networkPolicy:
       - protocol: TCP
         port: 9443
 
-# Monitoring
+# Monitoring (metrics are HTTPS on :8443; see docs/metrics.md)
 metrics:
   enabled: true
-  port: 8080
+  port: 8443
   
 # Webhook configuration
 webhook:
@@ -352,14 +352,14 @@ spec:
     ports:
     - protocol: TCP
       port: 9443
-  # Metrics scraping
+  # Metrics scraping (HTTPS, kube-apiserver-authenticated; see docs/metrics.md)
   - from:
     - namespaceSelector:
         matchLabels:
           name: monitoring
     ports:
     - protocol: TCP
-      port: 8080
+      port: 8443
   egress:
   # DNS resolution
   - to: []
@@ -457,13 +457,14 @@ spec:
 
 **Structured Logging:**
 ```yaml
-# Manager deployment logging configuration
+# Manager deployment logging configuration. The default zap logger emits
+# structured JSON suitable for ingestion. To get the development encoder
+# (console output, stack traces from Warn), pass --zap-devel=true.
 args:
 - --health-probe-bind-address=:8081
-- --metrics-bind-address=127.0.0.1:8080
-- --leader-elect
-- --v=2  # Production log level
-- --log-format=json  # Structured logging
+- --metrics-bind-address=:8443     # HTTPS, kube-apiserver-authenticated
+- --secure-metrics=true
+- --leader-elect=true
 ```
 
 **Log Aggregation:**
@@ -540,19 +541,21 @@ spec:
         summary: "High reconciliation error rate"
         description: "Beskar7 controller error rate is {{ $value }} errors/sec"
         
-    - alert: PhysicalHostStuckProvisioning
+    - alert: PhysicalHostStuckInspecting
+      # PhysicalHost states (api/v1beta1/physicalhost_types.go): Available, InUse,
+      # Inspecting, Ready, Error, Enrolling, Unknown. The metric is
+      # beskar7_controller_physicalhost_states_total (see docs/metrics.md).
       expr: |
-        (
-          increase(physical_host_state_total{state="Provisioning"}[1h]) == 0
-        ) and (
-          physical_host_state_total{state="Provisioning"} > 0
+        beskar7_controller_physicalhost_states_total{state="Inspecting"} > 0
+        unless on (namespace) (
+          increase(beskar7_controller_physicalhost_states_total{state="Inspecting"}[15m]) > 0
         )
-      for: 30m
+      for: 15m
       labels:
         severity: warning
       annotations:
-        summary: "PhysicalHost stuck in provisioning state"
-        description: "One or more PhysicalHosts have been stuck in Provisioning state for over 30 minutes"
+        summary: "PhysicalHost stuck in Inspecting state"
+        description: "PhysicalHosts have been in Inspecting state for over 15 minutes (> DefaultInspectionTimeout)."
 ```
 
 ## Operational Procedures
@@ -655,9 +658,11 @@ kubectl get secret -n beskar7-system
 kubectl get physicalhost -A
 kubectl describe physicalhost HOSTNAME
 
-# Check metrics
-kubectl port-forward -n beskar7-system svc/controller-manager-metrics-service 8080:8080
-curl http://localhost:8080/metrics
+# Check metrics (HTTPS on 8443; for plain-HTTP local debugging, restart the
+# manager with --secure-metrics=false). See docs/metrics.md.
+kubectl port-forward -n beskar7-system svc/beskar7-controller-manager-metrics-service 8443:8443
+TOKEN=$(kubectl create token -n monitoring prometheus)
+curl -k -H "Authorization: Bearer $TOKEN" https://localhost:8443/metrics
 ```
 
 ## Multi-Tenancy Considerations

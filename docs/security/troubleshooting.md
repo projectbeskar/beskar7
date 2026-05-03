@@ -1,652 +1,198 @@
-# Security Troubleshooting Guide
+# Security Troubleshooting
 
-This guide helps diagnose and resolve security-related issues in Beskar7.
+How to diagnose security-control failures in Beskar7.
 
-## Common Security Issues
+For an inventory of what's enforced, see [Security](README.md). For configuration recipes, see [Configuration](configuration.md). For general operational issues, see [Troubleshooting](../troubleshooting.md).
 
-### TLS Certificate Problems
+## TLS to the BMC
 
-#### Issue: Certificate Validation Failures
+### Symptom: `RedfishConnectionReady=False (CABundleFetchFailed)`
 
-**Symptoms:**
-- PhysicalHost webhook validation errors
-- Connection failures to BMC endpoints
-- TLS certificate validation errors in logs
-
-**Diagnosis:**
-```bash
-# Check PhysicalHost webhook events
-kubectl get events -n beskar7-system --field-selector reason=TLSSecurityIssue
-
-# Check certificate manually
-openssl s_client -connect bmc.example.com:443 -verify_return_error
-
-# Test TLS connection
-curl -v https://bmc.example.com
-```
-
-**Common Causes & Solutions:**
-
-1. **Self-signed certificates**
-   ```yaml
-   # Temporary fix for development
-   spec:
-     redfishConnection:
-       insecureSkipVerify: true  # Only for development!
-   
-   # Proper fix: Add custom CA
-   spec:
-     redfishConnection:
-       caCertificateSecretRef:
-         name: custom-ca-cert
-   ```
-
-2. **Expired certificates**
-   ```bash
-   # Check certificate expiry
-   echo | openssl s_client -connect bmc.example.com:443 2>/dev/null | openssl x509 -noout -dates
-   
-   # Solution: Renew BMC certificate
-   ```
-
-3. **Hostname mismatch**
-   ```bash
-   # Check certificate SANs
-   echo | openssl s_client -connect bmc.example.com:443 2>/dev/null | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
-   
-   # Solution: Use correct hostname or update certificate
-   ```
-
-4. **CA certificate not trusted**
-   ```yaml
-   # Add custom CA certificate
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: custom-ca-cert
-   data:
-     ca.crt: <base64-encoded-ca-cert>
-   ```
-
-#### Issue: Certificate Expiry Warnings
-
-**Symptoms:**
-- Warning events about certificate expiry
-- Security monitor alerts
-
-**Diagnosis:**
-```bash
-# Check certificate expiry events
-kubectl get events -n beskar7-system --field-selector reason=TLSSecurityIssue,type=Warning
-
-# View security report for certificate issues
-kubectl logs deployment/controller-manager -n beskar7-system | grep "certificate.*expir"
-```
-
-**Solutions:**
-```bash
-# Plan certificate renewal
-# 1. Generate new certificate
-# 2. Update BMC with new certificate
-# 3. Update custom CA if needed
-```
-
-### RBAC Permission Issues
-
-#### Issue: Permission Denied Errors
-
-**Symptoms:**
-- Controller unable to create/update resources
-- "forbidden" errors in logs
-- RBAC security violations
-
-**Diagnosis:**
-```bash
-# Check current permissions
-kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:controller-manager
-
-# Check RBAC events
-kubectl get events -n beskar7-system --field-selector reason=RBACSecurityIssue
-
-# Verify ClusterRole
-kubectl get clusterrole manager-role -o yaml
-
-# Check ClusterRoleBinding
-kubectl get clusterrolebinding manager-rolebinding -o yaml
-```
-
-**Common Causes & Solutions:**
-
-1. **Missing permissions**
-   ```yaml
-   # Add missing permission to ClusterRole
-   rules:
-   - apiGroups: ["infrastructure.cluster.x-k8s.io"]
-     resources: ["physicalhosts"]
-     verbs: ["create"]  # Add missing verb
-   ```
-
-2. **Overly restrictive security policy**
-   ```yaml
-   # Update security policy to allow required permissions
-   security:
-     rbac:
-       max_allowed_permissions:
-         beskar7-controller:
-           - apiGroups: ["new-api-group"]
-             resources: ["new-resource"]
-             verbs: ["get", "list"]
-   ```
-
-3. **Service account not bound to role**
-   ```bash
-   # Check binding
-   kubectl get clusterrolebinding manager-rolebinding -o yaml
-   
-   # Fix: Ensure correct service account
-   subjects:
-   - kind: ServiceAccount
-     name: controller-manager
-     namespace: beskar7-system
-   ```
-
-#### Issue: Overly Broad Permissions Detected
-
-**Symptoms:**
-- Security monitor alerts about broad permissions
-- RBAC security warnings
-
-**Diagnosis:**
-```bash
-# Check RBAC security events
-kubectl get events -n beskar7-system --field-selector reason=RBACSecurityIssue
-
-# Review current permissions
-kubectl get clusterrole manager-role -o yaml
-```
-
-**Solutions:**
-```yaml
-# Replace broad permissions with specific ones
-# Bad:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["*"]
-
-# Good:
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["physicalhosts", "beskar7machines"]
-  verbs: ["get", "list", "watch", "create", "update", "patch"]
-```
-
-### Credential Security Issues
-
-#### Issue: Credential Validation Failures
-
-**Symptoms:**
-- PhysicalHost webhook validation errors
-- Secret validation failures
-- Password policy violations
-
-**Diagnosis:**
-```bash
-# Check credential events
-kubectl get events -n beskar7-system --field-selector reason=SecretSecurityIssue
-
-# Validate secret format
-kubectl get secret bmc-credentials -o yaml
-
-# Check password policy
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml
-```
-
-**Common Causes & Solutions:**
-
-1. **Missing required fields**
-   ```yaml
-   # Ensure secret has required fields
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: bmc-credentials
-   data:
-     username: <base64-encoded>  # Required
-     password: <base64-encoded>  # Required
-   ```
-
-2. **Weak password**
-   ```bash
-   # Generate strong password
-   PASSWORD=$(openssl rand -base64 32)
-   kubectl patch secret bmc-credentials --patch='{"data":{"password":"'$(echo -n "$PASSWORD" | base64)'"}}'
-   ```
-
-3. **Old credentials**
-   ```bash
-   # Check credential age
-   kubectl get secret bmc-credentials -o jsonpath='{.metadata.creationTimestamp}'
-   
-   # Rotate credentials if needed
-   ```
-
-#### Issue: Authentication Failures to BMC
-
-**Symptoms:**
-- Redfish authentication errors
-- BMC connection failures
-- Invalid credentials errors
-
-**Diagnosis:**
-```bash
-# Test credentials manually
-USERNAME=$(kubectl get secret bmc-credentials -o jsonpath='{.data.username}' | base64 -d)
-PASSWORD=$(kubectl get secret bmc-credentials -o jsonpath='{.data.password}' | base64 -d)
-curl -k -u "$USERNAME:$PASSWORD" https://bmc.example.com/redfish/v1/Systems
-
-# Check PhysicalHost status
-kubectl get physicalhost server-01 -o yaml
-```
-
-**Solutions:**
-1. Verify credentials are correct
-2. Check BMC user account status
-3. Ensure account has required permissions
-4. Rotate credentials if compromised
-
-### Network Security Issues
-
-#### Issue: Network Policy Blocking Traffic
-
-**Symptoms:**
-- Connection timeouts
-- Network connectivity failures
-- Webhook failures
-
-**Diagnosis:**
-```bash
-# Check network policies
-kubectl get networkpolicy -n beskar7-system
-
-# Check pod connectivity
-kubectl exec -it deployment/controller-manager -n beskar7-system -- curl -v https://bmc.example.com
-
-# Check network policy logs (if supported)
-```
-
-**Solutions:**
-```yaml
-# Add missing egress rule for BMC communication
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-bmc-egress
-spec:
-  podSelector:
-    matchLabels:
-      control-plane: controller-manager
-  policyTypes:
-  - Egress
-  egress:
-  - to: []
-    ports:
-    - protocol: TCP
-      port: 443
-```
-
-#### Issue: Webhook Certificate Problems
-
-**Symptoms:**
-- Webhook validation failures
-- TLS handshake errors
-- Certificate verification errors
-
-**Diagnosis:**
-```bash
-# Check webhook certificate
-kubectl get secret beskar7-webhook-server-cert -n beskar7-system -o yaml
-
-# Check webhook configuration
-kubectl get validatingwebhookconfigurations.admissionregistration.k8s.io
-
-# Test webhook manually
-kubectl create -f test-physicalhost.yaml --dry-run=server
-```
-
-**Solutions:**
-```bash
-# Recreate webhook certificates
-kubectl delete secret beskar7-webhook-server-cert -n beskar7-system
-# Restart manager to regenerate certs
-kubectl rollout restart deployment/beskar7-controller-manager -n beskar7-system
-```
-
-### Container Security Issues
-
-#### Issue: Security Context Violations
-
-**Symptoms:**
-- Pod creation failures
-- Security policy violations
-- Container startup errors
-
-**Diagnosis:**
-```bash
-# Check pod security violations
-kubectl get events -n beskar7-system --field-selector type=Warning
-
-# Check pod security context
-kubectl get pod -l control-plane=controller-manager -n beskar7-system -o yaml
-```
-
-**Solutions:**
-```yaml
-# Fix security context
-securityContext:
-  runAsNonRoot: true
-  runAsUser: 65532
-  runAsGroup: 65532
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: true
-  capabilities:
-    drop: ["ALL"]
-```
-
-#### Issue: Resource Limit Violations
-
-**Symptoms:**
-- OOMKilled pods
-- CPU throttling
-- Performance issues
-
-**Diagnosis:**
-```bash
-# Check resource usage
-kubectl top pod -l control-plane=beskar7-controller-manager -n beskar7-system
-
-# Check resource limits
-kubectl get pod -l control-plane=controller-manager -n beskar7-system -o yaml | grep -A5 resources
-```
-
-**Solutions:**
-```yaml
-# Increase resource limits
-resources:
-  limits:
-    cpu: 1000m      # Increase from 500m
-    memory: 1Gi     # Increase from 512Mi
-  requests:
-    cpu: 200m       # Increase from 100m
-    memory: 256Mi   # Increase from 128Mi
-```
-
-## Security Monitoring Issues
-
-### Issue: Security Monitor Not Running
-
-**Symptoms:**
-- No security events generated
-- Missing security metrics
-- No security reports
-
-**Diagnosis:**
-```bash
-# Check if security monitoring is enabled
-kubectl get deployment controller-manager -n beskar7-system -o yaml | grep enable-security-monitoring
-
-# Check manager logs
-kubectl logs deployment/controller-manager -n beskar7-system | grep security
-
-# Check security monitor status
-kubectl get events -n beskar7-system | grep security
-```
-
-**Solutions:**
-```bash
-# Enable security monitoring
-kubectl patch deployment controller-manager -n beskar7-system \
-  --patch '{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--enable-security-monitoring=true"]}]}}}}'
-
-# Restart manager
-kubectl rollout restart deployment/controller-manager -n beskar7-system
-```
-
-### Issue: False Positive Security Alerts
-
-**Symptoms:**
-- Excessive security warnings
-- Valid configurations flagged as violations
-- Alert fatigue
-
-**Diagnosis:**
-```bash
-# Review security events
-kubectl get events -n beskar7-system --field-selector type=Warning
-
-# Check security policy configuration
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml
-```
-
-**Solutions:**
-```yaml
-# Adjust security policy thresholds
-security:
-  tls:
-    expiry_warning_days: 15  # Reduce from 30 days
-  
-  credentials:
-    rotation_policy:
-      max_age_days: 180      # Increase from 90 days
-  
-  monitoring:
-    security_monitoring:
-      alert_on_medium: false # Disable medium alerts
-```
-
-## Debugging Tools and Commands
-
-### Security Status Commands
+The controller could not fetch or parse the CA bundle Secret named by `caBundleSecretRef`.
 
 ```bash
-# Overall security status
-kubectl get events -n beskar7-system --field-selector type=Warning
+kubectl describe physicalhost <name>
+# look for the RedfishConnectionReady condition
 
-# TLS security status
-kubectl get events -n beskar7-system --field-selector reason=TLSSecurityIssue
-
-# RBAC security status
-kubectl get events -n beskar7-system --field-selector reason=RBACSecurityIssue
-
-# Credential security status
-kubectl get events -n beskar7-system --field-selector reason=SecretSecurityIssue
-
-# Network policy status
-kubectl get networkpolicy -n beskar7-system
-
-# Security policy
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml
+kubectl get secret <ca-secret-name> -n <namespace> -o yaml
 ```
 
-### Certificate Debugging
+Causes and fixes:
+
+- The Secret does not exist in the host's namespace. Create it.
+- The Secret has neither `ca.crt` nor `tls.crt` data keys. Add one (PEM-encoded, base64).
+- Both keys are empty. Populate `ca.crt`.
+
+### Symptom: `RedfishConnectionReady=False (InsecureCABundleConflict)`
+
+The PhysicalHost has both `insecureSkipVerify: true` and `caBundleSecretRef` set. These are mutually exclusive — pick one:
 
 ```bash
-# Check certificate details
-openssl s_client -connect bmc.example.com:443 -showcerts
+# Either remove caBundleSecretRef:
+kubectl patch physicalhost <name> --type=json -p='[{"op":"remove","path":"/spec/redfishConnection/caBundleSecretRef"}]'
 
-# Check certificate chain
-openssl s_client -connect bmc.example.com:443 -verify_return_error
-
-# Check certificate expiry
-echo | openssl s_client -connect bmc.example.com:443 2>/dev/null | openssl x509 -noout -dates
-
-# Check certificate SANs
-echo | openssl s_client -connect bmc.example.com:443 2>/dev/null | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
+# Or flip insecureSkipVerify to false:
+kubectl patch physicalhost <name> --type=merge -p='{"spec":{"redfishConnection":{"insecureSkipVerify":false}}}'
 ```
 
-### RBAC Debugging
+### Symptom: certificate validation fails for a public-CA-signed BMC
+
+Verify the chain manually:
 
 ```bash
-# Check current permissions
-kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:controller-manager
-
-# Check specific permission
-kubectl auth can-i create physicalhosts --as=system:serviceaccount:beskar7-system:controller-manager
-
-# List all ClusterRoles
-kubectl get clusterrole | grep beskar7
-
-# Check ClusterRoleBinding
-kubectl get clusterrolebinding | grep beskar7
+openssl s_client -connect bmc.example.com:443 -showcerts -verify_return_error </dev/null
 ```
 
-### Network Debugging
+If `openssl` is happy but Beskar7 isn't, check the manager pod's CA pool. The default `gcr.io/distroless/static:nonroot` image includes the standard Mozilla bundle; an internal CA must be provided via `caBundleSecretRef`.
+
+## BMC credentials
+
+### Symptom: `RedfishConnectionReady=False (MissingCredentials)` / `(SecretNotFound)` / `(MissingSecretData)`
 
 ```bash
-# Test network connectivity
-kubectl exec -it deployment/controller-manager -n beskar7-system -- curl -v https://bmc.example.com
-
-# Check DNS resolution
-kubectl exec -it deployment/controller-manager -n beskar7-system -- nslookup bmc.example.com
-
-# Check network policies
-kubectl get networkpolicy -n beskar7-system -o yaml
-
-# Test webhook connectivity
-kubectl exec -it deployment/controller-manager -n beskar7-system -- curl -v https://kubernetes.default.svc/api/v1
+kubectl get physicalhost <name> -o jsonpath='{.status.errorMessage}'
+kubectl get secret <secret-name> -n <namespace>
+kubectl get secret <secret-name> -n <namespace> -o yaml | grep -A2 data:
 ```
 
-## Log Analysis
-
-### Enable Debug Logging
+The Secret needs `username` and `password` data keys (Opaque). If both keys are present but the BMC still rejects authentication, test manually:
 
 ```bash
-# Enable verbose logging
-kubectl patch deployment controller-manager -n beskar7-system \
-  --patch '{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--v=2"]}]}}}}'
-
-# Enable security debug logging
-kubectl patch deployment controller-manager -n beskar7-system \
-  --patch '{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"BESKAR7_SECURITY_DEBUG","value":"true"}]}]}}}}'
+USER=$(kubectl get secret <secret-name> -n <ns> -o jsonpath='{.data.username}' | base64 -d)
+PASS=$(kubectl get secret <secret-name> -n <ns> -o jsonpath='{.data.password}' | base64 -d)
+curl -sk -u "$USER:$PASS" https://<bmc-address>/redfish/v1/Systems
 ```
 
-### Log Patterns to Look For
+If `curl` succeeds, the credentials are correct — the problem is elsewhere (BMC firewall, BMC user disabled, BMC role lacks required privilege).
+
+## Bearer-token failures (`401 Unauthorized` from `:8082`)
+
+The callback endpoint returns an opaque `401` for every authentication failure. The verifier's specific error is logged at V(1) on the manager. To see why a request failed:
 
 ```bash
-# TLS errors
-kubectl logs deployment/controller-manager -n beskar7-system | grep -i "tls\|certificate\|x509"
+# Restart the manager with --zap-devel=true (development log encoder, V(1) included)
+kubectl edit deployment beskar7-controller-manager -n beskar7-system
+# Add --zap-devel=true to args, save, wait for rollout
 
-# RBAC errors
-kubectl logs deployment/controller-manager -n beskar7-system | grep -i "forbidden\|rbac\|permission"
-
-# Credential errors
-kubectl logs deployment/controller-manager -n beskar7-system | grep -i "auth\|credential\|password"
-
-# Security violations
-kubectl logs deployment/controller-manager -n beskar7-system | grep -i "security\|violation\|policy"
+# Tail the logs while the inspector retries:
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep -i bearer
 ```
 
-## Emergency Procedures
+Possible causes:
 
-### Disable Security Features
+| Log message | Cause | Fix |
+|---|---|---|
+| `get PhysicalHost: ... not found` | URL path references a host that does not exist. | Check the iPXE-rendered cmdline matches the actual `<namespace>/<host>`. |
+| `no bootstrap token issued for host ...` | `Status.Bootstrap.TokenHash` is empty. | The Beskar7Machine reconciler has not yet run `triggerInspection` for this host. Wait, or check Beskar7Machine status. |
+| `bootstrap token expired for host ...` | The token's `ExpiresAt` is in the past (30-min lifetime). | Trigger a re-mint — easiest is to delete the per-host Secret (`<host>-bootstrap-token`), the Beskar7Machine reconciler will mint a fresh one. The iPXE cmdline embedding the previous plaintext will be invalid; the host must re-PXE. |
+| `bootstrap token mismatch for host ...` | The plaintext on the wire does not hash to the stored hash. | Likely a stale iPXE cmdline. Rebuild the cmdline from the current Secret (`kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`) and re-PXE the host. Persistent mismatch suggests cmdline truncation or shell-escape damage in your iPXE template. |
+| Clock skew between manager and host > 30m | Host clock far in the future or past. | NTP. |
 
-If security features are blocking operation:
+## RBAC
+
+### Symptom: controller logs show `forbidden`
 
 ```bash
-# Disable security monitoring temporarily
-kubectl patch deployment controller-manager -n beskar7-system \
-  --patch '{"spec":{"template":{"spec":{"containers":[{"name":"manager","args":["--leader-elect","--enable-security-monitoring=false"]}]}}}}'
-
-# Allow insecure TLS temporarily (development only)
-kubectl patch physicalhost server-01 \
-  --patch '{"spec":{"redfishConnection":{"insecureSkipVerify":true}}}'
-
-# Disable network policies temporarily
-kubectl delete networkpolicy --all -n beskar7-system
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep -i forbidden
 ```
 
-### Recovery from Security Lockout
-
-If RBAC changes lock out the controller:
+Identify the verb + resource being denied. Compare with the deployed ClusterRole:
 
 ```bash
-# Reset to minimal required permissions
-kubectl apply -f config/rbac/role.yaml
-
-# Restart controller
-kubectl rollout restart deployment/controller-manager -n beskar7-system
-
-# Verify permissions
-kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:controller-manager
+kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
 ```
 
-## Performance Impact
+If the missing permission is for one of the resources the controller legitimately needs to access (e.g. `beskar7machines/finalizers`), the ClusterRole shipped with the chart is incomplete — file a bug. If it is something Beskar7 should not need, do not grant it; file a bug instead.
 
-Security features may impact performance:
+### Symptom: metrics scraping returns 401/403
 
-### Monitoring Performance
+`/metrics` on `:8443` requires a Kubernetes-authenticated request. Your Prometheus ServiceAccount needs the `metrics_reader` ClusterRole:
 
 ```bash
-# Check resource usage
-kubectl top pod -l control-plane=controller-manager -n beskar7-system
-
-# Monitor security scan duration
-kubectl logs deployment/beskar7-controller-manager -n beskar7-system | grep "security scan"
-
-# Check metrics
-curl http://localhost:8080/metrics | grep beskar7_security
+kubectl get clusterrole metrics-reader -o yaml
+kubectl create clusterrolebinding prometheus-metrics-reader \
+  --clusterrole=metrics-reader \
+  --serviceaccount=monitoring:prometheus
 ```
 
-### Optimization Recommendations
+For local development (`kubectl port-forward`), set `--secure-metrics=false` on the manager and use plain HTTP.
 
-1. **Reduce scan frequency** for non-critical environments
-2. **Disable unnecessary security checks** in development
-3. **Increase resource limits** if security monitoring causes resource pressure
-4. **Use caching** for TLS certificate validation
+## Webhook
 
-## Getting Help
+### Symptom: `failed calling webhook "validation.beskar7cluster..."`
 
-### Collect Diagnostic Information
+The Beskar7Cluster validating webhook is the only webhook in the codebase. Check:
 
 ```bash
-#!/bin/bash
-# Security diagnostic script
-
-echo "=== Beskar7 Security Diagnostics ==="
-echo "Date: $(date)"
-echo
-
-echo "=== Security Events ==="
-kubectl get events -n beskar7-system --field-selector type=Warning
-
-echo "=== Security Policy ==="
-kubectl get configmap beskar7-security-policy -n beskar7-system -o yaml
-
-echo "=== RBAC Configuration ==="
-kubectl get clusterrole manager-role -o yaml
-kubectl get clusterrolebinding manager-rolebinding -o yaml
-
-echo "=== Network Policies ==="
-kubectl get networkpolicy -n beskar7-system -o yaml
-
-echo "=== Controller Logs (last 100 lines) ==="
-kubectl logs deployment/beskar7-controller-manager -n beskar7-system --tail=100
-
-echo "=== Controller Status ==="
-kubectl get deployment beskar7-controller-manager -n beskar7-system -o yaml
+kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7
+kubectl get certificate -n beskar7-system
+kubectl get pods -n beskar7-system
 ```
 
-### Contact Support
+Common causes:
 
-When reporting security issues, include:
+- cert-manager not installed or not Ready. The chart's `Certificate` resource issues the webhook serving cert; without it the webhook server fails the TLS handshake. Install cert-manager and wait for the Certificate to reach `Ready=True`.
+- `webhook.enabled=false` in Helm values, but the operator still applied a `ValidatingWebhookConfiguration`. Either delete the orphaned config or re-enable the webhook.
+- The manager pod's webhook server is not running. Inspect logs for cert-load errors.
 
-1. Diagnostic information from the script above
-2. Description of the issue and steps to reproduce
-3. Environment details (Kubernetes version, deployment method)
-4. Any custom security configurations
-5. Timeline of when the issue started
+### Symptom: a PhysicalHost / Beskar7Machine / Beskar7MachineTemplate validation error from a webhook
 
-### Community Resources
+There is **no** webhook for those three CRDs. Any "webhook denied" error mentioning them is from a stale `ValidatingWebhookConfiguration` or `MutatingWebhookConfiguration` left over from a v0.3 install. Remove the orphaned configurations:
 
-- **GitHub Issues**: https://github.com/projectbeskar/beskar7/issues
-- **Security Advisory**: security@beskar7.io
-- **Community Slack**: #beskar7-security
-- **Documentation**: https://docs.beskar7.io/security/ 
+```bash
+kubectl get validatingwebhookconfigurations | grep beskar7
+kubectl get mutatingwebhookconfigurations | grep beskar7
+# delete any that reference physicalhost, beskar7machine, or beskar7machinetemplate paths
+```
+
+## NetworkPolicy
+
+### Symptom: callback endpoint timeouts from booted hosts
+
+Bare-metal nodes typically come up on a different network than the Pod CIDR. The chart's NetworkPolicy allows ingress on `:8082` from any source — the bearer token is the access control. If a Pod-network NetworkPolicy in your cluster blocks `:8082`, edit it.
+
+To debug from inside a Pod that has cluster network access:
+
+```bash
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
+  curl -kv -H "Authorization: Bearer test" \
+       https://<release>-controller-manager.<namespace>.svc.cluster.local:8082/healthz
+```
+
+`/healthz` does not require authentication; if even that times out, the issue is network plumbing, not auth.
+
+## Container security
+
+### Symptom: pod fails to start with security-context error
+
+If a Pod Security Admission profile is enforced on the namespace, verify the pod manifest matches the chart's expectations:
+
+```bash
+kubectl get pod -n beskar7-system -l app.kubernetes.io/name=beskar7 -o yaml | grep -A20 securityContext
+```
+
+The chart's `Deployment` is compatible with `restricted`; if you have customised the manifest and dropped a required field, restore it.
+
+## Diagnostic bundle
+
+When opening an issue with a security symptom:
+
+```bash
+kubectl get pods -n beskar7-system -o yaml > pods.yaml
+kubectl get clusterrole -l app.kubernetes.io/name=beskar7 -o yaml > rbac-clusterrole.yaml
+kubectl get networkpolicy -n beskar7-system -o yaml > networkpolicy.yaml
+kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7 -o yaml > webhooks.yaml
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager --tail=500 > controller.log
+
+kubectl get physicalhost -o yaml > physicalhosts.yaml          # redact BMC addresses if shareable
+kubectl get events -A --sort-by='.lastTimestamp' > events.txt
+```
+
+Do not include the BMC credentials Secret or any per-host bootstrap-token Secret — both contain plaintext secrets.
+
+## See also
+
+- [Security](README.md)
+- [Configuration](configuration.md)
+- [RBAC Hardening](rbac-hardening.md)
+- [General Troubleshooting](../troubleshooting.md)

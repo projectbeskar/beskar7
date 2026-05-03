@@ -1,501 +1,127 @@
 # API Reference
 
-This document provides comprehensive reference documentation for all Beskar7 Custom Resource Definitions (CRDs).
+This document is the field-by-field reference for every Beskar7 CRD in `infrastructure.cluster.x-k8s.io/v1beta1`.
 
-## API Groups and Versions
+The source of truth for every field listed here is `api/v1beta1/*_types.go`. If this document and the Go types disagree, the types win.
 
-Beskar7 defines resources in the `infrastructure.cluster.x-k8s.io` API group with version `v1beta1`.
+## API groups and versions
 
-**API Group:** `infrastructure.cluster.x-k8s.io`  
-**Version:** `v1beta1`  
-**Categories:** `cluster-api`
+- **Group:** `infrastructure.cluster.x-k8s.io`
+- **Version:** `v1beta1` (storage version)
+- **Categories:** `cluster-api`
 
-## Resource Overview
+## Resource overview
 
-| Resource | Kind | Short Name | Purpose |
-|----------|------|------------|---------|
-| PhysicalHost | `PhysicalHost` | `ph` | Represents a physical server manageable via Redfish |
-| Beskar7Machine | `Beskar7Machine` | - | Infrastructure provider for CAPI Machine resources |
-| Beskar7Cluster | `Beskar7Cluster` | - | Infrastructure provider for CAPI Cluster resources |
-| Beskar7MachineTemplate | `Beskar7MachineTemplate` | - | Template for creating Beskar7Machine resources |
+| Kind | Short name | Scope | Purpose |
+|---|---|---|---|
+| `PhysicalHost` | `ph` | Namespaced | Inventory record for a bare-metal box; owns BMC connection, observed power state, inspection report. |
+| `Beskar7Machine` | – | Namespaced | CAPI infra-machine; claims a `PhysicalHost`, drives PXE boot + kexec to target image. |
+| `Beskar7MachineTemplate` | `b7mt` | Namespaced | Template referenced by `KubeadmControlPlane` / `MachineDeployment` to mint `Beskar7Machine` objects. |
+| `Beskar7Cluster` | – | Namespaced | CAPI infra-cluster; tracks control-plane endpoint and failure domains. |
+
+---
 
 ## PhysicalHost
 
-Represents a physical server that can be managed via Redfish BMC.
-
-### API Definition
+A `PhysicalHost` represents one physical server. The reconciler in `controllers/physicalhost_controller.go` owns its lifecycle.
 
 ```yaml
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 ```
 
-### Specification Fields
+### `spec`
 
-#### spec.redfishConnection
+#### `spec.redfishConnection` (required)
 
-**Type:** `RedfishConnection` (required)
-
-Connection details for the Redfish BMC endpoint.
+Connection coordinates for the Redfish BMC.
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `address` | string | Yes | URL of the Redfish service (e.g., `https://192.168.1.100`) |
-| `credentialsSecretRef` | string | Yes | Name of the Secret containing Redfish credentials |
-| `insecureSkipVerify` | boolean | No | Skip TLS certificate verification (default: false) |
-
-**Validation:**
-- `address` must match pattern: `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`
-- `credentialsSecretRef` minimum length: 1
-
-#### spec.consumerRef
-
-**Type:** `ObjectReference` (optional)
-
-Reference to the Beskar7Machine using this host. Set automatically by the Beskar7Machine controller.
-
-#### spec.bootIsoSource
-
-**Type:** `string` (optional)
-
-URL of the ISO image for provisioning. Set by the consuming Beskar7Machine controller.
-
-#### spec.userDataSecretRef
-
-**Type:** `ObjectReference` (optional)
-
-Reference to a Secret containing cloud-init user data.
-
-**Status:** Currently accepted but not yet integrated into the provisioning process. This field is validated and can be set, but user data injection is pending implementation. Future versions will integrate this with OS-specific provisioning methods (cloud-init for Kairos, Ignition for Flatcar, Combustion for LeapMicro).
-
-### Status Fields
-
-#### status.ready
-
-**Type:** `boolean`
-
-Indicates if the host is ready and enrolled.
-
-#### status.state
-
-**Type:** `string`
-
-Current provisioning state. Possible values:
-
-| State | Description |
-|-------|-------------|
-| `""` (empty) | Initial state before reconciliation |
-| `Enrolling` | Controller establishing connection |
-| `Available` | Host ready to be claimed |
-| `Claimed` | Host reserved by a consumer |
-| `Provisioning` | Host being configured |
-| `Provisioned` | Host successfully configured |
-| `Deprovisioning` | Host being cleaned up |
-| `Error` | Host in error state |
-| `Unknown` | State could not be determined |
-
-#### status.observedPowerState
-
-**Type:** `string`
-
-Last observed power state from Redfish endpoint.
-
-#### status.errorMessage
-
-**Type:** `string`
-
-Details about any error encountered.
-
-#### status.hardwareDetails
-
-**Type:** `HardwareDetails`
-
-Information about the physical hardware.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `manufacturer` | string | Hardware manufacturer |
-| `model` | string | Hardware model |
-| `serialNumber` | string | Hardware serial number |
-| `status.health` | string | Health status |
-| `status.healthRollup` | string | Overall health status |
-| `status.state` | string | Hardware state |
-
-#### status.addresses
-
-**Type:** `[]MachineAddress`
-
-Network addresses associated with the host.
-
-#### status.conditions
-
-**Type:** `[]Condition`
-
-Current service state conditions.
-
-### Example
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: PhysicalHost
-metadata:
-  name: server-01
-  namespace: default
-  labels:
-    topology.kubernetes.io/zone: "rack-1"
-spec:
-  redfishConnection:
-    address: "https://192.168.1.100"
-    credentialsSecretRef: "bmc-credentials"
-    insecureSkipVerify: false
-status:
-  ready: true
-  state: "Available"
-  observedPowerState: "On"
-  hardwareDetails:
-    manufacturer: "Dell Inc."
-    model: "PowerEdge R750"
-    serialNumber: "ABC123DEF"
-    status:
-      health: "OK"
-      healthRollup: "OK"
-      state: "Enabled"
-  addresses:
-  - type: InternalIP
-    address: "192.168.1.100"
-  conditions:
-  - type: RedfishConnectionReady
-    status: "True"
-    reason: "Connected"
-    message: "Successfully connected to Redfish endpoint"
-```
-
-## Beskar7Machine
-
-Infrastructure provider resource for CAPI Machine objects.
-
-### API Definition
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Machine
-```
-
-### Specification Fields
-
-#### spec.providerID
-
-**Type:** `string` (optional)
-
-Unique identifier set by the infrastructure provider.
-
-#### spec.imageURL
-
-**Type:** `string` (required)
-
-URL of the OS image to use for the machine.
-
-**Validation:**
-- Must match pattern for valid image files: `.iso`, `.img`, `.qcow2`, `.vmdk`, `.raw`, `.vhd`, `.vhdx`, `.ova`, `.ovf`
-- Supports compressed formats: `.gz`, `.bz2`, `.xz`, `.zip`, `.tar`, `.tgz`, `.tbz2`, `.txz`
-- Must use supported schemes: `http`, `https`, `ftp`, `file`
-
-#### spec.osFamily
-
-**Type:** `string` (required)
-
-Operating system family to use.
-
-**Valid Values:**
-- `kairos` - Kairos cloud-native OS (recommended)
-- `flatcar` - Flatcar Container Linux
-- `LeapMicro` - openSUSE Leap Micro
-
-**Note:** Only the OS families listed above are currently supported with full RemoteConfig provisioning capabilities. Each OS family has specific kernel parameter requirements for configuration URL passing.
-
-#### spec.configURL
-
-**Type:** `string` (optional)
-
-URL of the configuration file for the machine.
-
-**Validation:**
-- Must match pattern for configuration files: `.yaml`, `.yml`, `.json`, `.toml`, `.conf`, `.cfg`, `.ini`, `.properties`
-- Must use supported schemes: `http`, `https`, `file`
-
-#### spec.provisioningMode
-
-**Type:** `string` (optional, default: "RemoteConfig")
-
-Mode to use for provisioning the machine.
-
-**Valid Values:**
-- `RemoteConfig` - Boot generic ISO with configuration URL
-- `PreBakedISO` - Boot pre-configured ISO. Use this when the OS config is embedded into the ISO for `kairos`, `talos`, `flatcar`, or `LeapMicro`.
-- `PXE` - PXE boot (future)
-- `iPXE` - iPXE boot (future)
-
-**Cross-field Validation:**
-- `configURL` is required when `provisioningMode` is `RemoteConfig`
-- `configURL` should not be set when `provisioningMode` is `PreBakedISO`
-
-### Status Fields
-
-#### status.ready
-
-**Type:** `boolean`
-
-Indicates if the machine is ready.
-
-#### status.phase
-
-**Type:** `string`
-
-Current phase of the machine lifecycle.
-
-#### status.failureReason
-
-**Type:** `string`
-
-Reason for any terminal failure.
-
-#### status.failureMessage
-
-**Type:** `string`
-
-Detailed message about any terminal failure.
-
-#### status.addresses
-
-**Type:** `[]MachineAddress`
-
-Network addresses for the machine.
-
-#### status.conditions
-
-**Type:** `[]Condition`
-
-Current service state conditions.
-
-**Standard Conditions:**
-- `InfrastructureReady` - Infrastructure is ready
-- `PhysicalHostAssociated` - Associated with a PhysicalHost
-
-### Example
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Machine
-metadata:
-  name: control-plane-01
-  namespace: default
-  labels:
-    cluster.x-k8s.io/cluster-name: "production-cluster"
-    cluster.x-k8s.io/control-plane: ""
-spec:
-  imageURL: "https://releases.kairos.io/v2.8.1/kairos-alpine-v2.8.1-amd64.iso"
-  osFamily: "kairos"
-  provisioningMode: "RemoteConfig"
-  configURL: "https://config.example.com/control-plane.yaml"
-status:
-  ready: true
-  phase: "Running"
-  addresses:
-  - type: InternalIP
-    address: "10.0.1.10"
-  - type: ExternalIP
-    address: "203.0.113.10"
-  conditions:
-  - type: InfrastructureReady
-    status: "True"
-    reason: "ProvisioningComplete"
-    message: "Infrastructure is ready"
-  - type: PhysicalHostAssociated
-    status: "True"
-    reason: "HostClaimed"
-    message: "Successfully associated with PhysicalHost server-01"
-```
-
-## Beskar7Cluster
-
-Infrastructure provider resource for CAPI Cluster objects.
-
-### API Definition
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Cluster
-```
-
-### Specification Fields
-
-#### spec.controlPlaneEndpoint
-
-**Type:** `APIEndpoint` (optional)
-
-Endpoint for the cluster's control plane API.
+|---|---|---|---|
+| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`. |
+| `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys. Min length 1. |
+| `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. |
+| `caBundleSecretRef` | `*LocalObjectReference` | no | Reference to a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
+
+When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`; the host is moved to `Error`.
+
+#### `spec.consumerRef`
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `host` | string | Yes | Hostname or IP address |
-| `port` | int32 | Yes | Port number (1-65535) |
+|---|---|---|---|
+| `consumerRef` | `*ObjectReference` | no | Set by the `Beskar7Machine` reconciler when it claims the host. Acts as the lock. Cleared on Beskar7Machine deletion (best-effort BMC cleanup runs first; see `controllers/beskar7machine_controller.go:reconcileDelete`). |
 
-**Validation:**
-- `host` must be valid IP address or hostname
-- `port` must be between 1 and 65535
+There are no other spec fields. Provisioning is driven by the consumer (the `Beskar7Machine`); the host itself only carries connection info and the consumer reference.
 
-### Status Fields
+### `status`
 
-#### status.ready
+| Field | Type | Description |
+|---|---|---|
+| `ready` | bool | True when the host is reachable via Redfish and has a current state. |
+| `state` | string | One of the constants in `api/v1beta1/physicalhost_types.go:10-26`: `""`, `"Unknown"`, `"Enrolling"`, `"Available"`, `"InUse"`, `"Inspecting"`, `"Ready"`, `"Error"`. See [State Management](state-management.md). |
+| `observedPowerState` | string | Last observed Redfish power state (e.g. `On`, `Off`). |
+| `errorMessage` | string | Set when state is `Error`; cleared when the host recovers. |
+| `hardwareDetails` | `HardwareDetails` | Manufacturer, model, serial, and BMC-reported health. Populated from `GetSystemInfo`. |
+| `addresses` | `[]MachineAddress` | Network addresses discovered via Redfish (BMC + system NICs). |
+| `inspectionReport` | `*InspectionReport` | Hardware report from the inspection image. Populated by the `PhysicalHost` reconciler after consuming the inspection-result ConfigMap (see [Inspection workflow](architecture.md#inspection-workflow)). |
+| `inspectionPhase` | string | One of `Pending`, `Booting`, `InProgress`, `Complete`, `Failed`, `Timeout`. |
+| `inspectionTimestamp` | `*metav1.Time` | Time the inspection started. |
+| `bootstrap` | `*BootstrapStatus` | Per-host bootstrap data fetch coordinates and the hashed bearer token. See below. |
+| `conditions` | `clusterv1.Conditions` | CAPI-style conditions; key types listed below. |
 
-**Type:** `boolean`
+#### `HardwareDetails`
 
-Indicates if the cluster infrastructure is ready.
+| Field | Type | Description |
+|---|---|---|
+| `manufacturer` | string | Reported by Redfish. |
+| `model` | string | Reported by Redfish. |
+| `serialNumber` | string | Reported by Redfish. |
+| `status.health` | string | `OK`, `Warning`, `Critical` (Redfish enum). |
+| `status.healthRollup` | string | Aggregated health across subsystems. |
+| `status.state` | string | Hardware state string from Redfish (`Enabled`, `Disabled`, etc.). |
 
-#### status.controlPlaneEndpoint
+#### `InspectionReport`
 
-**Type:** `APIEndpoint`
+The report is an array-of-structs shape — never a single flat object. Source: `api/v1beta1/physicalhost_types.go:140-180`.
 
-Discovered or configured control plane endpoint.
+| Field | Type | Description |
+|---|---|---|
+| `timestamp` | `metav1.Time` | When the report was produced. |
+| `manufacturer`, `model`, `serialNumber`, `bootModeDetected`, `firmwareVersion` | string | System-level identification. |
+| `cpus` | `[]CPUInfo` | One entry per physical CPU. |
+| `memory` | `[]MemoryInfo` | One entry per DIMM. |
+| `disks` | `[]DiskInfo` | One entry per storage device. |
+| `nics` | `[]NICInfo` | One entry per network interface. |
 
-#### status.failureDomains
+`CPUInfo`: `id`, `vendor`, `model`, `cores`, `threads`, `frequency`.
 
-**Type:** `FailureDomains`
+`MemoryInfo`: `id`, `type`, `capacity` (string, e.g. `"32GB"` or `"32GiB"`; parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`), `speed`.
 
-Map of failure domain information discovered from PhysicalHost labels.
+`DiskInfo`: `name`, `model`, `sizeGB` (int), `type` (`SSD`/`HDD`/`NVMe`), `serialNumber`.
 
-#### status.conditions
+`NICInfo`: `name`, `macAddress`, `driver`, `speed`, `ipAddresses` (`[]string`).
 
-**Type:** `[]Condition`
+#### `BootstrapStatus`
 
-Current service state conditions.
+Per-host bootstrap fetch coordinates and the hashed bearer token used to authenticate the inspection POST and bootstrap GET. The plaintext token is never stored on this object; it lives in a per-host Secret named `<host-name>-bootstrap-token`. See decision D-004 in `.claude/context/PROJECT_CONTEXT.md`.
 
-**Standard Conditions:**
-- `ControlPlaneEndpointReady` - Control plane endpoint is available
+| Field | Type | Description |
+|---|---|---|
+| `url` | string | The manager-served HTTPS URL that returns the host's bootstrap user-data. Computed as `<--bootstrap-url-base>/api/v1/bootstrap/<namespace>/<name>`. |
+| `tokenHash` | string | Hex-encoded SHA-256 of the per-host bearer token. 64 chars. |
+| `issuedAt` | `*metav1.Time` | When the current token was minted. |
+| `expiresAt` | `*metav1.Time` | When the current token stops being accepted. Defaults to `issuedAt + 30m`. |
+
+#### Conditions
+
+| Type | Set by | Meaning |
+|---|---|---|
+| `RedfishConnectionReady` | `PhysicalHost` | True when the BMC connection is healthy. False reasons include `MissingCredentials`, `SecretGetFailed`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `HostAvailable` | `PhysicalHost` | True when the host is `Available` (no consumer claim). |
+| `HostInspected` | `PhysicalHost` | True after the inspection report is persisted to status. |
 
 ### Example
 
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Cluster
-metadata:
-  name: production-cluster
-  namespace: default
-spec:
-  controlPlaneEndpoint:
-    host: "10.0.1.10"
-    port: 6443
-status:
-  ready: true
-  controlPlaneEndpoint:
-    host: "10.0.1.10"
-    port: 6443
-  failureDomains:
-    rack-1:
-      controlPlane: true
-      attributes:
-        zone: "rack-1"
-    rack-2:
-      controlPlane: true
-      attributes:
-        zone: "rack-2"
-  conditions:
-  - type: ControlPlaneEndpointReady
-    status: "True"
-    reason: "EndpointDiscovered"
-    message: "Control plane endpoint is ready"
-```
-
-## Beskar7MachineTemplate
-
-Template for creating Beskar7Machine resources, used by CAPI MachineDeployment and other templating resources.
-
-### API Definition
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7MachineTemplate
-```
-
-### Specification Fields
-
-#### spec.template
-
-**Type:** `Beskar7MachineTemplateResource` (required)
-
-Template for creating Beskar7Machine resources.
-
-#### spec.template.spec
-
-**Type:** `Beskar7MachineSpec` (required)
-
-Specification for the Beskar7Machine (same fields as Beskar7Machine.spec).
-
-### Example
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7MachineTemplate
-metadata:
-  name: worker-template
-  namespace: default
-spec:
-  template:
-    spec:
-      imageURL: "https://releases.kairos.io/v2.8.1/kairos-alpine-v2.8.1-amd64.iso"
-      osFamily: "kairos"
-      provisioningMode: "RemoteConfig"
-      configURL: "https://config.example.com/worker.yaml"
-```
-
-## Common Types
-
-### ObjectReference
-
-Standard Kubernetes object reference.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `apiVersion` | string | API version of the referenced object |
-| `kind` | string | Kind of the referenced object |
-| `name` | string | Name of the referenced object |
-| `namespace` | string | Namespace of the referenced object |
-| `uid` | string | UID of the referenced object |
-
-### MachineAddress
-
-Network address information.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Type of address (InternalIP, ExternalIP, etc.) |
-| `address` | string | The address value |
-
-**Address Types:**
-- `Hostname` - DNS hostname
-- `ExternalIP` - Public IP address
-- `InternalIP` - Private IP address
-- `ExternalDNS` - External DNS name
-- `InternalDNS` - Internal DNS name
-
-### Condition
-
-Standard Kubernetes condition type.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `type` | string | Type of condition |
-| `status` | string | Status of condition (True, False, Unknown) |
-| `reason` | string | Machine-readable reason for condition |
-| `message` | string | Human-readable message |
-| `lastTransitionTime` | string | Time when condition last changed |
-| `severity` | string | Severity of the condition |
-
-## Usage Patterns
-
-### Basic PhysicalHost Setup
-
-1. **Create BMC credentials secret:**
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -505,146 +131,210 @@ metadata:
 type: Opaque
 stringData:
   username: "admin"
-  password: "password123"
-```
-
-2. **Create PhysicalHost:**
-```yaml
+  password: "changeme"
+---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
   name: server-01
   namespace: default
+  labels:
+    topology.kubernetes.io/zone: rack-1
 spec:
   redfishConnection:
     address: "https://192.168.1.100"
     credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: false
 ```
-
-### Machine Provisioning Patterns
-
-#### RemoteConfig Pattern
-
-Used when you have a generic OS installer ISO and want to provide configuration via URL:
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Machine
-metadata:
-  name: worker-01
-spec:
-  imageURL: "https://releases.kairos.io/v2.8.1/kairos-alpine-v2.8.1-amd64.iso"
-  osFamily: "kairos"
-  provisioningMode: "RemoteConfig"
-  configURL: "https://config.example.com/worker.yaml"
-```
-
-#### PreBakedISO Pattern
-
-Used when you have a pre-configured ISO with all settings embedded:
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Machine
-metadata:
-  name: worker-02
-spec:
-  imageURL: "https://storage.example.com/custom-kairos-worker.iso"
-  osFamily: "kairos"
-  provisioningMode: "PreBakedISO"
-```
-
-### Cluster API Integration
-
-Beskar7 resources are typically created by Cluster API controllers, not directly by users:
-
-```yaml
-# CAPI Cluster - creates Beskar7Cluster
-apiVersion: cluster.x-k8s.io/v1beta1
-kind: Cluster
-metadata:
-  name: production-cluster
-spec:
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: Beskar7Cluster
-    name: production-cluster
 
 ---
-# CAPI Machine - creates Beskar7Machine
-apiVersion: cluster.x-k8s.io/v1beta1
-kind: Machine
+
+## Beskar7Machine
+
+A `Beskar7Machine` is a CAPI infra-machine. The reconciler in `controllers/beskar7machine_controller.go` claims a `PhysicalHost`, runs the inspection workflow, validates hardware, and signals readiness.
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Machine
+```
+
+### `spec`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `providerID` | `*string` | no | Set by the controller when the host is claimed. Format: `b7://<namespace>/<name>`. Do not set manually. |
+| `inspectionImageURL` | string | yes | iPXE boot script URL or kernel/initrd URL for the inspection image. Validated against `^https?://.*`. |
+| `targetImageURL` | string | yes | URL of the final OS image (kexec target). Validated against `^https?://.*`. |
+| `configurationURL` | string | no | URL passed to the target OS during kexec. Validated against `^https?://.*`. |
+| `hardwareRequirements` | `*HardwareRequirements` | no | Minimum hardware. The inspection report is validated against these; failures are terminal. |
+
+#### `HardwareRequirements`
+
+| Field | Type | Description |
+|---|---|---|
+| `minCPUCores` | int | Minimum CPU cores summed across all CPUs (`>= 1`). |
+| `minMemoryGB` | int | Minimum installed memory in decimal GB summed across all DIMMs (`>= 1`). The capacity parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`. |
+| `minDiskGB` | int | Minimum disk space summed across all disks (`>= 1`). |
+
+If the inspection report does not meet any of these, the controller sets `Status.FailureReason = HardwareRequirementsNotMet` and `InfrastructureReady = False (Severity=Error)`. This is terminal — operator must lower requirements, allocate to different hardware, or delete-and-recreate.
+
+### `status`
+
+| Field | Type | Description |
+|---|---|---|
+| `ready` | bool | True after the host is `Ready` and the bootstrap data has been signalled. |
+| `phase` | `*string` | Free-form: `Pending`, `Inspecting`, `Provisioned`, `Failed`. |
+| `failureReason` | `*string` | Set on terminal failures (`HardwareRequirementsNotMet`, `InspectionTimedOut`, `BootstrapDataUnavailable`). Once set, the controller stops requeueing — operator must intervene. |
+| `failureMessage` | `*string` | Human-readable failure detail. Surfaced via `kubectl describe machine`. |
+| `addresses` | `[]MachineAddress` | Copied from the claimed `PhysicalHost.Status.Addresses`. |
+| `conditions` | `clusterv1.Conditions` | See below. |
+
+#### Conditions
+
+| Type | Set by | Meaning |
+|---|---|---|
+| `InfrastructureReady` | `Beskar7Machine` | Standard CAPI infra-ready condition. Summary across the others. |
+| `PhysicalHostAssociated` | `Beskar7Machine` | True after a host is claimed. False reasons: `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost`. |
+| `MachineProvisioned` | `Beskar7Machine` | True after host transitions to `Ready` and the machine has its `ProviderID`. |
+| `BootstrapDataReady` | `Beskar7Machine` | True after `Machine.Spec.Bootstrap.DataSecretName` is set and the bootstrap URL has been signalled to the host. False reasons: `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
+
+### Example
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Machine
 metadata:
   name: control-plane-01
+  namespace: default
+  labels:
+    cluster.x-k8s.io/cluster-name: production-cluster
+    cluster.x-k8s.io/control-plane: "true"
 spec:
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: Beskar7Machine
-    name: control-plane-01
+  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
+  hardwareRequirements:
+    minCPUCores: 4
+    minMemoryGB: 16
+    minDiskGB:   100
 ```
 
-## Validation and Constraints
+---
 
-### Admission Webhooks
+## Beskar7MachineTemplate
 
-All Beskar7 resources are protected by comprehensive admission webhooks that provide:
+`Beskar7MachineTemplate` is a pure schema. It is referenced by `KubeadmControlPlane` and `MachineDeployment` so they can mint `Beskar7Machine` objects with the same spec. There is no `Beskar7MachineTemplate` controller, no validating/defaulting webhook, and no immutability enforcement; the template's spec is whatever any author writes.
 
-#### Validating Webhooks
-- **Field validation**: URL formats, enum values, cross-field constraints
-- **Security validation**: TLS certificate validation, credential strength requirements
-- **Business logic validation**: Redfish connectivity, resource dependencies
-- **Immutability enforcement**: Critical fields that cannot be changed after creation
-
-#### Mutating Webhooks (Defaulting)
-- **Automatic field defaulting**: Sets sensible defaults for optional fields
-- **Consistent behavior**: Ensures all resources have complete specifications
-- **Version compatibility**: Maintains compatibility across API versions
-
-### Field Validation
-
-All resources include comprehensive field validation via OpenAPI schemas and admission webhooks:
-
-- **URL validation** for `imageURL` and `configURL` (with format and accessibility checks)
-- **Enum validation** for `osFamily` and `provisioningMode` 
-- **Pattern validation** for Redfish addresses and BMC endpoints
-- **Cross-field validation** for provisioning mode constraints and dependencies
-- **Security validation** for TLS settings and credential requirements
-
-### Resource Constraints
-
-#### PhysicalHost Constraints
-- Must have unique Redfish addresses within a namespace
-- Redfish connection parameters are validated on creation/update
-- Credentials secret must exist and contain valid username/password
-- TLS configuration is validated for production environments
-
-#### Beskar7Machine Constraints  
-- Can only claim available PhysicalHost resources
-- ConfigURL is mandatory for RemoteConfig mode but forbidden for PreBakedISO mode
-- ImageURL must point to supported image formats (.iso, .img, .qcow2, etc.)
-- ProviderID is managed by controllers and cannot be set manually
-
-#### Beskar7MachineTemplate Constraints
-- **Immutable after creation**: imageURL, osFamily, provisioningMode, configURL cannot be changed
-- ProviderID cannot be set in templates (managed by controllers)
-- Inherits all validation rules from Beskar7Machine specifications
-- Template changes require creating new template versions
-
-### Status Transitions
-
-Resources follow predictable state transitions:
-
-**PhysicalHost States:**
-```
-None -> Enrolling -> Available -> Claimed -> Provisioning -> Provisioned
-                     v           v
-                   Error <- -> Deprovisioning -> Available
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7MachineTemplate
 ```
 
-**Beskar7Machine Conditions:**
-```
-PhysicalHostAssociated: False -> True (when host is claimed)
-InfrastructureReady: False -> True (when provisioning completes)
+### `spec`
+
+| Field | Type | Description |
+|---|---|---|
+| `template.spec` | `Beskar7MachineSpec` | Identical schema to a `Beskar7Machine`'s spec. See [Beskar7Machine.spec](#spec-1). |
+
+### Example
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7MachineTemplate
+metadata:
+  name: my-cluster-workers
+  namespace: default
+spec:
+  template:
+    spec:
+      inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+      configurationURL:   "http://boot-server.local/configs/worker.yaml"
+      hardwareRequirements:
+        minCPUCores: 4
+        minMemoryGB: 8
+        minDiskGB:   50
 ```
 
-This API reference provides comprehensive information for working with Beskar7 resources. For additional examples and usage scenarios, see the other documentation files. 
+The template carries the `cluster-api` category so `clusterctl move` walks it during workload-cluster migration.
+
+---
+
+## Beskar7Cluster
+
+A `Beskar7Cluster` is a CAPI infra-cluster. The reconciler in `controllers/beskar7cluster_controller.go` derives the control-plane endpoint and discovers failure domains.
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Cluster
+```
+
+### `spec`
+
+| Field | Type | Description |
+|---|---|---|
+| `controlPlaneEndpoint.host` | string | Optional. If unset, the controller derives it from the control-plane `Beskar7Machine.Status.Addresses`. |
+| `controlPlaneEndpoint.port` | int32 | Optional. |
+
+### `status`
+
+| Field | Type | Description |
+|---|---|---|
+| `ready` | bool | True when `controlPlaneEndpoint` is populated. |
+| `controlPlaneEndpoint` | `clusterv1.APIEndpoint` | Same shape as `spec.controlPlaneEndpoint`. |
+| `failureDomains` | `clusterv1.FailureDomains` | Map keyed by zone name; values discovered from `topology.kubernetes.io/zone` labels on `PhysicalHost` objects. |
+| `conditions` | `clusterv1.Conditions` | See below. |
+
+#### Conditions
+
+| Type | Set by | Meaning |
+|---|---|---|
+| `ControlPlaneEndpointReady` | `Beskar7Cluster` | True after the endpoint is populated. False reason: `ControlPlaneEndpointNotSet`. |
+
+### Webhooks
+
+`Beskar7Cluster` is the only resource with an admission webhook. The webhook is in `api/v1beta1/webhooks/beskar7cluster_webhook.go`; it validates `controlPlaneEndpoint.host` and `port`. The webhook ships with `failurePolicy: Fail`.
+
+There are **no** webhooks for `PhysicalHost`, `Beskar7Machine`, or `Beskar7MachineTemplate`. Validation for those resources is performed by the controllers themselves and via OpenAPI schema validation.
+
+### Example
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Cluster
+metadata:
+  name: production-cluster
+  namespace: default
+spec:
+  controlPlaneEndpoint:
+    host: "10.0.1.10"
+    port: 6443
+```
+
+---
+
+## Common types
+
+### `ObjectReference`
+
+Standard Kubernetes object reference (`apiVersion`, `kind`, `name`, `namespace`, `uid`).
+
+### `MachineAddress`
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | One of `Hostname`, `InternalIP`, `ExternalIP`, `InternalDNS`, `ExternalDNS`. |
+| `address` | string | The address. |
+
+### `Condition`
+
+CAPI-style condition: `type`, `status` (`True`/`False`/`Unknown`), `reason`, `message`, `severity`, `lastTransitionTime`.
+
+---
+
+## Cross-references
+
+- Lifecycle and state transitions: [State Management](state-management.md).
+- Per-CRD docs with extended notes: [PhysicalHost](physicalhost.md), [Beskar7Machine](beskar7machine.md), [Beskar7MachineTemplate](beskar7machinetemplate.md), [Beskar7Cluster](beskar7cluster.md).
+- Working YAML: [`examples/`](../examples/).
+- Architecture: [Architecture](architecture.md).

@@ -1,455 +1,130 @@
-# Production Security Configuration for Beskar7
-# This example demonstrates a secure production deployment
+# Production-style security configuration for Beskar7 v0.4.0-alpha.
+#
+# This file demonstrates the enforced security knobs only — the
+# beskar7-security-policy ConfigMap and the various "security framework"
+# settings advertised in earlier docs were never implemented and have been
+# removed. The real controls today are:
+#
+#   1. PhysicalHost.spec.redfishConnection.caBundleSecretRef for verified BMC TLS
+#   2. PhysicalHost.spec.redfishConnection.insecureSkipVerify=false
+#   3. Strong BMC credentials in a Secret (operator-managed; no in-controller policy)
+#   4. NetworkPolicy gating manager ingress
+#   5. cert-manager-issued certs for the webhook + callback endpoint
+#
+# See docs/security/README.md and docs/security/configuration.md.
 
 ---
+# A namespace for production hosts. The chart's NetworkPolicy and the
+# controllers' RBAC are cluster-scoped, but Secrets live where the hosts live.
 apiVersion: v1
-kind: ConfigMap
+kind: Namespace
 metadata:
-  name: beskar7-security-policy
-  namespace: beskar7-system
-data:
-  policy.yaml: |
-    # Production Security Policy
-    security:
-      # Strict TLS enforcement for production
-      tls:
-        enforce_certificate_validation: true
-        allow_insecure_skip_verify: false
-        min_tls_version: "1.2"
-        expiry_warning_days: 30
-        expiry_critical_days: 7
-        trusted_cas:
-          - system
-          - production-ca-cert  # Custom production CA
-        require_hostname_verification: true
-        require_valid_certificate_chain: true
-        
-      # Strict RBAC enforcement
-      rbac:
-        enforce_least_privilege: true
-        prohibited_permissions:
-          - apiGroups: ["*"]
-            resources: ["*"]
-            verbs: ["*"]
-          - apiGroups: ["rbac.authorization.k8s.io"]
-            resources: ["*"]
-            verbs: ["*"]
-          - verbs: ["impersonate"]
-        
-      # Strong credential requirements
-      credentials:
-        password_policy:
-          min_length: 16
-          require_uppercase: true
-          require_lowercase: true
-          require_numbers: true
-          require_special_chars: true
-          prohibited_common_passwords: true
-        rotation_policy:
-          max_age_days: 90
-          warning_age_days: 60
-          force_rotation_age_days: 365
-        storage_policy:
-          require_encryption_at_rest: true
-          require_kubernetes_secrets: true
-          prohibit_plaintext_storage: true
-          
-      # Network security
-      network:
-        default_tls: true
-        prohibited_protocols:
-          - http
-          - telnet
-          - ftp
-          - snmp
-        bmc_encryption: true
-        require_network_policies: true
-        
-      # Container security hardening
-      container:
-        security_context:
-          run_as_non_root: true
-          read_only_root_filesystem: true
-          allow_privilege_escalation: false
-          drop_all_capabilities: true
-          seccomp_profile: runtime/default
-        resource_limits:
-          enforce_resource_limits: true
-          default_cpu_limit: "500m"
-          default_memory_limit: "512Mi"
-          
-      # Comprehensive monitoring
-      monitoring:
-        security_monitoring:
-          enabled: true
-          scan_interval: "30m"  # Frequent scans for production
-          alert_on_critical: true
-          alert_on_high: true
-          alert_on_medium: true
-        audit_logging:
-          enabled: true
-          log_failed_authentications: true
-          log_privilege_escalations: true
-          log_secret_access: true
-          log_rbac_changes: true
-        metrics:
-          expose_security_metrics: true
-          alert_on_policy_violations: true
-          alert_on_certificate_expiry: true
-          alert_on_credential_age: true
-          
-      # Compliance requirements
-      compliance:
-        standards:
-          cis_kubernetes: true
-          nist_cybersecurity: true
-          soc2: true
-        validation:
-          periodic_security_scans: true
-          vulnerability_assessments: true
-          compliance_reporting: true
+  name: beskar7-prod
 
 ---
-# Production CA Certificate Secret
+# BMC credentials Secret. Generate the password externally; Beskar7 does not
+# enforce any strength policy itself.
 apiVersion: v1
 kind: Secret
 metadata:
-  name: production-ca-cert
-  namespace: beskar7-system
+  name: bmc-credentials
+  namespace: beskar7-prod
 type: Opaque
 data:
-  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # Base64 encoded production CA
+  username: YWRtaW4=                       # "admin"
+  password: <base64 of openssl rand -base64 32>
 
 ---
-# Secure PhysicalHost Example
+# CA bundle for the BMC fleet, issued by cert-manager. The Beskar7 controller
+# reads data["ca.crt"] (preferred) or data["tls.crt"] (fallback).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: bmc-ca-bundle
+  namespace: beskar7-prod
+spec:
+  secretName: bmc-ca-bundle
+  isCA: true
+  commonName: "BMC Issuing CA"
+  duration: 8760h        # 1 year
+  renewBefore: 720h      # rotate 30 days before expiry
+  issuerRef:
+    name: my-root-issuer
+    kind: ClusterIssuer
+
+---
+# PhysicalHost using strict TLS verification against the bundle above.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
   name: prod-server-01
-  namespace: default
+  namespace: beskar7-prod
 spec:
   redfishConnection:
-    address: "https://prod-bmc-01.internal.company.com"
-    credentialsSecretRef:
-      name: prod-bmc-credentials
-    # Use custom CA for internal certificates
-    caCertificateSecretRef:
-      name: production-ca-cert
-    # Never skip verification in production
-    insecureSkipVerify: false
-  
-  # Hardware specifications
-  serverSpecs:
-    manufacturer: "Dell"
-    model: "PowerEdge R750"
-    cpu: "Intel Xeon Gold 6338"
-    memory: "256GB"
-    storage: "2x 960GB NVMe SSD"
+    address: "https://bmc.prod.example.com"
+    credentialsSecretRef: "bmc-credentials"
+    insecureSkipVerify: false              # mutually exclusive with caBundleSecretRef
+    caBundleSecretRef:
+      name: bmc-ca-bundle
 
 ---
-# Production BMC Credentials (with strong password)
-apiVersion: v1
-kind: Secret
-metadata:
-  name: prod-bmc-credentials
-  namespace: default
-  annotations:
-    # Track credential creation for rotation
-    beskar7.io/credential-created: "2024-01-15"
-    beskar7.io/credential-owner: "infrastructure-team"
-    beskar7.io/rotation-schedule: "quarterly"
-type: Opaque
-data:
-  username: cm9vdA==  # root
-  password: UGFzc3dvcmQxMjM0NSE=  # Strong password (example)
-
----
-# Network Policies for Production
+# Tighten the chart's NetworkPolicy egress to a known BMC subnet. Apply this
+# AFTER the chart's default NetworkPolicy (overlays it).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: beskar7-production-policy
+  name: beskar7-bmc-egress
   namespace: beskar7-system
 spec:
   podSelector:
     matchLabels:
-      control-plane: beskar7-controller-manager
+      app.kubernetes.io/name: beskar7
   policyTypes:
-  - Ingress
-  - Egress
-  
-  ingress:
-  # Webhook traffic from API server only
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: kube-system
-      podSelector:
-        matchLabels:
-          component: kube-apiserver
-    ports:
-    - protocol: TCP
-      port: 9443
-  
-  # Metrics from monitoring namespace only
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: monitoring
-    ports:
-    - protocol: TCP
-      port: 8080
-  
+    - Egress
   egress:
-  # DNS resolution
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: kube-system
-      podSelector:
-        matchLabels:
-          k8s-app: kube-dns
-    ports:
-    - protocol: UDP
-      port: 53
-  
-  # Kubernetes API server
-  - to:
-    - namespaceSelector:
-        matchLabels:
-          name: kube-system
-    ports:
-    - protocol: TCP
-      port: 443
-  
-  # BMC communication to internal network only
-  - to:
-    - namespaceSelector: {}
-    ports:
-    - protocol: TCP
-      port: 443
-    - protocol: TCP
-      port: 8443
+    # DNS
+    - ports:
+        - protocol: UDP
+          port: 53
+    # kube-apiserver
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443
+    # BMC subnet only — replace the CIDR with your actual management network.
+    - to:
+        - ipBlock:
+            cidr: 10.100.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443           # standard Redfish HTTPS
+        - protocol: TCP
+          port: 5000          # Supermicro X10/X11 alternate
 
 ---
-# Production Deployment with Enhanced Security
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: beskar7-controller-manager
-  namespace: beskar7-system
-  labels:
-    control-plane: beskar7-controller-manager
-spec:
-  selector:
-    matchLabels:
-      control-plane: beskar7-controller-manager
-  replicas: 2  # HA deployment for production
-  template:
-    metadata:
-      annotations:
-        kubectl.kubernetes.io/default-container: manager
-      labels:
-        control-plane: beskar7-controller-manager
-    spec:
-      # Enhanced security context
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-        sysctls: []
-      
-      # Additional security volumes
-      volumes:
-      - name: webhook-server-cert
-        secret:
-          secretName: beskar7-webhook-server-cert
-          defaultMode: 0400
-      - name: tmp
-        emptyDir:
-          sizeLimit: 100Mi
-      - name: ca-certificates
-        secret:
-          secretName: production-ca-cert
-          defaultMode: 0444
-      
-      containers:
-      - name: manager
-        command:
-        - /manager
-        args:
-        - --leader-elect
-        - --enable-security-monitoring=true
-        - --security-scan-interval=30m
-        - --metrics-bind-address=:8080
-        - --health-probe-bind-address=:8081
-        image: ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
-        imagePullPolicy: Always
-        
-        # Maximum security context
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          runAsUser: 65532
-          runAsGroup: 65532
-          capabilities:
-            drop: ["ALL"]
-          seccompProfile:
-            type: RuntimeDefault
-        
-        # Production environment variables
-        env:
-        - name: GODEBUG
-          value: "netdns=go"
-        - name: GOMAXPROCS
-          valueFrom:
-            resourceFieldRef:
-              resource: limits.cpu
-        - name: BESKAR7_ENVIRONMENT
-          value: "production"
-        - name: BESKAR7_SECURITY_STRICT
-          value: "true"
-        
-        volumeMounts:
-        - name: webhook-server-cert
-          mountPath: /tmp/k8s-webhook-server/serving-certs
-          readOnly: true
-        - name: tmp
-          mountPath: /tmp
-          readOnly: false
-        - name: ca-certificates
-          mountPath: /etc/ssl/certs/production-ca.crt
-          subPath: ca.crt
-          readOnly: true
-        
-        ports:
-        - containerPort: 8080
-          name: metrics
-          protocol: TCP
-        - containerPort: 8081
-          name: healthz
-          protocol: TCP
-        - containerPort: 9443
-          name: webhook
-          protocol: TCP
-        
-        # Enhanced health checks
-        livenessProbe:
-          httpGet:
-            path: /healthz
-            port: 8081
-            scheme: HTTP
-          initialDelaySeconds: 30
-          periodSeconds: 20
-          timeoutSeconds: 10
-          successThreshold: 1
-          failureThreshold: 3
-        
-        readinessProbe:
-          httpGet:
-            path: /readyz
-            port: 8081
-            scheme: HTTP
-          initialDelaySeconds: 10
-          periodSeconds: 10
-          timeoutSeconds: 5
-          successThreshold: 1
-          failureThreshold: 3
-        
-        # Production resource limits
-        resources:
-          limits:
-            cpu: 1000m
-            memory: 1Gi
-            ephemeral-storage: 2Gi
-          requests:
-            cpu: 200m
-            memory: 256Mi
-            ephemeral-storage: 100Mi
-      
-      serviceAccountName: controller-manager
-      terminationGracePeriodSeconds: 30
-      automountServiceAccountToken: true
-      enableServiceLinks: false
-      hostNetwork: false
-      hostPID: false
-      hostIPC: false
-      dnsPolicy: ClusterFirst
-      restartPolicy: Always
-      schedulerName: default-scheduler
-      priorityClassName: system-cluster-critical
-      
-      # Production scheduling preferences
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            podAffinityTerm:
-              labelSelector:
-                matchLabels:
-                  control-plane: beskar7-controller-manager
-              topologyKey: kubernetes.io/hostname
-      
-      tolerations:
-      - effect: NoSchedule
-        key: node-role.kubernetes.io/control-plane
-        operator: Exists
-
----
-# Production Service Monitor for Prometheus
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: beskar7-security-metrics
-  namespace: beskar7-system
-spec:
-  selector:
-    matchLabels:
-      control-plane: beskar7-controller-manager
-  endpoints:
-  - port: metrics
-    interval: 30s
-    path: /metrics
-    scheme: http
-
----
-# Production Alert Rules
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  name: beskar7-security-alerts
-  namespace: beskar7-system
-spec:
-  groups:
-  - name: beskar7-security
-    rules:
-    - alert: Beskar7CriticalSecurityIssue
-      expr: beskar7_security_scan_issues_total{severity="critical"} > 0
-      for: 0m
-      labels:
-        severity: critical
-      annotations:
-        summary: "Critical security issue detected in Beskar7"
-        description: "{{ $value }} critical security issues detected"
-    
-    - alert: Beskar7CertificateExpiring
-      expr: beskar7_tls_certificate_expiry_days < 7
-      for: 0m
-      labels:
-        severity: warning
-      annotations:
-        summary: "TLS certificate expiring soon"
-        description: "Certificate expires in {{ $value }} days"
-    
-    - alert: Beskar7CredentialRotationRequired
-      expr: beskar7_credential_age_days > 90
-      for: 0m
-      labels:
-        severity: warning
-      annotations:
-        summary: "Credential rotation required"
-        description: "Credentials are {{ $value }} days old" 
+# Chart values pinned for production:
+#   bootstrap.urlBase            — match the Service DNS for your release name
+#   webhook.enabled              — turn the Beskar7Cluster validating webhook on
+#   certManager.enabled          — webhook + callback endpoint serving certs
+#
+# Apply with:
+#   helm install beskar7 beskar7/beskar7 -n beskar7-system --create-namespace -f values-prod.yaml
+#
+# values-prod.yaml:
+#
+#   webhook:
+#     enabled: true
+#   certManager:
+#     enabled: true
+#   bootstrap:
+#     urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+#   controllerManager:
+#     replicaCount: 1                       # leader-elect=true; only one active
+#     resources:
+#       limits:
+#         cpu: "500m"
+#         memory: "512Mi"
+#       requests:
+#         cpu: "100m"
+#         memory: "128Mi"

@@ -8,9 +8,10 @@ Beskar7 acts as a bridge between the declarative Kubernetes API and the physical
 
 *   Define your bare-metal infrastructure (`PhysicalHost` resources) within Kubernetes.
 *   Provision Kubernetes nodes onto these physical hosts using `Beskar7Machine` resources, which integrate with CAPI `Machine` objects.
-*   Leverage immutable, cloud-native OSes like Kairos, Flatcar, and openSUSE Leap Micro using their specific provisioning methods (Remote Configuration via kernel parameters or Pre-Baked ISOs).
+*   Boot nodes via iPXE network boot to a hardware-inspection image, validate the report against operator-supplied hardware requirements, then kexec into the target OS (Kairos, Flatcar, or any image you host).
 *   Orchestrate cluster-level infrastructure using `Beskar7Cluster` resources.
-*   Support multiple provisioning modes including PXE and iPXE network boot.
+
+Beskar7 uses only universally-supported Redfish features (power state, one-time PXE boot, system info, network interface enumeration). It does not rely on Virtual Media, BIOS attribute editing, or vendor-specific Redfish extensions.
 
 ## Why Beskar7?
 

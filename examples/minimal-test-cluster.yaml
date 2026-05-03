@@ -1,16 +1,22 @@
 # Minimal Test Cluster Example
-# This is a simplified version for quick testing with a single node.
-# Perfect for development and testing Beskar7 functionality.
+#
+# A simplified single-host scenario for quick testing of the Beskar7 v0.4.0-alpha
+# inspection workflow. NOT a working cluster — bring this up first to verify the
+# inspection round-trip, then graduate to examples/complete-cluster.yaml.
 #
 # Prerequisites:
-# 1. Beskar7 controller installed
-# 2. At least one bare-metal server with Redfish BMC
+#   1. Beskar7 controller installed and Ready.
+#   2. cert-manager installed.
+#   3. iPXE infrastructure reachable (see docs/ipxe-setup.md).
+#   4. At least one bare-metal server with Redfish.
 #
 # Usage:
 #   kubectl apply -f minimal-test-cluster.yaml
+#   kubectl get physicalhost -w
+#   kubectl get beskar7machine -w
 
 ---
-# BMC credentials
+# BMC credentials.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -19,10 +25,10 @@ metadata:
 type: Opaque
 stringData:
   username: "admin"
-  password: "password"  # Change this!
+  password: "changeme"
 
 ---
-# Single PhysicalHost for testing
+# Single PhysicalHost.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: PhysicalHost
 metadata:
@@ -30,12 +36,12 @@ metadata:
   namespace: default
 spec:
   redfishConnection:
-    address: "https://172.16.56.43"  # Replace with your BMC IP
+    address: "https://172.16.56.43"
     credentialsSecretRef: "test-bmc-credentials"
-    insecureSkipVerify: true
+    insecureSkipVerify: true   # Test env only — see docs/security/configuration.md.
 
 ---
-# Simple Beskar7Cluster
+# Beskar7Cluster (placeholder; not paired with a CAPI Cluster in this minimal test).
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: Beskar7Cluster
 metadata:
@@ -43,22 +49,21 @@ metadata:
   namespace: default
 spec:
   controlPlaneEndpoint:
-    host: "172.16.56.43"  # Replace with your server IP
+    host: "172.16.56.43"
     port: 6443
 
 ---
-# Beskar7Machine that will use the PhysicalHost
+# Single Beskar7Machine. Without an owning CAPI Machine, this won't progress
+# past the bootstrap-data check — useful for confirming the controller picks
+# up your spec but not for completing provisioning.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: Beskar7Machine
 metadata:
   name: test-machine-01
   namespace: default
   labels:
-    cluster.x-k8s.io/cluster-name: "test-cluster"
+    cluster.x-k8s.io/cluster-name: test-cluster
 spec:
-  osFamily: "kairos"
-  imageURL: "https://github.com/kairos-io/kairos/releases/download/v2.8.1/kairos-alpine-v2.8.1-amd64.iso"
-  provisioningMode: "RemoteConfig"
-  configURL: "https://your-server.com/config/test-config.yaml"
-  bootMode: "UEFI"
-
+  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  configurationURL:   "http://boot-server.local/configs/test.yaml"

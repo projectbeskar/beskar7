@@ -302,7 +302,10 @@ echo MAC: ${net0/mac}
 echo IP: ${net0/ip}
 
 # Set variables
-set beskar7-api http://beskar7-controller.cluster.local:8080
+# The Beskar7 callback endpoint is HTTPS on :8082. It hosts both the inspection
+# POST and the bootstrap GET. Both require an Authorization: Bearer header — the
+# token is per-host and is rendered into the kernel cmdline (see below).
+set beskar7-api https://beskar7-controller-manager.beskar7-system.svc:8082
 set boot-server http://boot-server.local
 
 # Boot inspection image
@@ -314,24 +317,48 @@ sleep 30
 reboot
 EOF
 
-# Create inspection boot script
+# Create inspection boot script.
+#
+# The inspection kernel cmdline must include four Beskar7-specific variables:
+#
+#   beskar7.api              Base URL of the manager's callback endpoint (https://...:8082).
+#                             Used by the inspector to POST the report and by the target OS
+#                             to GET bootstrap data.
+#   beskar7.namespace        Namespace of the PhysicalHost (path component for both endpoints).
+#   beskar7.host             Name of the PhysicalHost (path component for both endpoints).
+#   beskar7.token            Plaintext per-host bearer token. Sent in the Authorization
+#                             header of every request to :8082. Lifetime: 30 minutes.
+#                             Source: Secret <host>-bootstrap-token, key plaintext-token.
+#
+# The bootstrap endpoint URL is computed deterministically from --bootstrap-url-base
+# and exposed as beskar7.bootstrap-url for consumers (cloud-init, ignition) that
+# prefer reading a single URL over assembling one from parts.
+#
+# In a real deployment the iPXE script is rendered per host by your boot infrastructure
+# (Tinkerbell, dnsmasq + a CGI script, an internal HTTP service, etc.) — the snippets
+# below show the variable shape that infrastructure must produce.
 cat > /var/www/boot/ipxe/inspect.ipxe << 'EOF'
 #!ipxe
 
 echo Booting Beskar7 Inspector...
 
-# Beskar7 API endpoint
-set api-url http://beskar7-controller.cluster.local:8080
-
-# Host identification
-set host-mac ${net0/mac}
-set host-ip ${net0/ip}
+# Operator-controlled variables. In production these come from your DHCP/iPXE
+# infrastructure rendering a per-host boot script.
+set api-url       https://beskar7-controller-manager.beskar7-system.svc:8082
+set namespace     default
+set host-name     ${net0/mac:hexhyp}      # adapt to your naming scheme
+set bootstrap-url ${api-url}/api/v1/bootstrap/${namespace}/${host-name}
+# Plaintext bearer token for THIS host — render from the per-host Secret
+# <host>-bootstrap-token, data key plaintext-token. NEVER bake into a static script.
+set bearer-token  REPLACE_WITH_PER_HOST_TOKEN
 
 # Boot Alpine inspection kernel
 kernel http://boot-server.local/inspector/vmlinuz \
     beskar7.api=${api-url} \
-    beskar7.mac=${host-mac} \
-    beskar7.ip=${host-ip} \
+    beskar7.namespace=${namespace} \
+    beskar7.host=${host-name} \
+    beskar7.bootstrap-url=${bootstrap-url} \
+    beskar7.token=${bearer-token} \
     console=tty0 \
     console=ttyS0,115200
 
@@ -466,12 +493,19 @@ sudo ufw allow 443/tcp
 
 ### Beskar7 Controller
 
-```bash
-# Allow webhook (if inspection reports via HTTP)
-sudo ufw allow 8080/tcp
+The manager listens on:
 
-# Allow Kubernetes API
-sudo ufw allow 6443/tcp
+- `:8443` — Prometheus metrics (HTTPS, authenticated; see [Security](security/README.md)).
+- `:8082` — host callback endpoint (HTTPS, bearer-token-gated; receives inspection POST and serves bootstrap GET).
+- `:9443` — Beskar7Cluster webhook (when `--enable-webhook=true`).
+
+If the boot network is segregated from the cluster network, ensure the boot subnet can reach the manager on `:8082`. The chart's NetworkPolicy already allows ingress on `:8082` cluster-wide; bare-metal IPs are not allow-listed there because the bearer token is the access control. On host firewalls (controller pods aside):
+
+```bash
+# On any iptables-based firewall between the boot subnet and the cluster:
+# allow TCP/8082 to the manager Service IP / NodePort.
+sudo ufw allow 6443/tcp     # Kubernetes API
+sudo ufw allow 8082/tcp     # Beskar7 callback endpoint
 ```
 
 ## DNS Configuration
