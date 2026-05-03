@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	conditions "sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -129,6 +130,85 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				g.Expect(b7cluster.Status.Ready).To(BeFalse())
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.IsZero()).To(BeTrue())
 			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpointReady should be False")
+		})
+
+		// BUG-9: when the operator pre-sets Spec.ControlPlaneEndpoint (typical
+		// for VIP / load-balancer / external-DNS setups), the controller must
+		// honor it authoritatively instead of running discovery and overriding.
+		It("should honor user-set Spec.ControlPlaneEndpoint authoritatively (BUG-9)", func() {
+			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+				Host: "api.example.com",
+				Port: 8443,
+			}
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			// First reconcile adds finalizer.
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile should observe the user-supplied endpoint, mark
+			// Ready=true, and NOT requeue waiting for control-plane machines.
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero(), "user-supplied endpoint must not trigger discovery requeue")
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("api.example.com"))
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(8443)))
+				g.Expect(b7cluster.Status.Ready).To(BeTrue())
+				cond := conditions.Get(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+			}, "5s", "100ms").Should(Succeed())
+		})
+
+		// BUG-9: when only the port is user-supplied, discovery should still find
+		// the host but the user's port wins.
+		It("should override default port 6443 with Spec.ControlPlaneEndpoint.Port when discovering host (BUG-9)", func() {
+			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+				// Host empty → discovery runs.
+				Port: 7443,
+			}
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			// Stand up a ready control-plane machine with an internal IP.
+			cpMachine := &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cp-bug9",
+					Namespace: testNs.Name,
+					Labels: map[string]string{
+						clusterv1.ClusterNameLabel:       capiCluster.Name,
+						"cluster.x-k8s.io/control-plane": "",
+					},
+				},
+				Spec: clusterv1.MachineSpec{
+					ClusterName: capiCluster.Name,
+					Bootstrap:   clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
+				},
+			}
+			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
+			cpMachine.Status.Addresses = []clusterv1.MachineAddress{
+				{Type: clusterv1.MachineInternalIP, Address: "10.0.0.42"},
+			}
+			conditions.MarkTrue(cpMachine, clusterv1.InfrastructureReadyCondition)
+			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
+
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("10.0.0.42"))
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(7443)),
+					"user-supplied Spec.ControlPlaneEndpoint.Port must override default 6443")
+			}, "5s", "100ms").Should(Succeed())
 		})
 
 		It("should derive endpoint when a ready control plane machine has an IP", func() {

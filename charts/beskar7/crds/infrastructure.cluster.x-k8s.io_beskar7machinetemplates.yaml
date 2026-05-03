@@ -8,9 +8,13 @@ metadata:
 spec:
   group: infrastructure.cluster.x-k8s.io
   names:
+    categories:
+    - cluster-api
     kind: Beskar7MachineTemplate
     listKind: Beskar7MachineTemplateList
     plural: beskar7machinetemplates
+    shortNames:
+    - b7mt
     singular: beskar7machinetemplate
   scope: Namespaced
   versions:

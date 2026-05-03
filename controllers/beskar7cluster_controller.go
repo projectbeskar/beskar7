@@ -277,9 +277,37 @@ func failureDomainsEqual(a, b clusterv1.FailureDomains) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// defaultAPIServerPort is the canonical Kubernetes API server port. Used as
+// the fallback when neither the user nor a discovery path provides one.
+const defaultAPIServerPort = 6443
+
 func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Context, logger logr.Logger, cluster *clusterv1.Cluster, b7cluster *infrastructurev1beta1.Beskar7Cluster) error {
 	logger.Info("Reconciling control plane endpoint")
 
+	// If the operator pre-set a ControlPlaneEndpoint on the Beskar7Cluster spec
+	// (typical for VIP / load-balancer / external-DNS setups), use it
+	// authoritatively. We do not run discovery in this case — the operator
+	// already knows where the API server lives, and discovery would race with
+	// their explicit choice.
+	if specEndpoint := b7cluster.Spec.ControlPlaneEndpoint; specEndpoint.Host != "" {
+		port := specEndpoint.Port
+		if port == 0 {
+			port = defaultAPIServerPort
+		}
+		logger.Info("Using user-supplied control plane endpoint", "host", specEndpoint.Host, "port", port)
+		b7cluster.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{
+			Host: specEndpoint.Host,
+			Port: port,
+		}
+		conditions.MarkTrue(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady)
+		b7cluster.Status.Ready = true
+		return nil
+	}
+
+	// No user-supplied endpoint — discover from a ready control-plane Machine.
+	// The discovered host gets paired with Spec.ControlPlaneEndpoint.Port if
+	// set (operator wants a non-default port over the discovered IP), otherwise
+	// the canonical 6443.
 	cpEndpoint, err := r.findControlPlaneEndpoint(ctx, logger, cluster)
 	if err != nil {
 		return errors.Wrapf(err, "failed to find control plane endpoint for cluster %s/%s", cluster.Namespace, cluster.Name)
@@ -291,7 +319,11 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 		return nil
 	}
 
-	logger.Info("Control plane endpoint found", "host", cpEndpoint.Host, "port", cpEndpoint.Port)
+	if specPort := b7cluster.Spec.ControlPlaneEndpoint.Port; specPort != 0 {
+		cpEndpoint.Port = specPort
+	}
+
+	logger.Info("Control plane endpoint discovered", "host", cpEndpoint.Host, "port", cpEndpoint.Port)
 	b7cluster.Status.ControlPlaneEndpoint = *cpEndpoint
 	conditions.MarkTrue(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady)
 	b7cluster.Status.Ready = true
@@ -349,9 +381,12 @@ func (r *Beskar7ClusterReconciler) findControlPlaneEndpoint(ctx context.Context,
 		}
 
 		logger.Info("Found suitable control plane machine endpoint", "machine", machine.Name, "address", selectedAddress)
+		// Port is the canonical 6443 by default; the caller
+		// (reconcileControlPlaneEndpoint) overrides with Spec.ControlPlaneEndpoint.Port
+		// when the operator has set one.
 		return &clusterv1.APIEndpoint{
 			Host: selectedAddress,
-			Port: 6443, // Default Kubernetes API server port
+			Port: defaultAPIServerPort,
 		}, nil
 	}
 
