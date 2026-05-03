@@ -572,62 +572,171 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(unchangedHost.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
 		})
 
-		PIt("[SKIP - Hardware Testing] Should validate hardware requirements", func() {
-			By("Creating machine with hardware requirements")
-			beskar7Machine.Spec.HardwareRequirements = &infrastructurev1beta1.HardwareRequirements{
-				MinCPUCores: 32,
-				MinMemoryGB: 64,
-				MinDiskGB:   1000,
-			}
-			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
-
-			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
-
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Simulating inspection with insufficient hardware")
-			inspectedHost := &infrastructurev1beta1.PhysicalHost{}
-			hostKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, hostKey, inspectedHost)).To(Succeed())
-				g.Expect(inspectedHost.Spec.ConsumerRef).NotTo(BeNil())
-			}, Timeout, Interval).Should(Succeed())
-
-			inspectedHost.Status.InspectionPhase = infrastructurev1beta1.InspectionComplete
-			inspectedHost.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
-				Timestamp:    metav1.Now(),
-				Manufacturer: "Dell Inc.",
-				Model:        "PowerEdge R650",
-				SerialNumber: "XYZ789",
-				CPUs: []infrastructurev1beta1.CPUInfo{
-					{
-						ID:    "0",
-						Cores: 16, // Less than required 32
+		// Converted from "[SKIP - Hardware Testing] Should validate hardware requirements".
+		// validateInspectionReport is exercised directly because the full Reconcile path
+		// requires a CAPI Machine owner chain that this test doesn't set up. The helper
+		// is the unit under test for BUG-8 (terminal-failure wiring).
+		Context("hardware-validation terminal failures (BUG-8)", func() {
+			buildMachine := func(reqs *infrastructurev1beta1.HardwareRequirements) *infrastructurev1beta1.Beskar7Machine {
+				return &infrastructurev1beta1.Beskar7Machine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "validate-target",
+						Namespace: testNs.Name,
 					},
-				},
-				Memory: []infrastructurev1beta1.MemoryInfo{
-					{
-						ID:       "DIMM0",
-						Capacity: "32GB", // Less than required 64GB
+					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+						InspectionImageURL:   "http://boot-server/ipxe/inspect.ipxe",
+						TargetImageURL:       "http://boot-server/images/kairos.tar.gz",
+						HardwareRequirements: reqs,
 					},
-				},
+				}
 			}
-			Expect(k8sClient.Status().Update(ctx, inspectedHost)).To(Succeed())
 
-			By("Reconciling after inspection")
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: machineLookupKey})
-			Expect(err).NotTo(HaveOccurred())
+			buildHostWithReport := func(report *infrastructurev1beta1.InspectionReport) *infrastructurev1beta1.PhysicalHost {
+				return &infrastructurev1beta1.PhysicalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "validate-host",
+						Namespace: testNs.Name,
+					},
+					Status: infrastructurev1beta1.PhysicalHostStatus{
+						InspectionReport: report,
+					},
+				}
+			}
 
-			By("Verifying validation failure condition")
-			Eventually(func(g Gomega) {
-				failedMachine := &infrastructurev1beta1.Beskar7Machine{}
-				g.Expect(k8sClient.Get(ctx, machineLookupKey, failedMachine)).To(Succeed())
-				cond := conditions.Get(failedMachine, infrastructurev1beta1.MachineProvisionedCondition)
-				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				g.Expect(cond.Reason).To(ContainSubstring("Validation"))
-			}, Timeout, Interval).Should(Succeed())
+			expectTerminalFailure := func(b *infrastructurev1beta1.Beskar7Machine, expectedReason string) {
+				Expect(b.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set on terminal failure")
+				Expect(*b.Status.FailureReason).To(Equal(expectedReason))
+				Expect(b.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be set")
+				Expect(*b.Status.FailureMessage).NotTo(BeEmpty())
+				Expect(b.Status.Ready).To(BeFalse())
+				Expect(b.Status.Phase).NotTo(BeNil())
+				Expect(*b.Status.Phase).To(Equal("Failed"))
+				cond := conditions.Get(b, infrastructurev1beta1.InfrastructureReadyCondition)
+				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
+				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				Expect(cond.Reason).To(Equal(expectedReason))
+				Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
+			}
+
+			It("Should mark Beskar7Machine terminally Failed when CPU cores are insufficient", func() {
+				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinCPUCores: 16})
+				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
+					CPUs: []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 4}},
+				})
+
+				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error (would requeue forever)")
+				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
+				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("CPU cores"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("4"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
+			})
+
+			It("Should mark Beskar7Machine terminally Failed when memory is insufficient", func() {
+				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinMemoryGB: 64})
+				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
+					CPUs:   []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 32}},
+					Memory: []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "16GB"}},
+				})
+
+				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("memory"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("64"))
+			})
+
+			It("Should mark Beskar7Machine terminally Failed when disk space is insufficient", func() {
+				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinDiskGB: 1000})
+				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
+					CPUs:   []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 32}},
+					Memory: []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "128GB"}},
+					Disks:  []infrastructurev1beta1.DiskInfo{{Name: "sda", SizeGB: 250}},
+				})
+
+				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).To(Equal(ctrl.Result{}))
+				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("disk"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("250"))
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("1000"))
+			})
+
+			It("Should NOT clear FailureReason on a subsequent reconcile (idempotent terminality)", func() {
+				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinCPUCores: 16})
+				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
+					CPUs: []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 4}},
+				})
+
+				_, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(machine.Status.FailureReason).NotTo(BeNil())
+				originalReason := *machine.Status.FailureReason
+
+				// Re-run validation (simulating a subsequent reconcile). The helper
+				// must overwrite-but-not-clear: same reason, no transition to nil.
+				_, err = reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(machine.Status.FailureReason).NotTo(BeNil(), "FailureReason must persist across reconciles")
+				Expect(*machine.Status.FailureReason).To(Equal(originalReason))
+			})
+		})
+
+		Context("inspection timeout terminal failure (BUG-8)", func() {
+			It("Should mark Beskar7Machine terminally Failed when inspection times out", func() {
+				machine := &infrastructurev1beta1.Beskar7Machine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "timeout-target",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
+						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+					},
+				}
+				// Build a host with an InspectionTimestamp older than DefaultInspectionTimeout.
+				host := &infrastructurev1beta1.PhysicalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "timeout-host",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.PhysicalHostSpec{
+						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+							Address:              "https://192.168.1.100",
+							CredentialsSecretRef: credentialSecret.Name,
+						},
+					},
+				}
+				// Persist the host so setInspectionRequestAnnotation can patch it.
+				// Status is a subresource — set it AFTER Create or it's dropped.
+				Expect(k8sClient.Create(ctx, host)).To(Succeed())
+				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
+				host.Status.State = infrastructurev1beta1.StateInspecting
+				host.Status.InspectionTimestamp = &old
+				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+
+				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
+				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
+
+				// Beskar7Machine in-memory state assertions.
+				Expect(machine.Status.FailureReason).NotTo(BeNil())
+				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionTimedOutReason))
+				Expect(machine.Status.FailureMessage).NotTo(BeNil())
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
+				Expect(machine.Status.Ready).To(BeFalse())
+				Expect(machine.Status.Phase).NotTo(BeNil())
+				Expect(*machine.Status.Phase).To(Equal("Failed"))
+
+				// PhysicalHost should have received the timeout annotation.
+				patchedHost := &infrastructurev1beta1.PhysicalHost{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
+				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("timeout"))
+			})
 		})
 	})
 })

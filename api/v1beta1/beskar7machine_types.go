@@ -44,6 +44,19 @@ const (
 	// BootstrapDataUnavailableReason (Severity=Error, terminal) indicates that the named
 	// bootstrap data Secret was not found in the Beskar7Machine's namespace.
 	BootstrapDataUnavailableReason string = "BootstrapDataUnavailable"
+	// HardwareRequirementsNotMetReason (Severity=Error, terminal) indicates that the
+	// inspection report shows the host does not meet the Beskar7Machine's
+	// HardwareRequirements (CPU/memory/disk). The BMC's hardware cannot change at
+	// runtime, so this is terminal — the operator must lower the requirements,
+	// allocate to a different host, or replace the hardware.
+	HardwareRequirementsNotMetReason string = "HardwareRequirementsNotMet"
+	// InspectionTimedOutReason (Severity=Error, terminal) indicates that the inspection
+	// image did not POST a report within DefaultInspectionTimeout. Likely causes:
+	// misconfigured iPXE, host couldn't reach the manager's callback endpoint, or an
+	// inspection image bug. Terminal because the controller has no way to recover
+	// automatically; the operator must investigate and either delete-and-recreate the
+	// Beskar7Machine or fix the iPXE setup.
+	InspectionTimedOutReason string = "InspectionTimedOut"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.
