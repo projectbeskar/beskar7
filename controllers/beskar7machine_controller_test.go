@@ -58,10 +58,12 @@ var _ = Describe("Beskar7MachineReconciler factory defaulting", func() {
 
 var _ = Describe("Beskar7Machine Controller", func() {
 
-	const (
-		Timeout  = time.Second * 10
-		Interval = time.Millisecond * 250
-	)
+	// Note: the Timeout / Interval constants previously declared at this scope
+	// were used by the v0.3-era PIt blocks that PR-10 converted or deleted.
+	// The remaining specs in this Describe either don't need Eventually polling
+	// or use literal "5s" / "100ms" timeouts inline. The block-scoped Timeout /
+	// Interval constants below (around line 951) belong to the bootstrap-data
+	// Describe and remain in use.
 
 	Context("When reconciling a Beskar7Machine", func() {
 		var beskar7Machine *infrastructurev1beta1.Beskar7Machine
