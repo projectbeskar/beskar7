@@ -66,6 +66,13 @@ spec:
                   address:
                     pattern: ^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$
                     type: string
+                  caBundleSecretRef:
+                    properties:
+                      name:
+                        default: ""
+                        type: string
+                    type: object
+                    x-kubernetes-map-type: atomic
                   credentialsSecretRef:
                     minLength: 1
                     type: string

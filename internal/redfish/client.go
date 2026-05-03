@@ -72,7 +72,12 @@ type NetworkAddress struct {
 
 // RedfishClientFactory defines the signature for a function that creates a Redfish client.
 // It is defined here to be shared between PhysicalHost and Beskar7Machine controllers.
-type RedfishClientFactory func(ctx context.Context, address, username, password string, insecure bool) (Client, error)
+//
+// caBundle, when non-empty, must be PEM-encoded CA certificates used to verify the
+// BMC's TLS server certificate. When empty, the client falls back to system roots
+// and honours the insecure flag. caBundle != nil with insecure == true is a
+// programming error and is rejected at the factory layer.
+type RedfishClientFactory func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (Client, error)
 
 // ConvertToMachineAddresses converts NetworkAddress slices to Cluster API MachineAddress format.
 func ConvertToMachineAddresses(networkAddresses []NetworkAddress) []clusterv1.MachineAddress {

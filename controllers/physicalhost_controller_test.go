@@ -35,7 +35,7 @@ var _ = Describe("PhysicalHostReconciler factory defaulting", func() {
 
 	It("should preserve an explicitly provided factory", func() {
 		sentinel := internalredfish.RedfishClientFactory(
-			func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		)
@@ -45,7 +45,7 @@ var _ = Describe("PhysicalHostReconciler factory defaulting", func() {
 
 		// Pointer equality is not directly comparable for func types in Go; verify
 		// the factory is still the one we set by calling it and checking the result type.
-		client, err := r.RedfishClientFactory(ctx, "", "", "", false)
+		client, err := r.RedfishClientFactory(ctx, "", "", "", false, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(client).To(BeAssignableToTypeOf(&internalredfish.MockClient{}))
 	})
@@ -117,7 +117,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test"),
 				Recorder: record.NewFakeRecorder(100),
-				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return mockRfClient, nil
 				},
 			}
@@ -312,7 +312,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-failed"),
 				Recorder: record.NewFakeRecorder(100),
-				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return nil, fmt.Errorf("connection timeout")
 				},
 			}
@@ -338,6 +338,143 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
 				g.Expect(failedPh.Status.State).To(Equal(infrastructurev1beta1.StateError))
+			}, Timeout, Interval).Should(Succeed())
+		})
+
+		It("Should reject InsecureSkipVerify=true combined with CABundleSecretRef terminally", func() {
+			By("Creating a host with the conflicting TLS configuration")
+			insecure := true
+			conflictPh := physicalHost.DeepCopy()
+			conflictPh.Name = "tls-conflict-host"
+			conflictPh.Spec.RedfishConnection.InsecureSkipVerify = &insecure
+			conflictPh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
+				Name: "irrelevant-bundle",
+			}
+
+			// Build a reconciler whose factory would panic if invoked — we want to
+			// prove the conflict gate fires BEFORE the factory.
+			factoryCalled := false
+			conflictReconciler := &PhysicalHostReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Log:      ctrl.Log.WithName("physicalhost-test-tls-conflict"),
+				Recorder: record.NewFakeRecorder(100),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
+					factoryCalled = true
+					return mockRfClient, nil
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, conflictPh)).To(Succeed())
+			phLookupKey := types.NamespacedName{Name: conflictPh.Name, Namespace: conflictPh.Namespace}
+
+			By("Reconciling — first pass adds finalizer, second fires the conflict gate")
+			_, err := conflictReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			result, err := conflictReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).NotTo(HaveOccurred(), "conflict must be terminal — no requeue-with-error")
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "conflict should set a long RequeueAfter, not return Result{}")
+			Expect(factoryCalled).To(BeFalse(), "factory must not be called when TLS configuration is invalid")
+
+			By("Verifying the InsecureCABundleConflict condition + Error state are set")
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				cond := conditions.Get(got, infrastructurev1beta1.RedfishConnectionReadyCondition)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(infrastructurev1beta1.InsecureCABundleConflictReason))
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateError))
+				g.Expect(got.Status.ErrorMessage).To(ContainSubstring("mutually exclusive"))
+			}, Timeout, Interval).Should(Succeed())
+		})
+
+		It("Should fetch and pass the CA bundle to the factory when CABundleSecretRef is set", func() {
+			By("Creating a CA bundle Secret")
+			const expectedBundle = "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n"
+			caSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ca-bundle",
+					Namespace: testNs.Name,
+				},
+				Data: map[string][]byte{
+					"ca.crt": []byte(expectedBundle),
+				},
+			}
+			Expect(k8sClient.Create(ctx, caSecret)).To(Succeed())
+
+			By("Creating a host that references the CA bundle")
+			withBundlePh := physicalHost.DeepCopy()
+			withBundlePh.Name = "with-ca-bundle-host"
+			withBundlePh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
+				Name: caSecret.Name,
+			}
+
+			var observedBundle []byte
+			withBundleReconciler := &PhysicalHostReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Log:      ctrl.Log.WithName("physicalhost-test-with-bundle"),
+				Recorder: record.NewFakeRecorder(100),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, caBundle []byte) (internalredfish.Client, error) {
+					// Capture for assertion. The factory is invoked once per reconcile;
+					// the latest call wins, which is what we want.
+					observedBundle = caBundle
+					return mockRfClient, nil
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, withBundlePh)).To(Succeed())
+			phLookupKey := types.NamespacedName{Name: withBundlePh.Name, Namespace: withBundlePh.Namespace}
+
+			_, err := withBundleReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = withBundleReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(string(observedBundle)).To(Equal(expectedBundle),
+				"factory must receive the bundle bytes from the referenced Secret")
+		})
+
+		It("Should fail with CABundleFetchFailed when the referenced bundle Secret is missing", func() {
+			By("Creating a host that references a non-existent CA bundle")
+			missingBundlePh := physicalHost.DeepCopy()
+			missingBundlePh.Name = "missing-ca-bundle-host"
+			missingBundlePh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
+				Name: "ghost-bundle",
+			}
+
+			factoryCalled := false
+			missingBundleReconciler := &PhysicalHostReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Log:      ctrl.Log.WithName("physicalhost-test-missing-bundle"),
+				Recorder: record.NewFakeRecorder(100),
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
+					factoryCalled = true
+					return mockRfClient, nil
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, missingBundlePh)).To(Succeed())
+			phLookupKey := types.NamespacedName{Name: missingBundlePh.Name, Namespace: missingBundlePh.Namespace}
+
+			_, err := missingBundleReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).NotTo(HaveOccurred()) // first pass adds finalizer
+
+			_, err = missingBundleReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			Expect(err).To(HaveOccurred(), "missing CA bundle should error so the reconcile can be retried")
+			Expect(factoryCalled).To(BeFalse(), "factory must not be called when CA bundle fetch fails")
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				cond := conditions.Get(got, infrastructurev1beta1.RedfishConnectionReadyCondition)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(infrastructurev1beta1.CABundleFetchFailedReason))
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateError))
 			}, Timeout, Interval).Should(Succeed())
 		})
 
@@ -586,7 +723,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-pause"),
 				Recorder: record.NewFakeRecorder(100),
-				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return mockRfClient, nil
 				},
 			}

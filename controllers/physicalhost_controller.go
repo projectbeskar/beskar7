@@ -170,12 +170,38 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		insecure = *physicalHost.Spec.RedfishConnection.InsecureSkipVerify
 	}
 
+	// Reject the (insecure=true, caBundleSecretRef!=nil) combination terminally.
+	// There is no PhysicalHost validating webhook, so this is the gate; we set a
+	// clear condition + ErrorMessage and stop reconciling rather than silently
+	// picking one side of the conflict. Returning a non-error result with a
+	// long requeue avoids hot-looping on a misconfigured spec.
+	if err := validateRedfishTLSCombination(insecure, physicalHost.Spec.RedfishConnection.CABundleSecretRef); err != nil {
+		logger.Error(err, "Invalid Redfish TLS configuration")
+		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, err.Error())
+		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
+			infrastructurev1beta1.InsecureCABundleConflictReason, clusterv1.ConditionSeverityError,
+			"%s", err.Error())
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	// Fetch optional CA bundle (returns nil bytes when CABundleSecretRef is unset).
+	caBundle, err := fetchRedfishCABundle(ctx, r.Client, physicalHost)
+	if err != nil {
+		logger.Error(err, "Failed to fetch Redfish CA bundle")
+		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, err.Error())
+		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
+			infrastructurev1beta1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
+			"%s", err.Error())
+		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+	}
+
 	// Create Redfish client
 	rfClient, err := r.RedfishClientFactory(ctx,
 		physicalHost.Spec.RedfishConnection.Address,
 		username,
 		password,
 		insecure,
+		caBundle,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create Redfish client")

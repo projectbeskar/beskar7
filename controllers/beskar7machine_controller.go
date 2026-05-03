@@ -878,7 +878,20 @@ func (r *Beskar7MachineReconciler) getRedfishClientForHost(ctx context.Context, 
 		insecure = *host.Spec.RedfishConnection.InsecureSkipVerify
 	}
 
-	return r.RedfishClientFactory(ctx, host.Spec.RedfishConnection.Address, username, password, insecure)
+	// Reject the conflicting combination at this layer too. The PhysicalHost
+	// reconciler is the canonical gate (it sets the InsecureCABundleConflict
+	// condition), but Beskar7Machine consumes the same Spec, so we must not
+	// silently produce a working client here while PhysicalHost is in error.
+	if err := validateRedfishTLSCombination(insecure, host.Spec.RedfishConnection.CABundleSecretRef); err != nil {
+		return nil, err
+	}
+
+	caBundle, err := fetchRedfishCABundle(ctx, r.Client, host)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to fetch CA bundle")
+	}
+
+	return r.RedfishClientFactory(ctx, host.Spec.RedfishConnection.Address, username, password, insecure, caBundle)
 }
 
 // Helper functions
