@@ -3,6 +3,7 @@ package redfish
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -27,10 +28,39 @@ type gofishClient struct {
 var log = logf.Log.WithName("redfish-client")
 
 // newHTTPClient builds an *http.Client that mirrors gofish's internal transport
-// defaults while adding a per-call Timeout and honouring the insecure flag.
-// Callers who supply their own HTTPClient (e.g. custom CA) bypass this path.
-func newHTTPClient(insecure bool) *http.Client {
+// defaults while adding a per-call Timeout and honouring TLS configuration.
+//
+// When caBundle is non-empty, the returned client validates BMC certificates
+// against the supplied PEM bundle (system roots are NOT additionally trusted —
+// callers who want both must concatenate them upstream) and InsecureSkipVerify
+// is forced to false regardless of the insecure flag. The caller is expected
+// to have rejected the (insecure=true, caBundle!=nil) combination earlier;
+// the factory rejects it explicitly to surface the programming error.
+//
+// When caBundle is empty, behaviour is the prior contract: system roots, with
+// InsecureSkipVerify driven by the operator-opt-in flag.
+//
+// Returns an error only when caBundle is non-empty and contains no usable PEM
+// certificates — silent fallback to system roots in that case would defeat the
+// operator's intent.
+func newHTTPClient(insecure bool, caBundle []byte) (*http.Client, error) {
 	defaultTransport := http.DefaultTransport.(*http.Transport)
+	tlsConfig := &tls.Config{
+		// G402 — InsecureSkipVerify is operator-opt-in via Spec.RedfishConnection.InsecureSkipVerify.
+		// The caBundle branch below overrides this to false unconditionally.
+		InsecureSkipVerify: insecure, // #nosec G402
+	}
+	if len(caBundle) > 0 {
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caBundle) {
+			return nil, fmt.Errorf("redfish CA bundle: no valid PEM certificates found")
+		}
+		tlsConfig.RootCAs = pool
+		// A custom CA bundle and InsecureSkipVerify=true are incoherent.
+		// The factory should have rejected this combination already; force
+		// false here as defence in depth.
+		tlsConfig.InsecureSkipVerify = false
+	}
 	transport := &http.Transport{
 		Proxy:                 defaultTransport.Proxy,
 		DialContext:           defaultTransport.DialContext,
@@ -38,14 +68,12 @@ func newHTTPClient(insecure bool) *http.Client {
 		IdleConnTimeout:       defaultTransport.IdleConnTimeout,
 		ExpectContinueTimeout: defaultTransport.ExpectContinueTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: insecure, // #nosec G402 — InsecureSkipVerify is operator-opt-in via Spec.RedfishConnection.InsecureSkipVerify
-		},
+		TLSClientConfig:       tlsConfig,
 	}
 	return &http.Client{
 		Timeout:   defaultHTTPTimeout,
 		Transport: transport,
-	}
+	}, nil
 }
 
 // doWithCtx runs op in a goroutine and returns either op's result or ctx.Err()
@@ -67,9 +95,18 @@ func doWithCtx(ctx context.Context, op func() error) error {
 }
 
 // NewClient creates a new Redfish client.
-func NewClient(ctx context.Context, address, username, password string, insecure bool) (Client, error) {
+//
+// caBundle, when non-empty, is the PEM-encoded CA used to verify the BMC's
+// TLS server certificate. caBundle != nil with insecure == true is rejected
+// up front: the two are mutually exclusive and silently picking one would
+// hide a likely operator misconfiguration.
+func NewClient(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (Client, error) {
 	logger := logf.Log.WithName("redfish-client")
-	logger.V(1).Info("Creating new Redfish client", "rawAddress", address, "insecure", insecure)
+	logger.V(1).Info("Creating new Redfish client", "rawAddress", address, "insecure", insecure, "caBundleProvided", len(caBundle) > 0)
+
+	if insecure && len(caBundle) > 0 {
+		return nil, fmt.Errorf("redfish: InsecureSkipVerify=true is mutually exclusive with a CA bundle; choose one")
+	}
 
 	// Parse and validate the address URL
 	parsedURL, err := url.Parse(address)
@@ -92,13 +129,18 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	// Use the validated and cleaned URL string
 	endpointURL := parsedURL.String()
 
+	httpClient, err := newHTTPClient(insecure, caBundle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build HTTP client for %s: %w", endpointURL, err)
+	}
+
 	config := gofish.ClientConfig{
 		Endpoint:   endpointURL, // Use the processed URL
 		Username:   username,
 		Password:   password,
 		Insecure:   insecure, // retained for documentation intent; HTTPClient below takes precedence
 		BasicAuth:  true,
-		HTTPClient: newHTTPClient(insecure),
+		HTTPClient: httpClient,
 	}
 
 	// Log the final config before connecting. Username is omitted (SEC-4); use
@@ -108,6 +150,7 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 		"Endpoint", config.Endpoint,
 		"PasswordProvided", (config.Password != ""),
 		"Insecure", config.Insecure,
+		"CABundleProvided", len(caBundle) > 0,
 		"BasicAuth", config.BasicAuth)
 
 	c, err := gofish.ConnectContext(ctx, config)
@@ -124,17 +167,62 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	}, nil
 }
 
-// NewClientWithHTTPClient is a compatibility shim used by integration tests.
-// It forwards to NewClient and ignores the supplied httpClient argument;
-// NewClient now builds its own http.Client from the insecure flag.
-// SEC-5 will rewire this to actually use the supplied client (e.g. for custom CA bundles).
+// NewClientWithHTTPClient creates a Redfish client using the caller-supplied
+// *http.Client wholesale. Used by integration tests that need to point at an
+// httptest.Server with a self-signed cert and full transport control.
+//
+// The supplied httpClient is passed straight to gofish.ClientConfig.HTTPClient;
+// the insecure flag is ignored beyond logging (caller has already configured
+// the transport's TLSClientConfig). httpClient must not be nil — the whole
+// point of this constructor is the explicit client.
 func NewClientWithHTTPClient(
 	ctx context.Context,
 	address, username, password string,
 	insecure bool,
-	_ *http.Client,
+	httpClient *http.Client,
 ) (Client, error) {
-	return NewClient(ctx, address, username, password, insecure)
+	logger := logf.Log.WithName("redfish-client")
+	if httpClient == nil {
+		return nil, fmt.Errorf("redfish: NewClientWithHTTPClient called with nil httpClient (programming error)")
+	}
+	logger.V(1).Info("Creating Redfish client with caller-supplied http.Client",
+		"rawAddress", address, "insecure", insecure)
+
+	parsedURL, err := url.Parse(address)
+	if err != nil {
+		parsedURL, err = url.Parse("https://" + address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Redfish address format: %s: %w", address, err)
+		}
+	}
+	if parsedURL.Scheme == "" {
+		parsedURL.Scheme = "https"
+	}
+	endpointURL := parsedURL.String()
+
+	config := gofish.ClientConfig{
+		Endpoint:   endpointURL,
+		Username:   username,
+		Password:   password,
+		Insecure:   insecure,
+		BasicAuth:  true,
+		HTTPClient: httpClient,
+	}
+	logger.V(1).Info("Attempting gofish.ConnectContext with caller-supplied http.Client",
+		"Endpoint", config.Endpoint,
+		"PasswordProvided", (config.Password != ""),
+		"Insecure", config.Insecure,
+		"BasicAuth", config.BasicAuth)
+
+	c, err := gofish.ConnectContext(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to Redfish endpoint %s: %w", endpointURL, err)
+	}
+
+	return &gofishClient{
+		gofishClient: c,
+		apiEndpoint:  endpointURL,
+	}, nil
 }
 
 // Close disconnects the client. It uses a fresh 5-second context so that a

@@ -37,7 +37,7 @@ var _ = Describe("Beskar7MachineReconciler factory defaulting", func() {
 
 	It("should preserve an explicitly provided factory", func() {
 		sentinel := internalredfish.RedfishClientFactory(
-			func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		)
@@ -47,7 +47,7 @@ var _ = Describe("Beskar7MachineReconciler factory defaulting", func() {
 
 		// Pointer equality is not directly comparable for func types in Go; verify
 		// the factory is still the one we set by calling it and checking the result type.
-		client, err := r.RedfishClientFactory(ctx, "", "", "", false)
+		client, err := r.RedfishClientFactory(ctx, "", "", "", false, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(client).To(BeAssignableToTypeOf(&internalredfish.MockClient{}))
 	})
@@ -187,7 +187,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Log:    ctrl.Log.WithName("beskar7machine-bug1-test"),
-				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return mockRf, nil
 				},
 			}
@@ -332,7 +332,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Log:    ctrl.Log.WithName("beskar7machine-delete-test"),
-				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return mockRf, nil
 				},
 			}
@@ -396,7 +396,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Log:    ctrl.Log.WithName("beskar7machine-forcerelease-test"),
-				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return mockRf, nil
 				},
 			}
@@ -460,7 +460,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Log:    ctrl.Log.WithName("beskar7machine-hostgone-test"),
-				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return internalredfish.NewMockClient(), nil
 				},
 			}
@@ -500,7 +500,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Log:    ctrl.Log.WithName("beskar7machine-bmcfail-test"),
-				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return nil, fmt.Errorf("BMC unreachable")
 				},
 			}
@@ -665,7 +665,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		Expect(err).NotTo(HaveOccurred())
 
 		noopFactory := internalredfish.RedfishClientFactory(
-			func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		)
@@ -738,7 +738,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 			Scheme: mgr.GetScheme(),
 			Log:    ctrl.Log.WithName("race-test-direct"),
 			RedfishClientFactory: internalredfish.RedfishClientFactory(
-				func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+				func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					return internalredfish.NewMockClient(), nil
 				},
 			),
@@ -887,7 +887,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 			Scheme:           k8sClient.Scheme(),
 			Log:              ctrl.Log.WithName("bootstrap-test"),
 			BootstrapURLBase: bootstrapURLBase,
-			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		}
@@ -1010,7 +1010,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 var _ = Describe("Beskar7MachineReconciler.validateAndDefault", func() {
 	It("should fail when BootstrapURLBase is empty", func() {
 		r := &Beskar7MachineReconciler{
-			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		}
@@ -1020,7 +1020,7 @@ var _ = Describe("Beskar7MachineReconciler.validateAndDefault", func() {
 	It("should succeed when BootstrapURLBase is set", func() {
 		r := &Beskar7MachineReconciler{
 			BootstrapURLBase: "https://example.com:8082",
-			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 		}
@@ -1151,7 +1151,7 @@ var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func(
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 			Log:    ctrl.Log.WithName("mint-token-test"),
-			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool) (internalredfish.Client, error) {
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
 			BootstrapURLBase: "https://test.svc:8082",

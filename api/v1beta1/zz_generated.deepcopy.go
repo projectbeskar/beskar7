@@ -21,6 +21,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	"k8s.io/api/core/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -476,6 +477,11 @@ func (in *RedfishConnection) DeepCopyInto(out *RedfishConnection) {
 	if in.InsecureSkipVerify != nil {
 		in, out := &in.InsecureSkipVerify, &out.InsecureSkipVerify
 		*out = new(bool)
+		**out = **in
+	}
+	if in.CABundleSecretRef != nil {
+		in, out := &in.CABundleSecretRef, &out.CABundleSecretRef
+		*out = new(v1.LocalObjectReference)
 		**out = **in
 	}
 }
