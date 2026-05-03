@@ -330,57 +330,52 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpoint should remain unset without address")
 		})
 
-		PIt("[SKIP] should handle machine ready but only external address - deferred to hardware testing", func() {
-			// Create a machine that's ready but only has external IP
-			machineWithExternalOnly := &clusterv1.Machine{
+		// Converted from a long-pending PIt. The fallback path in
+		// findControlPlaneEndpoint (controllers/beskar7cluster_controller.go)
+		// picks the first address when no MachineInternalIP is present,
+		// which lets external-IP-only machines still feed the cluster
+		// control-plane endpoint.
+		It("should fall back to external IP when no internal address is present", func() {
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			// Stand up a control-plane Machine with ExternalIP only. Labels and
+			// Spec.ClusterName must reference the CAPI cluster, not the b7
+			// cluster — findControlPlaneEndpoint lists by ClusterNameLabel
+			// against the CAPI cluster's name.
+			cpMachine := &clusterv1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "machine-external-only",
+					Name:      "cp-external-only",
 					Namespace: testNs.Name,
 					Labels: map[string]string{
-						clusterv1.ClusterNameLabel:       b7cluster.Name,
-						"cluster.x-k8s.io/control-plane": "", // Required label for control plane detection
+						clusterv1.ClusterNameLabel:       capiCluster.Name,
+						"cluster.x-k8s.io/control-plane": "",
 					},
 				},
 				Spec: clusterv1.MachineSpec{
-					ClusterName: b7cluster.Name,
-				},
-				Status: clusterv1.MachineStatus{
-					Phase: string(clusterv1.MachinePhaseRunning),
-					Conditions: clusterv1.Conditions{
-						{
-							Type:   clusterv1.InfrastructureReadyCondition,
-							Status: corev1.ConditionTrue,
-						},
-					},
-					Addresses: []clusterv1.MachineAddress{
-						{
-							Type:    clusterv1.MachineExternalIP,
-							Address: "203.0.113.10", // External IP only
-						},
-					},
+					ClusterName: capiCluster.Name,
+					Bootstrap:   clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
 				},
 			}
-			Expect(k8sClient.Create(ctx, machineWithExternalOnly)).To(Succeed())
+			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
+			// Status is a subresource — set it AFTER Create.
+			cpMachine.Status.Addresses = []clusterv1.MachineAddress{
+				{Type: clusterv1.MachineExternalIP, Address: "203.0.113.10"},
+			}
+			conditions.MarkTrue(cpMachine, clusterv1.InfrastructureReadyCondition)
+			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
 
-			// Create the Beskar7Cluster
-			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-			// First reconcile - should add finalizer
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue(), "Should requeue after adding finalizer")
-
-			// Second reconcile - should detect control plane endpoint
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify that control plane endpoint uses external IP
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("203.0.113.10"))
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
-			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpoint should use external IP as fallback")
+			}, "5s", "100ms").Should(Succeed())
 		})
 
 		It("should handle machine not ready", func() {
