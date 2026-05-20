@@ -28,9 +28,16 @@ build:
 generate:
 	$(GO) generate ./...
 
-# Install controller-gen
+# Install controller-gen.
+# Pinned to v0.21.0 so the CRD `controller-gen.kubebuilder.io/version` annotation
+# stays stable across machines. Bumping to @latest caused every PR's
+# "Generate and Validate Manifests" job to fail with a one-line annotation diff
+# (controller-tools releases tend to bump that annotation on every release).
+# To upgrade: bump the pin, run `make manifests && make sync-chart-crds`,
+# commit the regenerated YAML alongside the Makefile change.
+CONTROLLER_GEN_VERSION ?= v0.21.0
 install-controller-gen:
-	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 # Generate manifests e.g. CRDs, RBAC, and DeepCopy objects
 manifests: install-controller-gen
