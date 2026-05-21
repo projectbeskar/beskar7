@@ -5,6 +5,16 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Chart/app version to publish (e.g. v0.4.0-alpha.1). Required when triggered manually.'
+        required: true
+        type: string
+      reset_index:
+        description: 'Discard the existing gh-pages index and publish only the new chart. Use to drop dead/legacy entries.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -19,7 +29,7 @@ jobs:
   helm-publish:
     name: Package and Publish Helm Chart
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -31,54 +41,101 @@ jobs:
       with:
         version: '3.12.1'
 
+    - name: Resolve version
+      id: ver
+      run: |
+        # On tag push: github.ref_name is the tag (e.g. v0.4.0-alpha).
+        # On workflow_dispatch: github.ref_name is the branch; require the
+        # `version` input instead.
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ inputs.version }}"
+        else
+          VERSION="${{ github.ref_name }}"
+        fi
+        if [ -z "$VERSION" ]; then
+          echo "::error::No version resolved (tag-push ref empty and workflow_dispatch input missing)"
+          exit 1
+        fi
+        if [[ "$VERSION" != v* ]]; then
+          echo "::error::Version '$VERSION' must start with 'v' (e.g. v0.4.0-alpha)"
+          exit 1
+        fi
+        CHART_VERSION="${VERSION#v}"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+        echo "Resolved version: $VERSION (chart version: $CHART_VERSION)"
+
     - name: Update Chart Version
       run: |
-        # Extract version from git tag (remove 'v' prefix for Helm version)
-        VERSION=${{ github.ref_name }}
-        CHART_VERSION=${VERSION#v}
-        
-        # Update Chart.yaml with new version and appVersion
+        VERSION='${{ steps.ver.outputs.version }}'
+        CHART_VERSION='${{ steps.ver.outputs.chart_version }}'
+
         sed -i "s/^version:.*/version: $CHART_VERSION/" charts/beskar7/Chart.yaml
         sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" charts/beskar7/Chart.yaml
-        
-        # Update image tag in values.yaml
-        sed -i "s/tag: v[0-9]\+\.[0-9]\+\.[0-9]\+/tag: $VERSION/" charts/beskar7/values.yaml
-        
-        # Show what we updated
+
+        # The Helm chart consumes controllerManager.image.tag; the top-level
+        # image.* block was removed in PR-4 chart parity. Update only the live key.
+        # Pattern is permissive: tag may be "v0.4.0-alpha" or "v0.4.0-alpha.1".
+        sed -i "s|tag: \"v[0-9.]\+\(-[a-zA-Z0-9.]\+\)\?\"|tag: \"$VERSION\"|" charts/beskar7/values.yaml
+
         echo "Updated Chart.yaml:"
         grep -E "^(version|appVersion):" charts/beskar7/Chart.yaml
-        echo "Updated values.yaml:"
-        grep "tag: v" charts/beskar7/values.yaml
+        echo "Updated values.yaml (controllerManager.image.tag):"
+        grep -A1 "controllerManager:" charts/beskar7/values.yaml | grep "tag:" || true
 
     - name: Checkout gh-pages branch
       uses: actions/checkout@v4
       with:
         ref: gh-pages
         path: gh-pages-repo
+        # gh-pages may not exist on a freshly-created repo; continue-on-error
+        # is set on the next step instead because this action has no equivalent.
+      continue-on-error: true
 
     - name: Package Helm Chart
+      env:
+        RESET_INDEX: ${{ inputs.reset_index }}
       run: |
-        # Create charts directory for packaging
         mkdir -p .helm-repo
-        
-        # Copy existing charts from gh-pages branch (if any)
-        if [ -d "gh-pages-repo" ]; then
+
+        # If reset_index was requested OR the gh-pages branch doesn't exist
+        # yet, start with an empty repo. Otherwise carry forward the existing
+        # tarballs and merge with the previous index so older chart versions
+        # remain installable.
+        if [ "$RESET_INDEX" = "true" ]; then
+          echo "reset_index=true — discarding any existing gh-pages content"
+        elif [ -d "gh-pages-repo" ]; then
+          echo "Carrying forward existing gh-pages contents"
           cp -f gh-pages-repo/*.tgz .helm-repo/ 2>/dev/null || true
           cp -f gh-pages-repo/.nojekyll .helm-repo/ 2>/dev/null || true
+        else
+          echo "No existing gh-pages branch — starting fresh"
         fi
-        
-        # Package the new chart version
+        # .nojekyll must always be present so GitHub Pages serves files as-is.
+        touch .helm-repo/.nojekyll
+
+        # Package the new chart version. Helm reads version from Chart.yaml,
+        # which the previous step already updated to match the tag/input.
         helm package charts/beskar7 --destination .helm-repo
-        
-        # Generate the index with all versions
-        helm repo index .helm-repo --url https://projectbeskar.github.io/beskar7 --merge gh-pages-repo/index.yaml 2>/dev/null || helm repo index .helm-repo --url https://projectbeskar.github.io/beskar7
-        
-        # Show what we have
+
+        # Generate the index. Only merge when we have a previous index AND
+        # the caller did not request a reset.
+        if [ "$RESET_INDEX" != "true" ] && [ -f "gh-pages-repo/index.yaml" ]; then
+          echo "Merging with previous index"
+          helm repo index .helm-repo \
+            --url https://projectbeskar.github.io/beskar7 \
+            --merge gh-pages-repo/index.yaml
+        else
+          echo "Generating a fresh index (no merge)"
+          helm repo index .helm-repo \
+            --url https://projectbeskar.github.io/beskar7
+        fi
+
         echo "Charts in repository:"
         ls -lh .helm-repo/*.tgz
         echo ""
         echo "Index entries:"
-        grep -A 3 "version:" .helm-repo/index.yaml || true
+        grep -E "^\s+(version|urls):" .helm-repo/index.yaml || true
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v4
