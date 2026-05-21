@@ -5,10 +5,10 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.1
-    created: "2026-05-21T09:12:33.640239905Z"
+    created: "2026-05-21T09:28:06.462490365Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
-    digest: ce7cafdd7bc7bdfdb1dfc0262ebd433b902680ff82e9b0168d5f9720111b8a2c
+    digest: 7029a582c6840fd0f19b28505b6cc5f3df7a058fe8dd3cff54c119cac738f02a
     home: https://github.com/projectbeskar/beskar7
     keywords:
     - cluster-api
@@ -26,4 +26,4 @@ entries:
     urls:
     - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.1.tgz
     version: 0.4.0-alpha.1
-generated: "2026-05-21T09:12:33.639381728Z"
+generated: "2026-05-21T09:28:06.461811349Z"
