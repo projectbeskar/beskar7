@@ -37,9 +37,20 @@ serviceAccount:
 
 podAnnotations: {}
 
+# Pod-level security context. fsGroup and runAsGroup must be set so the
+# non-root container (UID 65532, GID 65532) can read the webhook serving cert
+# Secret mounted at /tmp/k8s-webhook-server/serving-certs. The Secret volume
+# uses defaultMode 0400 (owner-only) to match config/manager/manager.yaml;
+# without fsGroup the kubelet leaves the files as root:root and the manager
+# crashes with "permission denied" on the eager TLS load in the inspection
+# callback server. seccompProfile is required by the Restricted PSA profile.
 podSecurityContext:
   runAsNonRoot: true
-  # fsGroup: 2000
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -49,6 +60,7 @@ securityContext:
   readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 65532
+  runAsGroup: 65532
 
 # Webhook configuration
 webhook:
@@ -75,9 +87,12 @@ certManager:
     duration: 8760h # 1 year
     renewBefore: 720h # 30 days
 
-# Namespace configuration
+# Namespace configuration. `create: false` is the default so that the standard
+# `helm install --create-namespace` flow works without a conflict on the
+# chart-rendered Namespace resource. Set `create: true` only if you install
+# without `--create-namespace` and want the chart to render the Namespace.
 namespace:
-  create: true
+  create: false
   name: beskar7-system
 
 # RBAC configuration
