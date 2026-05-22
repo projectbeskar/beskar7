@@ -403,14 +403,47 @@ func bootstrapTokenSecretName(hostName string) string {
 //
 // Returning false forces a re-mint on the next call to triggerInspection,
 // which is the desired behaviour for an expired or never-issued token.
+//
+// Two sources are inspected, in order:
+//
+//  1. Status.Bootstrap.{TokenHash,ExpiresAt}. This is the steady state once
+//     the PhysicalHost controller has consumed the bootstrap-token annotation.
+//
+//  2. A pending BootstrapTokenAnnotation that has not yet been promoted to
+//     Status. Without this check, two consecutive Beskar7Machine reconciles
+//     that both observe Status.Bootstrap as empty (because the PhysicalHost
+//     controller has not yet processed the annotation from the first
+//     reconcile) would both re-mint, race each other into the per-host
+//     Secret, and end up with Secret.plaintext belonging to mint N+1 while
+//     Status.TokenHash is from mint N — every inspector callback then 401s
+//     because the presented token does not hash to the stored hash. Reading
+//     the annotation back here gives the second reconcile a tiebreaker so
+//     it skips minting when an in-flight token is already on the wire.
 func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) bool {
-	if physicalHost == nil ||
-		physicalHost.Status.Bootstrap == nil ||
-		physicalHost.Status.Bootstrap.TokenHash == "" ||
-		physicalHost.Status.Bootstrap.ExpiresAt == nil {
+	if physicalHost == nil {
 		return false
 	}
-	return now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time)
+	// (1) Steady-state check.
+	if physicalHost.Status.Bootstrap != nil &&
+		physicalHost.Status.Bootstrap.TokenHash != "" &&
+		physicalHost.Status.Bootstrap.ExpiresAt != nil &&
+		now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time) {
+		return true
+	}
+	// (2) Pending-annotation check: a previous reconcile of this same
+	// Beskar7Machine already minted and signaled. The PhysicalHost
+	// reconciler will lift this annotation into Status on its next pass;
+	// until then, the Secret + annotation together are the authoritative
+	// source of truth.
+	if raw, ok := physicalHost.Annotations[BootstrapTokenAnnotation]; ok && raw != "" {
+		var v BootstrapTokenAnnotationValue
+		if err := json.Unmarshal([]byte(raw), &v); err == nil &&
+			v.Hash != "" &&
+			now.Before(v.ExpiresAt.Time) {
+			return true
+		}
+	}
+	return false
 }
 
 // upsertBootstrapTokenSecret writes the plaintext bearer token to a per-host
@@ -487,7 +520,18 @@ func (r *Beskar7MachineReconciler) setBootstrapTokenAnnotation(
 		physicalHost.Annotations = map[string]string{}
 	}
 	physicalHost.Annotations[BootstrapTokenAnnotation] = string(encoded)
-	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	// Plain MergeFrom (no optimistic lock). The annotation key is unique to
+	// this controller — no other writer sets BootstrapTokenAnnotation — so a
+	// concurrent modification of the PhysicalHost (status updates from the
+	// PhysicalHost reconciler, spec patches from finalizer logic, etc.)
+	// cannot collide on this field. Optimistic locking here was failing
+	// repeatedly under normal load, causing the mint to silently retry on
+	// every reconcile, each retry overwriting the per-host Secret with a
+	// new plaintext that nobody could ever match against Status.TokenHash
+	// — every inspector callback 401'd. Switching to plain merge resolves
+	// the loop because our write always succeeds on the latest server
+	// version of the object.
+	if err := r.Patch(ctx, physicalHost, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("set bootstrap-token annotation on PhysicalHost %s: %w", physicalHost.Name, err)
 	}
 	// We log the host name and operation only — never the hash plaintext, never
@@ -631,6 +675,10 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	// Mark as ready
 	conditions.MarkTrue(b7machine, infrastructurev1beta1.InfrastructureReadyCondition)
 	b7machine.Status.Ready = true
+	// CAPI v1beta2 contract: surface to Machine.status.initialization.infrastructureProvisioned.
+	// Without this, CAPI v1.10+ does not advance the Machine past Pending and
+	// the parent Cluster never reaches Available.
+	b7machine.Status.Initialization = &infrastructurev1beta1.Beskar7MachineInitializationStatus{Provisioned: true}
 	phase := "Provisioned"
 	b7machine.Status.Phase = &phase
 
@@ -639,8 +687,21 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 }
 
 // findAndClaimOrGetAssociatedHost finds an available host or returns the associated one.
+//
+// Lookup order:
+//  1. By Spec.ProviderID — only set after inspection completes (handleReadyHost).
+//  2. By Spec.ConsumerRef.Name pointing back at this Beskar7Machine — covers the
+//     window between claim (which sets ConsumerRef and transitions the host to
+//     InUse) and ProviderID assignment. Without this branch, once a host has
+//     been claimed and transitioned out of StateAvailable, the controller would
+//     never re-acquire it on subsequent reconciles — it would loop "No
+//     available host" forever and the inspection flow would never trigger.
+//     ConsumerRef is on Spec (not indexed); we list namespace-scoped and filter
+//     in-loop. Namespace scope keeps the list bounded.
+//  3. Find any StateAvailable host with no ConsumerRef and claim it. Returned
+//     with RequeueAfter so the next reconcile picks the host up via path (2).
 func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (*infrastructurev1beta1.PhysicalHost, ctrl.Result, error) {
-	// Check if we already have an associated host via ProviderID
+	// (1) ProviderID lookup.
 	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
 		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
 		if err == nil && ns == b7machine.Namespace {
@@ -651,8 +712,24 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		}
 	}
 
-	// Find available hosts. The field index filters server-side to StateAvailable,
-	// so only hosts the cache has indexed as Available are returned.
+	// (2) ConsumerRef lookup: find any host in our namespace already claimed by
+	// this Beskar7Machine. List all hosts in the namespace (no field index for
+	// Spec.ConsumerRef — it's a nested pointer; an index would not save much
+	// because the host count per namespace is bounded by physical inventory).
+	allHosts := &infrastructurev1beta1.PhysicalHostList{}
+	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
+		return nil, ctrl.Result{}, err
+	}
+	for i := range allHosts.Items {
+		h := &allHosts.Items[i]
+		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+			return h, ctrl.Result{}, nil
+		}
+	}
+
+	// (3) No existing claim — list StateAvailable hosts and try to claim one.
+	// The field index filters server-side to StateAvailable so the result set
+	// is bounded by the count of free hosts.
 	hostList := &infrastructurev1beta1.PhysicalHostList{}
 	if err := r.List(ctx, hostList,
 		client.InNamespace(b7machine.Namespace),

@@ -130,6 +130,11 @@ spec:
                 type: string
               failureReason:
                 type: string
+              initialization:
+                properties:
+                  provisioned:
+                    type: boolean
+                type: object
               phase:
                 type: string
               ready:

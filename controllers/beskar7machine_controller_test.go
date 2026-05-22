@@ -138,6 +138,46 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
 		})
 
+		// Regression test for the re-find bug: once a host is claimed (state
+		// transitions Available -> InUse), findAndClaimOrGetAssociatedHost
+		// must still return it on subsequent calls. Previously the function
+		// only looked up by Spec.ProviderID (not set until inspection
+		// completes) or by Status.State=Available (filtered out claimed
+		// hosts), so a claimed-but-not-yet-provisioned host was invisible to
+		// the controller — it would loop "No available host, requeuing"
+		// indefinitely after the initial claim, never reaching
+		// triggerInspection. Added a third lookup branch by
+		// Spec.ConsumerRef.Name pointing back at this Beskar7Machine.
+		It("Should re-find a claimed PhysicalHost via ConsumerRef on subsequent calls", func() {
+			By("Claiming the host: set ConsumerRef + transition status.state to InUse")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			base := physicalHost.DeepCopy()
+			physicalHost.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       beskar7Machine.Name,
+				Namespace:  testNs.Name,
+			}
+			Expect(k8sClient.Patch(ctx, physicalHost, client.MergeFrom(base))).To(Succeed())
+
+			// Move status into InUse (not Available) — the failure mode this
+			// test guards against happens precisely when status.state != Available.
+			physicalHost.Status.State = infrastructurev1beta1.StateInUse
+			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+
+			By("Calling findAndClaimOrGetAssociatedHost: should return our host via ConsumerRef")
+			// beskar7Machine.Spec.ProviderID is unset (set later in handleReadyHost),
+			// status.state is InUse so the StateAvailable index won't return it — only
+			// the ConsumerRef branch can.
+			got, result, err := reconciler.findAndClaimOrGetAssociatedHost(ctx, ctrl.Log.WithName("refind-test"), beskar7Machine)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(ctrl.Result{}), "no requeue expected — host is already claimed by us")
+			Expect(got).NotTo(BeNil(), "ConsumerRef lookup must re-find the claimed host")
+			Expect(got.Name).To(Equal(physicalHost.Name))
+			Expect(got.Spec.ConsumerRef).NotTo(BeNil())
+			Expect(got.Spec.ConsumerRef.Name).To(Equal(beskar7Machine.Name))
+		})
+
 		// Converted from PIt "[SKIP - Hardware Testing] Should successfully claim an available PhysicalHost":
 		// This no longer requires Redfish (claim path only touches Spec.ConsumerRef, no Redfish calls
 		// until triggerInspection). We skip the Machine OwnerRef requirement here because this
@@ -1428,5 +1468,47 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 			},
 		}
 		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue())
+	})
+
+	// Regression test for the mint race: when a previous Beskar7Machine
+	// reconcile has set the BootstrapTokenAnnotation but the PhysicalHost
+	// controller has not yet promoted it to Status, the second reconcile
+	// must NOT re-mint. Otherwise the Secret gets overwritten with a new
+	// plaintext whose hash doesn't match the one Status will eventually
+	// carry, and every inspector bearer-auth attempt 401s. See the layer
+	// 5 hardening notes in this PR's body.
+	It("returns true when a pending annotation has a non-expired hash (mint-race guard)", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "deadbeef",
+			IssuedAt:  metav1.NewTime(now.Add(-30 * time.Second)),
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+			// Status.Bootstrap is intentionally empty — simulates the
+			// window where the PhysicalHost reconciler has not yet
+			// consumed the annotation.
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue(),
+			"pending annotation must count as a valid in-flight token")
+	})
+
+	It("returns false when pending annotation is expired (mint a fresh one)", func() {
+		exp := metav1.NewTime(now.Add(-1 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "deadbeef",
+			IssuedAt:  metav1.NewTime(now.Add(-31 * time.Minute)),
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse(),
+			"expired pending annotation must NOT block a fresh mint")
 	})
 })

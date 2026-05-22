@@ -7,10 +7,12 @@
 #   1. Static install   - operator pod Running, CRDs present
 #   2. Admission        - webhook rejects invalid PhysicalHost
 #   3. Reconcile        - controller talks to mock BMC, PhysicalHost -> Available
-#   4. CAPI claim       - Beskar7Machine claims the host, sets ProviderID
-#
-# Layer 5 (PXE/inspector callback) needs a real iPXE-boot inspector and is
-# out of scope for this rig.
+#   4. CAPI claim       - Beskar7Machine claims the host, host state machine
+#                         progresses (Available -> Inspecting/InUse)
+#   5. Inspection       - simulate an iPXE-booted inspector POST to the
+#                         controller's bootstrap callback; assert PhysicalHost
+#                         reaches Ready and Beskar7Machine.Spec.ProviderID
+#                         is set
 #
 # Usage:
 #   hack/smoke/run.sh                # run all layers, tear down on exit
@@ -40,6 +42,7 @@ TEARDOWN_ONLY=0
 RUN_LAYER_2=1
 RUN_LAYER_3=1
 RUN_LAYER_4=1
+RUN_LAYER_5=1
 
 for arg in "$@"; do
   case "$arg" in
@@ -48,6 +51,7 @@ for arg in "$@"; do
     --skip-layer-2) RUN_LAYER_2=0 ;;
     --skip-layer-3) RUN_LAYER_3=0 ;;
     --skip-layer-4) RUN_LAYER_4=0 ;;
+    --skip-layer-5) RUN_LAYER_5=0 ;;
     -h|--help)
       sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
@@ -326,15 +330,202 @@ layer_4_claim() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 5: simulate an iPXE-booted inspector POSTing to the controller's
+# bootstrap callback. Completes the Inspecting -> Ready transition that
+# layer 4 stops short of, then asserts ProviderID gets set.
+#
+# Flow:
+#   1. Wait for PhysicalHost.Status.Bootstrap.{URL,TokenHash} to be set.
+#      The Beskar7Machine controller mints these once the host is claimed.
+#   2. Read the plaintext token from Secret <hostName>-bootstrap-token
+#      (key plaintext-token). The controller writes it there in lockstep
+#      with publishing the hash to Status.Bootstrap.TokenHash.
+#   3. Derive the inspection URL from the bootstrap URL: same host:port,
+#      swap "/api/v1/bootstrap/" -> "/api/v1/inspection/".
+#   4. POST a fake hardware report from inside the cluster (via a
+#      one-shot kubectl run curl pod). The controller's callback server
+#      lives at the in-cluster DNS name; -k is used because the cert
+#      covers webhook-service, not controller-manager service.
+#   5. Wait for PhysicalHost to reach state=Ready (controller picked up
+#      the inspection-result annotation + ConfigMap).
+#   6. Wait for Beskar7Machine.Spec.ProviderID to be set. Verify format
+#      matches b7://<ns>/<host>.
+# ---------------------------------------------------------------------------
+
+layer_5_inspection() {
+  info "[layer 5] simulating inspector POST to bootstrap callback"
+
+  # 1+2. Bootstrap status + token Secret (with timeout).
+  info "  waiting up to ${WAIT_TIMEOUT} for Bootstrap.URL + TokenHash"
+  local deadline=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
+  local bootstrap_url="" token_hash=""
+  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+    bootstrap_url="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.bootstrap.url}' 2>/dev/null || true)"
+    token_hash="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.bootstrap.tokenHash}' 2>/dev/null || true)"
+    if [[ -n "${bootstrap_url}" && -n "${token_hash}" ]]; then
+      break
+    fi
+    sleep 3
+  done
+  if [[ -z "${bootstrap_url}" || -z "${token_hash}" ]]; then
+    fail "[layer 5] Bootstrap.URL/TokenHash not populated within ${WAIT_TIMEOUT}"
+    dim "  --- describe PhysicalHost ---"
+    kubectl -n "${SMOKE_NS}" describe physicalhost smoke-host-01 | tail -30
+    return 1
+  fi
+  dim "  bootstrap URL: ${bootstrap_url}"
+
+  local token_b64
+  token_b64="$(kubectl -n "${SMOKE_NS}" get secret smoke-host-01-bootstrap-token \
+    -o jsonpath='{.data.plaintext-token}' 2>/dev/null || true)"
+  if [[ -z "${token_b64}" ]]; then
+    fail "[layer 5] bootstrap-token Secret missing plaintext-token key"
+    return 1
+  fi
+  # Read the token + hash-cross-check with retry. The controller's mint
+  # path has a small window where Secret.plaintext can lead the matching
+  # hash into Status.Bootstrap.TokenHash by a few seconds (BootstrapToken
+  # annotation in flight from Beskar7Machine to PhysicalHost reconciler).
+  # The controller-side fix in beskar7machine_controller.go's
+  # bootstrapTokenStillValid prevents the race from re-occurring on
+  # subsequent reconciles, but a single retry here makes the runner
+  # robust against the first observation. ~12s total budget; well under
+  # the 600s inspection-timeout.
+  local token computed match=0
+  for attempt in 1 2 3 4 5 6; do
+    token_b64="$(kubectl -n "${SMOKE_NS}" get secret smoke-host-01-bootstrap-token \
+      -o jsonpath='{.data.plaintext-token}' 2>/dev/null || true)"
+    token_hash="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.bootstrap.tokenHash}' 2>/dev/null || true)"
+    if [[ -z "${token_b64}" || -z "${token_hash}" ]]; then
+      sleep 2; continue
+    fi
+    token="$(printf '%s' "${token_b64}" | base64 -d)"
+    if command -v sha256sum >/dev/null 2>&1; then
+      computed="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')"
+      if [[ "${computed}" == "${token_hash}" ]]; then
+        match=1
+        dim "  token sha256 matches Status.TokenHash (prefix: ${computed:0:12}…, attempt ${attempt})"
+        break
+      fi
+      dim "  attempt ${attempt}: sha256 mismatch (Secret: ${computed:0:8}…, Status: ${token_hash:0:8}…); retrying in 2s"
+      sleep 2
+    else
+      # No sha256sum available — skip the cross-check, trust the values.
+      match=1
+      break
+    fi
+  done
+  if [[ "${match}" -eq 0 ]]; then
+    fail "[layer 5] token Secret never converged with Status.Bootstrap.TokenHash"
+    dim "  Last Secret sha256: ${computed:0:12}…"
+    dim "  Last Status.TokenHash: ${token_hash:0:12}…"
+    return 1
+  fi
+
+  # 3. Derive inspection URL.
+  local inspection_url="${bootstrap_url//\/api\/v1\/bootstrap\//\/api\/v1\/inspection\/}"
+  if [[ "${inspection_url}" == "${bootstrap_url}" ]]; then
+    fail "[layer 5] bootstrap URL did not contain /api/v1/bootstrap/ (cannot derive inspection URL): ${bootstrap_url}"
+    return 1
+  fi
+  dim "  inspection URL: ${inspection_url}"
+
+  # 4. POST a fake report from inside the cluster. Use a one-shot pod so we
+  # do not need port-forward plumbing. -k skips TLS verify because the
+  # cert-manager-issued cert covers beskar7-webhook-service, not the
+  # controller-manager service the callback URL points at (real production
+  # inspectors handle this either via a CA bundle in the OS image or by
+  # accepting controller-manager.<ns>.svc as a SAN — out of scope here).
+  local report
+  report='{"manufacturer":"MockSmoke","model":"VirtualBox","serialNumber":"SMOKE-001","bootModeDetected":"UEFI","firmwareVersion":"1.0.0","cpus":[{"id":"cpu0","vendor":"GenuineIntel","model":"Mock CPU","cores":4,"threads":8,"frequency":"3.0GHz"}],"memory":[{"id":"DIMM0","type":"DDR4","capacity":"16GB","speed":"3200MHz"}],"disks":[{"name":"sda","model":"VirtualDisk","sizeGB":100,"type":"SSD","serialNumber":"SMOKE-DISK-001"}],"nics":[{"name":"eth0","macAddress":"de:ad:be:ef:00:01","driver":"virtio","speed":"1Gbps","ipAddresses":["10.0.0.42"]}]}'
+
+  # kubectl run is idempotent on a clean namespace but will collide on
+  # re-runs; --rm=true cleans up the pod even on success or failure.
+  info "  POSTing fake hardware report via in-cluster curl pod"
+  # -v gives curl protocol-level traces (DNS, TLS handshake, request lines)
+  # that surface in the pod's stdout; -m 30 caps the whole transaction so a
+  # hung TCP doesn't burn the smoke runner's budget; --no-progress-meter
+  # quiets the binary download counter without losing the -v output.
+  local post_out
+  if ! post_out="$(kubectl -n "${SMOKE_NS}" run smoke-inspector \
+        --image=curlimages/curl:8.10.1 \
+        --restart=Never --rm=true --quiet --attach=true \
+        --command -- \
+        sh -c "curl -kv --no-progress-meter -m 30 \
+          -o /dev/stderr -w 'HTTP_STATUS=%{http_code}\n' \
+          -X POST '${inspection_url}' \
+          -H 'Authorization: Bearer ${token}' \
+          -H 'Content-Type: application/json' \
+          --data-raw '${report}' 2>&1" 2>&1)"; then
+    fail "[layer 5] inspector POST pod failed"
+    dim "--- curl output ---"
+    printf '%s\n' "${post_out}" | tail -30
+    return 1
+  fi
+  if ! grep -q 'HTTP_STATUS=2' <<<"${post_out}"; then
+    fail "[layer 5] inspector POST returned non-2xx status"
+    dim "--- curl output ---"
+    printf '%s\n' "${post_out}" | tail -30
+    return 1
+  fi
+  pass "[layer 5a] inspector POST accepted (2xx)"
+
+  # 5. Host transitions to Ready.
+  info "  waiting up to ${WAIT_TIMEOUT} for PhysicalHost.Status.State=Ready"
+  local deadline2=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
+  local state=""
+  while [[ "$(date +%s)" -lt "${deadline2}" ]]; do
+    state="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.state}' 2>/dev/null || true)"
+    [[ "${state}" == "Ready" ]] && break
+    sleep 3
+  done
+  if [[ "${state}" != "Ready" ]]; then
+    fail "[layer 5b] PhysicalHost did not reach state=Ready (got: ${state}) within ${WAIT_TIMEOUT}"
+    dim "  --- describe PhysicalHost ---"
+    kubectl -n "${SMOKE_NS}" describe physicalhost smoke-host-01 | tail -30
+    return 1
+  fi
+  pass "[layer 5b] PhysicalHost reached state=Ready"
+
+  # 6. ProviderID set with expected format.
+  info "  waiting up to ${WAIT_TIMEOUT} for Beskar7Machine.Spec.ProviderID"
+  local deadline3=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
+  local provider=""
+  while [[ "$(date +%s)" -lt "${deadline3}" ]]; do
+    provider="$(kubectl -n "${SMOKE_NS}" get beskar7machine smoke-machine-01 \
+      -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
+    [[ -n "${provider}" ]] && break
+    sleep 3
+  done
+  if [[ -z "${provider}" ]]; then
+    fail "[layer 5c] ProviderID was not set within ${WAIT_TIMEOUT}"
+    dim "  --- describe Beskar7Machine ---"
+    kubectl -n "${SMOKE_NS}" describe beskar7machine smoke-machine-01 | tail -30
+    return 1
+  fi
+  local expected="b7://${SMOKE_NS}/smoke-host-01"
+  if [[ "${provider}" != "${expected}" ]]; then
+    fail "[layer 5c] ProviderID=${provider} != expected ${expected}"
+    return 1
+  fi
+  pass "[layer 5c] Beskar7Machine ProviderID=${provider}"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
 declare -i FAILED=0
 
 layer_1_static          || FAILED=1
-[[ "${RUN_LAYER_2}" -eq 1 ]] && { layer_2_admission || FAILED=1; }
-[[ "${RUN_LAYER_3}" -eq 1 ]] && { layer_3_reconcile || FAILED=1; }
+[[ "${RUN_LAYER_2}" -eq 1 ]] && { layer_2_admission  || FAILED=1; }
+[[ "${RUN_LAYER_3}" -eq 1 ]] && { layer_3_reconcile  || FAILED=1; }
 [[ "${RUN_LAYER_4}" -eq 1 ]] && { layer_4_claim      || FAILED=1; }
+[[ "${RUN_LAYER_5}" -eq 1 ]] && { layer_5_inspection || FAILED=1; }
 
 if [[ "${FAILED}" -eq 0 ]]; then
   pass "smoke test PASSED on context ${CONTEXT}"

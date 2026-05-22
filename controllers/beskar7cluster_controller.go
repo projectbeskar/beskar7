@@ -301,6 +301,8 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 		}
 		conditions.MarkTrue(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady)
 		b7cluster.Status.Ready = true
+		// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
+		b7cluster.Status.Initialization = &infrastructurev1beta1.Beskar7ClusterInitializationStatus{Provisioned: true}
 		return nil
 	}
 
@@ -316,6 +318,9 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 	if cpEndpoint == nil {
 		conditions.MarkFalse(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady, infrastructurev1beta1.ControlPlaneEndpointNotSetReason, clusterv1.ConditionSeverityInfo, "Waiting for control plane Beskar7Machine(s) to have IP addresses")
 		b7cluster.Status.Ready = false
+		// Initialization.Provisioned is one-shot per the v1beta2 contract; leave it
+		// nil here rather than flipping back to false, so a cluster that briefly
+		// loses its endpoint does not regress in CAPI's view.
 		return nil
 	}
 
@@ -327,6 +332,8 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 	b7cluster.Status.ControlPlaneEndpoint = *cpEndpoint
 	conditions.MarkTrue(b7cluster, infrastructurev1beta1.ControlPlaneEndpointReady)
 	b7cluster.Status.Ready = true
+	// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
+	b7cluster.Status.Initialization = &infrastructurev1beta1.Beskar7ClusterInitializationStatus{Provisioned: true}
 
 	return nil
 }

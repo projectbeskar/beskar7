@@ -108,10 +108,31 @@ type HardwareRequirements struct {
 	MinDiskGB int `json:"minDiskGB,omitempty"`
 }
 
+// Beskar7MachineInitializationStatus carries CAPI v1beta2 contract fields
+// describing one-shot initialisation milestones of the infrastructure machine.
+// CAPI core lifts `status.initialization.provisioned` from the
+// InfrastructureMachine into the parent Machine's
+// `status.initialization.infrastructureProvisioned`.
+type Beskar7MachineInitializationStatus struct {
+	// Provisioned is true when the machine is fully provisioned: the host has
+	// been claimed, inspected, and the ProviderID is set. The Beskar7Machine
+	// controller sets this in lockstep with status.ready=true.
+	// +optional
+	Provisioned bool `json:"provisioned,omitempty"`
+}
+
 // Beskar7MachineStatus defines the observed state of Beskar7Machine.
 type Beskar7MachineStatus struct {
 	// Ready indicates whether the machine is ready
 	Ready bool `json:"ready,omitempty"`
+
+	// Initialization carries CAPI v1beta2 contract initialisation milestones.
+	// On CAPI v1.10+ the Machine controller surfaces this into
+	// `Machine.status.initialization.infrastructureProvisioned`. Without it,
+	// CAPI never advances the Machine past Pending and never marks the parent
+	// Cluster as available.
+	// +optional
+	Initialization *Beskar7MachineInitializationStatus `json:"initialization,omitempty"`
 
 	// Phase represents the current phase of the machine
 	Phase *string `json:"phase,omitempty"`

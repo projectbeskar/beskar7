@@ -352,14 +352,16 @@ jobs:
         kubectl cluster-info
         echo "=== Pods (all namespaces) ==="
         kubectl get pods -A -o wide
-        echo "=== Beskar7 controller log ==="
-        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=300 || true
+        echo "=== Beskar7 controller log (last 500) ==="
+        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=500 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== PhysicalHost ==="
         kubectl -n beskar7-smoke get physicalhost -o yaml || true
         echo "=== Beskar7Machine ==="
         kubectl -n beskar7-smoke get beskar7machine -o yaml || true
+        echo "=== bootstrap-token Secret (smoke fixture; not real secret) ==="
+        kubectl -n beskar7-smoke get secret smoke-host-01-bootstrap-token -o yaml || true
         echo "=== Events ==="
         kubectl get events -A --sort-by='.lastTimestamp' | tail -30
         echo "=== Images on kind node ==="
