@@ -24,6 +24,10 @@ CRD_OPTIONS ?= "generateEmbeddedObjectMeta=true,maxDescLen=0"
 build:
 	$(GO) build -o bin/manager cmd/manager/main.go
 
+# Build the mock Redfish server binary
+build-mock-redfish:
+	$(GO) build -o bin/mock-redfish cmd/mock-redfish/main.go
+
 # Run code generators
 generate:
 	$(GO) generate ./...
@@ -74,6 +78,27 @@ docker-build:
 	# e.g., docker buildx create --use
 	docker buildx build --platform linux/amd64 -t $(IMG) --load .
 
+# Docker build for mock Redfish server
+docker-build-mock-redfish:
+	docker buildx build --platform linux/amd64 -t $(IMAGE_REGISTRY)/mock-redfish:$(VERSION) --load -f Dockerfile.mock-redfish .
+
+# Layered smoke test against the current kubectl context. Requires the
+# beskar7 chart to already be installed (helm install ...) and cert-manager
+# + CAPI core to be present. Exercises:
+#   1. Static install   - operator pod Running, CRDs present
+#   2. Admission        - CRD validation rejects malformed addresses
+#   3. Reconcile        - mock BMC + PhysicalHost -> Status.Ready=true
+#   4. CAPI claim       - Beskar7Machine claims the host, ProviderID set
+# Layer 5 (PXE/inspector callback) requires a real iPXE boot path and is
+# out of scope for this rig. See hack/smoke/run.sh for flags (--keep,
+# --teardown, MOCK_IMAGE=...).
+smoke:
+	bash hack/smoke/run.sh
+
+# Tear down smoke-test fixtures without running the suite.
+smoke-teardown:
+	bash hack/smoke/run.sh --teardown
+
 # Docker push (uses IMG variable defined at the top)
 docker-push:
 	docker push $(IMG)
@@ -123,4 +148,4 @@ release-manifests:
 	git checkout config/overlays/ 2>/dev/null || true
 	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
 
-.PHONY: build generate manifests test docker-build docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync
+.PHONY: build build-mock-redfish generate manifests test docker-build docker-build-mock-redfish docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown

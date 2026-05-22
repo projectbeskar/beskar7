@@ -1,0 +1,29 @@
+# Build the mock-redfish binary.
+# Base images are pinned by digest — same pins as the main Dockerfile.
+# To refresh: see the digest-update instructions in Dockerfile.
+# golang:1.25 (refreshed 2026-05-03)
+FROM golang:1.25@sha256:8a7adc288b77e9b787cd2695029eb54d10ae80571b21d44fed68d067ad0a9c96 as builder
+WORKDIR /workspace
+
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY api/ api/
+COPY internal/ internal/
+COPY controllers/ controllers/
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -o mock-redfish cmd/mock-redfish/main.go
+
+# gcr.io/distroless/static:nonroot (refreshed 2026-05-03)
+FROM gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
+WORKDIR /
+COPY --from=builder /workspace/mock-redfish .
+USER 65532:65532
+
+EXPOSE 8443
+
+ENTRYPOINT ["/mock-redfish"]

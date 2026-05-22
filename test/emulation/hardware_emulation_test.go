@@ -35,6 +35,7 @@ import (
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	"github.com/projectbeskar/beskar7/controllers"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	"github.com/projectbeskar/beskar7/internal/redfishmock"
 	"github.com/stmcginnis/gofish/redfish"
 )
 
@@ -45,7 +46,7 @@ func TestHardwareEmulation(t *testing.T) {
 
 var _ = Describe("Hardware Emulation Tests", func() {
 	var (
-		mockServer *MockRedfishServer
+		mockServer *redfishmock.MockRedfishServerWithHTTPTest
 		ctx        context.Context
 	)
 
@@ -62,17 +63,17 @@ var _ = Describe("Hardware Emulation Tests", func() {
 	Context("Vendor-Specific Hardware Emulation", func() {
 		It("should emulate Dell PowerEdge server behavior", func() {
 			// Create Dell server emulation
-			mockServer = NewMockRedfishServer(VendorDell)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorDell)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
 			// Test vendor-specific information from mock server
-			srvInfo := mockServer.systemInfo
+			srvInfo := mockServer.SystemInfo
 			Expect(srvInfo.Manufacturer).To(Equal("Dell Inc."))
 			Expect(srvInfo.Model).To(ContainSubstring("PowerEdge"))
 
 			// Test Dell-specific BIOS attributes
-			biosAttrs := mockServer.biosAttributes
+			biosAttrs := mockServer.BiosAttributes
 			Expect(biosAttrs).To(HaveKey("KernelArgs"))
 			Expect(biosAttrs["BootMode"]).To(Equal("Uefi"))
 
@@ -84,46 +85,46 @@ var _ = Describe("Hardware Emulation Tests", func() {
 		})
 
 		It("should emulate HPE ProLiant server behavior", func() {
-			mockServer = NewMockRedfishServer(VendorHPE)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorHPE)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
-			srvInfo := mockServer.systemInfo
+			srvInfo := mockServer.SystemInfo
 			Expect(srvInfo.Manufacturer).To(Equal("HPE"))
 			Expect(srvInfo.Model).To(ContainSubstring("ProLiant"))
 
 			// Test HPE-specific BIOS attributes
-			biosAttrs := mockServer.biosAttributes
+			biosAttrs := mockServer.BiosAttributes
 			Expect(biosAttrs).To(HaveKey("UefiOptimizedBoot"))
 			Expect(biosAttrs["BootOrderPolicy"]).To(Equal("AttemptOnce"))
 		})
 
 		It("should emulate Lenovo ThinkSystem server behavior", func() {
-			mockServer = NewMockRedfishServer(VendorLenovo)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorLenovo)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
-			srvInfo := mockServer.systemInfo
+			srvInfo := mockServer.SystemInfo
 			Expect(srvInfo.Manufacturer).To(Equal("Lenovo"))
 			Expect(srvInfo.Model).To(ContainSubstring("ThinkSystem"))
 
 			// Test Lenovo-specific BIOS attributes
-			biosAttrs := mockServer.biosAttributes
+			biosAttrs := mockServer.BiosAttributes
 			Expect(biosAttrs).To(HaveKey("SystemBootSequence"))
 			Expect(biosAttrs["SecureBootEnable"]).To(Equal("Enabled"))
 		})
 
 		It("should emulate Supermicro server behavior", func() {
-			mockServer = NewMockRedfishServer(VendorSupermicro)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorSupermicro)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
-			srvInfo := mockServer.systemInfo
+			srvInfo := mockServer.SystemInfo
 			Expect(srvInfo.Manufacturer).To(Equal("Supermicro"))
 			Expect(srvInfo.Model).To(ContainSubstring("X12"))
 
 			// Test Supermicro-specific BIOS attributes
-			biosAttrs := mockServer.biosAttributes
+			biosAttrs := mockServer.BiosAttributes
 			Expect(biosAttrs).To(HaveKey("BootFeature"))
 			Expect(biosAttrs["QuietBoot"]).To(Equal("Enabled"))
 		})
@@ -131,13 +132,13 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 	Context("Failure Scenario Testing", func() {
 		BeforeEach(func() {
-			mockServer = NewMockRedfishServer(VendorGeneric)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorGeneric)
 			mockServer.DisableAuth()
 		})
 
 		It("should handle network connectivity failures", func() {
 			// Enable network error simulation
-			mockServer.SetFailureMode(FailureConfig{
+			mockServer.SetFailureMode(redfishmock.FailureConfig{
 				NetworkErrors: true,
 			})
 
@@ -149,8 +150,8 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 		It("should handle authentication failures", func() {
 			// Re-enable auth and force auth failures
-			mockServer.authEnabled = true
-			mockServer.SetFailureMode(FailureConfig{
+			mockServer.AuthEnabled = true
+			mockServer.SetFailureMode(redfishmock.FailureConfig{
 				AuthFailures: true,
 			})
 
@@ -169,7 +170,7 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 		It("should handle slow response scenarios", func() {
 			// Enable slow response simulation
-			mockServer.SetFailureMode(FailureConfig{
+			mockServer.SetFailureMode(redfishmock.FailureConfig{
 				SlowResponses: true,
 			})
 
@@ -185,7 +186,7 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 		It("should handle power operation failures", func() {
 			// Enable power failure simulation
-			mockServer.SetFailureMode(FailureConfig{
+			mockServer.SetFailureMode(redfishmock.FailureConfig{
 				PowerFailures: true,
 			})
 
@@ -204,7 +205,7 @@ var _ = Describe("Hardware Emulation Tests", func() {
 		)
 
 		BeforeEach(func() {
-			mockServer = NewMockRedfishServer(VendorDell)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorDell)
 			mockServer.DisableAuth()
 
 			// Controller environment not used in these emulation tests
@@ -260,7 +261,7 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 	Context("Stress Testing and Concurrent Operations", func() {
 		BeforeEach(func() {
-			mockServer = NewMockRedfishServer(VendorGeneric)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorGeneric)
 			mockServer.DisableAuth()
 		})
 
@@ -336,7 +337,7 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 	Context("Vendor-Specific Behavior Testing", func() {
 		It("should test Dell BIOS attribute handling", func() {
-			mockServer = NewMockRedfishServer(VendorDell)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorDell)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
@@ -349,12 +350,12 @@ var _ = Describe("Hardware Emulation Tests", func() {
 
 			// This would test actual BIOS attribute setting in a full implementation
 			// For now, we verify the server has the right vendor configuration
-			Expect(mockServer.vendor).To(Equal(VendorDell))
-			Expect(mockServer.biosAttributes).To(HaveKey("KernelArgs"))
+			Expect(mockServer.Vendor()).To(Equal(redfishmock.VendorDell))
+			Expect(mockServer.BiosAttributes).To(HaveKey("KernelArgs"))
 		})
 
 		It("should test HPE UEFI boot override behavior", func() {
-			mockServer = NewMockRedfishServer(VendorHPE)
+			mockServer = redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorHPE)
 			mockServer.DisableAuth()
 			defer mockServer.Close()
 
@@ -365,8 +366,8 @@ var _ = Describe("Hardware Emulation Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify HPE-specific configuration
-			Expect(mockServer.vendor).To(Equal(VendorHPE))
-			Expect(mockServer.biosAttributes).To(HaveKey("UefiOptimizedBoot"))
+			Expect(mockServer.Vendor()).To(Equal(redfishmock.VendorHPE))
+			Expect(mockServer.BiosAttributes).To(HaveKey("UefiOptimizedBoot"))
 		})
 	})
 })
