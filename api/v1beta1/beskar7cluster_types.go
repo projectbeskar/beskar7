@@ -25,11 +25,35 @@ type Beskar7ClusterSpec struct {
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint"`
 }
 
+// Beskar7ClusterInitializationStatus carries CAPI v1beta2 contract fields
+// describing one-shot initialisation milestones of the infrastructure cluster.
+// See the CAPI proposal "improve-status-in-CAPI-resources" — CAPI core lifts
+// `status.initialization.provisioned` from the InfrastructureCluster up into
+// the parent Cluster's `status.initialization.infrastructureProvisioned`.
+type Beskar7ClusterInitializationStatus struct {
+	// Provisioned is true when the infrastructure cluster is fully initialised:
+	// the control-plane endpoint is reachable and any failure domains have been
+	// surfaced. The Beskar7Cluster controller sets this in lockstep with
+	// status.ready=true (legacy v1beta1 contract).
+	// +optional
+	Provisioned bool `json:"provisioned,omitempty"`
+}
+
 // Beskar7ClusterStatus defines the observed state of Beskar7Cluster.
 type Beskar7ClusterStatus struct {
 	// Ready indicates that the cluster is ready.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
+
+	// Initialization carries CAPI v1beta2 contract initialisation milestones.
+	// On CAPI v1.10+ the KubeadmConfig and Machine controllers gate on
+	// `Cluster.status.initialization.infrastructureProvisioned`, which CAPI
+	// core derives from this nested field. Without it the bootstrap data
+	// secret is never generated, and the Beskar7Machine bootstrap token mint
+	// (which depends on a non-empty Machine.Spec.Bootstrap.DataSecretName)
+	// never fires either. Required for end-to-end CAPI lifecycle.
+	// +optional
+	Initialization *Beskar7ClusterInitializationStatus `json:"initialization,omitempty"`
 
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
 	// +optional

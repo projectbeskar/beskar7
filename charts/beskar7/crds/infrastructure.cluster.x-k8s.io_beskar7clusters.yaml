@@ -115,6 +115,11 @@ spec:
                       type: boolean
                   type: object
                 type: object
+              initialization:
+                properties:
+                  provisioned:
+                    type: boolean
+                type: object
               ready:
                 type: boolean
             type: object

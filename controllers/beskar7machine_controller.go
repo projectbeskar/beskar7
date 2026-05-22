@@ -631,6 +631,10 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	// Mark as ready
 	conditions.MarkTrue(b7machine, infrastructurev1beta1.InfrastructureReadyCondition)
 	b7machine.Status.Ready = true
+	// CAPI v1beta2 contract: surface to Machine.status.initialization.infrastructureProvisioned.
+	// Without this, CAPI v1.10+ does not advance the Machine past Pending and
+	// the parent Cluster never reaches Available.
+	b7machine.Status.Initialization = &infrastructurev1beta1.Beskar7MachineInitializationStatus{Provisioned: true}
 	phase := "Provisioned"
 	b7machine.Status.Phase = &phase
 
@@ -639,8 +643,21 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 }
 
 // findAndClaimOrGetAssociatedHost finds an available host or returns the associated one.
+//
+// Lookup order:
+//  1. By Spec.ProviderID — only set after inspection completes (handleReadyHost).
+//  2. By Spec.ConsumerRef.Name pointing back at this Beskar7Machine — covers the
+//     window between claim (which sets ConsumerRef and transitions the host to
+//     InUse) and ProviderID assignment. Without this branch, once a host has
+//     been claimed and transitioned out of StateAvailable, the controller would
+//     never re-acquire it on subsequent reconciles — it would loop "No
+//     available host" forever and the inspection flow would never trigger.
+//     ConsumerRef is on Spec (not indexed); we list namespace-scoped and filter
+//     in-loop. Namespace scope keeps the list bounded.
+//  3. Find any StateAvailable host with no ConsumerRef and claim it. Returned
+//     with RequeueAfter so the next reconcile picks the host up via path (2).
 func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (*infrastructurev1beta1.PhysicalHost, ctrl.Result, error) {
-	// Check if we already have an associated host via ProviderID
+	// (1) ProviderID lookup.
 	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
 		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
 		if err == nil && ns == b7machine.Namespace {
@@ -651,8 +668,24 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		}
 	}
 
-	// Find available hosts. The field index filters server-side to StateAvailable,
-	// so only hosts the cache has indexed as Available are returned.
+	// (2) ConsumerRef lookup: find any host in our namespace already claimed by
+	// this Beskar7Machine. List all hosts in the namespace (no field index for
+	// Spec.ConsumerRef — it's a nested pointer; an index would not save much
+	// because the host count per namespace is bounded by physical inventory).
+	allHosts := &infrastructurev1beta1.PhysicalHostList{}
+	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
+		return nil, ctrl.Result{}, err
+	}
+	for i := range allHosts.Items {
+		h := &allHosts.Items[i]
+		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+			return h, ctrl.Result{}, nil
+		}
+	}
+
+	// (3) No existing claim — list StateAvailable hosts and try to claim one.
+	// The field index filters server-side to StateAvailable so the result set
+	// is bounded by the count of free hosts.
 	hostList := &infrastructurev1beta1.PhysicalHostList{}
 	if err := r.List(ctx, hostList,
 		client.InNamespace(b7machine.Namespace),
