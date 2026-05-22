@@ -92,9 +92,13 @@ func NewPhysicalHostReconciler(
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // ConfigMaps are only ever fetched by name (the inspection-result
 // ConfigMap referenced from the InspectionResultAnnotation) and
-// upserted/deleted by the inspection handler. There is no informer over
-// ConfigMaps, so list/watch are intentionally omitted (SEC-2 / D-007).
-//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;update;patch;delete
+// upserted/deleted by the inspection handler. The informer also needs to
+// watch ConfigMaps so the controller-runtime cache can serve cached Gets
+// from the InspectionHandler's CreateOrUpdate path — without list+watch
+// the reflector loops on "configmaps is forbidden" and the first POST
+// times out waiting for the informer to sync. The previous SEC-2 / D-007
+// note that omitted these is superseded by the inspection-handler design.
+//+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile handles PhysicalHost reconciliation.

@@ -6,9 +6,12 @@ metadata:
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
 rules:
-# ConfigMaps: only fetched by name (inspection-result handoff) and
-# create/update/delete on the same. No informer; list/watch intentionally
-# omitted (SEC-2 / D-007).
+# ConfigMaps: inspection-result handoff (D-005). list+watch are required
+# so the controller-runtime cache can populate the ConfigMap informer
+# used by the inspection handler's CreateOrUpdate path. Without them the
+# reflector loops on "configmaps is forbidden" and the first inspection
+# POST blocks until the informer sync timeout returns 5xx. (Supersedes
+# the SEC-2 / D-007 note that previously omitted list/watch.)
 - apiGroups:
   - ""
   resources:
@@ -17,8 +20,10 @@ rules:
   - create
   - delete
   - get
+  - list
   - patch
   - update
+  - watch
 - apiGroups:
   - ""
   resources:
