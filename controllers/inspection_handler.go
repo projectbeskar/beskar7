@@ -357,7 +357,13 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 		physicalHost.Annotations = map[string]string{}
 	}
 	physicalHost.Annotations[InspectionResultAnnotation] = cmName
-	if err := h.Client.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	// Plain MergeFrom (no optimistic lock). Same reasoning as
+	// Beskar7MachineReconciler.setBootstrapTokenAnnotation: this annotation
+	// key is unique to this handler, no other writer collides on it, and
+	// MergeFromWithOptimisticLock against a concurrently-mutating PhysicalHost
+	// (status updates from the PhysicalHost reconciler) caused repeated
+	// Conflict failures that broke the inspection-result handoff entirely.
+	if err := h.Client.Patch(ctx, physicalHost, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("patch PhysicalHost annotation: %w", err)
 	}
 	log.V(1).Info("Inspection-result annotation set", "host", physicalHost.Name, "configmap", cmName)
@@ -391,6 +397,21 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
 	}
 	if _, err := os.Stat(keyPath); err != nil {
 		return fmt.Errorf("callback server key %q not readable: %w", keyPath, err)
+	}
+
+	// Pre-warm the ConfigMap informer. The inspection handler writes a
+	// transient per-host inspection-result ConfigMap on every POST (D-005);
+	// without pre-warming, the first POST after manager startup blocks for
+	// up to the cache's sync timeout waiting for the lazily-created
+	// informer to populate, which under a kind-fresh cluster regularly
+	// exceeds the kube-apiserver's request budget and surfaces as
+	// "Timeout: failed waiting for *v1.ConfigMap Informer to sync" — the
+	// inspector POST then 5xx's and the smoke-test inspector simulator
+	// cannot drive the host to Ready. Calling GetInformer here registers
+	// the informer with the cache; mgr.Start() will boot it alongside the
+	// other watches before the first reconcile fires.
+	if _, err := mgr.GetCache().GetInformer(context.Background(), &corev1.ConfigMap{}); err != nil {
+		return fmt.Errorf("pre-warm ConfigMap informer for inspection handler: %w", err)
 	}
 
 	inspectionLog := ctrl.Log.WithName("inspection-handler")
