@@ -51,7 +51,7 @@ func TestNewMockRedfishServerWithHTTPTest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET service root via TLS: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("service root over TLS = %d, want 200", resp.StatusCode)
 	}

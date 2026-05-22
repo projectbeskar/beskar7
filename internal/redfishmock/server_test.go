@@ -61,7 +61,7 @@ func authedGET(t *testing.T, baseURL, path, user, pass string) *http.Response {
 // decodeJSON reads and JSON-decodes the body into out. Closes the body.
 func decodeJSON(t *testing.T, resp *http.Response, out interface{}) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestAuth_ServiceRootIsUnauthenticated(t *testing.T) {
 	// the first end-to-end smoke run on virtrigaud.
 	_, srv := newTestServer(t, VendorGeneric)
 	resp := authedGET(t, srv.URL, "/redfish/v1/", "", "")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("anonymous GET /redfish/v1/ = %d, want 200", resp.StatusCode)
 	}
@@ -218,7 +218,7 @@ func TestAuth_ServiceRootIsUnauthenticated(t *testing.T) {
 func TestAuth_NonRootRequiresAuth(t *testing.T) {
 	_, srv := newTestServer(t, VendorGeneric)
 	resp := authedGET(t, srv.URL, "/redfish/v1/Systems/1", "", "")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("anonymous GET /redfish/v1/Systems/1 = %d, want 401", resp.StatusCode)
 	}
