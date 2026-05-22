@@ -174,18 +174,39 @@ layer_3_reconcile() {
   info "[layer 3] applying mock BMC + PhysicalHost"
   kubectl apply -f "${MANIFEST_DIR}/00-namespace.yaml" >/dev/null
 
-  # Optional MOCK_IMAGE override. When overriding (typically a local
-  # iterative build that reuses a tag) we also force imagePullPolicy=Always
-  # so the kubelet does not serve a stale cached layer.
+  # Resolve the mock image. Priority:
+  #   1. MOCK_IMAGE env var (operator override; forces imagePullPolicy=Always
+  #      because iterative dev usually reuses the same tag).
+  #   2. Auto-derive from the installed controller: same registry path with
+  #      "/beskar7" swapped for "/mock-redfish". This keeps the mock in
+  #      lockstep with the chart, so `make smoke` works against any released
+  #      version without manifest edits.
+  #   3. Fall back to the literal in the manifest (a release-time default
+  #      that lags by one alpha when a fresh tag has just been cut).
+  local controller_img mock_image="" pull_policy=""
   if [[ -n "${MOCK_IMAGE}" ]]; then
-    info "  overriding mock image: ${MOCK_IMAGE}"
-    kubectl apply -f "${MANIFEST_DIR}/10-mock-redfish.yaml" >/dev/null
-    kubectl -n "${SMOKE_NS}" set image deploy/mock-redfish "mock-redfish=${MOCK_IMAGE}" >/dev/null
-    kubectl -n "${SMOKE_NS}" patch deploy mock-redfish --type=json -p='[
-      {"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}
-    ]' >/dev/null
+    mock_image="${MOCK_IMAGE}"
+    pull_policy="Always"
+    info "  mock image: ${mock_image} (from MOCK_IMAGE)"
   else
-    kubectl apply -f "${MANIFEST_DIR}/10-mock-redfish.yaml" >/dev/null
+    controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+    if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
+      mock_image="${BASH_REMATCH[1]}/mock-redfish:${BASH_REMATCH[2]}"
+      info "  mock image: ${mock_image} (auto-derived from ${OPERATOR_DEPLOY})"
+    else
+      info "  mock image: <manifest default> (could not parse controller image '${controller_img}')"
+    fi
+  fi
+
+  kubectl apply -f "${MANIFEST_DIR}/10-mock-redfish.yaml" >/dev/null
+  if [[ -n "${mock_image}" ]]; then
+    kubectl -n "${SMOKE_NS}" set image deploy/mock-redfish "mock-redfish=${mock_image}" >/dev/null
+  fi
+  if [[ -n "${pull_policy}" ]]; then
+    kubectl -n "${SMOKE_NS}" patch deploy mock-redfish --type=json -p="[
+      {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"${pull_policy}\"}
+    ]" >/dev/null
   fi
 
   kubectl apply -f "${MANIFEST_DIR}/20-bmc-secret.yaml" >/dev/null
