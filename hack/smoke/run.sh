@@ -445,25 +445,30 @@ layer_5_inspection() {
   # kubectl run is idempotent on a clean namespace but will collide on
   # re-runs; --rm=true cleans up the pod even on success or failure.
   info "  POSTing fake hardware report via in-cluster curl pod"
+  # -v gives curl protocol-level traces (DNS, TLS handshake, request lines)
+  # that surface in the pod's stdout; -m 30 caps the whole transaction so a
+  # hung TCP doesn't burn the smoke runner's budget; --no-progress-meter
+  # quiets the binary download counter without losing the -v output.
   local post_out
   if ! post_out="$(kubectl -n "${SMOKE_NS}" run smoke-inspector \
         --image=curlimages/curl:8.10.1 \
         --restart=Never --rm=true --quiet --attach=true \
-        --override-type=strategic \
-        --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532}}}' \
         --command -- \
-        sh -c "curl -ksS -o - -w '\nHTTP_STATUS=%{http_code}\n' \
+        sh -c "curl -kv --no-progress-meter -m 30 \
+          -o /dev/stderr -w 'HTTP_STATUS=%{http_code}\n' \
           -X POST '${inspection_url}' \
           -H 'Authorization: Bearer ${token}' \
           -H 'Content-Type: application/json' \
-          --data-raw '${report}'" 2>&1)"; then
+          --data-raw '${report}' 2>&1" 2>&1)"; then
     fail "[layer 5] inspector POST pod failed"
-    dim "  output: ${post_out}"
+    dim "--- curl output ---"
+    printf '%s\n' "${post_out}" | tail -30
     return 1
   fi
   if ! grep -q 'HTTP_STATUS=2' <<<"${post_out}"; then
     fail "[layer 5] inspector POST returned non-2xx status"
-    dim "  output: ${post_out}"
+    dim "--- curl output ---"
+    printf '%s\n' "${post_out}" | tail -30
     return 1
   fi
   pass "[layer 5a] inspector POST accepted (2xx)"
