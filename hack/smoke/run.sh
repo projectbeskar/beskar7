@@ -387,6 +387,24 @@ layer_5_inspection() {
   local token
   token="$(printf '%s' "${token_b64}" | base64 -d)"
 
+  # Cross-check: hash the token we're about to present and compare to the
+  # PhysicalHost's TokenHash. If they differ, the Secret holds a token that
+  # was overwritten by a subsequent mint before the matching hash reached
+  # status (a race that would otherwise produce an opaque 401). We show
+  # only the first 12 chars of each; the full token is sensitive.
+  if command -v sha256sum >/dev/null 2>&1; then
+    local computed
+    computed="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')"
+    if [[ "${computed}" != "${token_hash}" ]]; then
+      fail "[layer 5] token Secret out of sync with Status.Bootstrap.TokenHash"
+      dim "  Secret token sha256(prefix): ${computed:0:12}…"
+      dim "  Status.TokenHash (prefix):   ${token_hash:0:12}…"
+      dim "  This is usually a token-mint race; re-run smoke."
+      return 1
+    fi
+    dim "  token sha256 matches Status.TokenHash (prefix: ${computed:0:12}…)"
+  fi
+
   # 3. Derive inspection URL.
   local inspection_url="${bootstrap_url//\/api\/v1\/bootstrap\//\/api\/v1\/inspection\/}"
   if [[ "${inspection_url}" == "${bootstrap_url}" ]]; then
