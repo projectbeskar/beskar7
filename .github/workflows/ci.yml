@@ -234,171 +234,136 @@ jobs:
         name: release-manifests
         path: beskar7-manifests-v0.0.0-ci.yaml
 
-  # Job 7: End-to-End Test Setup Validation
+  # Job 7: End-to-End Smoke Test
+  #
+  # Spins up a kind cluster, installs cert-manager + Cluster API core, builds
+  # the controller + mock-redfish images locally and loads them into the
+  # kind node, installs the in-tree Helm chart, then runs `make smoke` end
+  # to end. This exercises:
+  #
+  #   - Helm chart packaging + values (catches chart-level regressions like
+  #     the v0.4.0-alpha.1 fsGroup bug that would crashloop the manager)
+  #   - Webhook + CRD validation
+  #   - Redfish reconcile path against an in-cluster fake BMC
+  #   - CAPI claim path (Beskar7Machine -> PhysicalHost consumerRef +
+  #     state machine progression)
+  #
+  # This replaces the previous ad-hoc PhysicalHost-against-test.example.com
+  # check, which only verified webhook admission. Layer 5 (full PXE +
+  # inspector callback) still requires real hardware or sushy-tools and
+  # is not covered here.
   e2e-setup:
     name: E2E Setup Validation
     runs-on: ubuntu-latest
     needs: [manifests, container]
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Create kind cluster
       uses: helm/kind-action@v1
       with:
-        cluster_name: beskar7-test
+        cluster_name: beskar7-smoke
         kubectl_version: v1.31.0
-        
-    - name: Download release manifests
-      uses: actions/download-artifact@v4
-      with:
-        name: release-manifests
-        
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-      
-    - name: Build test image with latest code
+
+    - name: Build controller image
       uses: docker/build-push-action@v5
       with:
         context: .
         platforms: linux/amd64
         push: false
-        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci
         load: true
-        
-    - name: Load test image into kind
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build mock-redfish image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.mock-redfish
+        platforms: linux/amd64
+        push: false
+        # IMAGE_NAME is "<repo>/beskar7" (with the /beskar7 suffix); the mock
+        # image lives at "<repo>/mock-redfish". Build using github.repository
+        # directly to avoid string surgery on IMAGE_NAME.
+        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Load images into kind
       run: |
-        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test --name beskar7-test
-        
-    - name: Update manifests to use test image
-      run: |
-        # Replace the CI version image tag with test tag and set imagePullPolicy to Never
-        sed -i 's|ghcr.io/projectbeskar/beskar7/beskar7:v0.0.0-ci|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test|g' beskar7-manifests-v0.0.0-ci.yaml
-        sed -i 's|imagePullPolicy: Always|imagePullPolicy: Never|g' beskar7-manifests-v0.0.0-ci.yaml
-        echo "=== Verifying manifest changes ==="
-        grep -A2 -B2 "image.*beskar7.*test\|imagePullPolicy" beskar7-manifests-v0.0.0-ci.yaml
-        
+        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci --name beskar7-smoke
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci --name beskar7-smoke
+
     - name: Install cert-manager
       run: |
-        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.crds.yaml
-        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+        kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.1/cert-manager.yaml
         kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
         kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-cainjector -n cert-manager
         kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager-webhook -n cert-manager
-        
-    - name: Apply Beskar7 manifests
+
+    - name: Install Cluster API core via clusterctl
       run: |
-        kubectl apply -f beskar7-manifests-v0.0.0-ci.yaml
-        
-    - name: Debug deployment status
+        # Latest stable clusterctl. Installs cluster-api core + kubeadm
+        # bootstrap + kubeadm control-plane providers. Required for smoke
+        # layer 4 (CAPI Cluster/Machine reconcile against beskar7 infra).
+        CLUSTERCTL_VERSION=v1.10.1
+        curl -L -o /tmp/clusterctl "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CLUSTERCTL_VERSION}/clusterctl-linux-amd64"
+        chmod +x /tmp/clusterctl
+        sudo mv /tmp/clusterctl /usr/local/bin/clusterctl
+        clusterctl version
+        clusterctl init
+        # Wait for all CAPI controllers to be ready
+        for ns in capi-system capi-kubeadm-bootstrap-system capi-kubeadm-control-plane-system; do
+          kubectl wait --for=condition=Available --timeout=300s deployment --all -n "$ns"
+        done
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.1'
+
+    - name: Install Beskar7 chart (Helm)
       run: |
-        echo "=== Checking deployment status ==="
-        kubectl get deployments -n beskar7-system -o wide
-        echo "=== Checking replicasets ==="
-        kubectl get replicasets -n beskar7-system -o wide
-        echo "=== Checking pods ==="
-        kubectl get pods -n beskar7-system -o wide
-        echo "=== Checking events ==="
-        kubectl get events -n beskar7-system --sort-by='.lastTimestamp'
-        echo "=== Describing deployment ==="
-        kubectl describe deployment/controller-manager -n beskar7-system
-        echo "=== Checking if image is available in kind ==="
-        docker exec beskar7-test-control-plane crictl images | grep beskar7 || echo "No beskar7 images found"
-        
-    - name: Wait for controller deployment
+        helm install beskar7 ./charts/beskar7 \
+          --namespace beskar7-system --create-namespace \
+          --set controllerManager.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+          --set controllerManager.image.tag=smoke-ci \
+          --set controllerManager.image.pullPolicy=Never \
+          --wait --timeout=5m
+        kubectl -n beskar7-system get pods,deploy,svc
+
+    - name: Run make smoke
       run: |
-        if ! kubectl wait --for=condition=Available --timeout=300s deployment/controller-manager -n beskar7-system; then
-          echo "=== Deployment failed to become available, gathering debug info ==="
-          kubectl get deployments -n beskar7-system -o yaml
-          kubectl get pods -n beskar7-system -o yaml
-          kubectl describe pods -n beskar7-system
-          echo "=== Pod logs ==="
-          kubectl logs -n beskar7-system -l app.kubernetes.io/name=beskar7 --all-containers=true --previous=false || true
-          echo "=== Previous pod logs (if any) ==="
-          kubectl logs -n beskar7-system -l app.kubernetes.io/name=beskar7 --all-containers=true --previous=true || true
-          exit 1
-        fi
-        
-    - name: Wait for webhook certificates and readiness
+        # The smoke runner auto-derives the mock image from the controller
+        # image (same registry path, mock-redfish kind, same tag). We loaded
+        # mock-redfish:smoke-ci into kind above, so this resolves locally
+        # without registry pulls.
+        make smoke
+
+    - name: Diagnostics on failure
+      if: failure()
       run: |
-        # Wait for cert-manager to generate webhook certificates
-        echo "Waiting for webhook certificate..."
-        kubectl wait --for=condition=Ready --timeout=300s certificate/beskar7-serving-cert -n beskar7-system
-        
-        # Wait for webhook service endpoints to be ready
-        echo "Waiting for controller pods to be ready..."
-        kubectl wait --for=condition=Ready --timeout=120s pod -l app.kubernetes.io/name=beskar7 -n beskar7-system
-        
-        # Verify webhook service has endpoints
-        echo "Checking webhook service endpoints..."
-        kubectl get endpoints beskar7-webhook-service -n beskar7-system
-        
-        # Give webhook server additional time to start listening
-        echo "Allowing webhook server startup time..."
-        sleep 15
-        
-        # Test webhook connectivity (optional)
-        echo "Testing webhook readiness..."
-        kubectl get validatingwebhookconfiguration beskar7-validating-webhook-configuration -o yaml | grep -A5 "name: validation.beskar7cluster" || echo "Note: Webhook validation check is optional"
-        
-    - name: Test basic functionality
-      run: |
-        # Create a test PhysicalHost to verify CRDs and webhooks are working
-        echo "Creating test secret..."
-        kubectl apply -f - <<EOF
-        apiVersion: v1
-        kind: Secret
-        metadata:
-          name: test-credentials
-          namespace: default
-        stringData:
-          username: testuser
-          password: testpass
-        EOF
-        
-        echo "Creating test PhysicalHost..."
-        if kubectl apply -f - <<EOF
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: PhysicalHost
-        metadata:
-          name: test-host
-          namespace: default
-        spec:
-          redfishConnection:
-            address: "https://test.example.com"
-            credentialsSecretRef: "test-credentials"
-        EOF
-        then
-          echo "PhysicalHost created successfully - webhooks are working!"
-          
-          # Wait for the PhysicalHost to be processed
-          sleep 10
-          echo "PhysicalHost status:"
-          kubectl get physicalhost test-host -o yaml
-          
-          # Cleanup with timeout
-          echo "Cleaning up test resources..."
-          echo "Deleting PhysicalHost (with 60s timeout)..."
-          timeout 60s kubectl delete physicalhost test-host --wait=true || {
-            echo "PhysicalHost deletion timed out or failed, checking status..."
-            kubectl get physicalhost test-host -o yaml || echo "PhysicalHost already deleted"
-            kubectl describe physicalhost test-host || echo "PhysicalHost already deleted"
-          }
-          echo "Deleting test secret..."
-          kubectl delete secret test-credentials --wait=true || echo "Secret deletion failed or already deleted"
-        else
-          echo "Failed to create PhysicalHost - webhook error detected"
-          echo "Checking webhook status..."
-          kubectl get pods -n beskar7-system
-          echo "Full controller logs:"
-          kubectl logs -n beskar7-system -l app.kubernetes.io/name=beskar7 --tail=100
-          echo "Checking webhook configurations:"
-          kubectl get mutatingwebhookconfigurations beskar7-mutating-webhook-configuration -o yaml
-          kubectl get validatingwebhookconfigurations beskar7-validating-webhook-configuration -o yaml
-          echo "Checking webhook service:"
-          kubectl get service beskar7-webhook-service -n beskar7-system
-          kubectl get endpoints beskar7-webhook-service -n beskar7-system
-          exit 1
-        fi
+        echo "=== Cluster context ==="
+        kubectl cluster-info
+        echo "=== Pods (all namespaces) ==="
+        kubectl get pods -A -o wide
+        echo "=== Beskar7 controller log ==="
+        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=300 || true
+        echo "=== Mock-redfish log ==="
+        kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
+        echo "=== PhysicalHost ==="
+        kubectl -n beskar7-smoke get physicalhost -o yaml || true
+        echo "=== Beskar7Machine ==="
+        kubectl -n beskar7-smoke get beskar7machine -o yaml || true
+        echo "=== Events ==="
+        kubectl get events -A --sort-by='.lastTimestamp' | tail -30
+        echo "=== Images on kind node ==="
+        docker exec beskar7-smoke-control-plane crictl images | grep -E "beskar7|mock-redfish" || true
 
   # Job 8: Performance Benchmarks
   benchmark:
