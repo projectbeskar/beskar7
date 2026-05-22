@@ -520,7 +520,18 @@ func (r *Beskar7MachineReconciler) setBootstrapTokenAnnotation(
 		physicalHost.Annotations = map[string]string{}
 	}
 	physicalHost.Annotations[BootstrapTokenAnnotation] = string(encoded)
-	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+	// Plain MergeFrom (no optimistic lock). The annotation key is unique to
+	// this controller — no other writer sets BootstrapTokenAnnotation — so a
+	// concurrent modification of the PhysicalHost (status updates from the
+	// PhysicalHost reconciler, spec patches from finalizer logic, etc.)
+	// cannot collide on this field. Optimistic locking here was failing
+	// repeatedly under normal load, causing the mint to silently retry on
+	// every reconcile, each retry overwriting the per-host Secret with a
+	// new plaintext that nobody could ever match against Status.TokenHash
+	// — every inspector callback 401'd. Switching to plain merge resolves
+	// the loop because our write always succeeds on the latest server
+	// version of the object.
+	if err := r.Patch(ctx, physicalHost, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("set bootstrap-token annotation on PhysicalHost %s: %w", physicalHost.Name, err)
 	}
 	// We log the host name and operation only — never the hash plaintext, never
