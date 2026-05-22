@@ -294,10 +294,23 @@ jobs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+    - name: Build mock-inspector image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.mock-inspector
+        platforms: linux/amd64
+        push: false
+        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
     - name: Load images into kind
       run: |
         kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci --name beskar7-smoke
         kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci --name beskar7-smoke
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci --name beskar7-smoke
 
     - name: Install cert-manager
       run: |
@@ -356,6 +369,9 @@ jobs:
         kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=500 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
+        echo "=== Mock-inspector Job + log ==="
+        kubectl -n beskar7-smoke get job mock-inspector -o yaml || true
+        kubectl -n beskar7-smoke logs -l app.kubernetes.io/name=mock-inspector --tail=100 || true
         echo "=== PhysicalHost ==="
         kubectl -n beskar7-smoke get physicalhost -o yaml || true
         echo "=== Beskar7Machine ==="

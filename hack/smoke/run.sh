@@ -15,10 +15,11 @@
 #                         is set
 #
 # Usage:
-#   hack/smoke/run.sh                # run all layers, tear down on exit
-#   hack/smoke/run.sh --keep         # leave fixtures in place for inspection
-#   hack/smoke/run.sh --teardown     # only tear down, do not run
-#   MOCK_IMAGE=... hack/smoke/run.sh # override mock-redfish image
+#   hack/smoke/run.sh                            # run all layers, tear down on exit
+#   hack/smoke/run.sh --keep                     # leave fixtures in place for inspection
+#   hack/smoke/run.sh --teardown                 # only tear down, do not run
+#   MOCK_IMAGE=... hack/smoke/run.sh             # override mock-redfish image
+#   MOCK_INSPECTOR_IMAGE=... hack/smoke/run.sh   # override mock-inspector image
 #
 # Required: kubectl in PATH, current context with cert-manager + CAPI core
 # installed and the beskar7 chart already deployed to beskar7-system.
@@ -353,125 +354,62 @@ layer_4_claim() {
 # ---------------------------------------------------------------------------
 
 layer_5_inspection() {
-  info "[layer 5] simulating inspector POST to bootstrap callback"
+  info "[layer 5] running mock-inspector Job to POST hardware report"
 
-  # 1+2. Bootstrap status + token Secret (with timeout).
-  info "  waiting up to ${WAIT_TIMEOUT} for Bootstrap.URL + TokenHash"
-  local deadline=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
-  local bootstrap_url="" token_hash=""
-  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
-    bootstrap_url="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
-      -o jsonpath='{.status.bootstrap.url}' 2>/dev/null || true)"
-    token_hash="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
-      -o jsonpath='{.status.bootstrap.tokenHash}' 2>/dev/null || true)"
-    if [[ -n "${bootstrap_url}" && -n "${token_hash}" ]]; then
-      break
-    fi
-    sleep 3
-  done
-  if [[ -z "${bootstrap_url}" || -z "${token_hash}" ]]; then
-    fail "[layer 5] Bootstrap.URL/TokenHash not populated within ${WAIT_TIMEOUT}"
-    dim "  --- describe PhysicalHost ---"
-    kubectl -n "${SMOKE_NS}" describe physicalhost smoke-host-01 | tail -30
-    return 1
-  fi
-  dim "  bootstrap URL: ${bootstrap_url}"
-
-  local token_b64
-  token_b64="$(kubectl -n "${SMOKE_NS}" get secret smoke-host-01-bootstrap-token \
-    -o jsonpath='{.data.plaintext-token}' 2>/dev/null || true)"
-  if [[ -z "${token_b64}" ]]; then
-    fail "[layer 5] bootstrap-token Secret missing plaintext-token key"
-    return 1
-  fi
-  # Read the token + hash-cross-check with retry. The controller's mint
-  # path has a small window where Secret.plaintext can lead the matching
-  # hash into Status.Bootstrap.TokenHash by a few seconds (BootstrapToken
-  # annotation in flight from Beskar7Machine to PhysicalHost reconciler).
-  # The controller-side fix in beskar7machine_controller.go's
-  # bootstrapTokenStillValid prevents the race from re-occurring on
-  # subsequent reconciles, but a single retry here makes the runner
-  # robust against the first observation. ~12s total budget; well under
-  # the 600s inspection-timeout.
-  local token computed match=0
-  for attempt in 1 2 3 4 5 6; do
-    token_b64="$(kubectl -n "${SMOKE_NS}" get secret smoke-host-01-bootstrap-token \
-      -o jsonpath='{.data.plaintext-token}' 2>/dev/null || true)"
-    token_hash="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
-      -o jsonpath='{.status.bootstrap.tokenHash}' 2>/dev/null || true)"
-    if [[ -z "${token_b64}" || -z "${token_hash}" ]]; then
-      sleep 2; continue
-    fi
-    token="$(printf '%s' "${token_b64}" | base64 -d)"
-    if command -v sha256sum >/dev/null 2>&1; then
-      computed="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')"
-      if [[ "${computed}" == "${token_hash}" ]]; then
-        match=1
-        dim "  token sha256 matches Status.TokenHash (prefix: ${computed:0:12}…, attempt ${attempt})"
-        break
-      fi
-      dim "  attempt ${attempt}: sha256 mismatch (Secret: ${computed:0:8}…, Status: ${token_hash:0:8}…); retrying in 2s"
-      sleep 2
+  # Derive the mock-inspector image from the installed controller image
+  # (same approach as layer_3_reconcile for mock-redfish): keep them in
+  # lockstep with the chart in use, so smoke runs against any released
+  # version without manifest edits. Respect MOCK_INSPECTOR_IMAGE for
+  # iterative dev (forces imagePullPolicy=Always).
+  local controller_img inspector_image="" pull_policy=""
+  if [[ -n "${MOCK_INSPECTOR_IMAGE:-}" ]]; then
+    inspector_image="${MOCK_INSPECTOR_IMAGE}"
+    pull_policy="Always"
+    info "  inspector image: ${inspector_image} (from MOCK_INSPECTOR_IMAGE)"
+  else
+    controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
+      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+    if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
+      inspector_image="${BASH_REMATCH[1]}/mock-inspector:${BASH_REMATCH[2]}"
+      info "  inspector image: ${inspector_image} (auto-derived from ${OPERATOR_DEPLOY})"
     else
-      # No sha256sum available — skip the cross-check, trust the values.
-      match=1
-      break
+      info "  inspector image: <manifest default> (could not parse controller image '${controller_img}')"
     fi
-  done
-  if [[ "${match}" -eq 0 ]]; then
-    fail "[layer 5] token Secret never converged with Status.Bootstrap.TokenHash"
-    dim "  Last Secret sha256: ${computed:0:12}…"
-    dim "  Last Status.TokenHash: ${token_hash:0:12}…"
-    return 1
   fi
 
-  # 3. Derive inspection URL.
-  local inspection_url="${bootstrap_url//\/api\/v1\/bootstrap\//\/api\/v1\/inspection\/}"
-  if [[ "${inspection_url}" == "${bootstrap_url}" ]]; then
-    fail "[layer 5] bootstrap URL did not contain /api/v1/bootstrap/ (cannot derive inspection URL): ${bootstrap_url}"
-    return 1
+  # Substitute the inspector image into the Job manifest before apply.
+  # Jobs are immutable after pod scheduling, so `kubectl set image` is
+  # racy here — substitute before kubectl-apply instead. The sed pattern
+  # matches the literal default tag in the manifest.
+  local rendered
+  if [[ -n "${inspector_image}" ]]; then
+    rendered="$(sed "s|image: ghcr.io/projectbeskar/beskar7/mock-inspector:.*|image: ${inspector_image}|" \
+      "${MANIFEST_DIR}/50-mock-inspector-job.yaml")"
+  else
+    rendered="$(cat "${MANIFEST_DIR}/50-mock-inspector-job.yaml")"
   fi
-  dim "  inspection URL: ${inspection_url}"
+  printf '%s\n' "${rendered}" | kubectl apply -f - >/dev/null
+  if [[ -n "${pull_policy}" ]]; then
+    kubectl -n "${SMOKE_NS}" patch job mock-inspector --type=json -p="[
+      {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"${pull_policy}\"}
+    ]" >/dev/null 2>&1 || true
+  fi
 
-  # 4. POST a fake report from inside the cluster. Use a one-shot pod so we
-  # do not need port-forward plumbing. -k skips TLS verify because the
-  # cert-manager-issued cert covers beskar7-webhook-service, not the
-  # controller-manager service the callback URL points at (real production
-  # inspectors handle this either via a CA bundle in the OS image or by
-  # accepting controller-manager.<ns>.svc as a SAN — out of scope here).
-  local report
-  report='{"manufacturer":"MockSmoke","model":"VirtualBox","serialNumber":"SMOKE-001","bootModeDetected":"UEFI","firmwareVersion":"1.0.0","cpus":[{"id":"cpu0","vendor":"GenuineIntel","model":"Mock CPU","cores":4,"threads":8,"frequency":"3.0GHz"}],"memory":[{"id":"DIMM0","type":"DDR4","capacity":"16GB","speed":"3200MHz"}],"disks":[{"name":"sda","model":"VirtualDisk","sizeGB":100,"type":"SSD","serialNumber":"SMOKE-DISK-001"}],"nics":[{"name":"eth0","macAddress":"de:ad:be:ef:00:01","driver":"virtio","speed":"1Gbps","ipAddresses":["10.0.0.42"]}]}'
-
-  # kubectl run is idempotent on a clean namespace but will collide on
-  # re-runs; --rm=true cleans up the pod even on success or failure.
-  info "  POSTing fake hardware report via in-cluster curl pod"
-  # -v gives curl protocol-level traces (DNS, TLS handshake, request lines)
-  # that surface in the pod's stdout; -m 30 caps the whole transaction so a
-  # hung TCP doesn't burn the smoke runner's budget; --no-progress-meter
-  # quiets the binary download counter without losing the -v output.
-  local post_out
-  if ! post_out="$(kubectl -n "${SMOKE_NS}" run smoke-inspector \
-        --image=curlimages/curl:8.10.1 \
-        --restart=Never --rm=true --quiet --attach=true \
-        --command -- \
-        sh -c "curl -kv --no-progress-meter -m 30 \
-          -o /dev/stderr -w 'HTTP_STATUS=%{http_code}\n' \
-          -X POST '${inspection_url}' \
-          -H 'Authorization: Bearer ${token}' \
-          -H 'Content-Type: application/json' \
-          --data-raw '${report}' 2>&1" 2>&1)"; then
-    fail "[layer 5] inspector POST pod failed"
-    dim "--- curl output ---"
-    printf '%s\n' "${post_out}" | tail -30
+  # Wait for the Job to reach a terminal state. activeDeadlineSeconds=300
+  # on the Job itself bounds the inner pod; --timeout here covers the
+  # kubectl wait protocol overhead.
+  info "  waiting up to ${WAIT_TIMEOUT} for mock-inspector Job to complete"
+  if ! kubectl -n "${SMOKE_NS}" wait --for=condition=Complete \
+        job/mock-inspector --timeout="${WAIT_TIMEOUT}" >/dev/null 2>&1; then
+    # Either Failed condition or wait timeout. Dump pod logs either way.
+    fail "[layer 5a] mock-inspector Job did not complete successfully"
+    dim "--- Job status ---"
+    kubectl -n "${SMOKE_NS}" get job mock-inspector -o yaml | tail -30
+    dim "--- mock-inspector pod log ---"
+    kubectl -n "${SMOKE_NS}" logs -l app.kubernetes.io/name=mock-inspector --tail=50 || true
     return 1
   fi
-  if ! grep -q 'HTTP_STATUS=2' <<<"${post_out}"; then
-    fail "[layer 5] inspector POST returned non-2xx status"
-    dim "--- curl output ---"
-    printf '%s\n' "${post_out}" | tail -30
-    return 1
-  fi
-  pass "[layer 5a] inspector POST accepted (2xx)"
+  pass "[layer 5a] mock-inspector Job completed (inspector POST accepted)"
 
   # 5. Host transitions to Ready.
   info "  waiting up to ${WAIT_TIMEOUT} for PhysicalHost.Status.State=Ready"

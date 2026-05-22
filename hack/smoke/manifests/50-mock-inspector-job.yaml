@@ -1,0 +1,128 @@
+---
+# Job that runs cmd/mock-inspector to simulate an iPXE-booted inspector
+# POSTing a hardware-details payload to the controller's bootstrap callback.
+#
+# Replaces the bash `kubectl run curl` invocation that previously lived
+# inside hack/smoke/run.sh's layer 5. Packaging it as a Job means the
+# simulator is reusable for docs and manual demos:
+#
+#   kubectl apply -f hack/smoke/manifests/50-mock-inspector-job.yaml
+#   kubectl -n beskar7-smoke wait --for=condition=Complete job/mock-inspector --timeout=180s
+#
+# Image is auto-derived by hack/smoke/run.sh from the installed controller
+# image (same registry path, mock-inspector kind, same tag). The literal
+# tag below is the lockstep default for direct kubectl-apply use.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mock-inspector
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-inspector
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  # The pod's exit code propagates; the runner uses `kubectl wait
+  # --for=condition=Complete` so any non-2xx POST → exit 1 → Job Failed.
+  backoffLimit: 0
+  # Allow the binary's --wait-for-bootstrap window plus the POST budget.
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-inspector
+        app.kubernetes.io/part-of: beskar7
+        app.kubernetes.io/component: smoke-test
+    spec:
+      restartPolicy: Never
+      # The binary needs to read PhysicalHost.status.bootstrap and the
+      # bootstrap-token Secret in beskar7-smoke. RBAC defined below.
+      serviceAccountName: mock-inspector
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mock-inspector
+        # Default image; hack/smoke/run.sh overrides this via `kubectl set
+        # image` to match the installed controller's tag (same auto-derive
+        # logic as the mock-redfish Deployment).
+        image: ghcr.io/projectbeskar/beskar7/mock-inspector:v0.4.0-alpha.3
+        imagePullPolicy: IfNotPresent
+        args:
+        - --namespace=beskar7-smoke
+        - --host-name=smoke-host-01
+        - --wait-for-bootstrap=3m
+        - --insecure-skip-verify=true
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mock-inspector
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-inspector
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+---
+# Namespaced Role: get on the PhysicalHost we are targeting, get on the
+# per-host bootstrap-token Secret. Nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mock-inspector
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-inspector
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+rules:
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhosts
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mock-inspector
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-inspector
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mock-inspector
+subjects:
+- kind: ServiceAccount
+  name: mock-inspector
+  namespace: beskar7-smoke
