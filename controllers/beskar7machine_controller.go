@@ -403,14 +403,47 @@ func bootstrapTokenSecretName(hostName string) string {
 //
 // Returning false forces a re-mint on the next call to triggerInspection,
 // which is the desired behaviour for an expired or never-issued token.
+//
+// Two sources are inspected, in order:
+//
+//  1. Status.Bootstrap.{TokenHash,ExpiresAt}. This is the steady state once
+//     the PhysicalHost controller has consumed the bootstrap-token annotation.
+//
+//  2. A pending BootstrapTokenAnnotation that has not yet been promoted to
+//     Status. Without this check, two consecutive Beskar7Machine reconciles
+//     that both observe Status.Bootstrap as empty (because the PhysicalHost
+//     controller has not yet processed the annotation from the first
+//     reconcile) would both re-mint, race each other into the per-host
+//     Secret, and end up with Secret.plaintext belonging to mint N+1 while
+//     Status.TokenHash is from mint N — every inspector callback then 401s
+//     because the presented token does not hash to the stored hash. Reading
+//     the annotation back here gives the second reconcile a tiebreaker so
+//     it skips minting when an in-flight token is already on the wire.
 func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) bool {
-	if physicalHost == nil ||
-		physicalHost.Status.Bootstrap == nil ||
-		physicalHost.Status.Bootstrap.TokenHash == "" ||
-		physicalHost.Status.Bootstrap.ExpiresAt == nil {
+	if physicalHost == nil {
 		return false
 	}
-	return now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time)
+	// (1) Steady-state check.
+	if physicalHost.Status.Bootstrap != nil &&
+		physicalHost.Status.Bootstrap.TokenHash != "" &&
+		physicalHost.Status.Bootstrap.ExpiresAt != nil &&
+		now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time) {
+		return true
+	}
+	// (2) Pending-annotation check: a previous reconcile of this same
+	// Beskar7Machine already minted and signaled. The PhysicalHost
+	// reconciler will lift this annotation into Status on its next pass;
+	// until then, the Secret + annotation together are the authoritative
+	// source of truth.
+	if raw, ok := physicalHost.Annotations[BootstrapTokenAnnotation]; ok && raw != "" {
+		var v BootstrapTokenAnnotationValue
+		if err := json.Unmarshal([]byte(raw), &v); err == nil &&
+			v.Hash != "" &&
+			now.Before(v.ExpiresAt.Time) {
+			return true
+		}
+	}
+	return false
 }
 
 // upsertBootstrapTokenSecret writes the plaintext bearer token to a per-host

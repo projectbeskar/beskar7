@@ -384,25 +384,45 @@ layer_5_inspection() {
     fail "[layer 5] bootstrap-token Secret missing plaintext-token key"
     return 1
   fi
-  local token
-  token="$(printf '%s' "${token_b64}" | base64 -d)"
-
-  # Cross-check: hash the token we're about to present and compare to the
-  # PhysicalHost's TokenHash. If they differ, the Secret holds a token that
-  # was overwritten by a subsequent mint before the matching hash reached
-  # status (a race that would otherwise produce an opaque 401). We show
-  # only the first 12 chars of each; the full token is sensitive.
-  if command -v sha256sum >/dev/null 2>&1; then
-    local computed
-    computed="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')"
-    if [[ "${computed}" != "${token_hash}" ]]; then
-      fail "[layer 5] token Secret out of sync with Status.Bootstrap.TokenHash"
-      dim "  Secret token sha256(prefix): ${computed:0:12}…"
-      dim "  Status.TokenHash (prefix):   ${token_hash:0:12}…"
-      dim "  This is usually a token-mint race; re-run smoke."
-      return 1
+  # Read the token + hash-cross-check with retry. The controller's mint
+  # path has a small window where Secret.plaintext can lead the matching
+  # hash into Status.Bootstrap.TokenHash by a few seconds (BootstrapToken
+  # annotation in flight from Beskar7Machine to PhysicalHost reconciler).
+  # The controller-side fix in beskar7machine_controller.go's
+  # bootstrapTokenStillValid prevents the race from re-occurring on
+  # subsequent reconciles, but a single retry here makes the runner
+  # robust against the first observation. ~12s total budget; well under
+  # the 600s inspection-timeout.
+  local token computed match=0
+  for attempt in 1 2 3 4 5 6; do
+    token_b64="$(kubectl -n "${SMOKE_NS}" get secret smoke-host-01-bootstrap-token \
+      -o jsonpath='{.data.plaintext-token}' 2>/dev/null || true)"
+    token_hash="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.bootstrap.tokenHash}' 2>/dev/null || true)"
+    if [[ -z "${token_b64}" || -z "${token_hash}" ]]; then
+      sleep 2; continue
     fi
-    dim "  token sha256 matches Status.TokenHash (prefix: ${computed:0:12}…)"
+    token="$(printf '%s' "${token_b64}" | base64 -d)"
+    if command -v sha256sum >/dev/null 2>&1; then
+      computed="$(printf '%s' "${token}" | sha256sum | awk '{print $1}')"
+      if [[ "${computed}" == "${token_hash}" ]]; then
+        match=1
+        dim "  token sha256 matches Status.TokenHash (prefix: ${computed:0:12}…, attempt ${attempt})"
+        break
+      fi
+      dim "  attempt ${attempt}: sha256 mismatch (Secret: ${computed:0:8}…, Status: ${token_hash:0:8}…); retrying in 2s"
+      sleep 2
+    else
+      # No sha256sum available — skip the cross-check, trust the values.
+      match=1
+      break
+    fi
+  done
+  if [[ "${match}" -eq 0 ]]; then
+    fail "[layer 5] token Secret never converged with Status.Bootstrap.TokenHash"
+    dim "  Last Secret sha256: ${computed:0:12}…"
+    dim "  Last Status.TokenHash: ${token_hash:0:12}…"
+    return 1
   fi
 
   # 3. Derive inspection URL.

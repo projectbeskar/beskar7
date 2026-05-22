@@ -1469,4 +1469,46 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 		}
 		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue())
 	})
+
+	// Regression test for the mint race: when a previous Beskar7Machine
+	// reconcile has set the BootstrapTokenAnnotation but the PhysicalHost
+	// controller has not yet promoted it to Status, the second reconcile
+	// must NOT re-mint. Otherwise the Secret gets overwritten with a new
+	// plaintext whose hash doesn't match the one Status will eventually
+	// carry, and every inspector bearer-auth attempt 401s. See the layer
+	// 5 hardening notes in this PR's body.
+	It("returns true when a pending annotation has a non-expired hash (mint-race guard)", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "deadbeef",
+			IssuedAt:  metav1.NewTime(now.Add(-30 * time.Second)),
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+			// Status.Bootstrap is intentionally empty — simulates the
+			// window where the PhysicalHost reconciler has not yet
+			// consumed the annotation.
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue(),
+			"pending annotation must count as a valid in-flight token")
+	})
+
+	It("returns false when pending annotation is expired (mint a fresh one)", func() {
+		exp := metav1.NewTime(now.Add(-1 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "deadbeef",
+			IssuedAt:  metav1.NewTime(now.Add(-31 * time.Minute)),
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+		}
+		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse(),
+			"expired pending annotation must NOT block a fresh mint")
+	})
 })
