@@ -98,10 +98,31 @@ teardown() {
     return 0
   fi
   info "tearing down ${SMOKE_NS}"
-  # Drop CRs first so finalizers don't block the namespace delete
+
+  # Drop CRs in dependency order so finalizers can release. Skip if the
+  # namespace is already gone (idempotent re-runs).
+  kubectl get ns "${SMOKE_NS}" >/dev/null 2>&1 || return 0
+
   kubectl delete --ignore-not-found=true -n "${SMOKE_NS}" \
     machine,kubeadmconfig,beskar7machine,beskar7cluster,cluster,physicalhost --all \
     --wait=false >/dev/null 2>&1 || true
+
+  # Give controllers a few seconds to honour finalizers, then force-remove
+  # any remaining finalizers so the namespace can actually finalize. CAPI
+  # Cluster/Machine finalizers cancel cleanly; the beskar7 PhysicalHost
+  # finalizer can hang if the Beskar7Machine claim was never fully released
+  # (smoke test exit between layer 4a and layer 4b would leave this state).
+  # Force-removing is safe for ephemeral smoke fixtures.
+  sleep 5
+  local obj name
+  for obj in machine kubeadmconfig beskar7machine beskar7cluster cluster physicalhost; do
+    while read -r name; do
+      [[ -z "${name}" ]] && continue
+      kubectl -n "${SMOKE_NS}" patch "${name}" --type=merge \
+        -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+    done < <(kubectl -n "${SMOKE_NS}" get "${obj}" -o name 2>/dev/null || true)
+  done
+
   kubectl delete --ignore-not-found=true namespace "${SMOKE_NS}" --wait=false >/dev/null 2>&1 || true
 }
 
@@ -244,27 +265,6 @@ layer_3_reconcile() {
 # ---------------------------------------------------------------------------
 
 layer_4_claim() {
-  info "[layer 4] checking CAPI conformance labels on beskar7 CRDs"
-  # CAPI v1.10+ runs a conversion webhook on Cluster/Machine that looks up
-  # the contract-version label on the infrastructure CRDs. If the labels
-  # are missing the conversion fails with:
-  #   "cannot find any versions matching contract versions [v1beta2 v1beta1]"
-  # We detect this and skip layer 4 cleanly instead of leaving fixtures
-  # half-applied. Tracked as a follow-up: add
-  # `+kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1_beta1"`
-  # markers to api/v1beta1 types and regenerate manifests + chart CRDs.
-  local label_v1beta1 label_v1beta2
-  label_v1beta1="$(kubectl get crd beskar7clusters.infrastructure.cluster.x-k8s.io \
-    -o jsonpath='{.metadata.labels.cluster\.x-k8s\.io/v1beta1}' 2>/dev/null || true)"
-  label_v1beta2="$(kubectl get crd beskar7clusters.infrastructure.cluster.x-k8s.io \
-    -o jsonpath='{.metadata.labels.cluster\.x-k8s\.io/v1beta2}' 2>/dev/null || true)"
-  if [[ -z "${label_v1beta1}" && -z "${label_v1beta2}" ]]; then
-    warn "[layer 4] beskar7 CRDs missing CAPI contract-version labels"
-    warn "  CAPI Cluster/Machine conversion will fail; layer 4 cannot run."
-    warn "  Tracked separately. See docs/smoke-testing.md (Known limitations)."
-    return 0
-  fi
-
   info "[layer 4] applying Beskar7Cluster + Beskar7Machine + CAPI Machine"
   kubectl apply -f "${MANIFEST_DIR}/40-cluster-and-machine.yaml" >/dev/null
 
@@ -285,27 +285,44 @@ layer_4_claim() {
   fi
   pass "[layer 4a] PhysicalHost claimed by Beskar7Machine=${consumer}"
 
-  info "  waiting up to ${WAIT_TIMEOUT} for Beskar7Machine.Spec.ProviderID to be set"
+  # Layer 4b: the host progressed out of Available. Without a real inspector
+  # POSTing to the bootstrap callback the state machine parks at "Inspecting"
+  # (the controller's handleReadyHost - which sets ProviderID - only runs
+  # once the host reaches StateReady). So we assert progression, not
+  # ProviderID. Full ProviderID assertion belongs in a future layer that
+  # spins up an inspector-simulator pod.
+  info "  waiting up to ${WAIT_TIMEOUT} for PhysicalHost.Status.State to leave Available"
   local deadline2=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
-  local provider=""
+  local state=""
   while [[ "$(date +%s)" -lt "${deadline2}" ]]; do
-    provider="$(kubectl -n "${SMOKE_NS}" get beskar7machine smoke-machine-01 \
-      -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
-    [[ -n "${provider}" ]] && break
+    state="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.state}' 2>/dev/null || true)"
+    [[ -n "${state}" && "${state}" != "Available" ]] && break
     sleep 3
   done
-  if [[ -z "${provider}" ]]; then
-    fail "[layer 4b] ProviderID was not set within ${WAIT_TIMEOUT}"
-    dim "  --- describe Beskar7Machine ---"
-    kubectl -n "${SMOKE_NS}" describe beskar7machine smoke-machine-01 | tail -40
-    return 1
-  fi
-  pass "[layer 4b] Beskar7Machine ProviderID=${provider}"
-
-  local expected="b7://${SMOKE_NS}/smoke-host-01"
-  if [[ "${provider}" != "${expected}" ]]; then
-    warn "  ProviderID ${provider} != expected ${expected} (may indicate a host-name mismatch)"
-  fi
+  case "${state}" in
+    Inspecting|InUse|Ready)
+      pass "[layer 4b] PhysicalHost progressed to state=${state} (claim drove state machine)"
+      ;;
+    "")
+      fail "[layer 4b] PhysicalHost state empty after ${WAIT_TIMEOUT}"
+      return 1
+      ;;
+    Available)
+      fail "[layer 4b] PhysicalHost stuck in state=Available after claim (controller did not progress)"
+      dim "  --- describe Beskar7Machine ---"
+      kubectl -n "${SMOKE_NS}" describe beskar7machine smoke-machine-01 | tail -30
+      return 1
+      ;;
+    Error)
+      fail "[layer 4b] PhysicalHost transitioned to state=Error"
+      kubectl -n "${SMOKE_NS}" describe physicalhost smoke-host-01 | tail -20
+      return 1
+      ;;
+    *)
+      warn "[layer 4b] PhysicalHost in unexpected state=${state}"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
