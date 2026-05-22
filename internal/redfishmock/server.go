@@ -156,14 +156,14 @@ type RequestLog struct {
 // httptest-backed variant used by unit tests.
 func NewMockRedfishServer(vendor VendorType) *MockRedfishServer {
 	mrs := &MockRedfishServer{
-		vendor:       vendor,
-		powerState:   PowerStateOn,
-		bootSource:   BootSourceNone,
-		virtualMedia: make([]VirtualMedia, 2),
-		failures:     FailureConfig{},
-		requestLog:   make([]RequestLog, 0),
-		AuthEnabled:  true,
-		credentials:  map[string]string{"admin": "password123"},
+		vendor:         vendor,
+		powerState:     PowerStateOn,
+		bootSource:     BootSourceNone,
+		virtualMedia:   make([]VirtualMedia, 2),
+		failures:       FailureConfig{},
+		requestLog:     make([]RequestLog, 0),
+		AuthEnabled:    true,
+		credentials:    map[string]string{"admin": "password123"},
 		BiosAttributes: make(map[string]interface{}),
 	}
 
