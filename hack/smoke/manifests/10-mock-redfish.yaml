@@ -33,9 +33,12 @@ spec:
           type: RuntimeDefault
       containers:
       - name: mock-redfish
-        # Image tag is rewritten by hack/smoke/run.sh from $MOCK_IMAGE.
-        # Default points at the same release as the controller chart.
-        image: ghcr.io/projectbeskar/beskar7/mock-redfish:v0.4.0-alpha.2
+        # Default image. hack/smoke/run.sh auto-derives the tag from the
+        # installed controller (so the mock always matches the chart in use)
+        # and overrides this field on apply. The literal below is only used
+        # when the runner is bypassed (e.g. plain `kubectl apply -f hack/smoke/manifests/`).
+        # Bump it in lockstep with each release as a sane fallback.
+        image: ghcr.io/projectbeskar/beskar7/mock-redfish:v0.4.0-alpha.3
         imagePullPolicy: IfNotPresent
         args:
         - --listen-addr=:8443
