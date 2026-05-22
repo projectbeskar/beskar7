@@ -118,7 +118,54 @@ jobs:
         provenance: false
         sbom: false
 
-  # Job 3: Security Scan Released Image
+  # Job 3: Build and Push Mock Inspector Image (parallel with build-and-push and build-and-push-mock-redfish)
+  build-and-push-mock-inspector:
+    name: Build and Push Mock Inspector Image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    env:
+      IMAGE_NAME: ${{ github.repository }}/mock-inspector
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=tag
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+
+    - name: Build and push mock-inspector image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.mock-inspector
+        platforms: linux/amd64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        provenance: false
+        sbom: false
+
+  # Job 4: Security Scan Released Image
   security-scan:
     name: Security Scan Released Image
     runs-on: ubuntu-latest
@@ -149,7 +196,7 @@ jobs:
         name: vulnerability-report
         path: trivy-report.txt
 
-  # Job 3: Generate Release Artifacts
+  # Job 5: Generate Release Artifacts
   generate-artifacts:
     name: Generate Release Artifacts  
     runs-on: ubuntu-latest
@@ -238,7 +285,7 @@ jobs:
   #       name: helm-chart
   #       path: charts/*.tgz
 
-  # Job 5: Create GitHub Release
+  # Job 6: Create GitHub Release
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -336,7 +383,7 @@ jobs:
           vulnerability-report/trivy-report.txt
         token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Job 6: Update Documentation
+  # Job 7: Update Documentation
   update-docs:
     name: Update Documentation
     runs-on: ubuntu-latest
@@ -366,7 +413,7 @@ jobs:
           git push
         fi
 
-  # Job 7: Notify on Success/Failure
+  # Job 8: Notify on Success/Failure
   notify:
     name: Notify Release Status
     runs-on: ubuntu-latest

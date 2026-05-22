@@ -28,6 +28,10 @@ build:
 build-mock-redfish:
 	$(GO) build -o bin/mock-redfish cmd/mock-redfish/main.go
 
+# Build the mock inspector binary
+build-mock-inspector:
+	$(GO) build -o bin/mock-inspector cmd/mock-inspector/main.go
+
 # Run code generators
 generate:
 	$(GO) generate ./...
@@ -81,6 +85,10 @@ docker-build:
 # Docker build for mock Redfish server
 docker-build-mock-redfish:
 	docker buildx build --platform linux/amd64 -t $(IMAGE_REGISTRY)/mock-redfish:$(VERSION) --load -f Dockerfile.mock-redfish .
+
+# Docker build for mock inspector
+docker-build-mock-inspector:
+	docker buildx build --platform linux/amd64 -t $(IMAGE_REGISTRY)/mock-inspector:$(VERSION) --load -f Dockerfile.mock-inspector .
 
 # Layered smoke test against the current kubectl context. Requires the
 # beskar7 chart to already be installed (helm install ...) and cert-manager
@@ -148,4 +156,4 @@ release-manifests:
 	git checkout config/overlays/ 2>/dev/null || true
 	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
 
-.PHONY: build build-mock-redfish generate manifests test docker-build docker-build-mock-redfish docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown
+.PHONY: build build-mock-redfish build-mock-inspector generate manifests test docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown

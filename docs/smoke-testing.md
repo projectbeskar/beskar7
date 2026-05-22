@@ -23,12 +23,13 @@ Beyond layer 5 there's a separate "real boot" tier — iPXE actually serves, the
 ```
 hack/smoke/
 ├── manifests/
-│   ├── 00-namespace.yaml         # beskar7-smoke namespace
-│   ├── 10-mock-redfish.yaml      # Deployment + Service for the fake BMC
-│   ├── 20-bmc-secret.yaml        # Credentials the operator uses to talk to it
-│   ├── 30-physicalhost.yaml      # PhysicalHost pointing at the fake BMC
-│   └── 40-cluster-and-machine.yaml  # Beskar7Cluster + Beskar7Machine + CAPI Machine
-└── run.sh                        # Layered runner
+│   ├── 00-namespace.yaml             # beskar7-smoke namespace
+│   ├── 10-mock-redfish.yaml          # Deployment + Service for the fake BMC
+│   ├── 20-bmc-secret.yaml            # Credentials the operator uses to talk to it
+│   ├── 30-physicalhost.yaml          # PhysicalHost pointing at the fake BMC
+│   ├── 40-cluster-and-machine.yaml   # Beskar7Cluster + Beskar7Machine + CAPI Machine
+│   └── 50-mock-inspector-job.yaml    # Job + RBAC for the inspector simulator
+└── run.sh                            # Layered runner
 ```
 
 ### The fake BMC
@@ -42,6 +43,20 @@ hack/smoke/
 
 It generates a self-signed RSA cert in memory at startup (configurable via `--tls-cert` / `--tls-key` or disable with `--tls=false`), listens on `:8443` by default, and supports Basic auth (`admin` / `password123` by default). The image is published as `ghcr.io/projectbeskar/beskar7/mock-redfish:<tag>` alongside the controller, on the same git-tag push.
 
+### The mock inspector
+
+`cmd/mock-inspector` is the layer-5 simulator: a small Go binary that reads `PhysicalHost.Status.Bootstrap.{URL,TokenHash}`, fetches the plaintext token from the per-host `<host>-bootstrap-token` Secret, derives the inspection callback URL (path-swap `/api/v1/bootstrap/` → `/api/v1/inspection/`), and POSTs a hardware-details payload matching `controllers.InspectionReportRequest`. Exits 0 on 2xx, non-zero with a diagnostic on any other status.
+
+Flags:
+- `--namespace`, `--host-name` (required): which PhysicalHost to inspect
+- `--wait-for-bootstrap` (default 3m): how long to poll for the Bootstrap status fields
+- `--insecure-skip-verify` (default true): the controller's callback cert covers `beskar7-webhook-service`, not the controller-manager service the bootstrap URL points at
+- `--ca-bundle-file`: alternative to insecure-skip-verify, PEM CA(s) to trust
+
+The image is published as `ghcr.io/projectbeskar/beskar7/mock-inspector:<tag>` alongside the controller. Smoke runs it as a one-shot `batch/v1` Job (`hack/smoke/manifests/50-mock-inspector-job.yaml`) with a namespaced Role that only allows reading the PhysicalHost and its bootstrap-token Secret.
+
+The plaintext token is never logged. Only the first 12 chars of the hex hashes appear in diagnostics.
+
 ### The runner
 
 `hack/smoke/run.sh` is a Bash script (~200 lines, no external deps beyond `kubectl`) that:
@@ -50,7 +65,7 @@ It generates a self-signed RSA cert in memory at startup (configurable via `--tl
 2. Submits a CR with a malformed Redfish address via `kubectl --dry-run=server` and asserts CRD validation rejects it
 3. Applies the mock + a `PhysicalHost`, waits for `Status.Ready=true`
 4. Applies `Beskar7Cluster` + `Beskar7Machine` + CAPI `Machine` (with a pre-baked bootstrap data Secret — see below). Verifies (a) the controller sets `consumerRef` on the `PhysicalHost` and (b) the host state machine progresses out of `Available` (to `InUse` or `Inspecting`).
-5. Waits for `PhysicalHost.Status.Bootstrap.URL` + `TokenHash` to be populated, reads the plaintext token from the per-host `<host>-bootstrap-token` Secret, derives the inspection callback URL from the bootstrap URL, and POSTs a fake hardware-report payload via a one-shot `kubectl run curl` pod inside the cluster. Then waits for `PhysicalHost.Status.State=Ready` and `Beskar7Machine.Spec.ProviderID=b7://<ns>/<host>`.
+5. Applies the `mock-inspector` Job (image auto-derived from the installed controller's tag, or overridden via `MOCK_INSPECTOR_IMAGE`). The binary handles the Bootstrap-status polling, token read, hash cross-check, URL derivation, and POST. The runner then waits for `Job condition=Complete`, then for `PhysicalHost.Status.State=Ready` and `Beskar7Machine.Spec.ProviderID=b7://<ns>/<host>`.
 
 Failures print the relevant `describe` output and the tail of the controller log to make root-causing fast.
 
@@ -142,4 +157,4 @@ If you add a feature that touches one of the existing reconcile layers, add a ma
 
 The mock server is in `internal/redfishmock/`. If the controller starts calling a Redfish endpoint the mock doesn't yet serve, you'll see the smoke run fail with a 404 in the controller log — extend `server.go` with the new endpoint rather than working around the gap in the runner.
 
-Open follow-up: factor the bash inspector logic in layer 5 into a proper `cmd/mock-inspector` binary (matching the `cmd/mock-redfish` pattern), so the simulator can also be used for docs and manual demos outside the smoke runner.
+The inspector simulator is in `cmd/mock-inspector/`. If the controller changes the `InspectionReportRequest` shape (or the bootstrap-token Secret layout, or the bootstrap-callback URL pattern), update the binary AND the comment in `controllers/inspection_handler.go` that flags the cross-file dependency. Unit tests at `cmd/mock-inspector/main_test.go` cover the URL derivation, payload assembly, and hash cross-check helpers.
