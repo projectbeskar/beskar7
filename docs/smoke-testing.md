@@ -13,7 +13,7 @@ For a CAPI infrastructure provider, smoke testing splits into five layers. The f
 | 1. Static | Chart installs, pod runs, CRDs land, webhook + RBAC objects exist | No |
 | 2. Admission | CRD validation + webhook accept valid CRs and reject invalid ones | No |
 | 3. Reconcile mechanics | Controller talks to a Redfish endpoint, updates Status, surfaces errors | No — fake BMC |
-| 4. CAPI claim | `Beskar7Machine` claims a `PhysicalHost`, sets `ProviderID`, releases on delete | No — fake BMC |
+| 4. CAPI claim | `Beskar7Machine` claims a `PhysicalHost` and the host state machine progresses (Available → InUse/Inspecting) | No — fake BMC |
 | 5. Boot / inspector | iPXE actually boots, inspector posts callback, OS comes up | Yes (or libvirt VMs) |
 
 The rig in `hack/smoke/` covers layers 1–4. Layer 5 belongs in a dedicated CI runner using [sushy-tools](https://opendev.org/openstack/sushy-tools) — it's not in scope here.
@@ -49,7 +49,7 @@ It generates a self-signed RSA cert in memory at startup (configurable via `--tl
 1. Verifies the operator pod is running and the 4 CRDs are installed
 2. Submits a CR with a malformed Redfish address via `kubectl --dry-run=server` and asserts CRD validation rejects it
 3. Applies the mock + a `PhysicalHost`, waits for `Status.Ready=true`
-4. Applies `Beskar7Machine` + CAPI `Machine`, waits for `consumerRef` to be set on the `PhysicalHost` and `ProviderID` to be set on the `Beskar7Machine`
+4. Applies `Beskar7Cluster` + `Beskar7Machine` + CAPI `Machine`. Verifies (a) the controller sets `consumerRef` on the `PhysicalHost` and (b) the host state machine progresses out of `Available` (typically to `InUse`/`Inspecting`). The final `ProviderID` set only happens after the inspection callback completes — that needs the inspector simulator (a separate follow-up); the smoke runner stops at the claim+progression boundary.
 
 Failures print the relevant `describe` output and the tail of the controller log to make root-causing fast.
 
@@ -114,10 +114,6 @@ End-to-end runtime is typically 60–120 seconds, dominated by the initial contr
 The chart bug that shipped in `v0.4.0-alpha.1` — pod `securityContext` missing `fsGroup` and `runAsGroup`, causing the controller to crashloop on `permission denied` when reading its TLS cert — would have been caught at layer 1 (pod never reaches Running). `make smoke` is now a release-gating signal: if it doesn't pass against a freshly installed chart on `kind`, the release isn't shippable.
 
 Layer 3 catches RBAC misconfiguration (controller can't read the BMC `Secret`), CRD-vs-controller drift (controller doesn't know about a field the CRD requires), and TLS / connection regressions (controller can't talk to the BMC at all). Layer 4 catches finalizer leaks, owner-ref mistakes, and `ProviderID` formatting bugs.
-
-## Known limitations
-
-**CAPI v1.10+ contract labels missing on beskar7 CRDs.** When CAPI core runs a conversion webhook on `Cluster` or `Machine`, it reads a `cluster.x-k8s.io/v1beta1` (or `v1beta2`) label off the referenced infrastructure CRD. The beskar7 CRDs do not yet carry that label, so on a CAPI v1.10+ cluster the conversion fails with `cannot find any versions matching contract versions [v1beta2 v1beta1] for CRD beskar7clusters.infrastructure.cluster.x-k8s.io`. The smoke runner detects the missing label up front and skips layer 4 with a `[WARN]` rather than half-applying fixtures. Tracked as a separate fix: add `+kubebuilder:metadata:labels` markers to the `api/v1beta1` types and regenerate manifests + chart CRDs.
 
 ## What this does not catch
 
