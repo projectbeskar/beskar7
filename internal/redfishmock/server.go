@@ -1,5 +1,3 @@
-//go:build integration
-
 /*
 Copyright 2024 The Beskar7 Authors.
 
@@ -16,12 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package emulation
+// Package redfishmock provides a multi-vendor Redfish HTTP fake suitable for
+// unit tests and in-cluster smoke testing. It has no build tags and no
+// dependency on net/http/httptest, so it can be compiled into a standalone
+// binary.
+//
+// Quick usage — unit tests (via compat helper):
+//
+//	srv := redfishmock.NewMockRedfishServerWithHTTPTest(redfishmock.VendorDell)
+//	defer srv.Close()
+//	// srv.GetURL() returns the httptest TLS server URL.
+//
+// Quick usage — standalone binary:
+//
+//	srv := redfishmock.NewMockRedfishServer(redfishmock.VendorGeneric)
+//	http.ListenAndServe(":8080", srv.Handler())
+package redfishmock
 
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"time"
@@ -39,7 +51,7 @@ const (
 	DefaultSystemID = "1"
 )
 
-// VendorType represents different hardware vendors
+// VendorType represents different hardware vendors.
 type VendorType string
 
 const (
@@ -50,7 +62,7 @@ const (
 	VendorGeneric    VendorType = "Generic"
 )
 
-// PowerState represents the current power state
+// PowerState represents the current power state.
 type PowerState string
 
 const (
@@ -62,7 +74,7 @@ const (
 	PowerStateGracefulRestart  PowerState = "GracefulRestart"
 )
 
-// BootSourceOverrideTarget represents boot override targets
+// BootSourceOverrideTarget represents boot override targets.
 type BootSourceOverrideTarget string
 
 const (
@@ -73,24 +85,31 @@ const (
 	BootSourceUefiTarget BootSourceOverrideTarget = "UefiTarget"
 )
 
-// MockRedfishServer represents a mock Redfish BMC server
+// MockRedfishServer is a stateful Redfish BMC fake. Create it with
+// NewMockRedfishServer; serve it by passing Handler() to any net/http server.
+//
+// SystemInfo and BiosAttributes are exported so tests in other packages can
+// inspect vendor-specific initialisation without needing accessor methods.
 type MockRedfishServer struct {
-	server         *httptest.Server
-	vendor         VendorType
-	mu             sync.RWMutex
-	powerState     PowerState
-	bootSource     BootSourceOverrideTarget
-	bootParameters []string
-	virtualMedia   []VirtualMedia
-	biosAttributes map[string]interface{}
-	systemInfo     SystemInfo
-	failures       FailureConfig
-	requestLog     []RequestLog
-	authEnabled    bool
-	credentials    map[string]string // username:password
+	// SystemInfo holds the vendor-specific system snapshot set at construction.
+	SystemInfo SystemInfo
+	// BiosAttributes holds vendor-specific BIOS key-value pairs set at construction.
+	BiosAttributes map[string]interface{}
+	// AuthEnabled controls whether HTTP Basic Auth is enforced. Tests may
+	// toggle this directly between requests.
+	AuthEnabled bool
+
+	vendor       VendorType
+	mu           sync.RWMutex
+	powerState   PowerState
+	bootSource   BootSourceOverrideTarget
+	virtualMedia []VirtualMedia
+	failures     FailureConfig
+	requestLog   []RequestLog
+	credentials  map[string]string // username -> password
 }
 
-// SystemInfo represents basic system information
+// SystemInfo represents basic system information.
 type SystemInfo struct {
 	Manufacturer   string
 	Model          string
@@ -102,7 +121,7 @@ type SystemInfo struct {
 	UUID           string
 }
 
-// VirtualMedia represents virtual media configuration
+// VirtualMedia represents virtual media configuration.
 type VirtualMedia struct {
 	ID             string
 	ImageURL       string
@@ -111,7 +130,7 @@ type VirtualMedia struct {
 	ConnectedVia   string
 }
 
-// FailureConfig configures various failure scenarios
+// FailureConfig configures various failure scenarios.
 type FailureConfig struct {
 	NetworkErrors   bool
 	AuthFailures    bool
@@ -122,7 +141,7 @@ type FailureConfig struct {
 	MediaFailures   bool
 }
 
-// RequestLog tracks all requests for debugging
+// RequestLog tracks a single HTTP request for debugging.
 type RequestLog struct {
 	Timestamp time.Time
 	Method    string
@@ -131,65 +150,51 @@ type RequestLog struct {
 	Response  int
 }
 
-// NewMockRedfishServer creates a new mock Redfish server
+// NewMockRedfishServer creates a new MockRedfishServer initialised for the
+// given vendor. The handler is ready to serve immediately via Handler(); no
+// network listener is started. Use NewMockRedfishServerWithHTTPTest for the
+// httptest-backed variant used by unit tests.
 func NewMockRedfishServer(vendor VendorType) *MockRedfishServer {
 	mrs := &MockRedfishServer{
-		vendor:         vendor,
-		powerState:     PowerStateOn,
-		bootSource:     BootSourceNone,
-		bootParameters: make([]string, 0),
-		virtualMedia:   make([]VirtualMedia, 2), // CD and USB
-		biosAttributes: make(map[string]interface{}),
-		failures:       FailureConfig{},
-		requestLog:     make([]RequestLog, 0),
-		authEnabled:    true,
-		credentials:    map[string]string{"admin": "password123"},
+		vendor:       vendor,
+		powerState:   PowerStateOn,
+		bootSource:   BootSourceNone,
+		virtualMedia: make([]VirtualMedia, 2),
+		failures:     FailureConfig{},
+		requestLog:   make([]RequestLog, 0),
+		AuthEnabled:  true,
+		credentials:  map[string]string{"admin": "password123"},
+		BiosAttributes: make(map[string]interface{}),
 	}
 
-	// Initialize virtual media slots
-	mrs.virtualMedia[0] = VirtualMedia{
-		ID:             "CD",
-		Inserted:       false,
-		WriteProtected: true,
-		ConnectedVia:   "URI",
-	}
-	mrs.virtualMedia[1] = VirtualMedia{
-		ID:             "USB",
-		Inserted:       false,
-		WriteProtected: false,
-		ConnectedVia:   "URI",
-	}
+	mrs.virtualMedia[0] = VirtualMedia{ID: "CD", Inserted: false, WriteProtected: true, ConnectedVia: "URI"}
+	mrs.virtualMedia[1] = VirtualMedia{ID: "USB", Inserted: false, WriteProtected: false, ConnectedVia: "URI"}
 
-	// Set vendor-specific system info
-	mrs.initializeSystemInfo()
-
-	// Initialize BIOS attributes based on vendor
-	mrs.initializeBIOSAttributes()
-
-	// Create HTTP server
-	mrs.server = httptest.NewTLSServer(http.HandlerFunc(mrs.handleRequest))
+	mrs.initSystemInfo()
+	mrs.initBIOSAttributes()
 
 	return mrs
 }
 
-// GetURL returns the server URL
-func (mrs *MockRedfishServer) GetURL() string {
-	return mrs.server.URL
+// Vendor returns the VendorType this server was initialised with.
+func (mrs *MockRedfishServer) Vendor() VendorType {
+	return mrs.vendor
 }
 
-// Close shuts down the mock server
-func (mrs *MockRedfishServer) Close() {
-	mrs.server.Close()
+// Handler returns the http.Handler that implements the Redfish API fake.
+// Pass this to any net/http or httptest server.
+func (mrs *MockRedfishServer) Handler() http.Handler {
+	return http.HandlerFunc(mrs.handleRequest)
 }
 
-// SetFailureMode enables/disables failure scenarios
+// SetFailureMode enables or disables failure scenarios.
 func (mrs *MockRedfishServer) SetFailureMode(config FailureConfig) {
 	mrs.mu.Lock()
 	defer mrs.mu.Unlock()
 	mrs.failures = config
 }
 
-// GetRequestLog returns the request log for debugging
+// GetRequestLog returns a snapshot of the request log.
 func (mrs *MockRedfishServer) GetRequestLog() []RequestLog {
 	mrs.mu.RLock()
 	defer mrs.mu.RUnlock()
@@ -198,25 +203,25 @@ func (mrs *MockRedfishServer) GetRequestLog() []RequestLog {
 	return logCopy
 }
 
-// SetCredentials configures authentication
+// SetCredentials replaces the single allowed username/password pair.
 func (mrs *MockRedfishServer) SetCredentials(username, password string) {
 	mrs.mu.Lock()
 	defer mrs.mu.Unlock()
 	mrs.credentials = map[string]string{username: password}
 }
 
-// DisableAuth disables authentication (for testing)
+// DisableAuth disables HTTP Basic Auth enforcement.
 func (mrs *MockRedfishServer) DisableAuth() {
 	mrs.mu.Lock()
 	defer mrs.mu.Unlock()
-	mrs.authEnabled = false
+	mrs.AuthEnabled = false
 }
 
-// initializeSystemInfo sets vendor-specific system information
-func (mrs *MockRedfishServer) initializeSystemInfo() {
+// initSystemInfo sets vendor-specific system information.
+func (mrs *MockRedfishServer) initSystemInfo() {
 	switch mrs.vendor {
 	case VendorDell:
-		mrs.systemInfo = SystemInfo{
+		mrs.SystemInfo = SystemInfo{
 			Manufacturer:   "Dell Inc.",
 			Model:          "PowerEdge R750",
 			SerialNumber:   "DELL123456789",
@@ -227,7 +232,7 @@ func (mrs *MockRedfishServer) initializeSystemInfo() {
 			UUID:           "4c4c4544-0033-3310-8051-b4c04f4d3132",
 		}
 	case VendorHPE:
-		mrs.systemInfo = SystemInfo{
+		mrs.SystemInfo = SystemInfo{
 			Manufacturer:   "HPE",
 			Model:          "ProLiant DL380 Gen10",
 			SerialNumber:   "HPE987654321",
@@ -238,7 +243,7 @@ func (mrs *MockRedfishServer) initializeSystemInfo() {
 			UUID:           "30373237-3132-584d-5131-333032584d51",
 		}
 	case VendorLenovo:
-		mrs.systemInfo = SystemInfo{
+		mrs.SystemInfo = SystemInfo{
 			Manufacturer:   "Lenovo",
 			Model:          "ThinkSystem SR650",
 			SerialNumber:   "LEN555666777",
@@ -249,7 +254,7 @@ func (mrs *MockRedfishServer) initializeSystemInfo() {
 			UUID:           "01234567-89ab-cdef-0123-456789abcdef",
 		}
 	case VendorSupermicro:
-		mrs.systemInfo = SystemInfo{
+		mrs.SystemInfo = SystemInfo{
 			Manufacturer:   "Supermicro",
 			Model:          "X12DPi-NT6",
 			SerialNumber:   "SMC111222333",
@@ -260,7 +265,7 @@ func (mrs *MockRedfishServer) initializeSystemInfo() {
 			UUID:           "fedcba98-7654-3210-fedc-ba9876543210",
 		}
 	default:
-		mrs.systemInfo = SystemInfo{
+		mrs.SystemInfo = SystemInfo{
 			Manufacturer:   "Generic Manufacturer",
 			Model:          "Generic Server",
 			SerialNumber:   "GEN000111222",
@@ -273,54 +278,57 @@ func (mrs *MockRedfishServer) initializeSystemInfo() {
 	}
 }
 
-// initializeBIOSAttributes sets vendor-specific BIOS attributes
-func (mrs *MockRedfishServer) initializeBIOSAttributes() {
+// initBIOSAttributes sets vendor-specific BIOS key-value pairs.
+func (mrs *MockRedfishServer) initBIOSAttributes() {
 	switch mrs.vendor {
 	case VendorDell:
-		mrs.biosAttributes["KernelArgs"] = ""
-		mrs.biosAttributes["BootMode"] = "Uefi"
-		mrs.biosAttributes["SecureBoot"] = BiosEnabledState
+		mrs.BiosAttributes["KernelArgs"] = ""
+		mrs.BiosAttributes["BootMode"] = "Uefi"
+		mrs.BiosAttributes["SecureBoot"] = BiosEnabledState
 	case VendorHPE:
-		mrs.biosAttributes["BootOrderPolicy"] = "AttemptOnce"
-		mrs.biosAttributes["UefiOptimizedBoot"] = BiosEnabledState
-		mrs.biosAttributes["SecureBootStatus"] = BiosEnabledState
+		mrs.BiosAttributes["BootOrderPolicy"] = "AttemptOnce"
+		mrs.BiosAttributes["UefiOptimizedBoot"] = BiosEnabledState
+		mrs.BiosAttributes["SecureBootStatus"] = BiosEnabledState
 	case VendorLenovo:
-		mrs.biosAttributes["SystemBootSequence"] = "UEFI First"
-		mrs.biosAttributes["SecureBootEnable"] = BiosEnabledState
+		mrs.BiosAttributes["SystemBootSequence"] = "UEFI First"
+		mrs.BiosAttributes["SecureBootEnable"] = BiosEnabledState
 	case VendorSupermicro:
-		mrs.biosAttributes["BootFeature"] = "UEFI"
-		mrs.biosAttributes["QuietBoot"] = BiosEnabledState
+		mrs.BiosAttributes["BootFeature"] = "UEFI"
+		mrs.BiosAttributes["QuietBoot"] = BiosEnabledState
 	}
 }
 
-// handleRequest is the main HTTP request handler
+// handleRequest is the main HTTP request handler.
 func (mrs *MockRedfishServer) handleRequest(w http.ResponseWriter, r *http.Request) {
-	// Log the request
 	mrs.logRequest(r)
 
-	// Simulate slow responses if configured
+	// Simulate slow responses if configured.
 	if mrs.failures.SlowResponses {
 		time.Sleep(5 * time.Second)
 	}
 
-	// Simulate network errors for non-root requests so client can still connect
+	// Simulate network errors for non-root requests so the client can still connect.
 	if mrs.failures.NetworkErrors && r.URL.Path != RedfishAPIRoot {
 		http.Error(w, "Network Error", http.StatusInternalServerError)
 		return
 	}
 
-	// Handle authentication
-	if mrs.authEnabled && !mrs.authenticate(r) {
+	// Per DSP0266 (Redfish spec) §9.1, the service root at /redfish/v1/ MUST
+	// be accessible unauthenticated for service discovery. gofish relies on
+	// this: ConnectContext does an initial GET /redfish/v1/ without an
+	// Authorization header before it knows whether credentials are even
+	// required. Authenticating the service root would make us incompatible
+	// with the standard client and most real BMCs.
+	requiresAuth := !(r.Method == http.MethodGet && r.URL.Path == RedfishAPIRoot)
+	if requiresAuth && mrs.AuthEnabled && !mrs.authenticate(r) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="Redfish"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	// Set common headers
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("OData-Version", "4.0")
 
-	// Route the request
 	switch {
 	case r.URL.Path == RedfishAPIRoot && r.Method == http.MethodGet:
 		mrs.handleServiceRoot(w, r)
@@ -329,7 +337,6 @@ func (mrs *MockRedfishServer) handleRequest(w http.ResponseWriter, r *http.Reque
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Systems/") && r.Method == http.MethodGet:
 		mrs.handleSystemGet(w, r)
 	case r.URL.Path == RedfishSystemPath && (r.Method == http.MethodPatch || r.Method == http.MethodPost):
-		// Accept Boot Set requests
 		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Systems/") && strings.HasSuffix(r.URL.Path, "/Actions/ComputerSystem.Reset") && r.Method == http.MethodPost:
 		mrs.handleSystemReset(w, r)
@@ -338,24 +345,21 @@ func (mrs *MockRedfishServer) handleRequest(w http.ResponseWriter, r *http.Reque
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Managers/") && strings.HasSuffix(r.URL.Path, "/VirtualMedia") && r.Method == http.MethodGet:
 		mrs.handleManagerVirtualMediaCollection(w, r)
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Managers/") && strings.Contains(r.URL.Path, "/VirtualMedia/") && strings.Contains(r.URL.Path, "/Actions/"):
-		// Accept any VirtualMedia actions
 		w.WriteHeader(http.StatusNoContent)
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Managers/") && strings.Contains(r.URL.Path, "/VirtualMedia/") && r.Method == http.MethodGet:
 		mrs.handleVirtualMediaGet(w, r)
 	case strings.HasPrefix(r.URL.Path, "/redfish/v1/Managers/") && r.Method == http.MethodGet:
 		mrs.handleManagerGet(w, r)
 	case strings.Contains(r.URL.Path, "VirtualMedia"):
-		// Basic virtual media endpoints are handled via SetBootSourceISO in client tests
 		w.WriteHeader(http.StatusNotFound)
 	case strings.Contains(r.URL.Path, "Bios"):
-		// BIOS attribute GET/PATCH can be added if tests require deeper emulation
 		w.WriteHeader(http.StatusNotFound)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-// authenticate validates basic authentication
+// authenticate validates HTTP Basic Auth credentials.
 func (mrs *MockRedfishServer) authenticate(r *http.Request) bool {
 	if mrs.failures.AuthFailures {
 		return false
@@ -369,19 +373,17 @@ func (mrs *MockRedfishServer) authenticate(r *http.Request) bool {
 	mrs.mu.RLock()
 	defer mrs.mu.RUnlock()
 
-	expectedPassword, exists := mrs.credentials[username]
-	return exists && expectedPassword == password
+	expected, exists := mrs.credentials[username]
+	return exists && expected == password
 }
 
-// logRequest logs the HTTP request for debugging
+// logRequest appends a minimal request record to the request log.
 func (mrs *MockRedfishServer) logRequest(r *http.Request) {
 	mrs.mu.Lock()
 	defer mrs.mu.Unlock()
 
 	body := ""
 	if r.Body != nil {
-		// Note: In real implementation, you'd need to handle body reading properly
-		// This is simplified for the example - body content is not logged
 		body = "[body omitted]"
 	}
 
@@ -390,71 +392,53 @@ func (mrs *MockRedfishServer) logRequest(r *http.Request) {
 		Method:    r.Method,
 		URL:       r.URL.String(),
 		Body:      body,
-		Response:  200, // Will be updated if different
+		Response:  200,
 	})
 }
 
-// handleServiceRoot handles /redfish/v1/
-func (mrs *MockRedfishServer) handleServiceRoot(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleServiceRoot(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type":    "#ServiceRoot.v1_5_0.ServiceRoot",
 		"@odata.id":      "/redfish/v1/",
 		"Id":             "RootService",
 		"Name":           "Root Service",
 		"RedfishVersion": "1.6.1",
-		"UUID":           mrs.systemInfo.UUID,
-		"Systems": map[string]string{
-			"@odata.id": "/redfish/v1/Systems",
-		},
-		"Managers": map[string]string{
-			"@odata.id": "/redfish/v1/Managers",
-		},
+		"UUID":           mrs.SystemInfo.UUID,
+		"Systems":        map[string]string{"@odata.id": "/redfish/v1/Systems"},
+		"Managers":       map[string]string{"@odata.id": "/redfish/v1/Managers"},
 	}
-
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		// best-effort in tests: respond with 500 if encoding fails
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleSystemsCollection handles /redfish/v1/Systems
-func (mrs *MockRedfishServer) handleSystemsCollection(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleSystemsCollection(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type":         "#ComputerSystemCollection.ComputerSystemCollection",
 		"@odata.id":           "/redfish/v1/Systems",
 		"Name":                "Computer System Collection",
 		"Members@odata.count": 1,
-		"Members": []map[string]string{
-			{"@odata.id": "/redfish/v1/Systems/1"},
-		},
+		"Members":             []map[string]string{{"@odata.id": "/redfish/v1/Systems/1"}},
 	}
-
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleManagersCollection handles /redfish/v1/Managers
-func (mrs *MockRedfishServer) handleManagersCollection(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleManagersCollection(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type":         "#ManagerCollection.ManagerCollection",
 		"@odata.id":           "/redfish/v1/Managers",
 		"Name":                "Manager Collection",
 		"Members@odata.count": 1,
-		"Members": []map[string]string{
-			{"@odata.id": "/redfish/v1/Managers/1"},
-		},
+		"Members":             []map[string]string{{"@odata.id": "/redfish/v1/Managers/1"}},
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleManagerGet handles GET /redfish/v1/Managers/1
-func (mrs *MockRedfishServer) handleManagerGet(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleManagerGet(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type": "#Manager.v1_9_0.Manager",
 		"@odata.id":   "/redfish/v1/Managers/1",
@@ -465,35 +449,27 @@ func (mrs *MockRedfishServer) handleManagerGet(w http.ResponseWriter, r *http.Re
 				"target": "/redfish/v1/Managers/1/Actions/Manager.Reset",
 			},
 		},
-		"VirtualMedia": map[string]string{
-			"@odata.id": "/redfish/v1/Managers/1/VirtualMedia",
-		},
+		"VirtualMedia": map[string]string{"@odata.id": "/redfish/v1/Managers/1/VirtualMedia"},
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleManagerVirtualMediaCollection handles GET /redfish/v1/Managers/1/VirtualMedia
-func (mrs *MockRedfishServer) handleManagerVirtualMediaCollection(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleManagerVirtualMediaCollection(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type":         "#VirtualMediaCollection.VirtualMediaCollection",
 		"@odata.id":           "/redfish/v1/Managers/1/VirtualMedia",
 		"Name":                "Virtual Media Collection",
 		"Members@odata.count": 1,
-		"Members": []map[string]string{
-			{"@odata.id": "/redfish/v1/Managers/1/VirtualMedia/1"},
-		},
+		"Members":             []map[string]string{{"@odata.id": "/redfish/v1/Managers/1/VirtualMedia/1"}},
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleVirtualMediaGet handles GET /redfish/v1/Managers/1/VirtualMedia/1
-func (mrs *MockRedfishServer) handleVirtualMediaGet(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleVirtualMediaGet(w http.ResponseWriter, _ *http.Request) {
 	response := map[string]interface{}{
 		"@odata.type":    "#VirtualMedia.v1_5_0.VirtualMedia",
 		"@odata.id":      "/redfish/v1/Managers/1/VirtualMedia/1",
@@ -511,12 +487,10 @@ func (mrs *MockRedfishServer) handleVirtualMediaGet(w http.ResponseWriter, r *ht
 	}
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleSystemGet handles GET /redfish/v1/Systems/1
-func (mrs *MockRedfishServer) handleSystemGet(w http.ResponseWriter, r *http.Request) {
+func (mrs *MockRedfishServer) handleSystemGet(w http.ResponseWriter, _ *http.Request) {
 	mrs.mu.RLock()
 	defer mrs.mu.RUnlock()
 
@@ -526,20 +500,20 @@ func (mrs *MockRedfishServer) handleSystemGet(w http.ResponseWriter, r *http.Req
 		"Id":           "1",
 		"Name":         "System",
 		"SystemType":   "Physical",
-		"Manufacturer": mrs.systemInfo.Manufacturer,
-		"Model":        mrs.systemInfo.Model,
-		"SerialNumber": mrs.systemInfo.SerialNumber,
-		"UUID":         mrs.systemInfo.UUID,
+		"Manufacturer": mrs.SystemInfo.Manufacturer,
+		"Model":        mrs.SystemInfo.Model,
+		"SerialNumber": mrs.SystemInfo.SerialNumber,
+		"UUID":         mrs.SystemInfo.UUID,
 		"ProcessorSummary": map[string]interface{}{
-			"Count": mrs.systemInfo.ProcessorCount,
+			"Count": mrs.SystemInfo.ProcessorCount,
 		},
 		"MemorySummary": map[string]interface{}{
-			"TotalSystemMemoryGiB": mrs.systemInfo.MemoryGB,
+			"TotalSystemMemoryGiB": mrs.SystemInfo.MemoryGB,
 		},
 		"PowerState": mrs.powerState,
 		"Status": map[string]string{
 			"State":  BiosEnabledState,
-			"Health": mrs.systemInfo.Health,
+			"Health": mrs.SystemInfo.Health,
 		},
 		"Boot": map[string]interface{}{
 			"BootSourceOverrideTarget":  mrs.bootSource,
@@ -550,29 +524,23 @@ func (mrs *MockRedfishServer) handleSystemGet(w http.ResponseWriter, r *http.Req
 				"target": "/redfish/v1/Systems/1/Actions/ComputerSystem.Reset",
 			},
 		},
-		"Bios": map[string]string{
-			"@odata.id": "/redfish/v1/Systems/1/Bios",
-		},
+		"Bios": map[string]string{"@odata.id": "/redfish/v1/Systems/1/Bios"},
 	}
-
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		http.Error(w, "encode error", http.StatusInternalServerError)
-		return
 	}
 }
 
-// handleSystemReset handles system power actions
 func (mrs *MockRedfishServer) handleSystemReset(w http.ResponseWriter, r *http.Request) {
 	if mrs.failures.PowerFailures {
 		http.Error(w, "Power operation failed", http.StatusInternalServerError)
 		return
 	}
 
-	var resetRequest struct {
+	var req struct {
 		ResetType string `json:"ResetType"`
 	}
-
-	if err := json.NewDecoder(r.Body).Decode(&resetRequest); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -580,7 +548,7 @@ func (mrs *MockRedfishServer) handleSystemReset(w http.ResponseWriter, r *http.R
 	mrs.mu.Lock()
 	defer mrs.mu.Unlock()
 
-	switch resetRequest.ResetType {
+	switch req.ResetType {
 	case "On":
 		mrs.powerState = PowerStateOn
 	case "ForceOff":
@@ -596,6 +564,3 @@ func (mrs *MockRedfishServer) handleSystemReset(w http.ResponseWriter, r *http.R
 
 	w.WriteHeader(http.StatusNoContent)
 }
-
-// Additional handler methods would be implemented here...
-// handleManagerRequest, handleVirtualMediaRequest, handleBIOSRequest, etc.

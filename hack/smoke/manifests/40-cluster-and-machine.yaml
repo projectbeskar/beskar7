@@ -1,0 +1,109 @@
+---
+# Beskar7Cluster: minimal infrastructure cluster object. The controller's
+# only job here is to surface the control-plane endpoint and mark Ready
+# once the CAPI Cluster references it.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Cluster
+metadata:
+  name: smoke-cluster
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  # The Beskar7Cluster webhook requires a non-empty host when
+  # controlPlaneEndpoint is set. We pick a placeholder host; the smoke
+  # test does not validate cluster lifecycle, only that the Beskar7Machine
+  # claim path runs against the mock BMC.
+  controlPlaneEndpoint:
+    host: "127.0.0.1"
+    port: 6443
+---
+# The owning CAPI Cluster. We do not run real bootstrap or KCP here — the
+# smoke test only validates the Beskar7Machine claim path, not full
+# cluster lifecycle. A KubeadmConfig is referenced so CAPI's Machine
+# controller does not block on bootstrap, but the data secret never gets
+# consumed because the underlying host never actually boots.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: smoke-cluster
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.244.0.0/16"]
+    services:
+      cidrBlocks: ["10.96.0.0/16"]
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Beskar7Cluster
+    name: smoke-cluster
+---
+# Beskar7Machine: the resource under test. Reconciling this should:
+#   1. Find a free PhysicalHost (smoke-host-01) and set consumerRef
+#   2. Transition smoke-host-01 to State=InUse (or Inspecting)
+#   3. Set Beskar7Machine.Spec.ProviderID to b7://beskar7-smoke/smoke-host-01
+# The full Provisioned condition requires the inspection callback to fire,
+# which needs an iPXE-booted inspector we cannot run here. Layer 5.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Machine
+metadata:
+  name: smoke-machine-01
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  # These URLs are never fetched in the smoke test — the mock BMC accepts
+  # the boot-source override but no real machine boots. They are still
+  # required by the CRD schema, so we set syntactically valid placeholders.
+  inspectionImageURL: http://boot.example.invalid/ipxe/inspect.ipxe
+  targetImageURL: http://boot.example.invalid/images/placeholder.tar.gz
+  configurationURL: http://boot.example.invalid/configs/smoke.yaml
+---
+# CAPI Machine owning the Beskar7Machine. infrastructureRef closes the loop
+# so the Machine controller does not block claim. Bootstrap.dataSecretName
+# is left unset; the Machine controller will populate it from the
+# KubeadmConfig (which never actually gets used since nothing boots).
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: smoke-machine-01
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  clusterName: smoke-cluster
+  version: v1.31.0
+  bootstrap:
+    configRef:
+      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      kind: KubeadmConfig
+      name: smoke-machine-01-bootstrap
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Beskar7Machine
+    name: smoke-machine-01
+---
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+kind: KubeadmConfig
+metadata:
+  name: smoke-machine-01-bootstrap
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  initConfiguration:
+    nodeRegistration:
+      criSocket: /run/containerd/containerd.sock
