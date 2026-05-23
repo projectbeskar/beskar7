@@ -411,10 +411,13 @@ func RecordNetworkAddress(namespace string, outcome ProvisioningOutcome, errorTy
 // operation type. Previously the helper hardcoded PowerOperationOn so every
 // call landed on the "On" label regardless of intent — by-design dead today
 // (no external callers) but actively wrong if the helper were ever wired up.
-// errorType is currently unused; retained on the signature for API parity
-// with the other Record* helpers and for a future error-type label.
-func RecordPowerOperation(operation PowerOperation, namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	_ = errorType
+//
+// Error-type cardinality is deliberately not modelled on this counter:
+// power-operation failures are observed against the connection/Redfish-query
+// counters (RecordRedfishConnection, RecordRedfishQuery) which already carry
+// the ErrorType label. Keeping it off this counter avoids double-counting
+// the same failure across two label spaces when a future caller is wired.
+func RecordPowerOperation(operation PowerOperation, namespace string, outcome ProvisioningOutcome) {
 	RecordPhysicalHostPowerOperation(operation, namespace, outcome)
 }
 
