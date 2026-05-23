@@ -4,8 +4,33 @@ entries:
   - annotations:
       category: Infrastructure
     apiVersion: v2
+    appVersion: v0.4.0-alpha.4
+    created: "2026-05-23T08:11:19.083947541Z"
+    description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
+      Immutable Bare Metal
+    digest: 9dcc1534c2ae5a73f42223bccbd1f0878726418b0ddfb92ccd4b642c5f952e67
+    home: https://github.com/projectbeskar/beskar7
+    keywords:
+    - cluster-api
+    - infrastructure
+    - bare-metal
+    - redfish
+    - kubernetes
+    maintainers:
+    - name: projectbeskar
+      url: https://github.com/projectbeskar
+    name: beskar7
+    sources:
+    - https://github.com/projectbeskar/beskar7
+    type: application
+    urls:
+    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.4.tgz
+    version: 0.4.0-alpha.4
+  - annotations:
+      category: Infrastructure
+    apiVersion: v2
     appVersion: v0.4.0-alpha.3
-    created: "2026-05-22T07:25:09.496719199Z"
+    created: "2026-05-23T08:11:19.083300048Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: fab74b489dcfad5e09ab1c72293c8ea90c6c15841048423df1b1fc4e12373835
@@ -30,7 +55,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.2
-    created: "2026-05-22T07:25:09.49606101Z"
+    created: "2026-05-23T08:11:19.082639245Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 3a91a3b5dad99b74fd3a39431f9afda42407d4af7124e7b513933bb98015c4ff
@@ -55,7 +80,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.1
-    created: "2026-05-22T07:25:09.49536486Z"
+    created: "2026-05-23T08:11:19.081942398Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 7029a582c6840fd0f19b28505b6cc5f3df7a058fe8dd3cff54c119cac738f02a
@@ -76,4 +101,4 @@ entries:
     urls:
     - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.1.tgz
     version: 0.4.0-alpha.1
-generated: "2026-05-22T07:25:09.494603639Z"
+generated: "2026-05-23T08:11:19.081109636Z"
