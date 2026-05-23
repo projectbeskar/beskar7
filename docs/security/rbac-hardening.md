@@ -1,5 +1,7 @@
 # RBAC Hardening
 
+> **Audience:** Operators
+
 This page documents the ClusterRole that ships with Beskar7, the rationale behind each rule, and what to verify before exposing the controller to a multi-tenant or untrusted environment.
 
 The deployed ClusterRole is generated from kubebuilder markers on the controllers in `controllers/*.go` plus a few markers in `cmd/manager/main.go`. The resulting YAML is `config/rbac/role.yaml` (kustomize) and `charts/beskar7/templates/rbac.yaml` (Helm).

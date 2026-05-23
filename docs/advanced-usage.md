@@ -1,5 +1,7 @@
 # Advanced Usage
 
+> **Audience:** Operators
+
 This page covers Beskar7 features beyond the basic "register a host, claim a host" flow. The v0.3 `RemoteConfig`/`PreBakedISO`/`UefiTargetBootSourceOverride` approaches were removed in v0.4 — the only provisioning path now is iPXE network boot to an inspection image, followed by kexec into the target OS.
 
 ## Bootstrap data flow

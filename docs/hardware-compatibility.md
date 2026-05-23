@@ -1,5 +1,7 @@
 # Hardware Compatibility
 
+> **Audience:** Operators
+
 This document describes Beskar7's hardware compatibility and requirements.
 
 ## Overview

@@ -12,7 +12,7 @@ This walkthrough deploys a 1-control-plane + 2-worker Kubernetes cluster on bare
    ```bash
    clusterctl init
    ```
-3. **cert-manager.** See [Quick Start](../docs/quick-start.md#prerequisites).
+3. **cert-manager.** See [Installation](../docs/installation.md#prerequisites).
 4. **iPXE infrastructure.** DHCP + HTTP boot server reachable from the bare-metal nodes' management network. See [iPXE Setup](../docs/ipxe-setup.md).
 5. **The beskar7-inspector image and target OS image hosted on the boot server.**
 6. **Three bare-metal servers with Redfish-compatible BMCs**, with credentials and IP addresses for each BMC.

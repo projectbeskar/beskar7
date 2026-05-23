@@ -1,5 +1,7 @@
 # Security Troubleshooting
 
+> **Audience:** Operators
+
 How to diagnose security-control failures in Beskar7.
 
 For an inventory of what's enforced, see [Security](README.md). For configuration recipes, see [Configuration](configuration.md). For general operational issues, see [Troubleshooting](../troubleshooting.md).

@@ -1,5 +1,7 @@
 # Security Configuration
 
+> **Audience:** Operators
+
 How to configure the security features Beskar7 actually enforces. For an inventory of those features, see [Security](README.md).
 
 ## BMC TLS
@@ -203,4 +205,4 @@ There is no built-in security-scanning or compliance-reporting CronJob. Use your
 - [Security](README.md)
 - [RBAC Hardening](rbac-hardening.md)
 - [Security Troubleshooting](troubleshooting.md)
-- [Quick Start](../quick-start.md)
+- [Installation](../installation.md)

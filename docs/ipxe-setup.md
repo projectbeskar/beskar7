@@ -1,5 +1,7 @@
 # iPXE Infrastructure Setup for Beskar7
 
+> **Audience:** Operators
+
 This guide explains how to set up the iPXE infrastructure required for Beskar7's network boot provisioning workflow.
 
 ## Overview

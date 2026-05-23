@@ -1,46 +1,44 @@
-# Introduction to Beskar7
+# Concepts
 
-Welcome to Beskar7, a Cluster API (CAPI) Infrastructure Provider designed for managing bare-metal Kubernetes clusters using the Redfish standard.
+> **Audience:** Operators · Developers
 
-## What is Beskar7?
+Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines. It manages the lifecycle of physical servers through four CRD kinds. This page explains what each kind represents and how they work together.
 
-Beskar7 acts as a bridge between the declarative Kubernetes API and the physical hardware managed via Redfish BMCs (Baseboard Management Controllers). It allows you to:
+## PhysicalHost
 
-*   Define your bare-metal infrastructure (`PhysicalHost` resources) within Kubernetes.
-*   Provision Kubernetes nodes onto these physical hosts using `Beskar7Machine` resources, which integrate with CAPI `Machine` objects.
-*   Boot nodes via iPXE network boot to a hardware-inspection image, validate the report against operator-supplied hardware requirements, then kexec into the target OS (Kairos, Flatcar, or any image you host).
-*   Orchestrate cluster-level infrastructure using `Beskar7Cluster` resources.
+`PhysicalHost` is the inventory record for a single bare-metal server. It carries the Redfish BMC connection details (`redfishConnection.address` + `redfishConnection.credentialsSecretRef`), the observed power state, any hardware requirements the server must satisfy, and the inspection report collected by the `beskar7-inspector` image after a PXE boot. A host is either unclaimed (`Available`), being inspected (`Inspecting`), or in use by a `Beskar7Machine` (`InUse`). On release it cycles back to `Available`. The `ConsumerRef` field is the claim lock — only the `Beskar7MachineReconciler` writes it.
 
-Beskar7 uses only universally-supported Redfish features (power state, one-time PXE boot, system info, network interface enumeration). It does not rely on Virtual Media, BIOS attribute editing, or vendor-specific Redfish extensions.
+## Beskar7Machine
 
-## Why Beskar7?
+`Beskar7Machine` is the CAPI infrastructure-machine resource. One `Beskar7Machine` maps to one Kubernetes node. It finds a compatible `PhysicalHost`, claims it, triggers the inspection boot via Redfish + iPXE, validates the returned hardware report against `spec.hardwareRequirements`, and — once validation passes — kexecs into the target OS image. The provisioning workflow is driven by `spec.inspectionImageURL`, `spec.targetImageURL`, and `spec.configurationURL`. `Beskar7Machine` gets its bootstrap data (kubeadm join token, cloud-init, etc.) from the CAPI `Machine` object's `spec.bootstrap.dataSecretName`; the manager serves that data over HTTPS at `GET /api/v1/bootstrap/{namespace}/{name}`.
 
-Managing bare-metal infrastructure traditionally involves manual steps or separate automation tools. Beskar7 brings this management into the Kubernetes ecosystem, enabling consistent, declarative lifecycle management using familiar CAPI workflows.
+## Beskar7MachineTemplate
 
-## Target Audience
+`Beskar7MachineTemplate` is consumed by `KubeadmControlPlane` and `MachineDeployment` objects to mint `Beskar7Machine` resources. It carries the same spec fields as `Beskar7Machine`. Templates must survive `clusterctl move` — they carry the `cluster.x-k8s.io/v1beta1: v1_beta1` label.
 
-This project is primarily aimed at platform administrators, SREs, and DevOps teams who manage Kubernetes clusters running directly on physical hardware and utilize servers with Redfish-compliant BMCs.
+## Beskar7Cluster
 
-## Current Status
+`Beskar7Cluster` is the CAPI infrastructure-cluster resource. It tracks the control-plane endpoint (`spec.controlPlaneEndpoint`) and reports failure domains derived from `PhysicalHost` availability. The `Beskar7ClusterReconciler` does not provision machines; it provides the cluster-level infrastructure binding that CAPI's core controller uses to set `Cluster.Status.InfrastructureReady`.
 
-Beskar7 is currently in the **Alpha** stage. Core functionality is being developed, and APIs or implementation details may change. It is not yet recommended for production deployments.
+## How a node gets provisioned
 
-## Next Steps
+1. A `Beskar7Machine` is created (by a `MachineDeployment` or directly).
+2. The reconciler finds an `Available` `PhysicalHost` that satisfies `hardwareRequirements` and claims it (sets `ConsumerRef`).
+3. It mints a per-host bearer token and sets a one-time PXE boot flag via Redfish, then powers on the host.
+4. The host PXE-boots the inspection image (`beskar7-inspector`), which posts hardware details to `POST /api/v1/inspection/{namespace}/{name}` on the manager.
+5. The controller validates the report against requirements. On failure it releases the host and tries another.
+6. On success the host kexecs into the target OS image. The machine fetches its bootstrap data from `GET /api/v1/bootstrap/{namespace}/{name}`, joins the cluster, and the `Beskar7Machine` sets `Status.Ready = true`.
 
-### For New Users
-1. **[Quick Start Guide](./quick-start.md)** - Get Beskar7 built and deployed
-2. **[Hardware Compatibility](./hardware-compatibility.md)** - Check your hardware compatibility
-3. **[API Reference](./api-reference.md)** - Learn about the available resources
+## Where to go next
 
-### For Operators
-1. **[Deployment Best Practices](./deployment-best-practices.md)** - Production deployment guidance
-2. **[Troubleshooting](./troubleshooting.md)** - Common issues and solutions
-3. **[Metrics](./metrics.md)** - Monitoring and observability
+**Operators**
 
-### For Developers
-1. **[Architecture](./architecture.md)** - Understand the components and how they interact
-2. **[Advanced Usage](./advanced-usage.md)** - Advanced configuration scenarios
-3. **[API Reference](./api-reference.md)** - Complete API documentation
+- [Installation guide](installation.md) — prerequisites, Helm install, manifest install, verification.
+- [iPXE Setup](ipxe-setup.md) — DHCP and HTTP boot server configuration.
+- [State Management](state-management.md) — PhysicalHost lifecycle and recovery.
 
-### Complete Documentation
-See **[Documentation Index](./README.md)** for a complete overview of all available documentation. 
+**Developers**
+
+- [Development setup](development-setup.md) — clone, build, test.
+- [Architecture](architecture.md) — controller flow, callback endpoint, Redfish integration.
+- [API Reference](api-reference.md) — every CRD field.

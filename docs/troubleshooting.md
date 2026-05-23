@@ -1,5 +1,7 @@
 # Troubleshooting Beskar7
 
+> **Audience:** Operators
+
 This guide helps you diagnose and resolve common Beskar7 issues.
 
 ## Quick Diagnosis

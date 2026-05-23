@@ -1,5 +1,7 @@
 # Beskar7Machine
 
+> **Audience:** Operators
+
 `Beskar7Machine` is the Beskar7 CRD that implements the CAPI infrastructure-machine contract. The reconciler that owns it is `controllers/beskar7machine_controller.go`. One Beskar7Machine maps to one Kubernetes node.
 
 For the full field reference, see [API Reference: Beskar7Machine](api-reference.md#beskar7machine). This page covers operational behavior — the reconcile flow, what conditions mean, how failures surface.

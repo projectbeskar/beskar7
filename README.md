@@ -59,7 +59,7 @@ The `--devel` flag is required while the chart version is a SemVer pre-release (
 kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.4/beskar7-manifests-v0.4.0-alpha.4.yaml
 ```
 
-See [Quick Start Guide](docs/quick-start.md) for detailed installation instructions.
+See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
 
 ## Basic Usage
 
@@ -111,7 +111,8 @@ Works with **any Redfish-compliant BMC**. Tested with Dell, HPE, Lenovo, Supermi
 
 ## Documentation
 
-- [Quick Start Guide](docs/quick-start.md) - Step-by-step getting started
+- [Installation](docs/installation.md) - Prerequisites and install steps
+- [Quick Start](docs/quick-start.md) - First provisioning flow
 - [iPXE Setup Guide](docs/ipxe-setup.md) - Infrastructure setup
 - [Architecture](docs/architecture.md) - Technical architecture details
 - [API Reference](docs/api-reference.md) - Complete API documentation

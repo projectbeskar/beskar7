@@ -1,5 +1,7 @@
 # Beskar7 Security
 
+> **Audience:** Operators
+
 This page documents the security controls Beskar7 actually enforces in v0.4.0-alpha.4. Each item is anchored to source code so you can verify the claim.
 
 If you are looking for hardening recommendations, see [Configuration](configuration.md). For RBAC details, see [RBAC Hardening](rbac-hardening.md). For incident debugging, see [Troubleshooting](troubleshooting.md).
@@ -183,5 +185,5 @@ To avoid cargo-cult security claims:
 - [Security Configuration](configuration.md)
 - [RBAC Hardening](rbac-hardening.md)
 - [Security Troubleshooting](troubleshooting.md)
-- [Quick Start](../quick-start.md)
+- [Installation](../installation.md)
 - [API Reference: PhysicalHost](../api-reference.md#physicalhost)
