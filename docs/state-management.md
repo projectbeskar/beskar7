@@ -1,5 +1,7 @@
 # State Management
 
+> **Audience:** Operators
+
 This page describes the lifecycle of a `PhysicalHost` — the states it moves through, what triggers each transition, and how to recover when it gets stuck.
 
 The state constants are defined in `api/v1beta1/physicalhost_types.go:10-26`. The transitions are driven by `controllers/physicalhost_controller.go` and the `Beskar7Machine` reconciler in `controllers/beskar7machine_controller.go`.

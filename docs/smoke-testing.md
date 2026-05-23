@@ -1,5 +1,7 @@
 # Smoke testing without hardware
 
+> **Audience:** Developers
+
 Beskar7 is a Cluster API infrastructure provider for bare-metal hosts. Most of what it does — power-cycling BMCs, driving iPXE boot, consuming inspection callbacks — requires hardware. That makes "did my install work?" surprisingly hard to answer in a lab or CI environment with no physical servers.
 
 This page describes the layered smoke-test rig in `hack/smoke/` and the `make smoke` target it ships with. The goal is to take a freshly installed operator from "pod is running" through "Beskar7Machine claims a PhysicalHost and sets ProviderID" without involving real iron.

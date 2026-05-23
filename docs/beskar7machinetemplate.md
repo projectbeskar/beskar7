@@ -1,5 +1,7 @@
 # Beskar7MachineTemplate
 
+> **Audience:** Operators
+
 `Beskar7MachineTemplate` is a pure schema. CAPI's `KubeadmControlPlane` and `MachineDeployment` reference it to mint `Beskar7Machine` objects with the same spec.
 
 There is **no** Beskar7MachineTemplate controller, **no** validating or defaulting webhook, and **no** immutability enforcement. The template's `template.spec` is whatever any author writes; CAPI clones it onto each `Beskar7Machine`. Validation of the inner spec happens when the cloned `Beskar7Machine` hits the API server (OpenAPI schema rules from `api/v1beta1/beskar7machine_types.go`).

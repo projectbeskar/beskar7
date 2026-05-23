@@ -1,5 +1,7 @@
 # PhysicalHost
 
+> **Audience:** Operators
+
 `PhysicalHost` is the Beskar7 CRD that represents one bare-metal server and its BMC connection. The reconciler that owns it is `controllers/physicalhost_controller.go`.
 
 For the full field reference, see [API Reference: PhysicalHost](api-reference.md#physicalhost). This page covers operational behavior — when fields move, what conditions mean, how the lifecycle works.

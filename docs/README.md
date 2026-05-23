@@ -4,8 +4,9 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 
 ## Getting started
 
-- [Introduction](introduction.md) — what Beskar7 does and where it fits.
-- [Quick Start Guide](quick-start.md) — install + first PhysicalHost.
+- [Concepts](introduction.md) — what each CRD represents and how a node gets provisioned.
+- [Installation](installation.md) — prerequisites, Helm install, manifest install, verification.
+- [Quick Start](quick-start.md) — first `PhysicalHost` + `Beskar7Machine` flow.
 - [Architecture](architecture.md) — controllers, callback endpoint, inspection workflow.
 
 ## API reference
@@ -42,7 +43,12 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 
 ## Development
 
-- [CI/CD and Testing](ci-cd-and-testing.md) — build, test, lint expectations.
+- [Development Setup](development-setup.md) — clone, build, test, deploy from source.
+
+## Testing
+
+- [Smoke testing](smoke-testing.md) — five-layer end-to-end harness (`make smoke`) for verifying a build against a live kind cluster.
+- [CI/CD and Testing](ci-cd-and-testing.md) — unit/integration/lint expectations and the release workflow.
 
 ## Examples
 
@@ -52,11 +58,12 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 
 If you are new to Beskar7:
 
-1. [Introduction](introduction.md)
-2. [Quick Start Guide](quick-start.md)
-3. [Hardware Compatibility](hardware-compatibility.md)
-4. [iPXE Setup](ipxe-setup.md)
-5. The CRD docs you'll be editing: [PhysicalHost](physicalhost.md), [Beskar7Machine](beskar7machine.md), [Beskar7Cluster](beskar7cluster.md).
+1. [Concepts](introduction.md)
+2. [Installation](installation.md)
+3. [Quick Start](quick-start.md)
+4. [Hardware Compatibility](hardware-compatibility.md)
+5. [iPXE Setup](ipxe-setup.md)
+6. The CRD docs you will be editing: [PhysicalHost](physicalhost.md), [Beskar7Machine](beskar7machine.md), [Beskar7Cluster](beskar7cluster.md).
 
 If you are operating an existing install:
 

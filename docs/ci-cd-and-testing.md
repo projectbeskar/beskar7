@@ -1,5 +1,7 @@
 # CI/CD Pipeline and Hardware Emulation Testing
 
+> **Audience:** Developers
+
 This document describes the comprehensive CI/CD pipeline and hardware emulation testing framework for Beskar7, enabling development and testing without access to real BMC hardware.
 
 ## 🚀 **CI/CD Pipeline Overview**

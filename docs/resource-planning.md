@@ -1,5 +1,7 @@
 # Resource Planning and Sizing Guide
 
+> **Audience:** Operators
+
 This document provides detailed guidance for sizing Beskar7 controller manager resources based on your deployment scale and requirements.
 
 ## Overview

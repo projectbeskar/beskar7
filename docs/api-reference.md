@@ -1,5 +1,7 @@
 # API Reference
 
+> **Audience:** Operators · Developers
+
 This document is the field-by-field reference for every Beskar7 CRD in `infrastructure.cluster.x-k8s.io/v1beta1`.
 
 The source of truth for every field listed here is `api/v1beta1/*_types.go`. If this document and the Go types disagree, the types win.

@@ -1,5 +1,7 @@
 # Monitoring and Metrics
 
+> **Audience:** Operators
+
 Beskar7 exposes Prometheus metrics for the controllers and the host-callback endpoint. This page lists what's actually registered (source of truth: `internal/metrics/metrics.go`), how to scrape them, and which ones are useful for alerting.
 
 ## Overview

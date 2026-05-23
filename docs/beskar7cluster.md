@@ -1,5 +1,7 @@
 # Beskar7Cluster
 
+> **Audience:** Operators
+
 `Beskar7Cluster` is the Beskar7 CRD that implements the CAPI infrastructure-cluster contract. The reconciler that owns it is `controllers/beskar7cluster_controller.go`. It is the only Beskar7 resource with an admission webhook (`api/v1beta1/webhooks/beskar7cluster_webhook.go`).
 
 For the full field reference, see [API Reference: Beskar7Cluster](api-reference.md#beskar7cluster). This page covers operational behavior — what the controller derives, when it sets which condition.
