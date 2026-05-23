@@ -1,5 +1,5 @@
 # Complete Beskar7 Cluster Example
-# Deploys a 1 control-plane + 2 worker cluster using Beskar7 v0.4.0-alpha.
+# Deploys a 1 control-plane + 2 worker cluster using Beskar7 v0.4.0-alpha.4.
 #
 # Prerequisites:
 #   1. Beskar7 controller is installed (Helm or release manifests).

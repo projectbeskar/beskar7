@@ -1,4 +1,4 @@
-# Development-style security configuration for Beskar7 v0.4.0-alpha.
+# Development-style security configuration for Beskar7 v0.4.0-alpha.4.
 #
 # Loosens TLS verification for self-signed BMC certs typical in lab setups.
 # Do NOT use this configuration in production.

@@ -291,7 +291,7 @@ kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep -i p
 
 ### 9. Machine Never Becomes Ready
 
-**Symptom:** Beskar7Machine stays in "Provisioning" or "Inspecting" phase
+**Symptom:** Beskar7Machine stays in `Pending` or `Inspecting` phase. (The controller only writes one of four phase strings: `Pending`, `Inspecting`, `Provisioned`, `Failed` — no `Provisioning` phase exists; if you see that in a script, the script is filtering for a value that will never match.)
 
 **Check Workflow:**
 ```bash

@@ -10,7 +10,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 - **Reliable** - Only uses universally-supported Redfish features
 - **Vendor Agnostic** - Works with any Redfish-compliant BMC
 - **Hardware Discovery** - Collects real hardware specs via inspection
-- **Production Ready** - Clean architecture, minimal dependencies
+- **Clean architecture, minimal dependencies** - Distroless image, no CGO, narrow RBAC
 
 ## How It Works
 
@@ -26,8 +26,8 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.0-alpha  
-**Status:** Alpha - Under active development  
+**Version:** v0.4.0-alpha.4  
+**Status:** Alpha - Under active development. API may still change before v0.4.0 GA.  
 **Breaking Changes:** v0.4.0 is NOT compatible with v0.3.x ([see CHANGELOG](CHANGELOG.md))
 
 ## Installation
@@ -47,13 +47,16 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 ```bash
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
-helm install beskar7 beskar7/beskar7 --namespace beskar7-system --create-namespace
+helm install --devel beskar7 beskar7/beskar7 \
+  --namespace beskar7-system --create-namespace
 ```
+
+The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.4`); drop it once a non-prerelease tag is cut.
 
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha/beskar7-manifests-v0.4.0-alpha.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.4/beskar7-manifests-v0.4.0-alpha.4.yaml
 ```
 
 See [Quick Start Guide](docs/quick-start.md) for detailed installation instructions.

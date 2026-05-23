@@ -33,7 +33,12 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 
 1. **Wait for owner Machine.** If the owning CAPI `Machine` does not have an `OwnerReference` to this Beskar7Machine yet, requeue.
 2. **Bootstrap data check.** Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and set `FailureReason` (terminal).
-3. **Claim a host.** `findAndClaimOrGetAssociatedHost` lists `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available`. The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
+3. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
+    1. If `Spec.ProviderID` is set (only after inspection completes), `Get` the host directly by the encoded `<ns>/<name>` and return it.
+    2. List PhysicalHosts in the namespace and return the one whose `Spec.ConsumerRef.Name` matches this Beskar7Machine — covers the window between claim and `ProviderID` assignment. Without this branch the controller would forget its own claim after the first reconcile (the host has transitioned to `InUse` so the next branch's `Available` filter skips it).
+    3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available`. The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues.
+
+    See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
 4. **Signal the bootstrap URL.** Compute the URL deterministically as `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and patch `infrastructure.cluster.x-k8s.io/bootstrap-url` onto the host's annotations. The host reconciler persists it to `Status.Bootstrap.URL`.
 5. **Trigger inspection.** When the host transitions to `InUse`:
     - Open a Redfish client with the host's credentials.
@@ -42,7 +47,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
     - Patch the `inspection-request` annotation on the host with value `inspect`. The host reconciler transitions to `Inspecting`.
 6. **Wait for inspection.** While the host is `Inspecting`, monitor `Status.InspectionPhase`. If `Status.InspectionTimestamp` is older than `DefaultInspectionTimeout` (10 minutes), call `markTerminalFailure(InspectionTimedOut, ...)` and stop. Inspection timeout is terminal — the operator must investigate (likely an iPXE misconfiguration) and delete-and-recreate.
 7. **Validate hardware.** When `Status.InspectionPhase == Complete`, sum CPU cores across `report.cpus[]`, parse memory across `report.memory[]` (using the `parseMemoryCapacityGB` helper for `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` suffixes), and sum disk size across `report.disks[]`. If any minimum is violated, call `markTerminalFailure(HardwareRequirementsNotMet, ...)`. Hardware-validation failures are terminal — the BMC's hardware does not change at runtime.
-8. **Mark ready.** When validation passes, signal the host (`inspection-request: inspect-complete`) which moves the host to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, and sets `InfrastructureReady=True` and `Status.Ready=true`.
+8. **Mark ready.** When validation passes, signal the host (`inspection-request: inspect-complete`) which moves the host to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, sets `InfrastructureReady=True`, `Status.Ready=true`, and `Status.Initialization.Provisioned=true` (the CAPI v1beta2 contract field that CAPI core lifts into `Machine.status.initialization.infrastructureProvisioned` and uses to advance the parent Machine past `Pending`).
 
 ## Conditions
 

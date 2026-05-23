@@ -446,12 +446,13 @@ spec:
     path: /metrics
 ```
 
-**Key Metrics to Monitor:**
-- `controller_runtime_reconcile_total` - Reconciliation attempts
-- `controller_runtime_reconcile_errors_total` - Reconciliation errors
-- `workqueue_depth` - Work queue depth
-- `physical_host_state_total` - PhysicalHost state distribution
-- `beskar7_machine_provisioning_duration_seconds` - Provisioning time
+**Key Metrics to Monitor** (Beskar7 metrics carry namespace `beskar7` and subsystem `controller` — full names match `beskar7_controller_<base>`; see `internal/metrics/metrics.go` and [`docs/metrics.md`](metrics.md)):
+
+- `controller_runtime_reconcile_total` - Reconciliation attempts (controller-runtime upstream metric, no prefix)
+- `controller_runtime_reconcile_errors_total` - Reconciliation errors (controller-runtime upstream)
+- `workqueue_depth` - Work queue depth (controller-runtime upstream)
+- `beskar7_controller_physicalhost_states_total` - PhysicalHost state distribution
+- `beskar7_controller_beskar7machine_provisioning_duration_seconds` - Beskar7Machine provisioning time
 
 ### 2. Logging Configuration
 

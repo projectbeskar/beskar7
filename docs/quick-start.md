@@ -52,7 +52,7 @@ kubectl get pods -n cert-manager
     # echo $CR_PAT | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 
     # Build and push the image. The default tag is set in the Makefile:
-    #   IMG ?= ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha
+    #   IMG ?= ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.4
     # Builds for linux/amd64 by default.
     make docker-build docker-push
     ```
@@ -77,7 +77,7 @@ kubectl get pods -n cert-manager
     make install
     ```
 3.  **Deploy the Controller Manager:**
-    This will deploy the controller using the image defined in the Makefile (`ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha` by default — see `Makefile:15`).
+    This will deploy the controller using the image defined in the Makefile (`ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.4` by default — see `Makefile:15`).
     ```bash
     make deploy
     ```

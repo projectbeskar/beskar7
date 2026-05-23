@@ -32,6 +32,8 @@ The controller derives the endpoint by:
 
 If `Spec.ControlPlaneEndpoint.Host` is non-empty, the controller honors it authoritatively and skips discovery. If only `Spec.ControlPlaneEndpoint.Port` is set, discovery still finds the host but the user's port wins. The default port when neither is supplied is `6443`.
 
+Once the endpoint is populated, the controller sets `Status.Ready=true` AND `Status.Initialization.Provisioned=true` together. The second field is the CAPI v1beta2 contract: CAPI core lifts it into `Cluster.status.initialization.infrastructureProvisioned`, which the KubeadmConfig + Machine controllers gate on. Without it the bootstrap data secret is never generated and downstream Machine reconcile stalls — this was the gap fixed in v0.4.0-alpha.4.
+
 ### Failure domains
 
 The controller lists `PhysicalHost` resources in the same namespace, extracts unique values from the `topology.kubernetes.io/zone` label, and populates `Status.FailureDomains`:
