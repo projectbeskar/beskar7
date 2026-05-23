@@ -55,7 +55,7 @@ graph TD
     P -- iPXE Script --> Q;
     Q -- Inspection Image --> R;
     R -- Hardware Report --> L;
-    L -- Update Status --> J;
+    L -- Write ConfigMap + annotation --> J;
 ```
 
 **Workflow:**
@@ -249,9 +249,17 @@ The inspection workflow is the core innovation in Beskar7 v0.4.0+. It provides r
    Body: JSON with all hardware details
    |
    v
-8. Inspection Handler updates PhysicalHost status
-   Sets InspectionReport field
-   Sets InspectionPhase to Complete
+8. Inspection Handler validates the report, writes it to a per-host
+   ConfigMap (`<host>-inspection-result`), and patches an
+   `infrastructure.cluster.x-k8s.io/inspection-result` annotation onto
+   the PhysicalHost. The handler itself does NOT touch PhysicalHost
+   status (D-005: each controller owns its resource's status).
+   |
+   v
+8a. PhysicalHost reconciler reads the annotation, fetches the
+    ConfigMap, persists the InspectionReport to Status, transitions
+    InspectionPhase to Complete, then GCs the ConfigMap and clears
+    the annotation.
    |
    v
 9. Beskar7Machine controller validates hardware

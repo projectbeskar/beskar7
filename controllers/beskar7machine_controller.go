@@ -89,6 +89,12 @@ type Beskar7MachineReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines/finalizers,verbs=update
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch;patch
+// Beskar7MachineTemplate is read-only — there is no template controller. CAPI's
+// MachineDeployment / KCP walks the template via the shared informer cache, so
+// list+watch are required. The chart's hand-maintained RBAC has carried this
+// rule for a long time; this marker makes the generated config/rbac/role.yaml
+// match the chart so kustomize-based installs are not silently more restrictive.
+//+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machinetemplates,verbs=get;list;watch
 // Secret access in this controller is by name only:
 //   - getRedfishClientForHost: r.Get on the BMC credentials Secret named
 //     by host.Spec.RedfishConnection.CredentialsSecretRef.

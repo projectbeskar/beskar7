@@ -105,48 +105,58 @@ kubectl get physicalhost server-01 -o jsonpath='{.status.inspectionPhase}'
 kubectl get physicalhost server-01 -o jsonpath='{.status.inspectionReport}' | jq
 ```
 
-Example inspection report:
+Example inspection report (the actual shape — `cpus`/`memory`/`disks`/`nics` are arrays of structs, not flat objects; full definitions in `api/v1beta1/physicalhost_types.go`):
 
 ```json
 {
-  "timestamp": "2025-11-26T10:30:00Z",
-  "cpus": {
-    "count": 2,
-    "cores": 16,
-    "threads": 32,
-    "model": "Intel Xeon E5-2640 v4",
-    "architecture": "x86_64",
-    "mhz": 2400
-  },
-  "memory": {
-    "totalBytes": 68719476736,
-    "totalGB": 64
-  },
+  "timestamp": "2026-05-23T10:30:00Z",
+  "manufacturer": "Dell Inc.",
+  "model": "PowerEdge R730",
+  "serialNumber": "ABC1234",
+  "bootModeDetected": "UEFI",
+  "firmwareVersion": "2.15.0",
+  "cpus": [
+    {
+      "id": "cpu0",
+      "vendor": "GenuineIntel",
+      "model": "Intel Xeon E5-2640 v4",
+      "cores": 16,
+      "threads": 32,
+      "frequency": "2.4GHz"
+    }
+  ],
+  "memory": [
+    {
+      "id": "DIMM0",
+      "type": "DDR4",
+      "capacity": "32GiB",
+      "speed": "2400MHz"
+    },
+    {
+      "id": "DIMM1",
+      "type": "DDR4",
+      "capacity": "32GiB",
+      "speed": "2400MHz"
+    }
+  ],
   "disks": [
     {
-      "device": "/dev/sda",
-      "sizeBytes": 500107862016,
+      "name": "sda",
+      "model": "Samsung 870 EVO",
       "sizeGB": 500,
       "type": "SSD",
-      "model": "Samsung 870 EVO",
-      "serial": "S5H1NS0T123456"
+      "serialNumber": "S5H1NS0T123456"
     }
   ],
   "nics": [
     {
-      "interface": "eth0",
+      "name": "eth0",
       "macAddress": "00:25:90:f0:79:00",
-      "linkStatus": "up",
-      "speedMbps": 1000,
-      "driver": "ixgbe"
+      "driver": "ixgbe",
+      "speed": "1Gbps",
+      "ipAddresses": ["10.0.0.42"]
     }
-  ],
-  "system": {
-    "manufacturer": "Dell Inc.",
-    "model": "PowerEdge R730",
-    "serialNumber": "ABC1234",
-    "biosVersion": "2.15.0"
-  }
+  ]
 }
 ```
 

@@ -6,7 +6,37 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
-Work landed since the v0.4.0-alpha entry below. See `.claude/context/PROJECT_CONTEXT.md` for the full punch-list and PR history.
+*No unreleased work — see the per-tag entries below. Going forward, each released tag gets its own entry; this section stays empty between tags.*
+
+## [v0.4.0-alpha.4] - 2026-05-23
+
+The "smoke-test arc": a hardware-free CI smoke gate, the four production bugs the gate uncovered, and the CAPI v1.10+ conformance work needed to make any of it run.
+
+### Added
+- **CAPI v1beta1 + v1beta2 contract labels** on all four CRDs (PR #65). Without these, CAPI v1.10+ cannot discover Beskar7 infrastructure objects at all.
+- **CAPI v1beta2 status contract**: `status.initialization.provisioned` on `Beskar7Cluster` and `Beskar7Machine` (PR #68). CAPI core lifts this into the parent `Cluster`/`Machine.status.initialization.infrastructureProvisioned`; without it, KubeadmConfig never generates bootstrap data and Beskar7Machine never mints its bearer token.
+- **`cmd/mock-inspector` binary** (PR #69) — standalone Go binary that simulates an iPXE-booted inspector POST to the controller's bootstrap callback. Published as `ghcr.io/projectbeskar/beskar7/mock-inspector:<tag>` alongside the controller. Powers smoke layer 5; also doubles as a manual-demo entry point via `hack/smoke/manifests/50-mock-inspector-job.yaml`.
+- **kind-based CI smoke gate** (PR #66): every PR's `E2E Setup Validation` job spins up kind, installs cert-manager + CAPI core + the in-tree Helm chart, then runs `make smoke` end-to-end through layer 5 (ProviderID assertion). Replaces the previous ad-hoc "PhysicalHost against test.example.com" check.
+- **Unit-test coverage for `internal/redfishmock`** (PR #67): 88.9% statement coverage. Documents the spec-conformant unauthenticated service root as a regression test.
+- **`+kubebuilder:rbac` marker for `beskar7machinetemplates`** so generated `config/rbac/role.yaml` matches the chart's hand-maintained RBAC (PR A — this CHANGELOG entry's PR).
+
+### Fixed
+- **`findAndClaimOrGetAssociatedHost` re-find by `ConsumerRef.Name`** (PR #68). Previously the controller could only re-find a claimed host by `Spec.ProviderID` (set only after inspection) or by `Status.State=Available` (filters out claimed hosts). After a claim, the host transitioned to `InUse` and became invisible to the controller; provisioning looped "No available host" forever. New third lookup branch returns the host whose `ConsumerRef.Name` matches this Beskar7Machine.
+- **Bootstrap-token mint race** (PR #68). `bootstrapTokenStillValid` now honours a pending `BootstrapTokenAnnotation`; the `setBootstrapTokenAnnotation` patch dropped its `OptimisticLock` (the annotation key is unique to this controller, so the lock was over-defensive and was actually causing the failure mode it was meant to prevent — repeated Conflicts, repeated re-mints, every Secret write overwriting the previous plaintext while Status held a different hash). Inspector callbacks 401'd as a result.
+- **`setInspectionResultAnnotation` `OptimisticLock` drop** (PR #68). Same shape as the bootstrap-token annotation fix.
+- **ConfigMap RBAC + informer pre-warm** (PR #68). Added `list, watch` to the ConfigMap RBAC so the controller-runtime cache can populate the informer the inspection handler uses; the handler also pre-warms the informer at `SetupCallbackServer` time so the first POST does not stall on initial sync.
+
+### Changed
+- `bootstrapTokenStillValid` now inspects both `Status.Bootstrap` and the pending `BootstrapTokenAnnotation` (PR #68 — companion to the mint-race fix).
+- Helm chart `namespace.create` default flipped from `true` to `false` and chart pod-level `securityContext` now includes `fsGroup: 65532`, `runAsGroup: 65532`, `seccompProfile.type: RuntimeDefault` to match `config/manager/manager.yaml` (PR #62, shipped in alpha.2 but logged here for completeness).
+
+### Smoke-rig changes
+- Smoke runner gains layer 5 (inspector POST → `state=Ready` → `Beskar7Machine.Spec.ProviderID`) using the new `cmd/mock-inspector` Job (PR #69).
+- Smoke fixture restructured: `40-cluster-and-machine.yaml` pre-bakes a bootstrap data Secret and points `Machine.Spec.Bootstrap.DataSecretName` at it directly, bypassing KubeadmConfig generation (which would otherwise wait forever for a non-existent control plane).
+- Runner auto-derives both `mock-redfish` and `mock-inspector` image tags from the installed controller. `MOCK_IMAGE` and `MOCK_INSPECTOR_IMAGE` env vars override.
+- Smoke runner teardown force-removes finalizers after a 5s grace period so the namespace can finalize cleanly.
+
+## [v0.4.0-alpha] - 2025-11-27
 
 ### Added
 - TLS CA bundle support on `RedfishConnection` via `caBundleSecretRef` (PR-3.2 / SEC-5). Mutually exclusive with `insecureSkipVerify=true`; conflict reported as `RedfishConnectionReady=False (InsecureCABundleConflict)`.
@@ -45,8 +75,6 @@ Work landed since the v0.4.0-alpha entry below. See `.claude/context/PROJECT_CON
 ### Security
 - Inspection POST endpoint now requires TLS and `Authorization: Bearer <token>`. Body capped at 1 MiB; over-limit returns 413; auth failures return opaque 401 (PR-5.2 / SEC-1).
 - Bootstrap GET endpoint requires the same per-host bearer token; chain-walk failures collapse to opaque 404 to avoid leaking host topology (PR-5.3).
-
-## [v0.4.0-alpha] - 2025-11-27
 
 ### BREAKING CHANGES
 
@@ -130,9 +158,11 @@ This release represents a complete architectural redesign of Beskar7, moving fro
 
 ##### Beskar7Machine API
 - **New Fields**: Inspection workflow configuration
-  - `InspectionImage`: URL for iPXE boot to inspection environment
-  - `TargetOSImage`: URL for final OS image (kexec target)
-  - `BootMode`: Removed (UEFI only)
+  - `inspectionImageURL`: iPXE script URL that boots the inspection image
+  - `targetImageURL`: URL for the final OS image (kexec target after inspection)
+  - `configurationURL`: optional OS configuration URL passed through to the target
+  - `hardwareRequirements`: minimum CPU / memory / disk validated against the inspection report
+  - `BootMode`: removed (UEFI only)
 - **Condition Constants**: Added condition types
   - `MachineProvisionedCondition`
   - `WaitingForHostReason`
@@ -260,7 +290,7 @@ This release represents a complete architectural redesign of Beskar7, moving fro
 
 #### New Examples
 - **simple-cluster.yaml**: Updated for iPXE + inspection workflow
-  - Shows InspectionImage and TargetOSImage fields
+  - Shows `inspectionImageURL` and `targetImageURL` fields
   - Hardware requirements specification
   - Simplified configuration
 
@@ -643,7 +673,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...HEAD
+[v0.4.0-alpha.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...v0.4.0-alpha.4
 [v0.4.0-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.3.4-alpha...v0.4.0-alpha
 [v0.3.4-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.2.7...v0.3.4-alpha
 [v0.2.7]: https://github.com/projectbeskar/beskar7/releases/tag/v0.2.7

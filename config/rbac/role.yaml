@@ -80,6 +80,14 @@ rules:
   - patch
   - update
 - apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7machinetemplates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - rbac.authorization.k8s.io
   resources:
   - clusterrolebindings

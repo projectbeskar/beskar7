@@ -1,6 +1,6 @@
 # Beskar7 Security
 
-This page documents the security controls Beskar7 actually enforces in v0.4.0-alpha. Each item is anchored to source code so you can verify the claim.
+This page documents the security controls Beskar7 actually enforces in v0.4.0-alpha.4. Each item is anchored to source code so you can verify the claim.
 
 If you are looking for hardening recommendations, see [Configuration](configuration.md). For RBAC details, see [RBAC Hardening](rbac-hardening.md). For incident debugging, see [Troubleshooting](troubleshooting.md).
 
@@ -101,17 +101,27 @@ The controllers' RBAC markers grant Secret read access only as needed:
 
 - `PhysicalHost` reconciler: `secrets: get, list, watch` (the watch is required by the controller-runtime informer that triggers reconciles on credential rotation).
 - `Beskar7Machine` reconciler: `secrets: get, create, update, patch, delete` (no list/watch — Secret access is by name only).
-- ConfigMaps: `get, create, update, patch, delete` (no list/watch — fetched by name).
+- ConfigMaps: `get, list, watch, create, update, patch, delete`. The inspection handler upserts a per-host inspection-result ConfigMap via the cached client, which requires the controller-runtime informer to be backed by `list, watch`. The handler also pre-warms the informer at `SetupCallbackServer` time so the first POST does not stall waiting for an initial sync.
 
-Source: `controllers/physicalhost_controller.go:81-98`, `controllers/beskar7machine_controller.go:87-103`.
+Source: `controllers/physicalhost_controller.go:97`, `controllers/beskar7machine_controller.go:87-103`, `controllers/inspection_handler.go` (`SetupCallbackServer` pre-warm), `config/rbac/role.yaml`.
 
-The cluster-wide list/watch on Secret remains as a residual scope (tracked as `SEC-2` / D-007 in `.claude/context/PROJECT_CONTEXT.md`); a label-selected partial cache is an open v0.5 follow-up. See [RBAC Hardening](rbac-hardening.md) for detail.
+The cluster-wide list/watch on Secret AND ConfigMap remain as residual scopes (tracked as `SEC-2` / D-007 in `.claude/context/PROJECT_CONTEXT.md`); a label-selected partial cache for both is an open v0.5 follow-up. See [RBAC Hardening](rbac-hardening.md) for detail.
 
 ### 6. Pod security context
 
-The kustomize manifests under `config/manager/` and the Helm chart in `charts/beskar7/templates/deployment.yaml` set:
+The kustomize manifests under `config/manager/` and the Helm chart in `charts/beskar7/templates/deployment.yaml` set both pod-level and container-level security context:
 
 ```yaml
+# Pod-level (chart: .Values.podSecurityContext)
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level (chart: .Values.securityContext)
 securityContext:
   runAsNonRoot: true
   runAsUser: 65532
@@ -120,9 +130,9 @@ securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop: ["ALL"]
-  seccompProfile:
-    type: RuntimeDefault
 ```
+
+`fsGroup` and the matching `runAsGroup` on the pod-level context are required so the non-root container (UID 65532) can read the cert-manager-issued TLS Secret mounted at `/tmp/k8s-webhook-server/serving-certs` (Secret volumes use `defaultMode: 0400` to match the kustomize variant; without `fsGroup` the files are owned by `root:root` and the manager crashloops on the eager TLS load in the inspection callback server — this was the bug fixed in v0.4.0-alpha.2).
 
 ### 7. NetworkPolicy
 

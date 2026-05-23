@@ -13,12 +13,16 @@ metadata:
   name: manager-role
 rules:
 
-# ConfigMaps: only fetched by name (inspection-result handoff) and
-# created/updated/deleted by the controllers. No informer; list/watch are
-# intentionally omitted.
+# ConfigMaps: inspection-result handoff (D-005). list+watch are required
+# so the controller-runtime cache can populate the ConfigMap informer used
+# by the inspection handler's CreateOrUpdate path; the handler also
+# pre-warms the informer at SetupCallbackServer time so the first POST
+# does not stall waiting for an initial sync. Cluster-wide scope is
+# inherited from the role's scope; see "Residual cluster-wide scope"
+# below for the closure plan.
 - apiGroups: [""]
   resources: ["configmaps"]
-  verbs: ["create", "delete", "get", "patch", "update"]
+  verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 
 # Events: emitted by the controllers for major lifecycle changes.
 - apiGroups: [""]
@@ -82,15 +86,18 @@ rules:
 
 | Controller | What it accesses | Why |
 |---|---|---|
-| `PhysicalHostReconciler` | `physicalhosts`, `physicalhosts/status`, `physicalhosts/finalizers`, `secrets` (get + list/watch via informer), `configmaps` (get + create/delete/patch/update), `events` | Manage the host's lifecycle, fetch BMC credentials, consume the inspection-result ConfigMap. |
+| `PhysicalHostReconciler` | `physicalhosts`, `physicalhosts/status`, `physicalhosts/finalizers`, `secrets` (get + list/watch via informer), `configmaps` (get + create/delete/patch/update + list/watch via informer), `events` | Manage the host's lifecycle, fetch BMC credentials, consume the inspection-result ConfigMap (handoff from the inspection HTTP handler). |
 | `Beskar7MachineReconciler` | `beskar7machines`, `beskar7machines/status`, `beskar7machines/finalizers`, `physicalhosts` (get + patch), `secrets` (get + create/update/patch/delete), `machines` / `machines/status` (read), `cluster.x-k8s.io` resources (read) | Claim a host, read bootstrap data, mint per-host token Secret, walk to owner Machine. |
 | `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `machines` (read), `physicalhosts` (read for failure-domain discovery) | Derive the control-plane endpoint and failure domains. |
 
 ## Residual cluster-wide scope
 
-The Secret `list, watch` verbs are cluster-wide, not namespace-scoped. This is required by the controller-runtime informer registered by `PhysicalHostReconciler` to trigger reconciles on credential rotation. The data path of every controller fetches Secrets by name only; the cluster-wide scope is for the watch only.
+Two resources have cluster-wide `list, watch`:
 
-This residual scope is tracked as `SEC-2` (the partial closure decision is `D-007`) in `.claude/context/PROJECT_CONTEXT.md`. A label-selected partial cache is the planned v0.5 follow-up: change the informer to watch only Secrets carrying a Beskar7-owned label, narrowing the cache to BMC-credentials + bootstrap-token Secrets.
+- **Secrets**: required by the controller-runtime informer registered by `PhysicalHostReconciler` to trigger reconciles on credential rotation. The data path of every controller fetches Secrets by name only; the cluster-wide scope is for the watch only.
+- **ConfigMaps**: required by the controller-runtime cache to populate the informer used by the inspection HTTP handler's `CreateOrUpdate` of the per-host inspection-result ConfigMap. Without `list, watch` the reflector loops on `configmaps is forbidden` and the first POST stalls waiting for an initial sync (this is the bug that surfaced during smoke layer 5 development and was fixed in v0.4.0-alpha.4). The handler also pre-warms the informer at `SetupCallbackServer` time so the first POST does not stall.
+
+Both residual scopes are tracked as `SEC-2` (the partial closure decision is `D-007`) in `.claude/context/PROJECT_CONTEXT.md`. A label-selected partial cache is the planned v0.5 follow-up: narrow each informer to objects carrying a Beskar7-owned label so the cache is bounded to BMC-credentials + bootstrap-token Secrets and inspection-result ConfigMaps.
 
 ## Verification
 

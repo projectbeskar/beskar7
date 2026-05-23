@@ -1,10 +1,19 @@
 # Simple Beskar7 Cluster Example
 #
-# This example demonstrates a minimal working cluster with:
+# This example demonstrates the resource shape for a small cluster:
 # - 1 control plane node
 # - 2 worker nodes
 # - Hardware inspection enabled
 # - Minimum hardware requirements
+#
+# Scope: this fixture shows the resource graph but is NOT a one-shot deployable
+# cluster. A real cluster also needs a `KubeadmControlPlane` (referenced from
+# `Cluster.spec.controlPlaneRef`) and typically a `MachineDeployment` + matching
+# `Beskar7MachineTemplate` for the workers. See `examples/complete-cluster.yaml`
+# for the complete setup. The `controlPlaneRef` is omitted from the `Cluster`
+# below so this YAML can be `kubectl apply`-ed for demos without an unresolved
+# reference; the resulting cluster will block at "Waiting for control plane"
+# until you add the KCP.
 
 ---
 # Step 1: Create BMC credentials secret
@@ -63,8 +72,12 @@ metadata:
   name: test-cluster
   namespace: default
 spec:
+  # The webhook rejects an empty controlPlaneEndpoint.host. In production
+  # the controller derives this from a control-plane Machine's IP; for a
+  # demo we set a placeholder. The PhysicalHost reconciliation does not
+  # depend on this value.
   controlPlaneEndpoint:
-    host: ""  # Will be filled by controller
+    host: "192.0.2.1"  # RFC 5737 documentation prefix; replace with your real VIP/load-balancer
     port: 6443
 
 ---
@@ -87,11 +100,13 @@ spec:
     kind: Beskar7Cluster
     name: test-cluster
     namespace: default
-  controlPlaneRef:
-    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-    kind: KubeadmControlPlane
-    name: test-cluster-control-plane
-    namespace: default
+  # controlPlaneRef intentionally omitted — see the header comment. Add a
+  # KubeadmControlPlane (and uncomment this block) for a complete CAPI setup.
+  # controlPlaneRef:
+  #   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+  #   kind: KubeadmControlPlane
+  #   name: test-cluster-control-plane
+  #   namespace: default
 
 ---
 # Step 5: Create control plane machine
