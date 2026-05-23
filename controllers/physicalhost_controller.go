@@ -31,11 +31,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	conditions "sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -163,9 +165,11 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
 			"Failed to retrieve credentials: %v", err)
-		// The deferred patch will persist the error status; return the error so the
-		// caller can decide whether to requeue.
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		// Return the error without an explicit RequeueAfter so the workqueue's
+		// exponential rate-limiter (configured in SetupWithManager) governs the
+		// retry interval. A fixed 1-minute requeue would override the rate-limiter
+		// and ping a persistently-misconfigured host every 60s indefinitely.
+		return ctrl.Result{}, err
 	}
 
 	// Determine insecure setting
@@ -196,7 +200,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
 			"%s", err.Error())
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
+		return ctrl.Result{}, err
 	}
 
 	// Create Redfish client
@@ -213,7 +218,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
 			"Connection failed: %v", err)
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
+		return ctrl.Result{}, err
 	}
 	defer rfClient.Close(ctx)
 
@@ -225,7 +231,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
 			"Query failed: %v", err)
-		return ctrl.Result{RequeueAfter: 1 * time.Minute}, err
+		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
+		return ctrl.Result{}, err
 	}
 
 	// Update hardware details
@@ -560,6 +567,18 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.SecretToPhysicalHosts),
 		).
+		WithOptions(controller.Options{
+			// Exponential backoff for transient Redfish failures. The previous
+			// fixed RequeueAfter: 1*time.Minute on every error path meant a
+			// persistently-misconfigured BMC was pinged every 60s forever; now
+			// a failing host backs off geometrically (5s, 10s, 20s, ... capped
+			// at 30m) so a wrong address / wrong creds / unreachable BMC settles
+			// into a low-frequency check instead of a hot loop.
+			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](
+				5*time.Second,
+				30*time.Minute,
+			),
+		}).
 		Complete(r)
 }
 

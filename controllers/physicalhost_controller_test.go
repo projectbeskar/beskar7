@@ -327,9 +327,17 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err := failedReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
 			Expect(err).NotTo(HaveOccurred()) // First reconcile adds finalizer
 
-			_, err = failedReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
+			result, err := failedReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("connection timeout"))
+
+			By("Asserting error paths defer requeue cadence to the workqueue rate-limiter (BUG-14)")
+			// The error returned alongside Result{} signals controller-runtime to
+			// requeue via the configured exponential rate-limiter (set in
+			// SetupWithManager). An explicit RequeueAfter here would override the
+			// rate-limiter and pin a misconfigured BMC to a fixed 60s ping forever.
+			Expect(result.RequeueAfter).To(BeZero(), "Redfish-connection-failure path must not set RequeueAfter; the workqueue rate-limiter governs the retry cadence")
+			Expect(result.Requeue).To(BeFalse(), "Redfish-connection-failure path must not set Requeue=true; the error return already triggers a rate-limited requeue")
 
 			By("Checking error conditions")
 			Eventually(func(g Gomega) {
