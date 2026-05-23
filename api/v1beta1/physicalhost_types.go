@@ -24,13 +24,6 @@ const (
 	StateReady = "Ready"
 	// StateError indicates the host is in an error state
 	StateError = "Error"
-
-	// Deprecated states - for backward compatibility with old code
-	// These map to new states and should not be used in new code
-	StateClaimed        = "InUse"      // Deprecated: Use StateInUse
-	StateProvisioning   = "Inspecting" // Deprecated: Use StateInspecting
-	StateProvisioned    = "Ready"      // Deprecated: Use StateReady
-	StateDeprovisioning = "Error"      // Deprecated: Handle in controller
 )
 
 // Inspection phases
