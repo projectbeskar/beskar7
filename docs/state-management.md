@@ -4,7 +4,7 @@
 
 This page describes the lifecycle of a `PhysicalHost` — the states it moves through, what triggers each transition, and how to recover when it gets stuck.
 
-The state constants are defined in `api/v1beta1/physicalhost_types.go:10-26`. The transitions are driven by `controllers/physicalhost_controller.go` and the `Beskar7Machine` reconciler in `controllers/beskar7machine_controller.go`.
+The state constants are defined in `api/v1beta1/physicalhost_types.go`. The transitions are driven by `controllers/physicalhost_controller.go` and the `Beskar7Machine` reconciler in `controllers/beskar7machine_controller.go`.
 
 ## States
 
@@ -19,7 +19,7 @@ The state constants are defined in `api/v1beta1/physicalhost_types.go:10-26`. Th
 | `StateReady` | `"Ready"` | The inspection report has been validated and persisted; the host is ready for the target OS. |
 | `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. |
 
-The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code retains deprecated aliases (`StateClaimed = "InUse"`, etc.) for backward compatibility, but they all map to the new state strings — do not rely on the old strings appearing in `kubectl get`.
+The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code previously kept deprecated alias constants (`StateClaimed = "InUse"`, etc.); those aliases have been removed. Code that imported them must switch to the canonical state constants above.
 
 ## State diagram
 
