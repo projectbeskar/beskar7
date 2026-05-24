@@ -44,5 +44,8 @@ config/test-crds/
 fix-go-env.sh
 
 # Generated manifest files
-# beskar7-manifests-*.yaml
+# Generated release manifests (produced by `make release-manifests`; the
+# release workflow attaches them as GitHub Release assets but they should
+# not be tracked in git).
+beskar7-manifests-*.yaml
 field-testing/
