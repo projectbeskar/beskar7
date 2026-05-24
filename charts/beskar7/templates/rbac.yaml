@@ -1,4 +1,10 @@
 {{- if .Values.rbac.create }}
+{{- if not .Values.watchNamespaces }}
+# Cluster-wide RBAC (default — watchNamespaces is empty).
+# Grants the manager access to Beskar7 CRDs, Secrets, ConfigMaps, etc. in
+# ALL namespaces. This is the historical scope. To tighten, set
+# .Values.watchNamespaces to a non-empty list — the rendered manifest then
+# switches to per-namespace Role/RoleBinding pairs (see the else branch).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -8,10 +14,7 @@ metadata:
 rules:
 # ConfigMaps: inspection-result handoff (D-005). list+watch are required
 # so the controller-runtime cache can populate the ConfigMap informer
-# used by the inspection handler's CreateOrUpdate path. Without them the
-# reflector loops on "configmaps is forbidden" and the first inspection
-# POST blocks until the informer sync timeout returns 5xx. (Supersedes
-# the SEC-2 / D-007 note that previously omitted list/watch.)
+# used by the inspection handler's CreateOrUpdate path.
 - apiGroups:
   - ""
   resources:
@@ -35,7 +38,7 @@ rules:
 # create/update/patch/delete for the per-host bootstrap-token Secret.
 # list/watch are required because PhysicalHostReconciler.SetupWithManager
 # registers a .Watches(&corev1.Secret{}, ...) informer for credential
-# rotation. SEC-2 residual scope after PR-7 (D-007).
+# rotation. SEC-2 residual cluster-wide scope (tighten via watchNamespaces).
 - apiGroups:
   - ""
   resources:
@@ -135,4 +138,207 @@ subjects:
 - kind: ServiceAccount
   name: {{ include "beskar7.serviceAccountName" . }}
   namespace: {{ include "beskar7.namespace" . }}
+{{- else }}
+# Tightened RBAC: watchNamespaces is non-empty (SEC-2 PR 2).
+#
+# Three pieces:
+#   1. Minimal ClusterRole + ClusterRoleBinding for genuinely cluster-scoped
+#      reads (rbac.authorization.k8s.io/clusterroles + clusterrolebindings).
+#      These are not narrowable to a namespace.
+#   2. Role + RoleBinding in the operator's own namespace for leader-election
+#      (Lease) and operator-side Event creation.
+#   3. Role + RoleBinding per watched namespace for everything else: Secrets,
+#      ConfigMaps, Beskar7 CRDs, cluster.x-k8s.io Machine/Cluster reads, Events.
+#
+# All of this is bound to the manager's single ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "beskar7.fullname" . }}-manager-clusterscope
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "beskar7.fullname" . }}-manager-clusterscope
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "beskar7.fullname" . }}-manager-clusterscope
+subjects:
+- kind: ServiceAccount
+  name: {{ include "beskar7.serviceAccountName" . }}
+  namespace: {{ include "beskar7.namespace" . }}
+---
+# Leader-election + operator-side events in the operator's own namespace.
+# Separate from the per-watched-namespace Roles below because the lease
+# always lives where the operator runs, independent of where user CRs live.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "beskar7.fullname" . }}-manager-leaderelection
+  namespace: {{ include "beskar7.namespace" . }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "beskar7.fullname" . }}-manager-leaderelection
+  namespace: {{ include "beskar7.namespace" . }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "beskar7.fullname" . }}-manager-leaderelection
+subjects:
+- kind: ServiceAccount
+  name: {{ include "beskar7.serviceAccountName" . }}
+  namespace: {{ include "beskar7.namespace" . }}
+{{- range $ns := .Values.watchNamespaces }}
+---
+# Per-watched-namespace Role: Secrets, ConfigMaps, Beskar7 CRDs, CAPI Machine
+# reads, and Event creation in {{ $ns }}.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "beskar7.fullname" $ }}-manager-watch
+  namespace: {{ $ns }}
+  labels:
+    {{- include "beskar7.labels" $ | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - clusters
+  - clusters/status
+  - machines
+  - machines/status
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters
+  - beskar7machines
+  - physicalhosts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters/finalizers
+  - beskar7machines/finalizers
+  - physicalhosts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters/status
+  - beskar7machines/status
+  - physicalhosts/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7machinetemplates
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "beskar7.fullname" $ }}-manager-watch
+  namespace: {{ $ns }}
+  labels:
+    {{- include "beskar7.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "beskar7.fullname" $ }}-manager-watch
+subjects:
+- kind: ServiceAccount
+  name: {{ include "beskar7.serviceAccountName" $ }}
+  namespace: {{ include "beskar7.namespace" $ }}
+{{- end }}
+{{- end }}
 {{- end }}

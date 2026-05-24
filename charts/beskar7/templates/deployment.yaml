@@ -47,6 +47,9 @@ spec:
         - --enable-webhook=true
         - --webhook-port=9443
         {{- end }}
+        {{- with .Values.watchNamespaces }}
+        - --watch-namespaces={{ join "," . }}
+        {{- end }}
         ports:
         - containerPort: 8443
           name: metrics
