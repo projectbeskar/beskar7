@@ -17,14 +17,6 @@ The metrics provide insights into:
 - Boot configuration success rates
 - Failure domain discovery
 
-> **Wiring status (v0.4.0-alpha.4 → next):** the controllers currently emit the
-> reconciliation, error, and failure-domain metrics below. The rest (state
-> gauges, power-operation counter, Redfish-connection counter, availability
-> ratio, host-claim attempt/duration, machine provisioning histogram) are
-> registered but always read zero until the BUG-15 wire-up PR lands. If you
-> build dashboards today, gate them on samples present so empty series don't
-> look like outages.
-
 ## Metric Categories
 
 ### Controller Performance Metrics

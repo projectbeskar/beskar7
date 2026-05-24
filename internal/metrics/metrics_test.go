@@ -36,7 +36,7 @@ func TestInit(t *testing.T) {
 
 	// Test some metrics exist by using them
 	RecordReconciliation("test", "test-ns", ReconciliationOutcomeSuccess, 100*time.Millisecond)
-	RecordPhysicalHostState("available", "test-ns", 1)
+	UpdatePhysicalHostStateCounts("test-ns", map[string]int{"Available": 1})
 	RecordError("test", "test-ns", ErrorTypeConnection)
 }
 
@@ -59,32 +59,91 @@ func TestRecordReconciliation(t *testing.T) {
 	// We'll just verify that the histogram metric exists and can be retrieved
 }
 
-func TestRecordPhysicalHostState(t *testing.T) {
-	// Record state changes
-	RecordPhysicalHostState("available", "test-namespace", 1)
-	RecordPhysicalHostState("claimed", "test-namespace", 2)
-	RecordPhysicalHostState("available", "test-namespace", -1)
+func TestUpdatePhysicalHostStateCounts(t *testing.T) {
+	// Set state counts for a namespace
+	UpdatePhysicalHostStateCounts("ph-ns-1", map[string]int{
+		"Available":  3,
+		"InUse":      2,
+		"Inspecting": 1,
+	})
 
-	// Verify the gauge values
-	availableGauge := PhysicalHostStatesGauge.WithLabelValues("available", "test-namespace")
-	claimedGauge := PhysicalHostStatesGauge.WithLabelValues("claimed", "test-namespace")
-
-	availableMetric := &dto.Metric{}
-	claimedMetric := &dto.Metric{}
-
-	if err := availableGauge.Write(availableMetric); err != nil {
-		t.Fatalf("Failed to write available metric: %v", err)
-	}
-	if err := claimedGauge.Write(claimedMetric); err != nil {
-		t.Fatalf("Failed to write claimed metric: %v", err)
+	readGauge := func(state string) float64 {
+		g := PhysicalHostStatesGauge.WithLabelValues(state, "ph-ns-1")
+		m := &dto.Metric{}
+		if err := g.Write(m); err != nil {
+			t.Fatalf("Failed to write %s metric: %v", state, err)
+		}
+		return m.GetGauge().GetValue()
 	}
 
-	// Available should be 0 (1 - 1), claimed should be 2
-	if availableMetric.GetGauge().GetValue() != 0 {
-		t.Errorf("Expected available gauge to be 0, got %v", availableMetric.GetGauge().GetValue())
+	if got := readGauge("Available"); got != 3 {
+		t.Errorf("Available: want 3, got %v", got)
 	}
-	if claimedMetric.GetGauge().GetValue() != 2 {
-		t.Errorf("Expected claimed gauge to be 2, got %v", claimedMetric.GetGauge().GetValue())
+	if got := readGauge("InUse"); got != 2 {
+		t.Errorf("InUse: want 2, got %v", got)
+	}
+	if got := readGauge("Inspecting"); got != 1 {
+		t.Errorf("Inspecting: want 1, got %v", got)
+	}
+	// States absent from the map must be zeroed.
+	if got := readGauge("Error"); got != 0 {
+		t.Errorf("Error: want 0 (absent → zeroed), got %v", got)
+	}
+
+	// A subsequent call with only "Error" in the map must zero the previously-set states.
+	UpdatePhysicalHostStateCounts("ph-ns-1", map[string]int{"Error": 5})
+	if got := readGauge("Available"); got != 0 {
+		t.Errorf("Available after reset: want 0, got %v", got)
+	}
+	if got := readGauge("Error"); got != 5 {
+		t.Errorf("Error after update: want 5, got %v", got)
+	}
+}
+
+func TestUpdateBeskar7MachineStateCounts(t *testing.T) {
+	UpdateBeskar7MachineStateCounts("b7m-ns-1", map[string]int{
+		"Provisioned": 4,
+		"Failed":      1,
+	})
+
+	readGauge := func(phase string) float64 {
+		g := Beskar7MachineStatesGauge.WithLabelValues(phase, "b7m-ns-1")
+		m := &dto.Metric{}
+		if err := g.Write(m); err != nil {
+			t.Fatalf("Failed to write %s metric: %v", phase, err)
+		}
+		return m.GetGauge().GetValue()
+	}
+
+	if got := readGauge("Provisioned"); got != 4 {
+		t.Errorf("Provisioned: want 4, got %v", got)
+	}
+	if got := readGauge("Failed"); got != 1 {
+		t.Errorf("Failed: want 1, got %v", got)
+	}
+	// Absent phases are zeroed.
+	if got := readGauge("Pending"); got != 0 {
+		t.Errorf("Pending: want 0, got %v", got)
+	}
+}
+
+func TestUpdateBeskar7ClusterStateCounts(t *testing.T) {
+	UpdateBeskar7ClusterStateCounts("b7c-ns-1", 2, 1)
+
+	readReady := func(readyStr string) float64 {
+		g := Beskar7ClusterStatesGauge.WithLabelValues(readyStr, "b7c-ns-1")
+		m := &dto.Metric{}
+		if err := g.Write(m); err != nil {
+			t.Fatalf("Failed to write ready=%s metric: %v", readyStr, err)
+		}
+		return m.GetGauge().GetValue()
+	}
+
+	if got := readReady("true"); got != 2 {
+		t.Errorf("ready=true: want 2, got %v", got)
+	}
+	if got := readReady("false"); got != 1 {
+		t.Errorf("ready=false: want 1, got %v", got)
 	}
 }
 
