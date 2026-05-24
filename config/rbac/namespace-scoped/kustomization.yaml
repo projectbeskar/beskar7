@@ -1,0 +1,39 @@
+# Namespace-scoped RBAC overlay. SEC-2 follow-on to the Helm chart's
+# watchNamespaces support (charts/beskar7/templates/rbac.yaml).
+#
+# This overlay is the manual kustomize equivalent of setting
+# .Values.watchNamespaces in the chart. The default kustomize build
+# (config/default/) still references ../rbac (cluster-scoped); operators
+# wanting tightened RBAC swap the base to this directory in their own
+# overlay.
+#
+# What's here:
+#   - minimal-clusterrole.yaml      Cluster-scoped reads only (clusterroles,
+#                                   clusterrolebindings auto-generated from
+#                                   a kubebuilder marker).
+#   - leader-election-role.yaml     Role + RoleBinding in beskar7-system for
+#                                   leader-election leases + operator events.
+#   - watch-role.template.yaml      TEMPLATE for the per-namespace Role +
+#                                   RoleBinding. Copy and patch the
+#                                   namespace fields for each watched ns,
+#                                   then add to `resources:` below.
+#   - service_account.yaml,         Reused unchanged from the parent dir.
+#     metrics_*                     (Symlinks would also work; explicit
+#                                   refs are clearer.)
+#
+# To enable, point your own overlay's `bases:` at this dir instead of
+# ../rbac, AND set --watch-namespaces=<csv> on the manager Deployment so
+# the controller-runtime cache matches the RBAC.
+namespace: beskar7-system
+
+resources:
+- minimal-clusterrole.yaml
+- leader-election-role.yaml
+# watch-role.template.yaml is intentionally NOT listed — it's a template.
+# Copy it to watch-role.<namespace>.yaml per watched namespace, edit the
+# namespace fields, and append the new filenames here.
+#
+# Shared resources (ServiceAccount, metrics_auth_*, metrics_reader_role)
+# are NOT replicated here. Reference them from your own top-level overlay
+# by listing the individual files alongside this directory. See README.md
+# for a worked example.
