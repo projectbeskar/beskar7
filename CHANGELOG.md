@@ -8,6 +8,45 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 *No unreleased work — see the per-tag entries below. Going forward, each released tag gets its own entry; this section stays empty between tags.*
 
+## [v0.4.0-alpha.5] - 2026-05-24
+
+The "backlog cleanup arc": tightened RBAC to per-namespace scope as an opt-in, brought the Prometheus metric surface in line with reality (delete what was dead, wire what should emit), and closed every correctness bug + hygiene item that had been carried since the v0.4-alpha review.
+
+### Added
+- **`--watch-namespaces` manager flag** (PR #80) — comma-separated list of namespaces. Empty (default) = watch all namespaces (historical behavior). When set, `ctrl.Options.Cache.DefaultNamespaces` scopes informers to the listed namespaces. Parser is stateless (trim, dedupe, sort) with table-driven coverage in `cmd/manager/flags_test.go`.
+- **Helm chart `watchNamespaces` value** (PR #82) — switches the chart's RBAC topology from cluster-wide ClusterRole to per-namespace Role/RoleBinding when set. Default (empty list) is byte-for-byte equivalent to the previous chart output; opting in renders a minimal residual ClusterRole + a leader-election Role in the operator's namespace + a watch Role in each listed namespace. Manager Deployment also picks up the `--watch-namespaces` arg automatically.
+- **`config/rbac/namespace-scoped/` overlay** (PR #83) — kustomize parity for the chart change. Reference manifests + per-namespace template + worked-example README. Operators swap their overlay's RBAC base from `../rbac` to `../rbac/namespace-scoped` and duplicate the template per watched namespace.
+- **Wire-up of 9 previously-registered-but-unemitted metric helpers** (PR #76): `RecordPhysicalHostState`, `RecordPhysicalHostPowerOperation`, `RecordRedfishConnection`, `RecordBeskar7MachineState`, `RecordBeskar7MachineProvisioning`, `RecordBeskar7ClusterState`, `UpdatePhysicalHostAvailability`, `RecordHostClaimAttempt`, `RecordHostClaimDuration`. Plus extended `RecordError` to fire from `Beskar7MachineReconciler` and `PhysicalHostReconciler` (was only `Beskar7ClusterReconciler`). The advertised metric surface in `docs/metrics.md` now matches what the controllers actually emit.
+- **`make lint` Makefile target** (PR #77) pinning golangci-lint to v1.64.8, the version CI uses. Local devs no longer hit "unsupported version of the configuration" errors when a system-installed golangci-lint v2 reads the v1-syntax `.golangci.yml`.
+
+### Fixed
+- **BUG-12**: `RecordPowerOperation` accepted an `errorType` parameter that it silently discarded. Parameter removed; error-type cardinality lives on the Redfish-connection / Redfish-query counters already (PR #73).
+- **BUG-13**: removed the deprecated `PhysicalHost` state alias constants (`StateClaimed = "InUse"`, `StateProvisioning = "Inspecting"`, `StateProvisioned = "Ready"`, `StateDeprovisioning = "Error"`). They collided with the canonical constants on string value, so switch statements casing on the deprecated names compiled but never matched at runtime. Zero in-tree callers (PR #72).
+- **BUG-14**: `PhysicalHostReconciler` error paths no longer return `Result{RequeueAfter: 1*time.Minute}, err`. The workqueue is configured with `workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](5*time.Second, 30*time.Minute)`; error returns now use `Result{}, err` and the rate-limiter governs the retry cadence (5s → 10s → 20s → ... capped at 30m). A persistently-misconfigured BMC settles into a low-frequency check instead of a 60s hot loop (PR #74).
+- **BUG-15 dead-metric surface**: deleted 10 broken/redundant `Record*` helpers (`RecordRequeue`, `RecordPhysicalHostProvisioning`, `RecordBootConfiguration`, `RecordPhysicalHostConsumerMapping`, `RecordRedfishQuery`, `RecordNetworkAddress`, `RecordPowerOperation`, `RecordVirtualMediaOperation`, `RecordBootOperation`, `RecordDeprovisioningOperation`), 4 metric variables only referenced by them, and 5 unused `ErrorType` enum values (`ErrorTypeQuery`, `ErrorTypeAddress`, `ErrorTypePower`, `ErrorTypeBoot`, `ErrorTypeVirtualMedia`). Companion `docs/metrics.md` sections removed (PR #75).
+- **REFACTOR-1**: `controllers/beskar7cluster_controller.go` no longer uses a string literal for the `"cluster.x-k8s.io/control-plane"` label. Uses `clusterv1.MachineControlPlaneLabel` from the CAPI v1beta1 package, which was already imported (PR #79).
+- **`.gitignore`** `manager` rule was unanchored, accidentally hiding any untracked file under `cmd/manager/`. Anchored to `/manager` (repo-root binary only) (PR #80).
+- **Dockerfile + Makefile** builds now use `go build ./cmd/...` (package) instead of `go build cmd/.../main.go` (single file). The latter silently dropped sibling files in the same package — broke the Container Build job when `cmd/manager/flags.go` was added (PR #80).
+- **`.golangci.yml`** `run.skip-dirs` deprecation warning eliminated by moving `vendor` to `issues.exclude-dirs` (PR #77).
+
+### Changed
+- **State-gauge helper API refactored to per-reconcile Set** (PR #76): `RecordPhysicalHostState`/`RecordBeskar7MachineState`/`RecordBeskar7ClusterState` (which took `(label, namespace, delta float64)` and made the caller track previous state to subtract correctly) replaced with `UpdatePhysicalHostStateCounts(ns, map[string]int)`, `UpdateBeskar7MachineStateCounts(...)`, `UpdateBeskar7ClusterStateCounts(...)`. Each reconciler computes counts via a namespace-scoped List at the top of `Reconcile` and Sets each gauge series including zero for absent states. Stateless, restart-safe, no drift.
+- **`Beskar7ClusterFailureDomainsGauge`** call patterns unchanged; only the unwired helpers were touched.
+- **`RecordReconciliation`, `RecordError`, `RecordFailureDomains`, `RecordFailureDomainDiscovery`** retain their existing behavior; this release wires them more broadly across the three reconcilers (previously only `Beskar7ClusterReconciler` fired `RecordError`).
+- **Chart RBAC topology is now selectable** via `.Values.watchNamespaces`. Default (empty) keeps the existing ClusterRole+ClusterRoleBinding. Non-empty list switches to per-namespace Role+RoleBinding pairs plus a minimal ClusterRole for the residual cluster-scoped reads (`clusterroles`, `clusterrolebindings` — kubebuilder-marker autogen).
+- **`charts/beskar7/Chart.yaml`** `version` and `appVersion` bumped to v0.4.0-alpha.5 (this release).
+- **`Makefile` `VERSION`** bumped to v0.4.0-alpha.5 — image-tag default for `make docker-build`, `make release-manifests`, etc.
+- **`Beskar7MachineReconciler.findAndClaimOrGetAssociatedHost`** now records `RecordHostClaimAttempt` + `RecordHostClaimDuration` at all 6 exit branches (success / conflict-via-optimistic-lock / no-hosts / error), giving observability for the PR-2.2 race fix.
+
+### Docs
+- **`docs/security/rbac-hardening.md`** rewritten with a two-topology framing (cluster-wide default vs. namespace-scoped opt-in), Helm and kustomize activation paths, and a 4-step backward-compatible migration recipe (PR #84).
+- **`docs/security/README.md`** section 5 ("Per-namespace Secret/ConfigMap RBAC scope") updated: no longer punts to a hypothetical v0.5 label-selected partial cache. The actual closure path (watchNamespaces) is documented with links.
+- **`docs/ci-cd-and-testing.md`** style-normalized: 43 heading lines stripped of leading emoji and `**...**` bold-wrap to match the rest of `docs/` (PR #81).
+- **`docs/metrics.md`** lost the "Wiring status (v0.4.0-alpha.4 → next)" disclaimer that PR #75 added: every advertised metric now emits data.
+
+### Internal
+- **9 previously-orphan metric helpers** are now wired at the right controller call sites. Per-reconcile `recompute*Metrics` helpers (`recomputePhysicalHostMetrics`, `recomputeBeskar7MachineMetrics`, `recomputeBeskar7ClusterMetrics`) run at the top of each `Reconcile` so the state gauges and availability ratio stay current even when downstream reconcile errors. Cost is one namespace-scoped List per reconcile, dominated by the reconcile itself.
+
 ## [v0.4.0-alpha.4] - 2026-05-23
 
 The "smoke-test arc": a hardware-free CI smoke gate, the four production bugs the gate uncovered, and the CAPI v1.10+ conformance work needed to make any of it run.
@@ -673,7 +712,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.5...HEAD
+[v0.4.0-alpha.5]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...v0.4.0-alpha.5
 [v0.4.0-alpha.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...v0.4.0-alpha.4
 [v0.4.0-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.3.4-alpha...v0.4.0-alpha
 [v0.3.4-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.2.7...v0.3.4-alpha
