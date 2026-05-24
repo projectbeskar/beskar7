@@ -16,7 +16,7 @@ COPY controllers/ controllers/
 
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -o mock-redfish cmd/mock-redfish/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -o mock-redfish ./cmd/mock-redfish
 
 # gcr.io/distroless/static:nonroot (refreshed 2026-05-03)
 FROM gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39

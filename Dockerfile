@@ -25,7 +25,10 @@ COPY controllers/ controllers/
 # More info: https://doc.crds.dev/reference/go/go-env
 ARG TARGETOS
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -o manager cmd/manager/main.go
+# Build the package, not a single file — multi-file packages
+# (cmd/manager/{main,flags}.go) require ./cmd/manager so all sources
+# in the package are picked up.
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -o manager ./cmd/manager
 
 # Use distroless as minimal base image to package the manager binary.
 # Refer to https://github.com/GoogleContainerTools/distroless for more details.
