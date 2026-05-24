@@ -87,7 +87,8 @@ All configurable values with their defaults:
 | `certManager.certificate.renewBefore` | `720h` | Renew 30 days before expiry. |
 | `namespace.create` | `false` | Render a Namespace resource. Set `true` only when not using `--create-namespace`. |
 | `namespace.name` | `beskar7-system` | Namespace for all chart resources. |
-| `rbac.create` | `true` | Create ClusterRole and ClusterRoleBinding for the manager. |
+| `rbac.create` | `true` | Create RBAC resources for the manager. With `watchNamespaces` empty, renders a cluster-scoped ClusterRole + ClusterRoleBinding. With `watchNamespaces` set, renders a minimal ClusterRole + per-namespace Role/RoleBinding pairs (see `watchNamespaces`). |
+| `watchNamespaces` | `[]` | Namespaces the controller watches. Empty (default) = all namespaces, cluster-scoped RBAC. Non-empty list scopes both the cache (`--watch-namespaces` flag on the manager) and the RBAC (per-namespace Role/RoleBinding in each listed namespace + leader-election Role in the operator's own namespace). Beskar7 CRs outside the listed namespaces are ignored. |
 | `networkPolicy.enabled` | `false` | Deploy NetworkPolicy rules for the manager pod. |
 | `monitoring.enabled` | `true` | Enable the metrics server on `:8443` (HTTPS, TokenReview/SAR auth). |
 | `monitoring.serviceMonitor.enabled` | `false` | Create a Prometheus Operator `ServiceMonitor`. |

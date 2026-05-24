@@ -99,6 +99,28 @@ namespace:
 rbac:
   create: true
 
+# Namespaces the controller watches. When empty (default), the chart creates
+# a cluster-scoped ClusterRole + ClusterRoleBinding granting the manager
+# access to ALL Secrets/ConfigMaps/Beskar7 CRDs across all namespaces — the
+# historical behavior. When set to a non-empty list, RBAC narrows to
+# per-namespace Role/RoleBinding pairs in each listed namespace plus a
+# leader-election Role in the operator's own namespace; the cluster-wide
+# binding is replaced with a minimal ClusterRole covering only the genuinely
+# cluster-scoped reads (ClusterRoles/ClusterRoleBindings) that the manager
+# requires.
+#
+# The same list is passed to the manager via --watch-namespaces so its cache
+# informers scope to these namespaces. Beskar7 CRs (PhysicalHost, Beskar7Machine,
+# Beskar7Cluster, Beskar7MachineTemplate) and their associated CAPI Machines
+# must live in one of the watched namespaces; objects elsewhere are ignored.
+#
+# Example:
+#   watchNamespaces:
+#     - default
+#     - tenant-a
+#     - tenant-b
+watchNamespaces: []
+
 # Network policies
 networkPolicy:
   enabled: false
