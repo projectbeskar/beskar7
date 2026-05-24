@@ -47,6 +47,19 @@ CONTROLLER_GEN_VERSION ?= v0.21.0
 install-controller-gen:
 	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
+# Install golangci-lint pinned to the version CI uses. .golangci.yml targets
+# v1 schema; installing a v2 binary will reject the config. Use this target
+# instead of `go install` so local lint matches CI.
+GOLANGCI_LINT = $(GOBIN)/golangci-lint
+GOLANGCI_LINT_VERSION ?= v1.64.8
+install-golangci-lint:
+	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+# Run linters. Pins to the CI version via install-golangci-lint so a system-
+# installed v2 binary doesn't reject .golangci.yml's v1 syntax.
+lint: install-golangci-lint
+	$(GOLANGCI_LINT) run --timeout=5m
+
 # Generate manifests e.g. CRDs, RBAC, and DeepCopy objects
 manifests: install-controller-gen
 	$(CONTROLLER_GEN) object:headerFile="./hack/boilerplate.go.txt" paths="./..."
@@ -156,4 +169,4 @@ release-manifests:
 	git checkout config/overlays/ 2>/dev/null || true
 	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
 
-.PHONY: build build-mock-redfish build-mock-inspector generate manifests test docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown
+.PHONY: build build-mock-redfish build-mock-inspector generate manifests test lint docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install-golangci-lint install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown
