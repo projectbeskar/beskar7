@@ -4,7 +4,10 @@
 *.dll
 *.so
 *.dylib
-manager
+# Anchored to the repo root so we ignore the built binary `./manager` without
+# accidentally hiding everything under `cmd/manager/` (which was matched by
+# the unanchored rule, blocking new files in that directory).
+/manager
 
 # Test binary, built with `go test -c`
 *.test
