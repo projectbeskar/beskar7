@@ -350,8 +350,8 @@ func (r *Beskar7ClusterReconciler) findControlPlaneEndpoint(ctx context.Context,
 	listOpts := []client.ListOption{
 		client.InNamespace(cluster.Namespace),
 		client.MatchingLabels{
-			clusterv1.ClusterNameLabel:       cluster.Name,
-			"cluster.x-k8s.io/control-plane": "", // Use literal string for the label key
+			clusterv1.ClusterNameLabel:         cluster.Name,
+			clusterv1.MachineControlPlaneLabel: "",
 		},
 	}
 
