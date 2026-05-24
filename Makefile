@@ -20,17 +20,19 @@ IMG ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO):$(VERSION)
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "generateEmbeddedObjectMeta=true,maxDescLen=0"
 
-# Build the manager binary
+# Build the manager binary. Builds the package (./cmd/manager) instead of
+# just main.go so additional .go files in the package (e.g. flags.go) are
+# picked up.
 build:
-	$(GO) build -o bin/manager cmd/manager/main.go
+	$(GO) build -o bin/manager ./cmd/manager
 
-# Build the mock Redfish server binary
+# Build the mock Redfish server binary.
 build-mock-redfish:
-	$(GO) build -o bin/mock-redfish cmd/mock-redfish/main.go
+	$(GO) build -o bin/mock-redfish ./cmd/mock-redfish
 
-# Build the mock inspector binary
+# Build the mock inspector binary.
 build-mock-inspector:
-	$(GO) build -o bin/mock-inspector cmd/mock-inspector/main.go
+	$(GO) build -o bin/mock-inspector ./cmd/mock-inspector
 
 # Run code generators
 generate:

@@ -31,6 +31,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -78,6 +79,7 @@ func main() {
 	var bootstrapURLBase string
 	var inspectionPort int
 	var inspectionCertDir string
+	var watchNamespacesRaw string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -108,6 +110,13 @@ func main() {
 		"Directory containing tls.crt and tls.key for the inspection HTTPS endpoint. "+
 			"Defaults to the webhook cert dir; both endpoints are served from the same Pod and "+
 			"can share a cert covering the controller-manager Service DNS name.")
+	flag.StringVar(&watchNamespacesRaw, "watch-namespaces", "",
+		"Comma-separated list of namespaces the controller should watch. Empty "+
+			"(default) means watch all namespaces (the historical behavior). When set, "+
+			"informers are scoped to the listed namespaces — used together with "+
+			"per-namespace Role/RoleBinding to tighten Secret RBAC (SEC-2). RBAC and "+
+			"chart-side per-namespace bindings ship in follow-up PRs; this flag alone "+
+			"only narrows the cache.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -144,7 +153,7 @@ func main() {
 		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	managerOpts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsOptions,
 		WebhookServer:          webhook.NewServer(webhookServerOptions),
@@ -154,7 +163,22 @@ func main() {
 		LeaseDuration:          &leaderElectionLeaseDuration,
 		RenewDeadline:          &leaderElectionRenewDeadline,
 		RetryPeriod:            &leaderElectionRetryPeriod,
-	})
+	}
+
+	// Scope informers to the listed namespaces when --watch-namespaces is set.
+	// Empty list = all namespaces (default cache.Options behavior); we deliberately
+	// avoid setting DefaultNamespaces in that case so we don't accidentally lock
+	// the cache to an empty map (which would cache nothing).
+	if watchNamespaces := parseWatchNamespaces(watchNamespacesRaw); len(watchNamespaces) > 0 {
+		defaultNamespaces := make(map[string]cache.Config, len(watchNamespaces))
+		for _, ns := range watchNamespaces {
+			defaultNamespaces[ns] = cache.Config{}
+		}
+		managerOpts.Cache = cache.Options{DefaultNamespaces: defaultNamespaces}
+		setupLog.Info("Scoping informers to namespaces", "namespaces", watchNamespaces)
+	}
+
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), managerOpts)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
