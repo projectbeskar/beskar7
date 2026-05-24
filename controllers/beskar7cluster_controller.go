@@ -101,6 +101,10 @@ func (r *Beskar7ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Recompute readiness-state gauge on every reconcile so the gauge stays current
+	// even when reconcile short-circuits. Non-fatal: metric errors don't block reconcile.
+	r.recomputeBeskar7ClusterMetrics(ctx, logger, req.Namespace)
+
 	// Check if the Beskar7Cluster is paused
 	if isPaused(b7cluster) {
 		logger.Info("Beskar7Cluster reconciliation is paused")
@@ -432,6 +436,27 @@ func (r *Beskar7ClusterReconciler) SetupWithManager(ctx context.Context, mgr ctr
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Clusters),
 		).
 		Complete(r)
+}
+
+// recomputeBeskar7ClusterMetrics lists all Beskar7Clusters in the given namespace and
+// emits the readiness-state gauge metric. Called at the top of each Reconcile so the
+// gauge stays current even when reconcile short-circuits. Errors are logged and
+// swallowed — a metric failure must not affect reconcile correctness.
+func (r *Beskar7ClusterReconciler) recomputeBeskar7ClusterMetrics(ctx context.Context, logger logr.Logger, namespace string) {
+	list := &infrastructurev1beta1.Beskar7ClusterList{}
+	if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		logger.V(1).Info("Failed to list Beskar7Clusters for metric recompute; skipping", "err", err.Error())
+		return
+	}
+	readyCount, notReadyCount := 0, 0
+	for _, c := range list.Items {
+		if c.Status.Ready {
+			readyCount++
+		} else {
+			notReadyCount++
+		}
+	}
+	internalmetrics.UpdateBeskar7ClusterStateCounts(namespace, readyCount, notReadyCount)
 }
 
 // PhysicalHostToBeskar7Clusters maps a PhysicalHost event to reconcile requests for all Beskar7Clusters in the same namespace.

@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-logr/logr"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -120,6 +121,11 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	}
 
+	// Recompute state-gauge and availability metrics on every reconcile so the
+	// gauges stay current even when reconcile short-circuits (deletion, finalizer
+	// add, pause). A List error here is non-fatal — the metric is best-effort.
+	r.recomputePhysicalHostMetrics(ctx, logger, req.Namespace)
+
 	// Initialize patch helper. A single deferred Patch replaces both r.Update (finalizer)
 	// and r.Status().Update calls — controller-runtime merges spec and status in one round-trip.
 	patchHelper, err := patch.NewHelper(physicalHost, r.Client)
@@ -165,6 +171,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
 			"Failed to retrieve credentials: %v", err)
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Return the error without an explicit RequeueAfter so the workqueue's
 		// exponential rate-limiter (configured in SetupWithManager) governs the
 		// retry interval. A fixed 1-minute requeue would override the rate-limiter
@@ -189,6 +196,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.InsecureCABundleConflictReason, clusterv1.ConditionSeverityError,
 			"%s", err.Error())
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
@@ -200,6 +208,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
 			"%s", err.Error())
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
 	}
@@ -218,10 +227,15 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
 			"Connection failed: %v", err)
+		internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed, internalmetrics.ErrorTypeConnection)
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
 	}
 	defer rfClient.Close(ctx)
+
+	// Redfish client created successfully — count the connection.
+	internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess, internalmetrics.ErrorTypeUnknown)
 
 	// Get system information
 	sysInfo, err := rfClient.GetSystemInfo(ctx)
@@ -231,6 +245,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
 			infrastructurev1beta1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
 			"Query failed: %v", err)
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeTransient)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
 	}
@@ -539,6 +554,28 @@ func (r *PhysicalHostReconciler) updateStatus(ph *infrastructurev1beta1.Physical
 	ph.Status.State = state
 	ph.Status.Ready = ready
 	ph.Status.ErrorMessage = errorMsg
+}
+
+// recomputePhysicalHostMetrics lists all PhysicalHosts in the given namespace and
+// emits state-gauge + availability metrics in a single List call. Called at the
+// top of each Reconcile so metrics stay current even when the reconcile short-circuits.
+// Errors are logged and swallowed — a metric failure must not affect reconcile correctness.
+func (r *PhysicalHostReconciler) recomputePhysicalHostMetrics(ctx context.Context, logger logr.Logger, namespace string) {
+	list := &infrastructurev1beta1.PhysicalHostList{}
+	if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		logger.V(1).Info("Failed to list PhysicalHosts for metric recompute; skipping", "err", err.Error())
+		return
+	}
+	counts := make(map[string]int, len(list.Items))
+	availableCount := 0
+	for _, h := range list.Items {
+		counts[h.Status.State]++
+		if h.Status.State == infrastructurev1beta1.StateAvailable {
+			availableCount++
+		}
+	}
+	internalmetrics.UpdatePhysicalHostStateCounts(namespace, counts)
+	internalmetrics.UpdatePhysicalHostAvailability(namespace, availableCount, len(list.Items))
 }
 
 // defaultFactory sets RedfishClientFactory to the real gofish-backed constructor

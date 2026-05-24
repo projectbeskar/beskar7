@@ -27,6 +27,7 @@ import (
 	"github.com/pkg/errors"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	"github.com/projectbeskar/beskar7/internal/auth"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +126,10 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Recompute phase-gauge metrics on every reconcile so the gauge stays current
+	// even when reconcile short-circuits. Non-fatal: metric errors don't block reconcile.
+	r.recomputeBeskar7MachineMetrics(ctx, log, req.Namespace)
+
 	// Check if paused
 	if isPaused(b7machine) {
 		log.Info("Beskar7Machine reconciliation is paused")
@@ -202,6 +207,7 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
 			infrastructurev1beta1.PhysicalHostAssociationFailedReason, clusterv1.ConditionSeverityWarning,
 			"Failed to associate with PhysicalHost: %v", err)
+		internalmetrics.RecordError("beskar7machine", b7machine.Namespace, internalmetrics.ErrorTypeTransient)
 		return result, err
 	}
 
@@ -227,6 +233,9 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	// bytes here (that's the server-side bootstrap endpoint's job) — only verify
 	// the Secret exists and signal the URL to PhysicalHost.
 	if result, err := r.ensureBootstrapDataReady(ctx, logger, b7machine, machine, physicalHost); err != nil || !result.IsZero() {
+		if err != nil {
+			internalmetrics.RecordError("beskar7machine", b7machine.Namespace, internalmetrics.ErrorTypeTransient)
+		}
 		return result, err
 	}
 
@@ -314,8 +323,10 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	if powerState != redfish.OnPowerState {
 		if err := rfClient.SetPowerState(ctx, redfish.OnPowerState); err != nil {
 			logger.Error(err, "Failed to power on system")
+			internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
 			return ctrl.Result{}, err
 		}
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
 		logger.Info("Powered on system for inspection")
 	}
 
@@ -678,6 +689,11 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 		logger.Info("Copied network addresses", "count", len(physicalHost.Status.Addresses))
 	}
 
+	// Record provisioning success only on the first transition to ready. We check
+	// Status.Ready before updating it so we don't double-record on re-reconciles
+	// that reach handleReadyHost after the machine is already provisioned.
+	firstProvisioning := !b7machine.Status.Ready
+
 	// Mark as ready
 	conditions.MarkTrue(b7machine, infrastructurev1beta1.InfrastructureReadyCondition)
 	b7machine.Status.Ready = true
@@ -687,6 +703,14 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	b7machine.Status.Initialization = &infrastructurev1beta1.Beskar7MachineInitializationStatus{Provisioned: true}
 	phase := "Provisioned"
 	b7machine.Status.Phase = &phase
+
+	if firstProvisioning {
+		internalmetrics.RecordBeskar7MachineProvisioning(
+			b7machine.Namespace,
+			internalmetrics.ProvisioningOutcomeSuccess,
+			time.Since(b7machine.CreationTimestamp.Time),
+		)
+	}
 
 	logger.Info("Beskar7Machine infrastructure is ready")
 	return ctrl.Result{}, nil
@@ -707,12 +731,16 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 //  3. Find any StateAvailable host with no ConsumerRef and claim it. Returned
 //     with RequeueAfter so the next reconcile picks the host up via path (2).
 func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (*infrastructurev1beta1.PhysicalHost, ctrl.Result, error) {
+	claimStart := time.Now()
+
 	// (1) ProviderID lookup.
 	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
 		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
 		if err == nil && ns == b7machine.Namespace {
 			host := &infrastructurev1beta1.PhysicalHost{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host); err == nil {
+				internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
+				internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
 				return host, ctrl.Result{}, nil
 			}
 		}
@@ -724,11 +752,15 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	// because the host count per namespace is bounded by physical inventory).
 	allHosts := &infrastructurev1beta1.PhysicalHostList{}
 	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
+		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
+		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
 	}
 	for i := range allHosts.Items {
 		h := &allHosts.Items[i]
 		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+			internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
+			internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
 			return h, ctrl.Result{}, nil
 		}
 	}
@@ -741,6 +773,8 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		client.InNamespace(b7machine.Namespace),
 		client.MatchingFields{PhysicalHostStateIndex: string(infrastructurev1beta1.StateAvailable)},
 	); err != nil {
+		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
+		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
 	}
 
@@ -771,15 +805,23 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 				if apierrors.IsConflict(err) {
 					// Another reconciler won the race; requeue and try again.
 					logger.V(1).Info("Conflict claiming host, will retry", "host", host.Name)
+					internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeConflict, internalmetrics.ConflictReasonOptimisticLock)
+					internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeConflict, time.Since(claimStart))
 					return nil, ctrl.Result{Requeue: true}, nil
 				}
 				logger.Error(err, "Failed to claim host")
+				internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
+				internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 				return nil, ctrl.Result{}, err
 			}
+			internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
+			internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
 			return host, ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
 
+	internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeNoHosts, internalmetrics.ConflictReasonNone)
+	internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeNoHosts, time.Since(claimStart))
 	return nil, ctrl.Result{}, nil
 }
 
@@ -854,6 +896,9 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	}
 	if err := rfClient.SetPowerState(ctx, redfish.OffPowerState); err != nil {
 		logger.Info("Failed to graceful power-off during release; continuing", "err", err)
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeFailed)
+	} else {
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
 	}
 }
 
@@ -868,6 +913,15 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 // should return ctrl.Result{}, nil after invoking this helper to stop the
 // requeue cycle (CAPI does not auto-recover from FailureReason).
 func (r *Beskar7MachineReconciler) markTerminalFailure(b7machine *infrastructurev1beta1.Beskar7Machine, reason, message string) {
+	// Only record the provisioning-failed metric on the first terminal transition
+	// to avoid double-counting on re-reconciles that call markTerminalFailure again.
+	if b7machine.Status.FailureReason == nil {
+		internalmetrics.RecordBeskar7MachineProvisioning(
+			b7machine.Namespace,
+			internalmetrics.ProvisioningOutcomeFailed,
+			time.Since(b7machine.CreationTimestamp.Time),
+		)
+	}
 	b7machine.Status.FailureReason = &reason
 	b7machine.Status.FailureMessage = &message
 	b7machine.Status.Ready = false
@@ -1029,6 +1083,27 @@ func parseProviderID(id string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid provider ID %q: name segment contains '/'", id)
 	}
 	return parts[0], parts[1], nil
+}
+
+// recomputeBeskar7MachineMetrics lists all Beskar7Machines in the given namespace
+// and emits the phase-gauge metric. Called at the top of each Reconcile so the
+// gauge stays current even when reconcile short-circuits. Errors are logged and
+// swallowed — a metric failure must not affect reconcile correctness.
+func (r *Beskar7MachineReconciler) recomputeBeskar7MachineMetrics(ctx context.Context, logger logr.Logger, namespace string) {
+	list := &infrastructurev1beta1.Beskar7MachineList{}
+	if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
+		logger.V(1).Info("Failed to list Beskar7Machines for metric recompute; skipping", "err", err.Error())
+		return
+	}
+	counts := make(map[string]int, len(list.Items))
+	for _, m := range list.Items {
+		phase := ""
+		if m.Status.Phase != nil {
+			phase = *m.Status.Phase
+		}
+		counts[phase]++
+	}
+	internalmetrics.UpdateBeskar7MachineStateCounts(namespace, counts)
 }
 
 // isPaused and isClusterPaused functions are in utils.go

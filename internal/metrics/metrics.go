@@ -258,9 +258,49 @@ func RecordError(controller string, namespace string, errorType ErrorType) {
 	ControllerErrorsTotal.WithLabelValues(controller, string(errorType), namespace).Inc()
 }
 
-// RecordPhysicalHostState updates the PhysicalHost state gauge
-func RecordPhysicalHostState(state string, namespace string, delta float64) {
-	PhysicalHostStatesGauge.WithLabelValues(state, namespace).Add(delta)
+// physicalHostCanonicalStates lists every state string that can appear in
+// PhysicalHost.Status.State. Enumerating them here lets UpdatePhysicalHostStateCounts
+// zero-out states that have dropped to zero rather than leaving stale gauge series.
+var physicalHostCanonicalStates = []string{
+	"", "Unknown", "Enrolling", "Available", "InUse", "Inspecting", "Ready", "Error",
+}
+
+// beskar7MachineCanonicalPhases lists every phase string that can appear in
+// Beskar7Machine.Status.Phase. Same zero-reset rationale as above.
+var beskar7MachineCanonicalPhases = []string{
+	"Pending", "Inspecting", "Provisioned", "Failed",
+}
+
+// UpdatePhysicalHostStateCounts sets the PhysicalHost state gauge from a precomputed
+// counts map (state string → count). States absent from the map are set to zero so
+// series that drop to zero are reflected correctly rather than stuck at the last
+// non-zero value. Callers produce the map via a namespace-scoped List; no previous
+// state needs to be tracked by the caller.
+func UpdatePhysicalHostStateCounts(namespace string, counts map[string]int) {
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	for _, state := range physicalHostCanonicalStates {
+		PhysicalHostStatesGauge.WithLabelValues(state, namespace).Set(float64(counts[state]))
+	}
+}
+
+// UpdateBeskar7MachineStateCounts sets the Beskar7Machine phase gauge from a precomputed
+// counts map (phase string → count). Same zero-reset semantics as UpdatePhysicalHostStateCounts.
+func UpdateBeskar7MachineStateCounts(namespace string, counts map[string]int) {
+	if counts == nil {
+		counts = map[string]int{}
+	}
+	for _, phase := range beskar7MachineCanonicalPhases {
+		Beskar7MachineStatesGauge.WithLabelValues(phase, namespace).Set(float64(counts[phase]))
+	}
+}
+
+// UpdateBeskar7ClusterStateCounts sets the Beskar7Cluster readiness gauge from precomputed
+// ready/notReady counts. Same zero-reset semantics as UpdatePhysicalHostStateCounts.
+func UpdateBeskar7ClusterStateCounts(namespace string, readyCount, notReadyCount int) {
+	Beskar7ClusterStatesGauge.WithLabelValues("true", namespace).Set(float64(readyCount))
+	Beskar7ClusterStatesGauge.WithLabelValues("false", namespace).Set(float64(notReadyCount))
 }
 
 // RecordPhysicalHostPowerOperation records a power operation
@@ -277,23 +317,9 @@ func RecordRedfishConnection(namespace string, outcome ProvisioningOutcome, erro
 	PhysicalHostRedfishConnectionsTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
 }
 
-// RecordBeskar7MachineState updates the Beskar7Machine state gauge
-func RecordBeskar7MachineState(phase string, namespace string, delta float64) {
-	Beskar7MachineStatesGauge.WithLabelValues(phase, namespace).Add(delta)
-}
-
 // RecordBeskar7MachineProvisioning records provisioning duration and outcome
 func RecordBeskar7MachineProvisioning(namespace string, outcome ProvisioningOutcome, duration time.Duration) {
 	Beskar7MachineProvisioningDuration.WithLabelValues(string(outcome), namespace).Observe(duration.Seconds())
-}
-
-// RecordBeskar7ClusterState updates the Beskar7Cluster readiness state
-func RecordBeskar7ClusterState(ready bool, namespace string, delta float64) {
-	readyStr := "false"
-	if ready {
-		readyStr = "true"
-	}
-	Beskar7ClusterStatesGauge.WithLabelValues(readyStr, namespace).Add(delta)
 }
 
 // RecordFailureDomains records the number of failure domains for a cluster
