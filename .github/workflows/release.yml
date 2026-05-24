@@ -215,9 +215,15 @@ jobs:
         make install-controller-gen
         
     - name: Install kustomize
-      run: |
-        curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-        sudo mv kustomize /usr/local/bin/
+      # Pinned via `go install` because the upstream `install_kustomize.sh`
+      # at kustomize-master changed its asset-glob and started failing with
+      # `tar: ./kustomize_v*_linux_amd64.tar.gz: Cannot open: No such file
+      # or directory` (broke v0.4.0-alpha.5 release). Pinning here matches
+      # the Go-install pattern already used for controller-gen and
+      # golangci-lint in the Makefile, removes the dependency on a remote
+      # shell script, and locks the version for reproducible release
+      # manifests. Bump the version to track upstream when needed.
+      run: go install sigs.k8s.io/kustomize/kustomize/v5@v5.4.3
         
     - name: Generate release manifests
       run: |
