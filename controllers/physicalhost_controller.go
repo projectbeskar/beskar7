@@ -24,8 +24,8 @@ import (
 
 	"github.com/go-logr/logr"
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
+	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
