@@ -2,7 +2,7 @@
 
 > **Audience:** Operators
 
-This page documents the security controls Beskar7 actually enforces in v0.4.0-alpha.4. Each item is anchored to source code so you can verify the claim.
+This page documents the security controls Beskar7 actually enforces in v0.4.0-alpha.5. Each item is anchored to source code so you can verify the claim.
 
 If you are looking for hardening recommendations, see [Configuration](configuration.md). For RBAC details, see [RBAC Hardening](rbac-hardening.md). For incident debugging, see [Troubleshooting](troubleshooting.md).
 
