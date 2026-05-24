@@ -88,35 +88,6 @@ func TestRecordPhysicalHostState(t *testing.T) {
 	}
 }
 
-func TestRecordPhysicalHostProvisioning(t *testing.T) {
-	// Record successful provisioning
-	RecordPhysicalHostProvisioning("test-namespace", ProvisioningOutcomeSuccess, "")
-
-	// Record failed provisioning
-	RecordPhysicalHostProvisioning("test-namespace", ProvisioningOutcomeFailed, ErrorTypeConnection)
-
-	// Verify counters
-	successCounter := PhysicalHostProvisioningTotal.WithLabelValues("success", "test-namespace", "")
-	failureCounter := PhysicalHostProvisioningTotal.WithLabelValues("failed", "test-namespace", "connection")
-
-	successMetric := &dto.Metric{}
-	failureMetric := &dto.Metric{}
-
-	if err := successCounter.Write(successMetric); err != nil {
-		t.Fatalf("Failed to write success metric: %v", err)
-	}
-	if err := failureCounter.Write(failureMetric); err != nil {
-		t.Fatalf("Failed to write failure metric: %v", err)
-	}
-
-	if successMetric.GetCounter().GetValue() != 1 {
-		t.Errorf("Expected success counter to be 1, got %v", successMetric.GetCounter().GetValue())
-	}
-	if failureMetric.GetCounter().GetValue() != 1 {
-		t.Errorf("Expected failure counter to be 1, got %v", failureMetric.GetCounter().GetValue())
-	}
-}
-
 func TestUpdatePhysicalHostAvailability(t *testing.T) {
 	// Test availability calculation
 	UpdatePhysicalHostAvailability("test-namespace", 3, 10)

@@ -41,16 +41,6 @@ var (
 		[]string{"state", "namespace"},
 	)
 
-	PhysicalHostProvisioningTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: MetricNamespace,
-			Subsystem: MetricSubsystem,
-			Name:      "physicalhost_provisioning_total",
-			Help:      "Total number of PhysicalHost provisioning attempts",
-		},
-		[]string{"outcome", "namespace", "error_type"},
-	)
-
 	PhysicalHostPowerOperationsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Namespace: MetricNamespace,
@@ -91,16 +81,6 @@ var (
 			Buckets:   []float64{30, 60, 120, 300, 600, 1200, 1800, 3600}, // 30s to 1h
 		},
 		[]string{"outcome", "namespace"},
-	)
-
-	Beskar7MachineBootConfigurationsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: MetricNamespace,
-			Subsystem: MetricSubsystem,
-			Name:      "beskar7machine_boot_configurations_total",
-			Help:      "Total number of boot configuration attempts",
-		},
-		[]string{"mode", "os_family", "outcome", "namespace"},
 	)
 
 	// Beskar7Cluster metrics
@@ -166,16 +146,6 @@ var (
 		[]string{"controller", "error_type", "namespace"},
 	)
 
-	ControllerRequeueTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Namespace: MetricNamespace,
-			Subsystem: MetricSubsystem,
-			Name:      "requeue_total",
-			Help:      "Total number of reconciliation requeues",
-		},
-		[]string{"controller", "reason", "namespace"},
-	)
-
 	// Resource availability metrics
 	PhysicalHostAvailabilityGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -185,16 +155,6 @@ var (
 			Help:      "Availability ratio of PhysicalHosts (available/total)",
 		},
 		[]string{"namespace"},
-	)
-
-	PhysicalHostConsumerMappingsGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Namespace: MetricNamespace,
-			Subsystem: MetricSubsystem,
-			Name:      "physicalhost_consumer_mappings_total",
-			Help:      "Number of PhysicalHosts mapped to consumers",
-		},
-		[]string{"consumer_type", "namespace"},
 	)
 
 	// Concurrent provisioning metrics
@@ -230,17 +190,12 @@ const (
 type ErrorType string
 
 const (
-	ErrorTypeTransient    ErrorType = "transient"
-	ErrorTypePermanent    ErrorType = "permanent"
-	ErrorTypeValidation   ErrorType = "validation"
-	ErrorTypeConnection   ErrorType = "connection"
-	ErrorTypeTimeout      ErrorType = "timeout"
-	ErrorTypeQuery        ErrorType = "query"
-	ErrorTypeAddress      ErrorType = "address"
-	ErrorTypePower        ErrorType = "power"
-	ErrorTypeBoot         ErrorType = "boot"
-	ErrorTypeVirtualMedia ErrorType = "virtual_media"
-	ErrorTypeUnknown      ErrorType = "unknown"
+	ErrorTypeTransient  ErrorType = "transient"
+	ErrorTypePermanent  ErrorType = "permanent"
+	ErrorTypeValidation ErrorType = "validation"
+	ErrorTypeConnection ErrorType = "connection"
+	ErrorTypeTimeout    ErrorType = "timeout"
+	ErrorTypeUnknown    ErrorType = "unknown"
 )
 
 // ProvisioningOutcome represents the result of a provisioning operation
@@ -266,14 +221,12 @@ func Init() {
 	metrics.Registry.MustRegister(
 		// PhysicalHost metrics
 		PhysicalHostStatesGauge,
-		PhysicalHostProvisioningTotal,
 		PhysicalHostPowerOperationsTotal,
 		PhysicalHostRedfishConnectionsTotal,
 
 		// Beskar7Machine metrics
 		Beskar7MachineStatesGauge,
 		Beskar7MachineProvisioningDuration,
-		Beskar7MachineBootConfigurationsTotal,
 
 		// Beskar7Cluster metrics
 		Beskar7ClusterStatesGauge,
@@ -284,12 +237,11 @@ func Init() {
 		ControllerReconciliationDuration,
 		ControllerReconciliationTotal,
 		ControllerErrorsTotal,
-		ControllerRequeueTotal,
 
 		// Resource availability metrics
 		PhysicalHostAvailabilityGauge,
-		PhysicalHostConsumerMappingsGauge,
-		// Register new concurrent provisioning metrics
+
+		// Concurrent provisioning metrics
 		hostClaimAttempts,
 		hostClaimDuration,
 	)
@@ -306,23 +258,9 @@ func RecordError(controller string, namespace string, errorType ErrorType) {
 	ControllerErrorsTotal.WithLabelValues(controller, string(errorType), namespace).Inc()
 }
 
-// RecordRequeue records a requeue metric
-func RecordRequeue(controller string, namespace string, reason string) {
-	ControllerRequeueTotal.WithLabelValues(controller, reason, namespace).Inc()
-}
-
 // RecordPhysicalHostState updates the PhysicalHost state gauge
 func RecordPhysicalHostState(state string, namespace string, delta float64) {
 	PhysicalHostStatesGauge.WithLabelValues(state, namespace).Add(delta)
-}
-
-// RecordPhysicalHostProvisioning records a provisioning attempt
-func RecordPhysicalHostProvisioning(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	errorTypeStr := ""
-	if outcome == ProvisioningOutcomeFailed {
-		errorTypeStr = string(errorType)
-	}
-	PhysicalHostProvisioningTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
 }
 
 // RecordPhysicalHostPowerOperation records a power operation
@@ -347,11 +285,6 @@ func RecordBeskar7MachineState(phase string, namespace string, delta float64) {
 // RecordBeskar7MachineProvisioning records provisioning duration and outcome
 func RecordBeskar7MachineProvisioning(namespace string, outcome ProvisioningOutcome, duration time.Duration) {
 	Beskar7MachineProvisioningDuration.WithLabelValues(string(outcome), namespace).Observe(duration.Seconds())
-}
-
-// RecordBootConfiguration records a boot configuration attempt
-func RecordBootConfiguration(mode string, osFamily string, namespace string, outcome ProvisioningOutcome) {
-	Beskar7MachineBootConfigurationsTotal.WithLabelValues(mode, osFamily, string(outcome), namespace).Inc()
 }
 
 // RecordBeskar7ClusterState updates the Beskar7Cluster readiness state
@@ -380,70 +313,6 @@ func UpdatePhysicalHostAvailability(namespace string, availableCount, totalCount
 		ratio = float64(availableCount) / float64(totalCount)
 	}
 	PhysicalHostAvailabilityGauge.WithLabelValues(namespace).Set(ratio)
-}
-
-// RecordPhysicalHostConsumerMapping records a consumer mapping
-func RecordPhysicalHostConsumerMapping(consumerType string, namespace string, delta float64) {
-	PhysicalHostConsumerMappingsGauge.WithLabelValues(consumerType, namespace).Add(delta)
-}
-
-// RecordRedfishQuery records a Redfish query operation
-func RecordRedfishQuery(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	errorTypeStr := ""
-	if outcome == ProvisioningOutcomeFailed {
-		errorTypeStr = string(errorType)
-	}
-	PhysicalHostRedfishConnectionsTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
-}
-
-// RecordNetworkAddress records a network address detection operation
-func RecordNetworkAddress(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	errorTypeStr := ""
-	if outcome == ProvisioningOutcomeFailed {
-		errorTypeStr = string(errorType)
-	}
-	// Use the same counter as provisioning for now, could be separate if needed
-	PhysicalHostProvisioningTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
-}
-
-// RecordPowerOperation records a power operation against the
-// PhysicalHostPowerOperationsTotal counter, parameterised by the actual
-// operation type. Previously the helper hardcoded PowerOperationOn so every
-// call landed on the "On" label regardless of intent — by-design dead today
-// (no external callers) but actively wrong if the helper were ever wired up.
-//
-// Error-type cardinality is deliberately not modelled on this counter:
-// power-operation failures are observed against the connection/Redfish-query
-// counters (RecordRedfishConnection, RecordRedfishQuery) which already carry
-// the ErrorType label. Keeping it off this counter avoids double-counting
-// the same failure across two label spaces when a future caller is wired.
-func RecordPowerOperation(operation PowerOperation, namespace string, outcome ProvisioningOutcome) {
-	RecordPhysicalHostPowerOperation(operation, namespace, outcome)
-}
-
-// RecordVirtualMediaOperation records a virtual media operation
-func RecordVirtualMediaOperation(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	errorTypeStr := ""
-	if outcome == ProvisioningOutcomeFailed {
-		errorTypeStr = string(errorType)
-	}
-	PhysicalHostProvisioningTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
-}
-
-// RecordBootOperation records a boot configuration operation
-func RecordBootOperation(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	mode := "iso"         // Default mode
-	osFamily := "unknown" // Default OS family
-	RecordBootConfiguration(mode, osFamily, namespace, outcome)
-}
-
-// RecordDeprovisioningOperation records a deprovisioning operation
-func RecordDeprovisioningOperation(namespace string, outcome ProvisioningOutcome, errorType ErrorType) {
-	errorTypeStr := ""
-	if outcome == ProvisioningOutcomeFailed {
-		errorTypeStr = string(errorType)
-	}
-	PhysicalHostProvisioningTotal.WithLabelValues(string(outcome), namespace, errorTypeStr).Inc()
 }
 
 // ClaimOutcome represents the outcome of a host claim attempt

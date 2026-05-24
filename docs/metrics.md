@@ -17,6 +17,14 @@ The metrics provide insights into:
 - Boot configuration success rates
 - Failure domain discovery
 
+> **Wiring status (v0.4.0-alpha.4 → next):** the controllers currently emit the
+> reconciliation, error, and failure-domain metrics below. The rest (state
+> gauges, power-operation counter, Redfish-connection counter, availability
+> ratio, host-claim attempt/duration, machine provisioning histogram) are
+> registered but always read zero until the BUG-15 wire-up PR lands. If you
+> build dashboards today, gate them on samples present so empty series don't
+> look like outages.
+
 ## Metric Categories
 
 ### Controller Performance Metrics
@@ -52,11 +60,6 @@ These metrics track the overall performance and health of the Beskar7 controller
 - `timeout` - Operation timeout errors
 - `unknown` - Unclassified errors
 
-#### `beskar7_controller_requeue_total`
-**Type:** Counter  
-**Labels:** `controller`, `reason`, `namespace`  
-**Description:** Total number of reconciliation requeues by reason.
-
 ### PhysicalHost Metrics
 
 These metrics track the state and health of physical hosts managed by Beskar7.
@@ -74,11 +77,6 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 - `Error`
 - `Enrolling`
 - `Unknown`
-
-#### `beskar7_controller_physicalhost_provisioning_total`
-**Type:** Counter  
-**Labels:** `outcome`, `namespace`, `error_type`  
-**Description:** Total number of PhysicalHost provisioning attempts.
 
 #### `beskar7_controller_physicalhost_power_operations_total`
 **Type:** Counter  
@@ -100,11 +98,6 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 **Labels:** `namespace`  
 **Description:** Availability ratio of PhysicalHosts (available/total).
 
-#### `beskar7_controller_physicalhost_consumer_mappings_total`
-**Type:** Gauge  
-**Labels:** `consumer_type`, `namespace`  
-**Description:** Number of PhysicalHosts mapped to consumers.
-
 ### Beskar7Machine Metrics
 
 These metrics track machine provisioning and lifecycle management.
@@ -120,11 +113,6 @@ These metrics track machine provisioning and lifecycle management.
 **Description:** Time taken to provision a Beskar7Machine from creation to ready.
 
 **Buckets:** 30s, 60s, 2m, 5m, 10m, 20m, 30m, 1h
-
-#### `beskar7_controller_beskar7machine_boot_configurations_total`
-**Type:** Counter  
-**Labels:** `mode`, `os_family`, `outcome`, `namespace`  
-**Description:** Total number of boot configuration attempts.
 
 ### Beskar7Cluster Metrics
 
@@ -246,14 +234,11 @@ Create dashboards to visualize:
   for: 10m
   annotations:
     summary: "Slow machine provisioning times"
-
-# High requeue rate
-- alert: Beskar7HighRequeueRate
-  expr: rate(beskar7_controller_requeue_total[5m]) > 0.5
-  for: 5m
-  annotations:
-    summary: "High reconciliation requeue rate"
 ```
+
+> The controller-runtime workqueue already exports requeue and workqueue-depth metrics
+> (`workqueue_*`, `controller_runtime_reconcile_total{result="requeue"}`); alert on those
+> rather than a Beskar7-specific requeue counter.
 
 ## Troubleshooting with Metrics
 
