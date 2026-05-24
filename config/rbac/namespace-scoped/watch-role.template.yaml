@@ -1,0 +1,121 @@
+# PER-NAMESPACE TEMPLATE — duplicate this file for each watched namespace.
+#
+# This file is a TEMPLATE, not a kustomize-rendered manifest. The default
+# overlay (config/default/) does NOT include it. To deploy the namespace-
+# scoped variant:
+#
+#   1. Copy this file to watch-role.<namespace>.yaml for every namespace
+#      you want the manager to reconcile in.
+#   2. Edit the two `namespace:` fields below to the target namespace name.
+#   3. Add the resulting filenames to kustomization.yaml's `resources:` list.
+#   4. Set --watch-namespaces=<comma-separated-list> on the manager
+#      Deployment so the controller-runtime cache matches the RBAC.
+#
+# The chart automates all of the above through .Values.watchNamespaces; this
+# is the manual kustomize equivalent.
+#
+# Mirrors the chart's per-namespace "manager-watch" Role when
+# .Values.watchNamespaces is non-empty (charts/beskar7/templates/rbac.yaml).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-watch-role
+  namespace: REPLACE_WITH_WATCHED_NAMESPACE
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - clusters
+  - clusters/status
+  - machines
+  - machines/status
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters
+  - beskar7machines
+  - physicalhosts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters/finalizers
+  - beskar7machines/finalizers
+  - physicalhosts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7clusters/status
+  - beskar7machines/status
+  - physicalhosts/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7machinetemplates
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: manager-watch-rolebinding
+  namespace: REPLACE_WITH_WATCHED_NAMESPACE
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: manager-watch-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: beskar7-system

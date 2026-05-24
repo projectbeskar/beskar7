@@ -1,0 +1,49 @@
+# Leader-election Role + RoleBinding in the operator's own namespace.
+#
+# Even when --watch-namespaces narrows the cache to user-data namespaces,
+# the leader-election lease lives where the operator runs (beskar7-system
+# by default). Operator-side Event creation is in the same namespace for
+# the same reason.
+#
+# Mirrors the chart's "manager-leaderelection" Role when
+# .Values.watchNamespaces is non-empty (charts/beskar7/templates/rbac.yaml).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: manager-leaderelection-role
+  namespace: beskar7-system
+rules:
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: manager-leaderelection-rolebinding
+  namespace: beskar7-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: manager-leaderelection-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: beskar7-system

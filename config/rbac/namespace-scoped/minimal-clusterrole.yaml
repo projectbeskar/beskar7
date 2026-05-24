@@ -1,0 +1,37 @@
+# Minimal ClusterRole for the manager when --watch-namespaces is used.
+#
+# Contains only the genuinely cluster-scoped reads the manager requires:
+# clusterroles and clusterrolebindings (auto-generated from a kubebuilder
+# marker in cmd/manager/main.go). Every namespaced permission has been
+# moved to the per-namespace Role(s) in this directory.
+#
+# Mirrors the chart's "manager-clusterscope" ClusterRole when
+# .Values.watchNamespaces is non-empty (charts/beskar7/templates/rbac.yaml).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-clusterscope-role
+rules:
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: manager-clusterscope-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: manager-clusterscope-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: beskar7-system
