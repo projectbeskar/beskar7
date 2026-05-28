@@ -1,0 +1,24 @@
+{{- if not .Values.certManager.enabled }}
+{{- /*
+When cert-manager is disabled, the chart generates a self-signed serving
+certificate itself (see the beskar7.webhookCerts helper) and renders it into
+the same Secret name the Deployment mounts. This makes certManager.enabled=false
+a fully working mode: the callback server (:8082) and the webhook server (:9443)
+both get TLS, and the webhook configurations get a matching caBundle.
+
+The Secret is reused across upgrades via lookup, so the cert is stable.
+*/ -}}
+{{- include "beskar7.webhookCerts" . -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.certManager.certificate.secretName }}
+  namespace: {{ include "beskar7.namespace" . }}
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ ._beskar7WebhookCerts.crt }}
+  tls.key: {{ ._beskar7WebhookCerts.key }}
+  ca.crt: {{ ._beskar7WebhookCerts.ca }}
+{{- end }}
