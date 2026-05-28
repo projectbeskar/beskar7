@@ -741,15 +741,12 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
 		})
 
-		// FEATURE GAP: PhysicalHostReconciler does not call isPaused on the
-		// resource. Beskar7Machine and Beskar7Cluster reconcilers do honor the
-		// pause annotation; PhysicalHost does not. This is a deliberate gap
-		// — claim/release lifecycle continues independent of the cluster's
-		// paused state because the BMC is shared infrastructure, not a
-		// workload-cluster-scoped resource. If pause becomes a requirement
-		// (e.g. for maintenance windows), wire isPaused into Reconcile and
-		// convert these specs to real It blocks.
-		PIt("[FEATURE GAP - PhysicalHost pause not implemented] Should skip reconciliation when paused", func() {
+		// PhysicalHostReconciler honors the cluster.x-k8s.io/paused annotation on
+		// the resource itself (GAP-1 / #87). PhysicalHost is standalone inventory
+		// with no owner Cluster, so only the resource-level annotation applies —
+		// there is no cluster-pause to inherit. A paused host is left completely
+		// untouched: no finalizer add, no Redfish I/O, no status write.
+		It("Should skip reconciliation when paused", func() {
 			By("Creating paused PhysicalHost")
 			physicalHost.Annotations = map[string]string{
 				clusterv1.PausedAnnotation: "true",
@@ -768,9 +765,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(mockRfClient.GetPowerStateCalled).To(BeFalse())
 		})
 
-		// FEATURE GAP — see preceding spec for rationale. If pause is wired
-		// into PhysicalHostReconciler.Reconcile, convert this to a real It.
-		PIt("[FEATURE GAP - PhysicalHost pause not implemented] Should resume when pause annotation is removed", func() {
+		It("Should resume when pause annotation is removed", func() {
 			By("Creating paused PhysicalHost")
 			physicalHost.Annotations = map[string]string{
 				clusterv1.PausedAnnotation: "true",
