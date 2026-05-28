@@ -126,6 +126,17 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// add, pause). A List error here is non-fatal — the metric is best-effort.
 	r.recomputePhysicalHostMetrics(ctx, logger, req.Namespace)
 
+	// Respect the cluster.x-k8s.io/paused annotation. PhysicalHost is standalone
+	// inventory with no owner Cluster, so only the resource-level annotation
+	// applies (there is no cluster-pause to inherit). Returning before the patch
+	// helper is set up means a paused host is left completely untouched — no
+	// finalizer add, no Redfish I/O, no status write. Reconciliation resumes on
+	// the next event after the annotation is removed.
+	if isPaused(physicalHost) {
+		logger.Info("PhysicalHost reconciliation is paused")
+		return ctrl.Result{}, nil
+	}
+
 	// Initialize patch helper. A single deferred Patch replaces both r.Update (finalizer)
 	// and r.Status().Update calls — controller-runtime merges spec and status in one round-trip.
 	patchHelper, err := patch.NewHelper(physicalHost, r.Client)
