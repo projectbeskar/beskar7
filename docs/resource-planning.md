@@ -182,6 +182,9 @@ args:
 # Optional: scope informers to specific namespaces (SEC-2 / watched-namespaces mode).
 # Empty (default) watches all namespaces. See docs/security/rbac-hardening.md.
 - --watch-namespaces=
+# Optional: how long a host may stay Inspecting before InspectionTimedOut.
+# Default 10m; raise for hardware with slow BIOS POST / slow first-boot inspection.
+- --inspection-timeout=10m
 ```
 
 There is no `--max-concurrent-reconciles*` or `--reconciliation-interval` flag; the controller-runtime defaults apply (one reconciler per controller; per-resource requeue intervals encoded in the controllers themselves). Per-controller concurrency would have to be raised in code in `controllers/<kind>_controller.go:SetupWithManager`.

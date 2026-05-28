@@ -83,6 +83,21 @@ type Beskar7MachineReconciler struct {
 	// <BootstrapURLBase>/api/v1/bootstrap/<namespace>/<name>. Must be non-empty;
 	// validated in SetupWithManager.
 	BootstrapURLBase string
+	// InspectionTimeout bounds how long a host may stay in Inspecting before the
+	// machine is marked terminally failed (InspectionTimedOut). Zero means use
+	// DefaultInspectionTimeout. Set from the --inspection-timeout manager flag so
+	// operators with slow-POST hardware can raise it.
+	InspectionTimeout time.Duration
+}
+
+// inspectionTimeout returns the configured inspection timeout, falling back to
+// DefaultInspectionTimeout when unset (zero). Guards against a zero-value field
+// that would otherwise time out every inspection instantly.
+func (r *Beskar7MachineReconciler) inspectionTimeout() time.Duration {
+	if r.InspectionTimeout > 0 {
+		return r.InspectionTimeout
+	}
+	return DefaultInspectionTimeout
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines,verbs=get;list;watch;create;update;patch;delete
@@ -569,16 +584,17 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 	// misconfiguration or unreachable callback endpoint) and either
 	// delete-and-recreate the Beskar7Machine or fix the iPXE setup.
 	if physicalHost.Status.InspectionTimestamp != nil {
+		timeout := r.inspectionTimeout()
 		elapsed := time.Since(physicalHost.Status.InspectionTimestamp.Time)
-		if elapsed > DefaultInspectionTimeout {
-			logger.Info("Inspection timed out (terminal)", "elapsed", elapsed, "timeout", DefaultInspectionTimeout)
+		if elapsed > timeout {
+			logger.Info("Inspection timed out (terminal)", "elapsed", elapsed, "timeout", timeout)
 			// Best-effort signal to the PhysicalHost controller. Don't block the
 			// terminal marking on the annotation patch — the PhysicalHost catches
 			// up on its next reconcile regardless.
 			if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "timeout"); err != nil {
 				logger.Error(err, "Failed to set inspection timeout annotation")
 			}
-			msg := fmt.Sprintf("Inspection did not complete within %s", DefaultInspectionTimeout)
+			msg := fmt.Sprintf("Inspection did not complete within %s", timeout)
 			r.markTerminalFailure(b7machine, infrastructurev1beta1.InspectionTimedOutReason, msg)
 			return ctrl.Result{}, nil
 		}

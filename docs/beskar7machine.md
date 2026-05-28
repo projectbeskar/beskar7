@@ -47,7 +47,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
     - `SetBootSourcePXE` then `SetPowerState(On)` if not already powered on.
     - Mint a per-host bearer token unless an unexpired one is already in `Status.Bootstrap` (re-using avoids invalidating in-flight kernel cmdlines). The plaintext goes into a per-host Secret (`<host>-bootstrap-token`); only the SHA-256 hash and lifetime ride the `bootstrap-token` annotation. See `internal/auth/token.go` and decision D-004.
     - Patch the `inspection-request` annotation on the host with value `inspect`. The host reconciler transitions to `Inspecting`.
-6. **Wait for inspection.** While the host is `Inspecting`, monitor `Status.InspectionPhase`. If `Status.InspectionTimestamp` is older than `DefaultInspectionTimeout` (10 minutes), call `markTerminalFailure(InspectionTimedOut, ...)` and stop. Inspection timeout is terminal — the operator must investigate (likely an iPXE misconfiguration) and delete-and-recreate.
+6. **Wait for inspection.** While the host is `Inspecting`, monitor `Status.InspectionPhase`. If `Status.InspectionTimestamp` is older than the inspection timeout (default 10 minutes; override with the `--inspection-timeout` manager flag for slow-POST hardware), call `markTerminalFailure(InspectionTimedOut, ...)` and stop. Inspection timeout is terminal — the operator must investigate (likely an iPXE misconfiguration) and delete-and-recreate.
 7. **Validate hardware.** When `Status.InspectionPhase == Complete`, sum CPU cores across `report.cpus[]`, parse memory across `report.memory[]` (using the `parseMemoryCapacityGB` helper for `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` suffixes), and sum disk size across `report.disks[]`. If any minimum is violated, call `markTerminalFailure(HardwareRequirementsNotMet, ...)`. Hardware-validation failures are terminal — the BMC's hardware does not change at runtime.
 8. **Mark ready.** When validation passes, signal the host (`inspection-request: inspect-complete`) which moves the host to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, sets `InfrastructureReady=True`, `Status.Ready=true`, and `Status.Initialization.Provisioned=true` (the CAPI v1beta2 contract field that CAPI core lifts into `Machine.status.initialization.infrastructureProvisioned` and uses to advance the parent Machine past `Pending`).
 
@@ -68,7 +68,7 @@ These set `Status.FailureReason` and `Status.FailureMessage`. Once set, the cont
 |---|---|
 | `BootstrapDataUnavailable` | The Secret named by `Machine.Spec.Bootstrap.DataSecretName` does not exist. |
 | `HardwareRequirementsNotMet` | Inspection report falls below `hardwareRequirements`. |
-| `InspectionTimedOut` | No inspection report received within `DefaultInspectionTimeout` (10 min). |
+| `InspectionTimedOut` | No inspection report received within the inspection timeout (default 10 min; `--inspection-timeout` flag). |
 
 To recover, delete the Beskar7Machine (and its owner `Machine`); the host returns to `Available` and a fresh attempt can be made.
 

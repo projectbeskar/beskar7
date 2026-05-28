@@ -80,6 +80,7 @@ func main() {
 	var inspectionPort int
 	var inspectionCertDir string
 	var watchNamespacesRaw string
+	var inspectionTimeout time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -117,6 +118,10 @@ func main() {
 			"per-namespace Role/RoleBinding to tighten Secret RBAC (SEC-2). RBAC and "+
 			"chart-side per-namespace bindings ship in follow-up PRs; this flag alone "+
 			"only narrows the cache.")
+	flag.DurationVar(&inspectionTimeout, "inspection-timeout", controllers.DefaultInspectionTimeout,
+		"How long a host may stay in the Inspecting phase before the Beskar7Machine is "+
+			"marked terminally failed (InspectionTimedOut). Raise this for hardware with "+
+			"slow BIOS POST or slow first-boot inspection.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -188,10 +193,11 @@ func main() {
 	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
 	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
 	if err = (&controllers.Beskar7MachineReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Log:              ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
-		BootstrapURLBase: bootstrapURLBase,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Log:               ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		BootstrapURLBase:  bootstrapURLBase,
+		InspectionTimeout: inspectionTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)
