@@ -10,14 +10,31 @@ Beskar7 provisions bare-metal Kubernetes nodes via Redfish power management, iPX
 
 - Kubernetes v1.31+ ([docs](https://kubernetes.io/docs/setup/))
 - Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
-- cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
+- cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/)) — **recommended but optional** (see TLS section below)
 
-Install cert-manager before installing this chart:
+### TLS certificates
 
-```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.crds.yaml
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-```
+The webhook server and the inspection/bootstrap callback server both need a
+serving certificate. Two modes:
+
+- **`certManager.enabled=true` (default)** — cert-manager issues the cert and
+  injects the CA into the webhook configs. Install cert-manager first:
+
+  ```bash
+  kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.crds.yaml
+  kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+  ```
+
+- **`certManager.enabled=false`** — the chart self-generates a self-signed
+  serving cert and writes the matching CA into the webhook `caBundle`. No
+  cert-manager required. The cert is reused across upgrades and valid 10 years.
+  Use this on clusters where you don't run cert-manager:
+
+  ```bash
+  helm install --devel beskar7 beskar7/beskar7 \
+    --namespace beskar7-system --create-namespace \
+    --set certManager.enabled=false
+  ```
 
 ## Installation
 
@@ -78,7 +95,7 @@ All configurable values with their defaults:
 | `webhook.matchPolicy` | `Equivalent` | Webhook match policy. |
 | `webhook.service.port` | `443` | Port the webhook Service exposes. |
 | `webhook.service.targetPort` | `9443` | Container port the webhook handler listens on. |
-| `certManager.enabled` | `true` | Use cert-manager to issue the TLS certificate for the webhook and callback server. |
+| `certManager.enabled` | `true` | `true`: cert-manager issues the TLS cert + injects the webhook caBundle. `false`: the chart self-generates a self-signed cert and writes the caBundle directly (no cert-manager dependency). |
 | `certManager.issuer.name` | `beskar7-selfsigned-issuer` | cert-manager Issuer or ClusterIssuer name. |
 | `certManager.issuer.kind` | `ClusterIssuer` | Kind of the cert-manager issuer (`Issuer` or `ClusterIssuer`). |
 | `certManager.certificate.name` | `beskar7-serving-cert` | Name of the cert-manager Certificate resource. |

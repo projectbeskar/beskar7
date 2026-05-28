@@ -1,18 +1,35 @@
 {{- if .Values.webhook.enabled }}
+{{- /*
+caBundle / CA-injection strategy:
+  - certManager.enabled=true  → cert-manager's CA injector populates caBundle
+    from the named Certificate via the cert-manager.io/inject-ca-from
+    annotation (the historical path).
+  - certManager.enabled=false → the chart self-generates the serving cert
+    (beskar7.webhookCerts helper) and writes the matching CA into caBundle
+    directly. No annotation, no cert-manager dependency.
+*/ -}}
+{{- if not .Values.certManager.enabled }}
+{{- include "beskar7.webhookCerts" . -}}
+{{- end }}
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: {{ include "beskar7.fullname" . }}-mutating-webhook-configuration
+  {{- if .Values.certManager.enabled }}
   annotations:
     # cert-manager injects the CA bundle from the named Certificate's secret.
     cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "beskar7.namespace" .) .Values.certManager.certificate.name }}
+  {{- end }}
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
 webhooks:
 - admissionReviewVersions:
     {{- toYaml .Values.webhook.admissionReviewVersions | nindent 4 }}
   clientConfig:
+    {{- if not .Values.certManager.enabled }}
+    caBundle: {{ ._beskar7WebhookCerts.ca }}
+    {{- end }}
     service:
       name: {{ .Values.webhook.service.name }}
       namespace: {{ include "beskar7.namespace" . }}
@@ -37,15 +54,20 @@ apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
   name: {{ include "beskar7.fullname" . }}-validating-webhook-configuration
+  {{- if .Values.certManager.enabled }}
   annotations:
     # cert-manager injects the CA bundle from the named Certificate's secret.
     cert-manager.io/inject-ca-from: {{ printf "%s/%s" (include "beskar7.namespace" .) .Values.certManager.certificate.name }}
+  {{- end }}
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
 webhooks:
 - admissionReviewVersions:
     {{- toYaml .Values.webhook.admissionReviewVersions | nindent 4 }}
   clientConfig:
+    {{- if not .Values.certManager.enabled }}
+    caBundle: {{ ._beskar7WebhookCerts.ca }}
+    {{- end }}
     service:
       name: {{ .Values.webhook.service.name }}
       namespace: {{ include "beskar7.namespace" . }}

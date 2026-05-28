@@ -70,8 +70,10 @@ spec:
           {{- toYaml .Values.securityContext | nindent 10 }}
         # The cert volume is mounted unconditionally because the callback server
         # (inspection POST + bootstrap GET on :8082) requires TLS regardless of
-        # whether webhook admission is enabled. Both servers share the same cert
-        # issued by cert-manager. Operators must have certManager.enabled=true.
+        # whether webhook admission is enabled. Both servers share the same cert.
+        # When certManager.enabled=true the cert is issued by cert-manager; when
+        # false the chart self-generates it (templates/selfsigned-cert.yaml) into
+        # the same Secret name, so this mount works in both modes.
         volumeMounts:
         - mountPath: /tmp/k8s-webhook-server/serving-certs
           name: cert

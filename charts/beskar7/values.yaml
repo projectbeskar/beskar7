@@ -75,7 +75,19 @@ webhook:
     port: 443
     targetPort: 9443
 
-# Certificate manager configuration
+# Certificate configuration for the webhook + callback server TLS.
+#
+# enabled: true (default) — cert-manager issues the serving cert (Certificate +
+#   ClusterIssuer) and injects the CA bundle into the webhook configs via the
+#   cert-manager.io/inject-ca-from annotation. Requires cert-manager in the
+#   cluster.
+# enabled: false — the chart self-generates a self-signed serving cert
+#   (templates/selfsigned-cert.yaml) into the Secret named below and writes the
+#   matching CA directly into the webhook caBundle. No cert-manager dependency.
+#   The cert is reused across upgrades (looked up by Secret name) and is valid
+#   10 years. Use this on clusters without cert-manager.
+#
+# Either way the Deployment mounts the Secret named `certificate.secretName`.
 certManager:
   enabled: true
   issuer:
