@@ -722,40 +722,41 @@ spec:
 
 ### 1. Controller Tuning
 
-**Performance Configuration:**
+The manager exposes leader-election timing flags for HA tuning. The full set
+of real flags is enumerated in [Resource Planning → Performance Tuning](resource-planning.md#performance-tuning);
+the performance-relevant ones are:
+
 ```yaml
-# Manager args for high-scale deployments
+# Real manager args (see cmd/manager/main.go).
 args:
-- --concurrent-reconciles=10
-- --max-concurrent-reconciles=20
-- --worker-count=5
-- --resync-period=5m
-- --leader-elect-lease-duration=30s
-- --leader-elect-renew-deadline=20s
+- --leader-elect=true
+- --leader-elect-lease-duration=15s   # default 15s
+- --leader-elect-renew-deadline=10s   # default 10s
+- --leader-elect-retry-period=2s      # default 2s
+- --inspection-timeout=10m            # raise for slow-POST hardware
 ```
 
-### 2. Caching Strategy
+There is **no** `--concurrent-reconciles`, `--max-concurrent-reconciles`,
+`--worker-count`, or `--resync-period` flag. Each controller runs with
+controller-runtime's default `MaxConcurrentReconciles = 1`. Raising
+per-controller concurrency is a code change in
+`controllers/<kind>_controller.go:SetupWithManager`, not configuration — open
+an issue with your scaling profile if the serial default is a real constraint.
 
-**Informer Cache Configuration:**
-```yaml
-# Configure informer resync periods
-env:
-- name: CONTROLLER_RESYNC_PERIOD
-  value: "5m"
-- name: CACHE_SYNC_TIMEOUT
-  value: "30s"
-```
+### 2. Caching and rate limiting
 
-### 3. Rate Limiting
+The informer cache and API client use controller-runtime defaults. There are
+**no** `CONTROLLER_RESYNC_PERIOD`, `CACHE_SYNC_TIMEOUT`, `QPS_LIMIT`, or
+`BURST_LIMIT` environment variables — the manager does not read them. The cache
+resync period (controller-runtime default 10h) and client QPS/burst are not
+currently exposed as configuration. To scope the cache to specific namespaces
+(which reduces memory and watch load on large clusters), use the
+`--watch-namespaces` flag — see [RBAC hardening](security/rbac-hardening.md).
 
-**API Rate Limiting:**
-```yaml
-# Configure rate limiting for API calls
-env:
-- name: QPS_LIMIT
-  value: "50"
-- name: BURST_LIMIT
-  value: "100"
-```
+`GOMAXPROCS` is wired to the CPU limit via the downward API in
+`config/manager/manager.yaml`, so Go's runtime parallelism tracks the
+container's CPU allocation automatically.
 
-This document provides comprehensive guidance for deploying Beskar7 in production environments. Regular review and updates of these practices ensure optimal security, performance, and reliability. 
+This document provides guidance for deploying Beskar7 in production
+environments. Regular review keeps these practices aligned with the shipped
+flags and behavior.
