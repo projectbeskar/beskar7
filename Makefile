@@ -118,6 +118,12 @@ docker-build-mock-inspector:
 smoke:
 	bash hack/smoke/run.sh
 
+# Smoke test plus the watch-namespaces isolation check (layer 6). Only
+# meaningful when the operator was installed with watchNamespaces set; the
+# layer self-skips otherwise. See docs and SEC-2 (charts watchNamespaces).
+smoke-watch-namespaces:
+	bash hack/smoke/run.sh --with-isolation
+
 # Tear down smoke-test fixtures without running the suite.
 smoke-teardown:
 	bash hack/smoke/run.sh --teardown

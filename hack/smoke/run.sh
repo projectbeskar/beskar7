@@ -18,11 +18,16 @@
 #   hack/smoke/run.sh                            # run all layers, tear down on exit
 #   hack/smoke/run.sh --keep                     # leave fixtures in place for inspection
 #   hack/smoke/run.sh --teardown                 # only tear down, do not run
+#   hack/smoke/run.sh --with-isolation           # also run layer 6 (watch-namespaces isolation)
+#   SMOKE_NS_ISOLATION=1 hack/smoke/run.sh       # same, via env
 #   MOCK_IMAGE=... hack/smoke/run.sh             # override mock-redfish image
 #   MOCK_INSPECTOR_IMAGE=... hack/smoke/run.sh   # override mock-inspector image
 #
 # Required: kubectl in PATH, current context with cert-manager + CAPI core
 # installed and the beskar7 chart already deployed to beskar7-system.
+#
+# Layer 6 (isolation) only does work when the operator was installed with
+# --watch-namespaces (chart value watchNamespaces); otherwise it self-skips.
 
 set -euo pipefail
 
@@ -33,10 +38,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANIFEST_DIR="${SCRIPT_DIR}/manifests"
 SMOKE_NS="beskar7-smoke"
+# Namespace used by the layer-6 isolation check. Deliberately NOT in the
+# operator's --watch-namespaces list when running in watch-namespaces mode.
+ISOLATION_NS="${SMOKE_NS}-unwatched"
 OPERATOR_NS="${OPERATOR_NS:-beskar7-system}"
 OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-beskar7-controller-manager}"
 MOCK_IMAGE="${MOCK_IMAGE:-}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"
+# Grace window for the isolation check: how long to wait before asserting an
+# out-of-scope PhysicalHost was NOT reconciled. A watching operator adds the
+# finalizer on its first reconcile pass within ~1-2s, so 20s is ample.
+ISOLATION_GRACE="${ISOLATION_GRACE:-20}"
 
 KEEP_FIXTURES=0
 TEARDOWN_ONLY=0
@@ -44,15 +56,20 @@ RUN_LAYER_2=1
 RUN_LAYER_3=1
 RUN_LAYER_4=1
 RUN_LAYER_5=1
+# Layer 6 (watch-namespaces isolation) is opt-in: only meaningful when the
+# operator is installed with --watch-namespaces. Enable via --with-isolation
+# or SMOKE_NS_ISOLATION=1. It self-skips if the operator watches all namespaces.
+RUN_LAYER_6="${SMOKE_NS_ISOLATION:-0}"
 
 for arg in "$@"; do
   case "$arg" in
-    --keep)         KEEP_FIXTURES=1 ;;
-    --teardown)     TEARDOWN_ONLY=1 ;;
-    --skip-layer-2) RUN_LAYER_2=0 ;;
-    --skip-layer-3) RUN_LAYER_3=0 ;;
-    --skip-layer-4) RUN_LAYER_4=0 ;;
-    --skip-layer-5) RUN_LAYER_5=0 ;;
+    --keep)            KEEP_FIXTURES=1 ;;
+    --teardown)        TEARDOWN_ONLY=1 ;;
+    --skip-layer-2)    RUN_LAYER_2=0 ;;
+    --skip-layer-3)    RUN_LAYER_3=0 ;;
+    --skip-layer-4)    RUN_LAYER_4=0 ;;
+    --skip-layer-5)    RUN_LAYER_5=0 ;;
+    --with-isolation)  RUN_LAYER_6=1 ;;
     -h|--help)
       sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
@@ -129,6 +146,16 @@ teardown() {
   done
 
   kubectl delete --ignore-not-found=true namespace "${SMOKE_NS}" --wait=false >/dev/null 2>&1 || true
+
+  # Layer-6 isolation fixtures (best-effort; namespace may not exist).
+  if kubectl get ns "${ISOLATION_NS}" >/dev/null 2>&1; then
+    while read -r name; do
+      [[ -z "${name}" ]] && continue
+      kubectl -n "${ISOLATION_NS}" patch "${name}" --type=merge \
+        -p '{"metadata":{"finalizers":[]}}' >/dev/null 2>&1 || true
+    done < <(kubectl -n "${ISOLATION_NS}" get physicalhost -o name 2>/dev/null || true)
+    kubectl delete --ignore-not-found=true namespace "${ISOLATION_NS}" --wait=false >/dev/null 2>&1 || true
+  fi
 }
 
 # Teardown-only mode
@@ -454,6 +481,77 @@ layer_5_inspection() {
 }
 
 # ---------------------------------------------------------------------------
+# Layer 6: watch-namespaces isolation (opt-in)
+#
+# Verifies the SEC-2 watched-namespaces topology actually isolates: a
+# PhysicalHost created in a namespace NOT in --watch-namespaces must be left
+# completely untouched (no finalizer, no status) because the controller's
+# informers are scoped away from it.
+#
+# Self-skips when the operator is in all-namespaces mode (no --watch-namespaces
+# arg), so it is a no-op on the default smoke run.
+# ---------------------------------------------------------------------------
+
+layer_6_isolation() {
+  info "[layer 6] verifying watch-namespaces isolation"
+
+  # Read the operator's --watch-namespaces value, if any.
+  local args watch_csv
+  args="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo '')"
+  watch_csv="$(printf '%s' "${args}" | grep -oE '\-\-watch-namespaces=[^"]*' | head -1 | cut -d= -f2-)"
+
+  if [[ -z "${watch_csv}" ]]; then
+    warn "[layer 6] operator has no --watch-namespaces flag (all-namespaces mode); skipping isolation check"
+    return 0
+  fi
+  info "    operator watches: ${watch_csv}"
+
+  # Sanity: the smoke namespace must be watched (otherwise layers 3-5 couldn't
+  # have passed), and the isolation namespace must NOT be.
+  if [[ ",${watch_csv}," == *",${ISOLATION_NS},"* ]]; then
+    fail "[layer 6] isolation namespace ${ISOLATION_NS} is in the watch list; test misconfigured"
+    return 1
+  fi
+
+  info "    creating an out-of-scope PhysicalHost in ${ISOLATION_NS}"
+  kubectl create namespace "${ISOLATION_NS}" >/dev/null 2>&1 || true
+  cat <<EOF | kubectl apply -f - >/dev/null
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: unwatched-host-01
+  namespace: ${ISOLATION_NS}
+spec:
+  redfishConnection:
+    address: "https://192.0.2.99"
+    credentialsSecretRef: "no-such-secret"
+    insecureSkipVerify: true
+EOF
+
+  info "    waiting ${ISOLATION_GRACE}s to confirm the controller ignores it"
+  sleep "${ISOLATION_GRACE}"
+
+  # A reconciling controller adds the finalizer on its first pass (before any
+  # BMC I/O) and sets Status.State. Both must remain empty for an isolated host.
+  local finalizers state
+  finalizers="$(kubectl -n "${ISOLATION_NS}" get physicalhost unwatched-host-01 \
+    -o jsonpath='{.metadata.finalizers}' 2>/dev/null || echo '')"
+  state="$(kubectl -n "${ISOLATION_NS}" get physicalhost unwatched-host-01 \
+    -o jsonpath='{.status.state}' 2>/dev/null || echo '')"
+
+  if [[ -n "${finalizers}" && "${finalizers}" != "[]" ]]; then
+    fail "[layer 6] out-of-scope PhysicalHost was reconciled (finalizers=${finalizers}); isolation broken"
+    return 1
+  fi
+  if [[ -n "${state}" ]]; then
+    fail "[layer 6] out-of-scope PhysicalHost got Status.State=${state}; isolation broken"
+    return 1
+  fi
+  pass "[layer 6] out-of-scope PhysicalHost left untouched (no finalizer, no state)"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 
@@ -464,6 +562,7 @@ layer_1_static          || FAILED=1
 [[ "${RUN_LAYER_3}" -eq 1 ]] && { layer_3_reconcile  || FAILED=1; }
 [[ "${RUN_LAYER_4}" -eq 1 ]] && { layer_4_claim      || FAILED=1; }
 [[ "${RUN_LAYER_5}" -eq 1 ]] && { layer_5_inspection || FAILED=1; }
+[[ "${RUN_LAYER_6}" -eq 1 ]] && { layer_6_isolation  || FAILED=1; }
 
 if [[ "${FAILED}" -eq 0 ]]; then
   pass "smoke test PASSED on context ${CONTEXT}"
