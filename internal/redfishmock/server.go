@@ -319,7 +319,7 @@ func (mrs *MockRedfishServer) handleRequest(w http.ResponseWriter, r *http.Reque
 	// Authorization header before it knows whether credentials are even
 	// required. Authenticating the service root would make us incompatible
 	// with the standard client and most real BMCs.
-	requiresAuth := !(r.Method == http.MethodGet && r.URL.Path == RedfishAPIRoot)
+	requiresAuth := r.Method != http.MethodGet || r.URL.Path != RedfishAPIRoot
 	if requiresAuth && mrs.AuthEnabled && !mrs.authenticate(r) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="Redfish"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)

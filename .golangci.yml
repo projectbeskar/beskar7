@@ -1,26 +1,32 @@
-# golangci-lint v1 configuration. CI pins golangci-lint to v1.64.8
-# (.github/workflows/ci.yml). Run `make lint` locally — it installs the same
-# binary into $GOBIN so the config schema matches. A system-installed v2
-# binary will reject this file with "unsupported version of the configuration"
-# because v2 requires a top-level `version:` key and renamed sections; v1 does
-# not.
+# golangci-lint v2 configuration. CI and `make lint` pin the v2 binary
+# (see .github/workflows/ci.yml and Makefile GOLANGCI_LINT_VERSION).
+#
+# The `standard` default set is errcheck, govet, ineffassign, staticcheck,
+# and unused — equivalent to the previous v1 list once gosimple (folded into
+# staticcheck) and typecheck (always-on in v2) are accounted for.
+version: "2"
+
 run:
-  timeout: 5m
   tests: true
 
 linters:
-  enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - typecheck
-    - unused
+  default: standard
+  exclusions:
+    generated: lax
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
 
 issues:
-  exclude-dirs:
-    - vendor
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

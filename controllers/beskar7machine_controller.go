@@ -197,7 +197,7 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}()
 
 	// Handle deletion
-	if !b7machine.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !b7machine.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, log, b7machine)
 	}
 
