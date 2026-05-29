@@ -55,6 +55,15 @@ const (
 	// gives operators headroom for slow BIOS POST + first-boot inspector +
 	// bootstrap fetch.
 	TokenLifetime = 30 * time.Minute
+
+	// BootNonceLifetime is the validity window for per-host boot nonces (D-009).
+	// Shorter than TokenLifetime because the nonce is single-use and consumed at
+	// the first GET /api/v1/boot call: a long window only extends the race window
+	// for a co-located provisioning-L2 attacker (see D-009 residual accepted risk).
+	// 10 minutes matches DefaultInspectionTimeout — by the time inspection runs,
+	// the nonce window has elapsed and a fresh nonce is minted on the next
+	// triggerInspection call.
+	BootNonceLifetime = 10 * time.Minute
 )
 
 // MintToken generates a fresh per-host bearer token.
@@ -110,4 +119,13 @@ func LifetimeFor(now time.Time) (issuedAt, expiresAt metav1.Time) {
 	issuedAt = metav1.NewTime(now)
 	expiresAt = metav1.NewTime(now.Add(TokenLifetime))
 	return issuedAt, expiresAt
+}
+
+// NonceLifetimeFor returns the expiresAt timestamp to persist on
+// PhysicalHost.Status.Bootstrap when a boot nonce is minted at the given
+// instant. The nonce has no issuedAt field in Status — only expiresAt and the
+// consumed marker matter for the validity check. Uses BootNonceLifetime (10 min)
+// rather than TokenLifetime (30 min) because the nonce is single-use.
+func NonceLifetimeFor(now time.Time) (expiresAt metav1.Time) {
+	return metav1.NewTime(now.Add(BootNonceLifetime))
 }

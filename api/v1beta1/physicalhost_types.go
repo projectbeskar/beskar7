@@ -339,6 +339,33 @@ type BootstrapStatus struct {
 	// Defaults to IssuedAt + 30m at mint time (D-004).
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
+
+	// BootNonceHash is the hex-encoded SHA-256 of the per-host boot nonce
+	// minted at inspection time (D-009). The nonce gates the
+	// GET /api/v1/boot/{ns}/{host}/{nonce} endpoint. Only the hash is stored
+	// here — the plaintext rides a per-host Secret under key "plaintext-boot-nonce".
+	// The hash cannot be used to forge a valid nonce URL, so its presence
+	// in reconcile logs is acceptable.
+	// +optional
+	BootNonceHash string `json:"bootNonceHash,omitempty"`
+
+	// BootNonceExpiresAt is the time the current boot nonce stops being
+	// accepted. Defaults to mint time + 10 min (BootNonceLifetime, D-009).
+	// A shorter window than the bearer-token lifetime is intentional: the
+	// nonce is single-use and consumed at first boot, so a long window only
+	// widens the race window for a co-located attacker.
+	// +optional
+	BootNonceExpiresAt *metav1.Time `json:"bootNonceExpiresAt,omitempty"`
+
+	// BootNonceConsumedAt is the timestamp at which the boot nonce was
+	// single-use consumed by the GET /api/v1/boot handler (D-010). Nil
+	// until that handler fires. Once set, the nonce is permanently spent:
+	// no controller in this PR clears or re-uses it. A new nonce is minted
+	// on every re-provision cycle (triggerInspection detects ConsumedAt != nil
+	// and forces a fresh mint). Written exclusively by the /boot handler
+	// (D-010) — nothing in this PR writes this field.
+	// +optional
+	BootNonceConsumedAt *metav1.Time `json:"bootNonceConsumedAt,omitempty"`
 }
 
 // Redfish conditions and reasons - simplified for power management only
@@ -452,7 +479,7 @@ func (in *PhysicalHostStatus) DeepCopyInto(out *PhysicalHostStatus) {
 	if in.Bootstrap != nil {
 		in, out := &in.Bootstrap, &out.Bootstrap
 		*out = new(BootstrapStatus)
-		**out = **in
+		(*in).DeepCopyInto(*out)
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions

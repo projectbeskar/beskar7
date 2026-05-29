@@ -313,6 +313,13 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// bearer tokens against the stored hash.
 	r.applyBootstrapTokenAnnotation(logger, physicalHost)
 
+	// Consume the boot-nonce annotation (D-009): the Beskar7Machine controller
+	// signals the hash + expiry of the freshly minted per-host boot nonce; we
+	// persist them to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}.
+	// BootNonceConsumedAt is NOT touched here — it is the /boot handler's field
+	// (D-010). Same idempotent annotation-in/status-out pattern as the token.
+	r.applyBootNonceAnnotation(logger, physicalHost)
+
 	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
 	// HTTP handler stored the validated InspectionReport on a ConfigMap and
 	// pointed at it via this annotation. We persist the report to Status, mark
@@ -438,6 +445,49 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 	logger.Info("Applied bootstrap-token annotation to Status.Bootstrap", "host", physicalHost.Name)
 
 	delete(physicalHost.Annotations, BootstrapTokenAnnotation)
+}
+
+// applyBootNonceAnnotation reads the BootNonceAnnotation, JSON-decodes the
+// {hash, expiresAt} payload, and persists those values to Status.Bootstrap.
+// BootNonceConsumedAt is NOT written here — it is exclusively written by the
+// /boot handler (D-010). Any code path that reads ConsumedAt after this call
+// will see only whatever value was already in Status before the annotation was
+// applied (nil until the handler fires).
+//
+// Same idempotent "annotation in, status out, annotation cleared" pattern as
+// applyBootstrapTokenAnnotation. Malformed JSON → log + leave annotation in
+// place (do not clear) so the next reconcile or an operator can investigate;
+// clearing would silently discard a nonce-state signal. Empty hash → ignore
+// the annotation and clear it (nothing useful to persist).
+func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	raw := physicalHost.Annotations[BootNonceAnnotation]
+	if raw == "" {
+		return
+	}
+	var value BootNonceAnnotationValue
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		logger.Error(err, "Failed to decode boot-nonce annotation; leaving in place for investigation",
+			"host", physicalHost.Name)
+		return
+	}
+	if value.Hash == "" {
+		logger.Info("boot-nonce annotation has empty hash; ignoring", "host", physicalHost.Name)
+		delete(physicalHost.Annotations, BootNonceAnnotation)
+		return
+	}
+
+	if physicalHost.Status.Bootstrap == nil {
+		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+	}
+	// Copy the hash (safe to log — see BootNonceHash docstring in physicalhost_types.go).
+	physicalHost.Status.Bootstrap.BootNonceHash = value.Hash
+	expiresAt := value.ExpiresAt
+	physicalHost.Status.Bootstrap.BootNonceExpiresAt = &expiresAt
+	// Intentionally do NOT touch BootNonceConsumedAt — that field belongs to
+	// the /boot handler (D-010). This controller must not clear or overwrite it.
+	logger.Info("Applied boot-nonce annotation to Status.Bootstrap", "host", physicalHost.Name)
+
+	delete(physicalHost.Annotations, BootNonceAnnotation)
 }
 
 // applyInspectionResultAnnotation reads the InspectionResultAnnotation, fetches

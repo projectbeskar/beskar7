@@ -798,3 +798,111 @@ var _ = Describe("PhysicalHost Controller", func() {
 		})
 	})
 })
+
+// applyBootNonceAnnotation unit tests (D-009). Pure unit; no I/O so no envtest needed.
+// Mirrors the applyBootstrapTokenAnnotation tests in the Context block above.
+var _ = Describe("applyBootNonceAnnotation", func() {
+	var r *PhysicalHostReconciler
+
+	BeforeEach(func() {
+		r = &PhysicalHostReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("boot-nonce-test"),
+		}
+	})
+
+	It("lifts BootNonceHash and BootNonceExpiresAt into Status.Bootstrap from the annotation", func() {
+		fakeHash := "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+		// Truncate to second precision: metav1.Time marshals as RFC3339 (second
+		// resolution), so sub-second precision is lost in the JSON round-trip.
+		// The test compares the round-tripped value; truncate the input to match.
+		expiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
+		value := BootNonceAnnotationValue{
+			Hash:      fakeHash,
+			ExpiresAt: expiresAt,
+		}
+		encoded, err := json.Marshal(value)
+		Expect(err).NotTo(HaveOccurred())
+
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
+			},
+		}
+
+		r.applyBootNonceAnnotation(r.Log, ph)
+
+		Expect(ph.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
+		Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(fakeHash))
+		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).NotTo(BeNil())
+		Expect(ph.Status.Bootstrap.BootNonceExpiresAt.Time.Equal(expiresAt.Time)).To(BeTrue())
+		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation),
+			"annotation must be cleared after consumption")
+	})
+
+	It("does not touch BootNonceConsumedAt (that field belongs to the /boot handler)", func() {
+		consumed := metav1.Now()
+		fakeHash := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+		expiresAt := metav1.NewTime(time.Now().Add(5 * time.Minute))
+		value := BootNonceAnnotationValue{Hash: fakeHash, ExpiresAt: expiresAt}
+		encoded, err := json.Marshal(value)
+		Expect(err).NotTo(HaveOccurred())
+
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceConsumedAt: &consumed,
+				},
+			},
+		}
+
+		r.applyBootNonceAnnotation(r.Log, ph)
+
+		Expect(ph.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
+			"applyBootNonceAnnotation must not clear BootNonceConsumedAt — it is the /boot handler's field")
+		Expect(ph.Status.Bootstrap.BootNonceConsumedAt.Time.Equal(consumed.Time)).To(BeTrue())
+	})
+
+	It("leaves annotation in place when JSON is malformed", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: "not-json"},
+			},
+		}
+		r.applyBootNonceAnnotation(r.Log, ph)
+
+		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation),
+			"malformed JSON must leave the annotation in place for investigation")
+		Expect(ph.Status.Bootstrap).To(BeNil(),
+			"malformed JSON must not initialize Status.Bootstrap")
+	})
+
+	It("ignores and clears annotation when hash is empty", func() {
+		expiresAt := metav1.NewTime(time.Now().Add(5 * time.Minute))
+		value := BootNonceAnnotationValue{Hash: "", ExpiresAt: expiresAt}
+		encoded, err := json.Marshal(value)
+		Expect(err).NotTo(HaveOccurred())
+
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
+			},
+		}
+		r.applyBootNonceAnnotation(r.Log, ph)
+
+		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation),
+			"empty-hash annotation must be cleared")
+		Expect(ph.Status.Bootstrap).To(BeNil(),
+			"empty-hash annotation must not initialize Status.Bootstrap")
+	})
+
+	It("is a no-op when the annotation is absent", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		r.applyBootNonceAnnotation(r.Log, ph)
+		Expect(ph.Status.Bootstrap).To(BeNil())
+	})
+})
