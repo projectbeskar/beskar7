@@ -7,14 +7,14 @@ resources:
 - ../../default
 - pdb.yaml  # Keep the existing PDB
 
-patchesStrategicMerge:
-- manager_patch.yaml
+patches:
+- path: manager_patch.yaml
 
 namePrefix: extra-large-
 
-commonLabels:
-  deployment-size: extra-large
-
+# deployment-size is already covered by the labels block below (which also
+# carries includeSelectors: true), so the old commonLabels entry was redundant
+# and was dropped during the v1→v2 migration.
 labels:
 - includeSelectors: true
   pairs:

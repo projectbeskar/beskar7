@@ -6,12 +6,16 @@ namespace: beskar7-system
 # "controller-manager" becomes "my-deployment-controller-manager".
 # namePrefix: my-deployment-
 
-# Labels to add to all resources and selectors.
-commonLabels:
-  app.kubernetes.io/name: beskar7
-  app.kubernetes.io/version: v0.2.7
+# Labels to add to all resources and selectors. includeSelectors: true
+# preserves the v1 commonLabels behavior (the labels are injected into
+# Deployment/Service selectors too, not just metadata).
+labels:
+- pairs:
+    app.kubernetes.io/name: beskar7
+    app.kubernetes.io/version: v0.2.7
+  includeSelectors: true
 
-bases:
+resources:
 - ../crd
 - ../rbac
 - ../manager

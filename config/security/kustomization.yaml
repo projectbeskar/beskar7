@@ -1,6 +1,8 @@
 resources:
 - network-policy.yaml
 
-commonLabels:
-  app.kubernetes.io/name: beskar7
-  app.kubernetes.io/component: security 
+labels:
+- pairs:
+    app.kubernetes.io/name: beskar7
+    app.kubernetes.io/component: security
+  includeSelectors: true 

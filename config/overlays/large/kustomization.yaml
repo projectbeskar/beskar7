@@ -6,14 +6,14 @@ namespace: beskar7-system
 resources:
 - ../../default
 
-patchesStrategicMerge:
-- manager_patch.yaml
+patches:
+- path: manager_patch.yaml
 
 namePrefix: large-
 
-commonLabels:
-  deployment-size: large
-
+# deployment-size is already covered by the labels block below (which also
+# carries includeSelectors: true), so the old commonLabels entry was redundant
+# and was dropped during the v1→v2 migration.
 labels:
 - includeSelectors: true
   pairs:
