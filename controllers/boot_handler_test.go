@@ -232,14 +232,14 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 		By("asserting iPXE script structure")
 		Expect(body).To(HavePrefix("#!ipxe\n"))
-		Expect(body).To(ContainSubstring(b7m.Spec.InspectionImageURL+"/vmlinuz"))
-		Expect(body).To(ContainSubstring("beskar7.api="+bootTestAPIBase))
-		Expect(body).To(ContainSubstring("beskar7.namespace="+testNs.Name))
-		Expect(body).To(ContainSubstring("beskar7.host="+ph.Name))
+		Expect(body).To(ContainSubstring(b7m.Spec.InspectionImageURL + "/vmlinuz"))
+		Expect(body).To(ContainSubstring("beskar7.api=" + bootTestAPIBase))
+		Expect(body).To(ContainSubstring("beskar7.namespace=" + testNs.Name))
+		Expect(body).To(ContainSubstring("beskar7.host=" + ph.Name))
 		Expect(body).To(ContainSubstring("beskar7.token="))
-		Expect(body).To(ContainSubstring("beskar7.target="+b7m.Spec.TargetImageURL))
+		Expect(body).To(ContainSubstring("beskar7.target=" + b7m.Spec.TargetImageURL))
 		Expect(body).To(ContainSubstring("beskar7.ca="))
-		Expect(body).To(ContainSubstring("initrd "+b7m.Spec.InspectionImageURL+"/initrd.img"))
+		Expect(body).To(ContainSubstring("initrd " + b7m.Spec.InspectionImageURL + "/initrd.img"))
 		Expect(body).To(ContainSubstring("\nboot\n"))
 
 		By("asserting BootNonceConsumedAt is set")
@@ -324,7 +324,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
 		By("body is the correct iPXE script")
-		Expect(body).To(ContainSubstring(b7m.Spec.InspectionImageURL+"/vmlinuz"))
+		Expect(body).To(ContainSubstring(b7m.Spec.InspectionImageURL + "/vmlinuz"))
 		Expect(body).To(ContainSubstring("beskar7.token="))
 
 		By("ConsumedAt is unchanged — same second as the pre-set value")
@@ -627,9 +627,9 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	// Table-driven injection tests — one row per injection vector.
 	// Each case mutates exactly one of the two URL fields; the other is kept valid.
 	type injectionCase struct {
-		name           string
-		inspectionURL  string
-		targetURL      string
+		name          string
+		inspectionURL string
+		targetURL     string
 	}
 	injectionCases := []injectionCase{
 		// InspectionImageURL injection vectors
@@ -825,8 +825,8 @@ func (s *logCaptureSink) append(msg string) {
 	s.entries = append(s.entries, msg)
 }
 
-func (s *logCaptureSink) Init(_ logr.RuntimeInfo)                      {}
-func (s *logCaptureSink) Enabled(_ int) bool                           { return true }
+func (s *logCaptureSink) Init(_ logr.RuntimeInfo) {}
+func (s *logCaptureSink) Enabled(_ int) bool      { return true }
 func (s *logCaptureSink) Info(_ int, msg string, kv ...interface{}) {
 	s.append(fmt.Sprint(append([]interface{}{msg}, kv...)...))
 }
@@ -846,8 +846,8 @@ type logCaptureSinkChild struct {
 	static string
 }
 
-func (c *logCaptureSinkChild) Init(_ logr.RuntimeInfo)                          {}
-func (c *logCaptureSinkChild) Enabled(_ int) bool                              { return true }
+func (c *logCaptureSinkChild) Init(_ logr.RuntimeInfo) {}
+func (c *logCaptureSinkChild) Enabled(_ int) bool      { return true }
 func (c *logCaptureSinkChild) Info(_ int, msg string, kv ...interface{}) {
 	c.parent.append(fmt.Sprint(append([]interface{}{c.static, msg}, kv...)...))
 }
