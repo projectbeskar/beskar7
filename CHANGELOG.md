@@ -8,6 +8,34 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 *No unreleased work — see the per-tag entries below. Going forward, each released tag gets its own entry; this section stays empty between tags.*
 
+## [v0.4.0-alpha.6] - 2026-05-29
+
+The "post-alpha.5 hardening arc": closed the last correctness bug surfaced after alpha.5 (a host that leaked permanently when a machine was deleted mid-provision), stood up a real manager-level integration test tier to catch that class of bug at PR speed, brought the tooling/config onto current schemas (kustomize v2, golangci-lint v2), and landed the CAPI pause-conformance + webhook + flag work that had been queued. Also fixes the release workflow itself, which broke on the alpha.5 tag run.
+
+### Added
+- **Manager-level integration test suite** (#94, PR #106) — replaces the hollow `test/integration` placeholder (a single `t.Skip` that asserted nothing) with a real suite that boots envtest, starts one shared controller-runtime manager wiring all three reconcilers exactly as `cmd/manager/main.go` does, and drives cross-controller scenarios under real watch/informer timing. Three specs: full provision flow (claim → inspect → `Ready`/ProviderID, with the inspector callback simulated via the inspection-result ConfigMap + annotation handoff), credentials-Secret rotation re-trigger via `SecretToPhysicalHosts`, and delete-and-release. Build-tagged `integration`; the existing `integration-test` CI job already runs it, so no workflow change. Catches the watch-wiring / concurrent-reconcile bug class that the manual-`Reconcile` unit tier cannot and that was previously only covered by the slow kind smoke.
+- **`--inspection-timeout` manager flag** (#91, PR #99) — exposes the previously-hardcoded inspection timeout (`DefaultInspectionTimeout`, 10m) as a `Beskar7MachineReconciler` field resolved via `inspectionTimeout()`, wired through `cmd/manager/main.go`. Lets operators tune how long a host may sit in `Inspecting` before the machine is marked terminally failed.
+- **Self-signed webhook certificate path** (GAP-2, #88, PR #98) — the Helm chart can now serve the `Beskar7Cluster` admission webhook without cert-manager. When `certManager.enabled=false`, a memoized `beskar7.webhookCerts` template helper generates a CA + serving cert (Sprig `genCA`/`genSignedCert`), renders a `kubernetes.io/tls` Secret, and injects the CA bundle into the webhook configuration. `certManager.enabled=true` (default) keeps the cert-manager-issued path unchanged.
+- **Smoke watch-namespaces isolation layer + CI gate** (#95, PR #102) — adds layer 6 to `hack/smoke/run.sh` (env/flag-gated `SMOKE_NS_ISOLATION` / `--with-isolation`) that proves a watch-namespaces-scoped operator ignores resources outside its watched set, plus a `make smoke-watch-namespaces` target and a CI phase. Self-skips when the operator was installed cluster-wide.
+
+### Fixed
+- **#107**: `Beskar7MachineReconciler.reconcileDelete` only released the claimed `PhysicalHost` when `Spec.ProviderID` was set, but `ProviderID` is assigned late (after inspection, in `handleReadyHost`) while `ConsumerRef` is set at claim time. A machine deleted mid-inspection thus had its finalizer removed without clearing the host's `ConsumerRef`, stranding the host in `InUse` with a dangling reference — a permanent, unclaimable leak. Release now keys off `ConsumerRef` ownership (new `findClaimedHostForRelease` helper; `ProviderID` kept as a fast-path `Get`, with a namespace list-scan fallback) (PR #108).
+- **#103**: `PhysicalHostReconciler.reconcileDelete` panicked on a nil `Recorder` (`r.Recorder.Event(...)`) because the manager wiring never set `Recorder`. Wired `mgr.GetEventRecorderFor(...)` in `cmd/manager/main.go` and added a nil-guard, with a regression test that panics without the guard (PR #104).
+- **GAP-1 / #87**: `PhysicalHostReconciler` now honours the CAPI pause signal (`cluster.x-k8s.io/paused` annotation), matching the other reconcilers and the provider contract. Reconcile returns early without mutating the host while paused (PR #97).
+- **Release workflow kustomize install** (#86) — the `Generate Release Artifacts` step used the upstream `install_kustomize.sh` script, whose asset glob changed at kustomize-master and started failing with `tar: ... No such file or directory` (this broke the v0.4.0-alpha.5 release artifacts). Replaced with a pinned `go install sigs.k8s.io/kustomize/kustomize/v5@v5.4.3`, matching the controller-gen / golangci-lint pattern.
+
+### Changed
+- **golangci-lint migrated to v2** (#93, PR #105) — `.golangci.yml` rewritten to the v2 schema (`version: "2"`, `linters.default: standard`, `formatters` section); `make lint` and CI pinned to the matching v2 binary (`v2.12.2`, module path `.../v2/cmd/golangci-lint`). Seven surfaced staticcheck quick-fix findings resolved behavior-preservingly (tagged `switch`, De Morgan simplification, `time.Time` method shortcuts).
+- **kustomize configs migrated off deprecated v1 fields** (#92, PR #101) — `bases:` → `resources:`, `commonLabels:` → `labels: [{pairs, includeSelectors: true}]` (the `includeSelectors` is load-bearing for the Deployment selector), `patchesStrategicMerge:` → `patches: [{path}]` across seven `kustomization.yaml` files. All eight `kustomize build` entry points verified byte-identical before/after.
+
+### Docs
+- **Scrubbed fictional performance-tuning flags and env vars** (#89, PR #100) from the docs — removed references to manager flags and environment variables that `cmd/manager/main.go` never accepted, so the documented surface matches the real one.
+
+### Internal
+- **`test/emulation/hardware_emulation_test.go` deleted** (PR #106) — orphaned dead test code (`//go:build integration`, package `emulation`) that no CI job or `make` target ever ran; its mock-Redfish assertions are already covered by `internal/redfishmock/server_test.go`.
+- **`charts/beskar7/Chart.yaml`** `version` and `appVersion` bumped to v0.4.0-alpha.6 (this release).
+- **`Makefile` `VERSION`** bumped to v0.4.0-alpha.6 — image-tag default for `make docker-build`, `make release-manifests`, etc.
+
 ## [v0.4.0-alpha.5] - 2026-05-24
 
 The "backlog cleanup arc": tightened RBAC to per-namespace scope as an opt-in, brought the Prometheus metric surface in line with reality (delete what was dead, wire what should emit), and closed every correctness bug + hygiene item that had been carried since the v0.4-alpha review.
@@ -712,7 +740,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.5...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.6...HEAD
+[v0.4.0-alpha.6]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
 [v0.4.0-alpha.5]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...v0.4.0-alpha.5
 [v0.4.0-alpha.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...v0.4.0-alpha.4
 [v0.4.0-alpha]: https://github.com/projectbeskar/beskar7/compare/v0.3.4-alpha...v0.4.0-alpha

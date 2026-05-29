@@ -1,6 +1,6 @@
 # Minimal Test Cluster Example
 #
-# A simplified single-host scenario for quick testing of the Beskar7 v0.4.0-alpha.5
+# A simplified single-host scenario for quick testing of the Beskar7 v0.4.0-alpha.6
 # inspection workflow. NOT a working cluster — bring this up first to verify the
 # inspection round-trip, then graduate to examples/complete-cluster.yaml.
 #
