@@ -86,21 +86,22 @@ func ConvertToMachineAddresses(networkAddresses []NetworkAddress) []clusterv1.Ma
 	for _, netAddr := range networkAddresses {
 		// Determine the machine address type based on the network address
 		var addrType clusterv1.MachineAddressType
-		if netAddr.Type == IPv4AddressType {
+		switch netAddr.Type {
+		case IPv4AddressType:
 			// Classify IPv4 addresses as Internal or External based on RFC 1918 private ranges
 			if isPrivateIPv4(netAddr.Address) {
 				addrType = clusterv1.MachineInternalIP
 			} else {
 				addrType = clusterv1.MachineExternalIP
 			}
-		} else if netAddr.Type == IPv6AddressType {
+		case IPv6AddressType:
 			// Classify IPv6 addresses as Internal or External based on RFC 4193 ULA and link-local
 			if isPrivateIPv6(netAddr.Address) {
 				addrType = clusterv1.MachineInternalIP
 			} else {
 				addrType = clusterv1.MachineExternalIP
 			}
-		} else {
+		default:
 			// Default to InternalIP for unknown types
 			addrType = clusterv1.MachineInternalIP
 		}

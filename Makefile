@@ -49,16 +49,15 @@ CONTROLLER_GEN_VERSION ?= v0.21.0
 install-controller-gen:
 	$(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
-# Install golangci-lint pinned to the version CI uses. .golangci.yml targets
-# v1 schema; installing a v2 binary will reject the config. Use this target
-# instead of `go install` so local lint matches CI.
+# Install golangci-lint pinned to the version CI uses. .golangci.yml is v2
+# schema; this target installs the matching v2 binary so local lint matches
+# CI. The v2 module path includes /v2/.
 GOLANGCI_LINT = $(GOBIN)/golangci-lint
-GOLANGCI_LINT_VERSION ?= v1.64.8
+GOLANGCI_LINT_VERSION ?= v2.12.2
 install-golangci-lint:
-	$(GO) install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-# Run linters. Pins to the CI version via install-golangci-lint so a system-
-# installed v2 binary doesn't reject .golangci.yml's v1 syntax.
+# Run linters with the pinned v2 binary (matches CI).
 lint: install-golangci-lint
 	$(GOLANGCI_LINT) run --timeout=5m
 

@@ -156,7 +156,7 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}()
 
 	// Handle deletion
-	if !physicalHost.ObjectMeta.DeletionTimestamp.IsZero() {
+	if !physicalHost.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, logger, physicalHost)
 	}
 
