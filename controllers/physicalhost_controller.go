@@ -512,11 +512,16 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Reconciling PhysicalHost deletion")
 
-	// If still claimed, log warning but allow deletion
+	// If still claimed, log warning but allow deletion. Guard the Recorder:
+	// it may be nil in tests (and historically was unset in main.go), and a
+	// nil dereference here would panic the delete reconcile *before* the
+	// finalizer is removed, stranding the host in Terminating forever.
 	if physicalHost.Spec.ConsumerRef != nil {
 		logger.Info("Warning: Deleting PhysicalHost that is still claimed", "consumer", physicalHost.Spec.ConsumerRef.Name)
-		r.Recorder.Event(physicalHost, corev1.EventTypeWarning, "DeletingClaimedHost",
-			fmt.Sprintf("Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name))
+		if r.Recorder != nil {
+			r.Recorder.Event(physicalHost, corev1.EventTypeWarning, "DeletingClaimedHost",
+				fmt.Sprintf("Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name))
+		}
 	}
 
 	// Remove finalizer; the deferred patch persists this.
