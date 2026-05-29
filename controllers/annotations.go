@@ -68,3 +68,31 @@ type BootstrapTokenAnnotationValue struct {
 	// ExpiresAt is the time the token stops being accepted, in RFC3339 form.
 	ExpiresAt metav1.Time `json:"expiresAt"`
 }
+
+// BootNonceAnnotation is set by the Beskar7Machine controller on a PhysicalHost
+// to signal the hash + expiry of a freshly minted per-host boot nonce (D-009).
+// The plaintext nonce is delivered out-of-band via the per-host bootstrap-token
+// Secret under key "plaintext-boot-nonce"; only the observable hash + expiry
+// ride this annotation. The PhysicalHost controller reads it, persists the values
+// to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}, and clears the
+// annotation so it is not acted on twice.
+//
+// Same "annotation in, status out, annotation cleared" pattern as
+// BootstrapTokenAnnotation. Value is a JSON encoding of BootNonceAnnotationValue.
+const BootNonceAnnotation = "infrastructure.cluster.x-k8s.io/boot-nonce"
+
+// BootNonceAnnotationValue is the wire format for BootNonceAnnotation.
+// Producer (Beskar7Machine controller) JSON-marshals one of these; consumer
+// (PhysicalHost controller) unmarshals and persists to Status.Bootstrap.
+//
+// The nonce plaintext never appears here — only the hash (safe to log per the
+// same reasoning as BootstrapTokenAnnotationValue.Hash) and the expiry instant.
+// No IssuedAt field: the nonce lifecycle check only needs to know whether it
+// is expired and whether it has been consumed (BootNonceConsumedAt, written by
+// the /boot handler in D-010 — not present here).
+type BootNonceAnnotationValue struct {
+	// Hash is the hex-encoded SHA-256 of the plaintext boot nonce (64 chars).
+	Hash string `json:"hash"`
+	// ExpiresAt is the time the nonce stops being accepted, in RFC3339 form.
+	ExpiresAt metav1.Time `json:"expiresAt"`
+}

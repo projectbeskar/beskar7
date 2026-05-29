@@ -118,3 +118,17 @@ func TestLifetimeFor(t *testing.T) {
 		t.Errorf("ExpiresAt - IssuedAt = %v, want 30m", expires.Sub(now))
 	}
 }
+
+func TestNonceLifetimeFor(t *testing.T) {
+	now := time.Now()
+	expires := NonceLifetimeFor(now)
+	if expires.Sub(now) != 10*time.Minute {
+		t.Errorf("NonceLifetimeFor: expiresAt - now = %v, want %v", expires.Sub(now), BootNonceLifetime)
+	}
+}
+
+func TestBootNonceLifetime_ShorterThanTokenLifetime(t *testing.T) {
+	if BootNonceLifetime >= TokenLifetime {
+		t.Errorf("BootNonceLifetime (%v) must be shorter than TokenLifetime (%v)", BootNonceLifetime, TokenLifetime)
+	}
+}

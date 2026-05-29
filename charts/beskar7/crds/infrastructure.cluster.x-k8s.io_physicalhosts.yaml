@@ -113,6 +113,14 @@ spec:
                 type: array
               bootstrap:
                 properties:
+                  bootNonceConsumedAt:
+                    format: date-time
+                    type: string
+                  bootNonceExpiresAt:
+                    format: date-time
+                    type: string
+                  bootNonceHash:
+                    type: string
                   expiresAt:
                     format: date-time
                     type: string

@@ -1512,3 +1512,286 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 			"expired pending annotation must NOT block a fresh mint")
 	})
 })
+
+// bootNonceStillValid unit tests (D-009). Table-driven; no envtest needed.
+var _ = Describe("bootNonceStillValid", func() {
+	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
+
+	It("returns false when host is nil", func() {
+		Expect(bootNonceStillValid(nil, now)).To(BeFalse())
+	})
+
+	It("returns false when Status.Bootstrap is nil", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when BootNonceHash is empty", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "",
+					BootNonceExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when BootNonceExpiresAt is nil", func() {
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "abcdef01",
+					BootNonceExpiresAt: nil,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when BootNonceExpiresAt is in the past", func() {
+		exp := metav1.NewTime(now.Add(-1 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "abcdef01",
+					BootNonceExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+	})
+
+	It("returns false when BootNonceExpiresAt equals now (boundary: must re-mint)", func() {
+		exp := metav1.NewTime(now)
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "abcdef01",
+					BootNonceExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+			"now.Before(expiresAt) is false at equality — boundary must re-mint")
+	})
+
+	It("returns false when BootNonceConsumedAt is set (consumed nonce is never valid)", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		consumed := metav1.NewTime(now.Add(-30 * time.Second))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:       "abcdef01",
+					BootNonceExpiresAt:  &exp,
+					BootNonceConsumedAt: &consumed,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+			"consumed nonce (BootNonceConsumedAt != nil) must never be considered valid")
+	})
+
+	It("returns true when nonce is fresh, unexpired, and unconsumed", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:       "abcdef01",
+					BootNonceExpiresAt:  &exp,
+					BootNonceConsumedAt: nil,
+				},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeTrue())
+	})
+
+	// Mint-race guard: a pending BootNonceAnnotation not yet promoted to Status
+	// must count as a valid in-flight nonce so a second concurrent Beskar7Machine
+	// reconcile does not clobber the Secret with a fresh nonce.
+	It("returns true when a pending annotation has a non-expired hash (mint-race guard)", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
+			Hash:      "abcdef01",
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+			// Status.Bootstrap intentionally nil — simulates the window before the
+			// PhysicalHost reconciler has consumed the BootNonceAnnotation.
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeTrue(),
+			"pending BootNonceAnnotation must count as a valid in-flight nonce")
+	})
+
+	It("returns false when pending annotation is expired (force re-mint)", func() {
+		exp := metav1.NewTime(now.Add(-2 * time.Minute))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
+			Hash:      "abcdef01",
+			ExpiresAt: exp,
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+		}
+		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+			"expired pending annotation must not block a fresh nonce mint")
+	})
+})
+
+// Mint-and-store boot nonce envtest (D-009).
+// Proves that mintAndStoreBootNonce:
+//  1. Stores plaintext under "plaintext-boot-nonce" in the per-host Secret.
+//  2. Sets BootNonceAnnotation with JSON {hash, expiresAt}.
+//  3. Does NOT write to PhysicalHost.Status.
+//  4. Does NOT clobber the "plaintext-token" key when it already exists.
+var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
+	var (
+		testNs       *corev1.Namespace
+		physicalHost *infrastructurev1beta1.PhysicalHost
+		r            *Beskar7MachineReconciler
+	)
+
+	BeforeEach(func() {
+		testNs = &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "mint-nonce-test-"},
+		}
+		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+
+		physicalHost = &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "nonce-test-host",
+				Namespace: testNs.Name,
+			},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address:              "https://192.168.99.1",
+					CredentialsSecretRef: "irrelevant",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+		r = &Beskar7MachineReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("mint-nonce-test"),
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+			BootstrapURLBase: "https://test.svc:8082",
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
+	})
+
+	It("stores plaintext-boot-nonce in the Secret and sets BootNonceAnnotation", func() {
+		statusBefore := physicalHost.Status.DeepCopy()
+
+		By("Calling mintAndStoreBootNonce directly")
+		Expect(r.mintAndStoreBootNonce(ctx, r.Log, physicalHost)).To(Succeed())
+
+		secretName := bootstrapTokenSecretName(physicalHost.Name)
+		By("Verifying plaintext-boot-nonce key is present in the Secret")
+		Eventually(func(g Gomega) {
+			s := &corev1.Secret{}
+			g.Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Namespace: physicalHost.Namespace, Name: secretName}, s)).To(Succeed())
+			g.Expect(s.Data).To(HaveKey("plaintext-boot-nonce"),
+				"Secret must have plaintext-boot-nonce key")
+			g.Expect(s.Data["plaintext-boot-nonce"]).NotTo(BeEmpty())
+			// MintToken returns base64.RawURLEncoding of 32 bytes → 43 chars.
+			g.Expect(len(s.Data["plaintext-boot-nonce"])).To(Equal(43),
+				"nonce length must match auth.MintToken's 43-char contract")
+		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		By("Verifying BootNonceAnnotation is set on PhysicalHost with hash + expiresAt")
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
+		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation))
+		raw := ph.Annotations[BootNonceAnnotation]
+		var value BootNonceAnnotationValue
+		Expect(json.Unmarshal([]byte(raw), &value)).To(Succeed())
+		Expect(value.Hash).To(HaveLen(64), "hash must be hex-encoded sha256 (64 chars)")
+		Expect(value.ExpiresAt.Time.After(time.Now())).To(BeTrue(),
+			"expiresAt must be in the future")
+		// Nonce lifetime is 10 min; verify it is not the 30-min token window.
+		Expect(time.Until(value.ExpiresAt.Time)).To(BeNumerically("<=", 10*time.Minute+5*time.Second),
+			"boot-nonce expiry must be at most 10 min + tolerance from now")
+
+		By("Verifying PhysicalHost.Status was not written by the nonce mint helper")
+		Expect(ph.Status.Bootstrap).To(Equal(statusBefore.Bootstrap),
+			"mintAndStoreBootNonce must not write to PhysicalHost.Status (annotation-handoff pattern)")
+	})
+
+	It("does not clobber plaintext-token when only minting a nonce", func() {
+		By("Minting the bearer token first")
+		Expect(r.mintAndStoreBootstrapToken(ctx, r.Log, physicalHost)).To(Succeed())
+
+		secretName := bootstrapTokenSecretName(physicalHost.Name)
+		var tokenBefore []byte
+		Eventually(func(g Gomega) {
+			s := &corev1.Secret{}
+			g.Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Namespace: physicalHost.Namespace, Name: secretName}, s)).To(Succeed())
+			g.Expect(s.Data).To(HaveKey("plaintext-token"))
+			tokenBefore = make([]byte, len(s.Data["plaintext-token"]))
+			copy(tokenBefore, s.Data["plaintext-token"])
+		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+
+		// Re-fetch so physicalHost has a current ResourceVersion after the
+		// annotation Patch that mintAndStoreBootstrapToken performed.
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, physicalHost)).To(Succeed())
+
+		By("Minting the boot nonce")
+		Expect(r.mintAndStoreBootNonce(ctx, r.Log, physicalHost)).To(Succeed())
+
+		By("Verifying plaintext-token is unchanged and plaintext-boot-nonce is now set")
+		Eventually(func(g Gomega) {
+			s := &corev1.Secret{}
+			g.Expect(k8sClient.Get(ctx,
+				types.NamespacedName{Namespace: physicalHost.Namespace, Name: secretName}, s)).To(Succeed())
+			g.Expect(s.Data).To(HaveKey("plaintext-token"))
+			g.Expect(s.Data["plaintext-token"]).To(Equal(tokenBefore),
+				"nonce mint must not overwrite the bearer-token key")
+			g.Expect(s.Data).To(HaveKey("plaintext-boot-nonce"),
+				"boot-nonce mint must write plaintext-boot-nonce key")
+		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+	})
+
+	It("re-mints the nonce when BootNonceConsumedAt is set (single-use enforcement)", func() {
+		By("Pre-seeding Status with a consumed nonce")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, physicalHost)).To(Succeed())
+		exp := metav1.NewTime(time.Now().Add(5 * time.Minute))
+		consumed := metav1.Now()
+		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+			BootNonceHash:       "oldhash",
+			BootNonceExpiresAt:  &exp,
+			BootNonceConsumedAt: &consumed,
+		}
+		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, physicalHost)).To(Succeed())
+
+		By("Asserting bootNonceStillValid returns false for a consumed nonce")
+		Expect(bootNonceStillValid(physicalHost, time.Now())).To(BeFalse(),
+			"a consumed nonce must not block a fresh mint")
+
+		By("Calling mintAndStoreBootNonce — should succeed and produce a new annotation")
+		Expect(r.mintAndStoreBootNonce(ctx, r.Log, physicalHost)).To(Succeed())
+
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
+		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation))
+		raw := ph.Annotations[BootNonceAnnotation]
+		var value BootNonceAnnotationValue
+		Expect(json.Unmarshal([]byte(raw), &value)).To(Succeed())
+		Expect(value.Hash).NotTo(Equal("oldhash"), "fresh nonce must produce a new hash")
+	})
+})
