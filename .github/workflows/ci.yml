@@ -358,6 +358,27 @@ jobs:
         # without registry pulls.
         make smoke
 
+    - name: Run watch-namespaces smoke (SEC-2 isolation)
+      run: |
+        # Re-run the full smoke with the operator in watched-namespaces mode to
+        # exercise the per-namespace RBAC topology (SEC-2) end-to-end, plus the
+        # layer-6 isolation assertion (an out-of-scope PhysicalHost must be
+        # ignored).
+        #
+        # The previous `make smoke` tore down beskar7-smoke with --wait=false,
+        # so it is likely still Terminating. The per-namespace Role can only be
+        # created in a live namespace (creating content in a Terminating
+        # namespace is forbidden), so wait for the deletion to finish before
+        # recreating it.
+        kubectl wait --for=delete namespace/beskar7-smoke --timeout=120s 2>/dev/null || true
+        kubectl apply -f hack/smoke/manifests/00-namespace.yaml
+        helm upgrade beskar7 ./charts/beskar7 \
+          --namespace beskar7-system \
+          --reuse-values \
+          --set 'watchNamespaces={beskar7-smoke}' \
+          --wait --timeout=5m
+        make smoke-watch-namespaces
+
     - name: Diagnostics on failure
       if: failure()
       run: |
@@ -376,6 +397,12 @@ jobs:
         kubectl -n beskar7-smoke get physicalhost -o yaml || true
         echo "=== Beskar7Machine ==="
         kubectl -n beskar7-smoke get beskar7machine -o yaml || true
+        echo "=== Operator args (watch-namespaces mode?) ==="
+        kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' || true; echo
+        echo "=== Isolation PhysicalHost (layer 6; must have no finalizer/state) ==="
+        kubectl -n beskar7-smoke-unwatched get physicalhost -o yaml || true
+        echo "=== Namespace-scoped RBAC ==="
+        kubectl -n beskar7-smoke get role,rolebinding -o wide || true
         echo "=== bootstrap-token Secret (smoke fixture; not real secret) ==="
         kubectl -n beskar7-smoke get secret smoke-host-01-bootstrap-token -o yaml || true
         echo "=== Events ==="
