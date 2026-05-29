@@ -21,7 +21,7 @@
 #     metrics_*                     (Symlinks would also work; explicit
 #                                   refs are clearer.)
 #
-# To enable, point your own overlay's `bases:` at this dir instead of
+# To enable, point your own overlay's `resources:` at this dir instead of
 # ../rbac, AND set --watch-namespaces=<csv> on the manager Deployment so
 # the controller-runtime cache matches the RBAC.
 namespace: beskar7-system

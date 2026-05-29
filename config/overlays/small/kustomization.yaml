@@ -6,10 +6,12 @@ namespace: beskar7-system
 resources:
 - ../../default
 
-patchesStrategicMerge:
-- manager_patch.yaml
+patches:
+- path: manager_patch.yaml
 
 namePrefix: small-
 
-commonLabels:
-  deployment-size: small 
+labels:
+- pairs:
+    deployment-size: small
+  includeSelectors: true 
