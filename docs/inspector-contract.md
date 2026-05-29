@@ -44,7 +44,7 @@ operator DHCP/boot-infra (NOT Beskar7)
 controller /boot endpoint (nonce-gated, NOT bearer-gated)
   └─ verify nonce → consume (single-use) → render kernel cmdline:
         beskar7.api / beskar7.namespace / beskar7.host / beskar7.token
-        / beskar7.target / beskar7.ca(-url)
+        / beskar7.target / beskar7.ca
   │
 inspector ramdisk (on the host)
   ├─ probe hardware (native SMBIOS/DMI + /sys + /proc)
@@ -101,6 +101,26 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 - **Rate limiting**: this route is ungated; it MUST be rate-limited per source IP
   (and SHOULD be per `{namespace}/{hostName}`).
 
+**Rendered output** (`Content-Type: text/plain`): a complete iPXE script that
+boots the inspector image with the §5 parameters on the kernel cmdline:
+
+```ipxe
+#!ipxe
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.ca={base64CA} [beskar7.timeout={t}] [beskar7.debug=true]
+initrd {InspectionImageURL}/initrd.img
+boot
+```
+
+- `{InspectionImageURL}` is `Beskar7Machine.Spec.InspectionImageURL` (the
+  consuming machine, resolved via the host's `ConsumerRef`) — the HTTPS base URL
+  of a location serving the inspector `vmlinuz` and `initrd.img`. (Contract v1
+  re-purposes this field as the inspector image base; it was previously
+  declared-but-unused.) If it is empty, `/boot` returns the opaque failure — the
+  host cannot be booted without an inspector image.
+- `{base64CA}` is the callback CA, base64-encoded (see §5 / §8).
+- The script boots the inspector image directly; it does NOT chainload another
+  iPXE script (the per-host script IS this response).
+
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
 - **Auth**: `Authorization: Bearer <token>`; the token's SHA-256 MUST match
@@ -140,7 +160,7 @@ these from `/proc/cmdline`.
 | `beskar7.host` | yes | PhysicalHost name. |
 | `beskar7.token` | yes | The per-host bearer token (43-char `base64url`, no padding). Secret. |
 | `beskar7.target` | yes | `Beskar7Machine.Spec.TargetImageURL` — the OS image to kexec into. Non-secret. |
-| `beskar7.ca` **or** `beskar7.ca-url` | yes | The CA the inspector uses to verify the callback's TLS cert. Inline base64-PEM (`beskar7.ca`) only for a single self-signed cert; otherwise a fetch URL (`beskar7.ca-url`) to avoid cmdline length limits (~2–4 KiB). See §8. |
+| `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Contract v1: inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 
@@ -226,7 +246,7 @@ evaluate correctly:
 ## 8. TLS and reachability
 
 - **All three endpoints are HTTPS-only.** The inspector MUST verify the callback
-  server's certificate against the CA delivered via `beskar7.ca`/`beskar7.ca-url`.
+  server's certificate against the CA delivered inline via `beskar7.ca`.
   The inspector MUST NOT offer or use an insecure-skip-verify option for the
   inspection POST or bootstrap GET — those carry/return cluster join secrets and a
   MITM there is a cluster compromise. This mirrors the `RedfishConnection` posture
