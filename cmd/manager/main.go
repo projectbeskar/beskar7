@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -137,6 +138,20 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// H-1: Warn if --bootstrap-url-base is a cluster-internal .svc address.
+	// Bare-metal hosts boot outside the cluster and cannot resolve cluster DNS;
+	// a .svc URL forces operators toward InsecureSkipVerify and the inspector's
+	// TLS verification will fail (contract §8). Operators MUST override
+	// --bootstrap-url-base with an externally-reachable address whose serving
+	// cert has a matching SAN.
+	if strings.Contains(bootstrapURLBase, ".svc") {
+		setupLog.Info("WARNING: --bootstrap-url-base contains a cluster-internal .svc address; "+
+			"bare-metal hosts cannot reach cluster DNS and the inspector's TLS verification will fail. "+
+			"Override --bootstrap-url-base with an externally-reachable address (LoadBalancer/NodePort/Ingress) "+
+			"whose TLS certificate has a matching SAN (contract §8).",
+			"bootstrapURLBase", bootstrapURLBase)
+	}
+
 	// Setup metrics registry
 	internalmetrics.Init()
 
@@ -221,12 +236,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Setup the host-callback HTTPS server. Hosts both the inspection POST and
-	// the bootstrap GET on the same port (default :8082), gated by the same
-	// per-host bearer-token middleware. TLS is mandatory and the cert dir
-	// defaults to the webhook cert dir (same Pod, same DNS name, one
+	// Setup the host-callback HTTPS server. Hosts the inspection POST, bootstrap
+	// GET, and the /boot iPXE endpoint on the same port (default :8082). The
+	// /boot endpoint is NOT bearer-gated; it uses the single-use boot nonce
+	// (D-009) and is rate-limited per source IP. TLS is mandatory and the cert
+	// dir defaults to the webhook cert dir (same Pod, same DNS name, one
 	// Certificate via cert-manager).
-	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir); err != nil {
+	// bootstrapURLBase is passed so the /boot handler can render beskar7.api=
+	// into the iPXE cmdline (§5). It must be externally reachable from bare metal.
+	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir, bootstrapURLBase); err != nil {
 		setupLog.Error(err, "unable to setup callback server")
 		os.Exit(1)
 	}
