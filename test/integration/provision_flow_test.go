@@ -255,16 +255,17 @@ var _ = Describe("Secret-rotation watch", func() {
 })
 
 var _ = Describe("Delete and release", func() {
-	// Regression test adjacent to the #103 nil-Recorder-on-delete fix. Verifies
-	// that deleting a provisioned Beskar7Machine causes:
+	// Regression tests adjacent to the #103 nil-Recorder-on-delete fix. Verify
+	// that deleting a Beskar7Machine causes:
 	//   1. The host's Spec.ConsumerRef to be cleared.
 	//   2. The host's Status.State to return to Available.
 	//
-	// We drive the machine to full Ready state (ProviderID set) before deleting
-	// because reconcileDelete only clears ConsumerRef when ProviderID is present
-	// on the Beskar7Machine. Deleting before ProviderID is set is a known
-	// production limitation: ConsumerRef is not cleared (the host strands in InUse).
-	// A separate issue tracks that path; this test covers the nominal delete case.
+	// Two cases are covered:
+	//   - Provisioned delete: machine driven to Ready (ProviderID set) before delete.
+	//   - Pre-Ready delete (#107 regression): machine deleted while the host is still
+	//     Inspecting, so ProviderID is nil. reconcileDelete must locate the claimed
+	//     host by ConsumerRef ownership (not ProviderID) and release it; otherwise
+	//     the host strands permanently in InUse with a dangling ConsumerRef.
 
 	var (
 		specCtx   context.Context
@@ -329,6 +330,46 @@ var _ = Describe("Delete and release", func() {
 			err := mgr.GetClient().Get(specCtx, b7mKey, &infrastructurev1beta1.Beskar7Machine{})
 			g.Expect(err).To(MatchError(ContainSubstring("not found")),
 				"Beskar7Machine must be fully deleted after finalizer removal")
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+	})
+
+	It("should release the host when a Beskar7Machine is deleted before provisioning (ProviderID unset) (#107)", func() {
+		hostKey := client.ObjectKeyFromObject(host)
+		b7mKey := client.ObjectKeyFromObject(b7machine)
+
+		By("waiting for the host to be claimed and reach Inspecting (pre-Ready, ProviderID still unset)")
+		// We deliberately do NOT simulate the inspector here, so the machine never
+		// reaches Ready and ProviderID is never set. This is the #107 window.
+		Eventually(func(g Gomega) {
+			current := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
+			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+			g.Expect(current.Spec.ConsumerRef).NotTo(BeNil())
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+		By("confirming ProviderID is unset on the Beskar7Machine (proves we are in the pre-Ready window)")
+		currentB7M := &infrastructurev1beta1.Beskar7Machine{}
+		Expect(mgr.GetClient().Get(specCtx, b7mKey, currentB7M)).To(Succeed())
+		Expect(currentB7M.Spec.ProviderID).To(BeNil(),
+			"ProviderID must be unset for this regression to exercise the ConsumerRef-based release path")
+
+		By("deleting the Beskar7Machine while the host is still Inspecting")
+		Expect(k8sClient.Delete(specCtx, b7machine)).To(Succeed())
+
+		By("waiting for host to be released (ConsumerRef cleared, state=Available) despite ProviderID never being set")
+		Eventually(func(g Gomega) {
+			current := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
+			g.Expect(current.Spec.ConsumerRef).To(BeNil(),
+				"ConsumerRef must be cleared even when the machine was deleted before ProviderID was assigned (#107)")
+			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateAvailable),
+				"host must return to Available rather than stranding in InUse/Inspecting")
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+		By("confirming the Beskar7Machine is fully gone")
+		Eventually(func(g Gomega) {
+			err := mgr.GetClient().Get(specCtx, b7mKey, &infrastructurev1beta1.Beskar7Machine{})
+			g.Expect(err).To(MatchError(ContainSubstring("not found")))
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 	})
 })

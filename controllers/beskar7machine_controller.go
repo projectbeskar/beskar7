@@ -842,9 +842,16 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 }
 
 // reconcileDelete handles deletion. The sequence is:
-//  1. Best-effort Redfish cleanup (ClearBootSourceOverride + graceful power-off).
-//  2. Patch ConsumerRef = nil on the PhysicalHost spec.
-//  3. Remove the Beskar7Machine finalizer.
+//  1. Locate the PhysicalHost this machine claimed (by ConsumerRef ownership).
+//  2. Best-effort Redfish cleanup (ClearBootSourceOverride + graceful power-off).
+//  3. Patch ConsumerRef = nil on the PhysicalHost spec.
+//  4. Remove the Beskar7Machine finalizer.
+//
+// Release keys off ConsumerRef ownership, NOT ProviderID. ProviderID is only set
+// once inspection completes (handleReadyHost), but ConsumerRef is set much earlier
+// at claim time, so a machine deleted mid-inspection has a claimed host with no
+// ProviderID. Keying release off ProviderID would skip the release entirely in
+// that window and strand the host in InUse with a dangling ConsumerRef (#107).
 //
 // Redfish cleanup is skipped when the ForceReleaseAnnotation is "true" (BMC
 // permanently unreachable) or when the credentials Secret no longer exists.
@@ -853,46 +860,85 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (ctrl.Result, error) {
 	logger.Info("Reconciling deletion")
 
-	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
-		ns, name, parseErr := parseProviderID(*b7machine.Spec.ProviderID)
-		if parseErr != nil {
-			// Malformed providerID — log and proceed; nothing useful we can do.
-			logger.V(1).Info("Cannot parse ProviderID during deletion; proceeding without host release", "err", parseErr)
+	host, err := r.findClaimedHostForRelease(ctx, logger, b7machine)
+	if err != nil {
+		logger.Error(err, "Failed to look up claimed host during deletion")
+		return ctrl.Result{}, err
+	}
+	if host != nil {
+		forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
+		if forceRelease {
+			logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
 		} else {
-			host := &infrastructurev1beta1.PhysicalHost{}
-			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host); err == nil {
-				if host.Spec.ConsumerRef != nil && host.Spec.ConsumerRef.Name == b7machine.Name {
-					forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
-					if forceRelease {
-						logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
-					} else {
-						// Best-effort Redfish cleanup. Errors are logged but do not block release.
-						r.bestEffortReleaseRedfish(ctx, logger, host)
-					}
-					// Always clear ConsumerRef on the host spec.
-					base := host.DeepCopy()
-					host.Spec.ConsumerRef = nil
-					if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-						if apierrors.IsConflict(err) {
-							return ctrl.Result{Requeue: true}, nil
-						}
-						logger.Error(err, "Failed to release host")
-						return ctrl.Result{}, err
-					}
-					logger.Info("Released PhysicalHost", "host", name)
-				}
-			} else if !apierrors.IsNotFound(err) {
-				// Real error fetching host — surface and requeue.
-				return ctrl.Result{}, err
-			}
-			// host NotFound → already gone; nothing to release.
+			// Best-effort Redfish cleanup. Errors are logged but do not block release.
+			r.bestEffortReleaseRedfish(ctx, logger, host)
 		}
+		// Always clear ConsumerRef on the host spec.
+		base := host.DeepCopy()
+		host.Spec.ConsumerRef = nil
+		if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{Requeue: true}, nil
+			}
+			logger.Error(err, "Failed to release host")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Released PhysicalHost", "host", host.Name)
 	}
 
 	if controllerutil.RemoveFinalizer(b7machine, Beskar7MachineFinalizer) {
 		logger.Info("Removing finalizer")
 	}
 	return ctrl.Result{}, nil
+}
+
+// findClaimedHostForRelease locates the PhysicalHost currently claimed by this
+// Beskar7Machine so reconcileDelete can release it. ConsumerRef ownership is the
+// source of truth: a machine deleted before inspection completes has a claimed
+// host (ConsumerRef set) but no ProviderID yet (#107), so a ProviderID-only
+// lookup would miss it and strand the host.
+//
+// ProviderID, when present and parseable, is used as a fast-path Get to avoid a
+// list in the common provisioned case. If it is unset, malformed, or points at a
+// host that is not (or no longer) claimed by us, we fall back to a namespace list
+// scan keyed on ConsumerRef.Name — the same lookup findAndClaimOrGetAssociatedHost
+// uses in the claim direction. Returns (nil, nil) when no host is claimed by us.
+func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (*infrastructurev1beta1.PhysicalHost, error) {
+	// Fast path: ProviderID names the host directly.
+	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
+		ns, name, parseErr := parseProviderID(*b7machine.Spec.ProviderID)
+		if parseErr != nil {
+			logger.V(1).Info("Cannot parse ProviderID during deletion; falling back to ConsumerRef scan", "err", parseErr)
+		} else {
+			host := &infrastructurev1beta1.PhysicalHost{}
+			err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host)
+			switch {
+			case err == nil:
+				if host.Spec.ConsumerRef != nil && host.Spec.ConsumerRef.Name == b7machine.Name {
+					return host, nil
+				}
+				// ProviderID points at a host not claimed by us; fall through to scan.
+			case apierrors.IsNotFound(err):
+				// Named host already gone; fall through in case a different host is ours.
+			default:
+				return nil, err
+			}
+		}
+	}
+
+	// Fallback: scan the namespace for any host whose ConsumerRef names us. This
+	// covers the claimed-but-not-yet-provisioned window where ProviderID is unset.
+	allHosts := &infrastructurev1beta1.PhysicalHostList{}
+	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
+		return nil, err
+	}
+	for i := range allHosts.Items {
+		h := &allHosts.Items[i]
+		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+			return h, nil
+		}
+	}
+	return nil, nil
 }
 
 // bestEffortReleaseRedfish issues ClearBootSourceOverride and a graceful power-off
