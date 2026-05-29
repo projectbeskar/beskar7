@@ -1,6 +1,6 @@
 # Complete Cluster Deployment Example
 
-This walkthrough deploys a 1-control-plane + 2-worker Kubernetes cluster on bare metal using Beskar7 v0.4.0-alpha.5. The accompanying YAML is [`complete-cluster.yaml`](complete-cluster.yaml).
+This walkthrough deploys a 1-control-plane + 2-worker Kubernetes cluster on bare metal using Beskar7 v0.4.0-alpha.6. The accompanying YAML is [`complete-cluster.yaml`](complete-cluster.yaml).
 
 ## Prerequisites
 
