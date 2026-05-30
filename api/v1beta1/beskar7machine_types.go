@@ -69,13 +69,13 @@ type Beskar7MachineSpec struct {
 	// InspectionImageURL is the iPXE boot script URL that boots the inspection image.
 	// The inspection image will collect hardware information and report back to Beskar7.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern="^https?://.*"
+	// +kubebuilder:validation:Pattern="^https?://[^\\s]+$"
 	InspectionImageURL string `json:"inspectionImageURL"`
 
 	// TargetImageURL is the URL of the final OS image to boot via kexec after inspection.
 	// This should be a kernel+initrd or complete bootable image.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern="^https?://.*"
+	// +kubebuilder:validation:Pattern="^https?://[^\\s]+$"
 	TargetImageURL string `json:"targetImageURL"`
 
 	// ConfigurationURL is an optional URL for OS-specific configuration.

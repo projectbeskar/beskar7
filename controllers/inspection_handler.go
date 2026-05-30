@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -370,22 +371,65 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 	return nil
 }
 
+// readCallbackCA reads the PEM CA bytes from certDir to populate the
+// BootHandler's BootHandlerConfig.CABytes (beskar7.ca= in the iPXE cmdline).
+//
+// The inspector uses this CA to verify the callback's TLS certificate on the
+// subsequent inspection POST and bootstrap GET (§8). Preference order:
+//  1. ca.crt — written by cert-manager and the chart's self-signed path;
+//     a dedicated CA cert is the best choice.
+//  2. tls.crt — self-signed certificates are their own CA; fall back to it
+//     when ca.crt is absent.
+//
+// Returns the raw PEM bytes. An error here blocks manager startup so
+// misconfiguration is loud (fail at setup, not at first /boot request).
+func readCallbackCA(certDir string) ([]byte, error) {
+	candidates := []string{
+		filepath.Join(certDir, "ca.crt"),
+		filepath.Join(certDir, "tls.crt"),
+	}
+	for _, p := range candidates {
+		f, err := os.Open(p)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("open %q: %w", p, err)
+		}
+		b, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read %q: %w", p, err)
+		}
+		if len(b) > 0 {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("no readable CA file found in cert dir %q (tried ca.crt, tls.crt)", certDir)
+}
+
 // SetupCallbackServer wires the host-callback HTTPS server into the manager.
 //
-// The server hosts two host-scoped endpoints, both gated by the same
-// per-PhysicalHost bearer-token middleware (auth.RequireBearer +
-// newBearerTokenVerifier):
+// The server hosts three host-scoped endpoints:
 //
 //   - POST /api/v1/inspection/{namespace}/{hostName}: receives inspection
 //     reports from the inspection image (handled by InspectionHandler).
+//     Bearer-gated.
 //   - GET  /api/v1/bootstrap/{namespace}/{hostName}: serves the bootstrap data
 //     Secret bytes for the Beskar7Machine that consumes the targeted host
-//     (handled by BootstrapHandler).
+//     (handled by BootstrapHandler). Bearer-gated.
+//   - GET  /api/v1/boot/{namespace}/{hostName}/{nonce}: serves the per-host
+//     iPXE boot script (handled by BootHandler). NOT bearer-gated — gated by
+//     the single-use boot nonce (D-009). Rate-limited per source IP.
 //
-// All authentication failures return an opaque 401 — the verifier's specific
-// error is logged at V(1) only. TLS is mandatory; the cert dir defaults to the
-// webhook cert dir (same Pod, same DNS name, one cert via cert-manager).
-func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
+// All bearer-auth failures return an opaque 401. All /boot nonce failures return
+// an opaque 404. TLS is mandatory; the cert dir defaults to the webhook cert dir
+// (same Pod, same DNS name, one cert via cert-manager).
+//
+// bootstrapURLBase is the externally-reachable HTTPS base URL of this server
+// (e.g. "https://beskar7.example.com:8082"). It is rendered into the
+// beskar7.api= kernel cmdline parameter by the /boot handler. Must be non-empty.
+func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapURLBase string) error {
 	if certDir == "" {
 		return fmt.Errorf("callback server cert dir is empty; set --inspection-cert-dir")
 	}
@@ -397,6 +441,17 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
 	}
 	if _, err := os.Stat(keyPath); err != nil {
 		return fmt.Errorf("callback server key %q not readable: %w", keyPath, err)
+	}
+
+	// Read the CA bytes for the /boot handler's beskar7.ca= cmdline parameter.
+	// The inspector uses this CA to verify the callback TLS certificate on
+	// the subsequent inspection POST and bootstrap GET (§8).
+	// Preference: ca.crt (cert-manager and the chart's self-signed path both
+	// write a dedicated ca.crt alongside tls.crt/tls.key). Fallback: tls.crt
+	// itself (self-signed certificates are their own CA).
+	caBytes, err := readCallbackCA(certDir)
+	if err != nil {
+		return fmt.Errorf("read callback CA for /boot handler: %w", err)
 	}
 
 	// Pre-warm the ConfigMap informer. The inspection handler writes a
@@ -426,10 +481,20 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
 		Log:    bootstrapLog,
 	}
 
-	// Same verifier flavour for both endpoints: the bearer token authorises
-	// requests for a specific PhysicalHost, regardless of which host-scoped
-	// endpoint is being called. We construct one verifier per route so the
-	// V(1) log handle reflects the route.
+	bootLog := ctrl.Log.WithName("boot-handler")
+	bootHandler := &BootHandler{
+		Client: mgr.GetClient(),
+		Log:    bootLog,
+		Config: BootHandlerConfig{
+			APIBase: bootstrapURLBase,
+			CABytes: caBytes,
+		},
+	}
+
+	// Same verifier flavour for the bearer-gated endpoints: the bearer token
+	// authorises requests for a specific PhysicalHost, regardless of which
+	// host-scoped endpoint is being called. We construct one verifier per route
+	// so the V(1) log handle reflects the route.
 	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
 	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
 
@@ -439,6 +504,8 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string) error {
 		auth.RequireBearer(inspectionLog, inspectionVerifier, inspectionHandler))
 	mux.Handle("GET /api/v1/bootstrap/{namespace}/{hostName}",
 		auth.RequireBearer(bootstrapLog, bootstrapVerifier, bootstrapHandler))
+	// /boot is NOT bearer-gated. Rate limiting is applied inside BootHandler.ServeHTTP.
+	mux.Handle("GET /api/v1/boot/{namespace}/{hostName}/{nonce}", bootHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {

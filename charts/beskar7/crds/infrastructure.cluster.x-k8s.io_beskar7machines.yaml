@@ -64,12 +64,12 @@ spec:
                     type: integer
                 type: object
               inspectionImageURL:
-                pattern: ^https?://.*
+                pattern: ^https?://[^\s]+$
                 type: string
               providerID:
                 type: string
               targetImageURL:
-                pattern: ^https?://.*
+                pattern: ^https?://[^\s]+$
                 type: string
             required:
             - inspectionImageURL
