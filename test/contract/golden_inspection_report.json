@@ -1,0 +1,63 @@
+{
+  "manufacturer": "Dell Inc.",
+  "model": "PowerEdge R650",
+  "serialNumber": "ABCD123",
+  "cpus": [
+    {
+      "id": "CPU.Socket.1",
+      "vendor": "Intel",
+      "model": "Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz",
+      "cores": 32,
+      "threads": 64,
+      "frequency": "2.0GHz"
+    },
+    {
+      "id": "CPU.Socket.2",
+      "vendor": "Intel",
+      "model": "Intel(R) Xeon(R) Gold 6338 CPU @ 2.00GHz",
+      "cores": 32,
+      "threads": 64,
+      "frequency": "2.0GHz"
+    }
+  ],
+  "memory": [
+    { "id": "DIMM.Socket.A1", "type": "DDR4", "capacity": "32GiB", "speed": "3200MHz" },
+    { "id": "DIMM.Socket.A2", "type": "DDR4", "capacity": "32GiB", "speed": "3200MHz" },
+    { "id": "DIMM.Socket.B1", "type": "DDR4", "capacity": "32GiB", "speed": "3200MHz" },
+    { "id": "DIMM.Socket.B2", "type": "DDR4", "capacity": "32GiB", "speed": "3200MHz" }
+  ],
+  "disks": [
+    {
+      "name": "/dev/nvme0n1",
+      "model": "Dell Ent NVMe AGN MU U.2 960GB",
+      "sizeGB": 960,
+      "type": "NVMe",
+      "serialNumber": "S64XNE0R301234"
+    },
+    {
+      "name": "/dev/nvme1n1",
+      "model": "Dell Ent NVMe AGN MU U.2 960GB",
+      "sizeGB": 960,
+      "type": "NVMe",
+      "serialNumber": "S64XNE0R305678"
+    }
+  ],
+  "nics": [
+    {
+      "name": "eno1",
+      "macAddress": "aa:bb:cc:dd:ee:01",
+      "driver": "ixgbe",
+      "speed": "10Gbps",
+      "ipAddresses": ["192.0.2.10", "fe80::a8bb:ccff:fedd:ee01"]
+    },
+    {
+      "name": "eno2",
+      "macAddress": "aa:bb:cc:dd:ee:02",
+      "driver": "ixgbe",
+      "speed": "10Gbps",
+      "ipAddresses": ["192.0.2.11"]
+    }
+  ],
+  "bootModeDetected": "UEFI",
+  "firmwareVersion": "2.10.2"
+}

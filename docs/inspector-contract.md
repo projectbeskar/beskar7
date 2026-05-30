@@ -298,10 +298,15 @@ The inspector MUST:
 - This document carries a **contract version** (top of file). Both repos record
   the version they implement.
 - A **golden report fixture** (a canonical §6 JSON document) lives in both repos.
-  The controller has a test that decodes it into `InspectionReportRequest`, runs
-  `buildInspectionReport` + hardware-requirements validation, and asserts success.
-  The inspector has a serde round-trip test asserting it produces byte-equivalent
-  JSON. A schema change fails one or both, forcing a coordinated contract bump.
+  The canonical copy is [`test/contract/golden_inspection_report.json`](../test/contract/golden_inspection_report.json)
+  (see [`test/contract/README.md`](../test/contract/README.md)). The controller test
+  `controllers/inspection_contract_test.go` decodes it into `InspectionReportRequest`
+  — both leniently (production parity) and strictly (`DisallowUnknownFields`, the
+  forward-drift catch) — round-trips it to prove the struct is lossless, runs
+  `buildInspectionReport`, and runs the real `parseMemoryCapacityGB` over its memory
+  entries to lock the hardware-aggregate math. The inspector mirrors the same bytes
+  in a serde round-trip test asserting byte-equivalent JSON. A schema change on
+  either side fails one or both tests, forcing a coordinated contract bump.
 
 ---
 
