@@ -169,11 +169,64 @@ readinessProbe:
 
 bootstrap:
   # Base URL operators expose for the bootstrap and inspection callback endpoints.
-  # Beskar7 computes per-machine bootstrap URLs from this base. Set to whatever
-  # FQDN+port your hosts can reach the manager on (typically the in-cluster
-  # service DNS, but may be a Service of type LoadBalancer or an external Ingress
-  # for hosts that boot before joining the cluster network).
+  # Beskar7 renders this into beskar7.api= on the inspector kernel cmdline and
+  # into PhysicalHost.Status.Bootstrap.URL. Bare-metal hosts must reach it DURING
+  # PXE boot — before they have joined the cluster network — so the default
+  # cluster-internal .svc address below is unreachable from real hardware and the
+  # manager logs a startup warning when it sees a .svc name.
+  #
+  # For a real deployment set this to the external address the host can reach
+  # (a Service of type LoadBalancer/NodePort or an Ingress; see callback.* below),
+  # and make sure that address is covered by the serving-cert SAN via
+  # callback.externalNames / callback.externalIPs. The inspector verifies the
+  # callback cert against the CA delivered on its cmdline and has no
+  # insecure-skip path, so a SAN mismatch is a hard failure.
   urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+
+# Callback server (inspection POST + bootstrap GET + per-host /boot) exposure.
+#
+# These endpoints run on :8082 (HTTPS) in the manager Pod and must be reachable
+# by bare-metal hosts that are still PXE-booting — i.e. over an externally
+# routable address, NOT cluster DNS. Two things have to line up for that to work:
+#   1. Expose the callback Service externally (service.type below, or front it
+#      with your own Ingress and leave the type ClusterIP).
+#   2. Put the external DNS name(s)/IP(s) in externalNames / externalIPs so the
+#      serving certificate's SAN covers them. bootstrap.urlBase's host MUST be one
+#      of these — the inspector rejects a hostname mismatch with no skip option.
+#
+# Defaults preserve the historical cluster-internal behavior (ClusterIP, no extra
+# SANs); the knobs below are opt-in.
+callback:
+  service:
+    # ClusterIP (default) keeps the Service cluster-internal. Set to LoadBalancer
+    # or NodePort to reach the callback endpoints from the provisioning network.
+    # For Ingress, leave this ClusterIP and route :8082 through your controller.
+    #
+    # SECURITY: scope the exposure to the provisioning subnet — do NOT publish it
+    # to the public internet. The /boot endpoint is gated only by an unguessable
+    # single-use nonce (rate-limited), and POST/GET carry per-host bearer tokens;
+    # a private provisioning network is the intended deployment. Use
+    # loadBalancerSourceRanges / cloud LB source restrictions (via .annotations) or
+    # a NetworkPolicy/firewall to keep it off the open internet.
+    type: ClusterIP
+    # Static load-balancer IP (LoadBalancer type only; ignored otherwise).
+    loadBalancerIP: ""
+    # Fixed node port in 30000-32767 (NodePort/LoadBalancer only; auto if empty).
+    nodePort: ""
+    # Extra annotations on the callback Service (e.g. cloud load-balancer hints).
+    annotations: {}
+  # External DNS name(s) the serving-cert SAN must cover. Include the host portion
+  # of bootstrap.urlBase here when it is a name. Added to both the cert-manager
+  # Certificate dnsNames and the self-signed cert SAN list.
+  externalNames: []
+  # External IP(s) the serving-cert SAN must cover. Use when bootstrap.urlBase is
+  # an IP (e.g. a fixed LoadBalancer IP). Added as IP SANs in both cert paths.
+  #
+  # NOTE (self-signed mode, certManager.enabled=false): the serving cert is
+  # generated once and reused across upgrades. Adding/removing names or IPs here
+  # after the first install does NOT rotate the cert — delete the Secret named in
+  # certManager.certificate.secretName to force regeneration with the new SANs.
+  externalIPs: []
 
 # Additional labels
 labels: {}

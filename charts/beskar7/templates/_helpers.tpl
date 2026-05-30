@@ -124,7 +124,14 @@ install/upgrade path hits the cluster and is stable.
     {{- $certs = dict "crt" (index $data "tls.crt") "key" (index $data "tls.key") "ca" $ca -}}
   {{- else -}}
     {{- $caCert := genCA (printf "%s-ca" $svc) 3650 -}}
-    {{- $cert := genSignedCert $cn nil (list $cn) 3650 $caCert -}}
+    {{- /*
+      SAN list: the in-cluster .svc name (webhook server) plus any external
+      callback names/IPs so the SAME cert validates for bare-metal hosts hitting
+      :8082. genSignedCert signature is (CN, ipAddresses, dnsNames, days, ca).
+    */ -}}
+    {{- $dnsNames := concat (list $cn) (.Values.callback.externalNames | default (list)) -}}
+    {{- $ipAddrs := .Values.callback.externalIPs | default (list) -}}
+    {{- $cert := genSignedCert $cn $ipAddrs $dnsNames 3650 $caCert -}}
     {{- $certs = dict "crt" (b64enc $cert.Cert) "key" (b64enc $cert.Key) "ca" (b64enc $caCert.Cert) -}}
   {{- end -}}
   {{- $_ := set . "_beskar7WebhookCerts" $certs -}}
