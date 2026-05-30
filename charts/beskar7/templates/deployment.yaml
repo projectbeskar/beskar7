@@ -57,6 +57,9 @@ spec:
         - containerPort: 9443
           name: webhook-server
           protocol: TCP
+        - containerPort: 8082
+          name: callback
+          protocol: TCP
         - containerPort: 8081
           name: healthz
           protocol: TCP

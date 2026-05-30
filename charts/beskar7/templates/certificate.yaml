@@ -15,7 +15,18 @@ spec:
     - beskar7
   commonName: {{ .Values.webhook.service.name }}.{{ include "beskar7.namespace" . }}.svc
   dnsNames:
+  # In-cluster SAN for the webhook server (apiserver verifies against this).
   - {{ .Values.webhook.service.name }}.{{ include "beskar7.namespace" . }}.svc
+  {{- /* External SANs for the callback server, reachable by bare-metal hosts. */}}
+  {{- range .Values.callback.externalNames }}
+  - {{ . | quote }}
+  {{- end }}
+  {{- with .Values.callback.externalIPs }}
+  ipAddresses:
+    {{- range . }}
+  - {{ . | quote }}
+    {{- end }}
+  {{- end }}
   issuerRef:
     name: {{ .Values.certManager.issuer.name }}
     kind: {{ .Values.certManager.issuer.kind }}

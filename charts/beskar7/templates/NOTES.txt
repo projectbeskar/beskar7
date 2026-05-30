@@ -21,4 +21,24 @@
 7. Monitoring is enabled - metrics are available at https://localhost:8443/metrics (HTTPS, requires auth)
 {{- end }}
 
+{{- if eq (.Values.callback.service.type | default "ClusterIP") "ClusterIP" }}
+
+NOTE: bootstrap.urlBase is "{{ .Values.bootstrap.urlBase }}".
+   Bare-metal hosts must reach the callback server (:8082) DURING PXE boot, before
+   they join the cluster network — a cluster-internal .svc address is NOT reachable
+   from real hardware. Expose the callback Service externally (set
+   callback.service.type=LoadBalancer or NodePort, or front it with an Ingress),
+   set bootstrap.urlBase to that external address, and list the external name(s)/IP(s)
+   in callback.externalNames / callback.externalIPs so the serving-cert SAN covers
+   them. See docs/installation.md (External reachability) and docs/inspector-contract.md.
+{{- else }}
+
+8. Callback Service is exposed as type {{ .Values.callback.service.type }}. Confirm
+   bootstrap.urlBase ({{ .Values.bootstrap.urlBase }}) resolves to that address and is
+   listed in callback.externalNames / callback.externalIPs (serving-cert SAN), or the
+   inspector will reject the callback TLS handshake.
+   SECURITY: scope this exposure to the provisioning network — do NOT publish :8082
+   to the public internet. Use loadBalancerSourceRanges / a NetworkPolicy / firewall.
+{{- end }}
+
 For more information, visit: https://github.com/projectbeskar/beskar7

@@ -48,6 +48,25 @@ helm install --devel my-release beskar7/beskar7 \
 
 The `bootstrap.urlBase` value is rendered into `PhysicalHost.Status.Bootstrap.URL`. Bare-metal hosts must be able to reach it during PXE boot.
 
+### External reachability
+
+The callback server (inspection POST, bootstrap GET, and the per-host `/boot` endpoint) listens on `:8082` over HTTPS. Bare-metal hosts reach it **while they are still PXE-booting** — before they have joined the cluster network — so the default cluster-internal `…svc:8082` address is not reachable from real hardware, and the manager logs a startup warning when `bootstrap.urlBase` is a `.svc` name.
+
+For a real deployment, two things must line up:
+
+1. **Expose the callback Service externally.** Either set `callback.service.type` to `LoadBalancer` or `NodePort`, or leave it `ClusterIP` and front `:8082` with your own Ingress controller. **Scope this to the provisioning network — do not publish it to the public internet.** The `/boot` endpoint is gated only by an unguessable single-use nonce (rate-limited), so restrict reachability with `loadBalancerSourceRanges` / cloud source-range annotations, a `NetworkPolicy`, or an upstream firewall.
+2. **Cover the external address in the serving-cert SAN.** List the external DNS name(s) and/or IP(s) in `callback.externalNames` / `callback.externalIPs`. The host portion of `bootstrap.urlBase` **must** be one of these — the inspector verifies the callback certificate against the CA it is handed on the kernel cmdline and has no insecure-skip path, so a SAN mismatch is a hard failure.
+
+```bash
+helm install --devel beskar7 beskar7/beskar7 \
+  --namespace beskar7-system --create-namespace \
+  --set callback.service.type=LoadBalancer \
+  --set bootstrap.urlBase=https://beskar7.example.com:8082 \
+  --set 'callback.externalNames={beskar7.example.com}'
+```
+
+The external SAN is added to both certificate paths: the cert-manager `Certificate` (`certManager.enabled=true`) and the chart's self-signed cert (`certManager.enabled=false`). In self-signed mode the cert is generated once and reused across upgrades — changing `callback.externalNames` / `callback.externalIPs` after the first install does not rotate it; delete the Secret named in `certManager.certificate.secretName` to force regeneration with the new SANs.
+
 ## Install via release manifests
 
 ```bash

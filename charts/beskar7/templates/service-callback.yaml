@@ -16,12 +16,23 @@ metadata:
     {{- include "beskar7.labels" . | nindent 4 }}
     app.kubernetes.io/component: callback-server
     cluster.x-k8s.io/provider: beskar7
+  {{- with .Values.callback.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
+  type: {{ .Values.callback.service.type | default "ClusterIP" }}
+  {{- if and (eq .Values.callback.service.type "LoadBalancer") .Values.callback.service.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.callback.service.loadBalancerIP | quote }}
+  {{- end }}
   ports:
   - name: callback
     port: 8082
     targetPort: 8082
     protocol: TCP
+    {{- if and (ne (.Values.callback.service.type | default "ClusterIP") "ClusterIP") .Values.callback.service.nodePort }}
+    nodePort: {{ .Values.callback.service.nodePort | int }}
+    {{- end }}
   selector:
     {{- include "beskar7.selectorLabels" . | nindent 4 }}
     control-plane: controller-manager
