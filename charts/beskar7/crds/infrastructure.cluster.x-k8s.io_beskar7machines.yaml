@@ -68,11 +68,15 @@ spec:
                 type: string
               providerID:
                 type: string
+              targetImageDigest:
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
               targetImageURL:
                 pattern: ^https?://[^\s]+$
                 type: string
             required:
             - inspectionImageURL
+            - targetImageDigest
             - targetImageURL
             type: object
           status:

@@ -124,6 +124,7 @@ spec:
   
   # Final OS (Kairos example)
   targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   
   # OS configuration
   configurationURL: "http://boot-server.local/configs/control-plane-config.yaml"
@@ -147,6 +148,7 @@ metadata:
 spec:
   inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
   targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   configurationURL: "http://boot-server.local/configs/worker-config.yaml"
   hardwareRequirements:
     minCPUCores: 4
@@ -165,6 +167,7 @@ metadata:
 spec:
   inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
   targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   configurationURL: "http://boot-server.local/configs/worker-config.yaml"
   hardwareRequirements:
     minCPUCores: 4

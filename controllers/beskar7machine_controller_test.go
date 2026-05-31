@@ -123,6 +123,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Spec: infrastructurev1beta1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+					TargetImageDigest:  bootTestDigest,
 				},
 			}
 
@@ -355,6 +356,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Spec: infrastructurev1beta1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					TargetImageDigest:  bootTestDigest,
 					ProviderID:         &provID,
 				},
 			}
@@ -422,6 +424,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Spec: infrastructurev1beta1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					TargetImageDigest:  bootTestDigest,
 					ProviderID:         &provID,
 				},
 			}
@@ -472,6 +475,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Spec: infrastructurev1beta1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					TargetImageDigest:  bootTestDigest,
 					ProviderID:         &provID,
 				},
 			}
@@ -523,6 +527,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Spec: infrastructurev1beta1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
+					TargetImageDigest:  bootTestDigest,
 					ProviderID:         &provID,
 				},
 			}
@@ -586,6 +591,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					Spec: infrastructurev1beta1.Beskar7MachineSpec{
 						InspectionImageURL:   "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:       "http://boot-server/images/kairos.tar.gz",
+						TargetImageDigest:    bootTestDigest,
 						HardwareRequirements: reqs,
 					},
 				}
@@ -696,6 +702,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					Spec: infrastructurev1beta1.Beskar7MachineSpec{
 						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+						TargetImageDigest:  bootTestDigest,
 					},
 				}
 				// Build a host with an InspectionTimestamp older than DefaultInspectionTimeout.
@@ -834,6 +841,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		machineB := &infrastructurev1beta1.Beskar7Machine{
@@ -841,6 +849,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, machineA)).To(Succeed())
@@ -952,6 +961,7 @@ var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 
@@ -1033,6 +1043,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, b7machine)).To(Succeed())

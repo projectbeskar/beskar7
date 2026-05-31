@@ -86,6 +86,10 @@ spec:
   # but no real machine boots; these are never fetched.
   inspectionImageURL: http://boot.example.invalid/ipxe/inspect.ipxe
   targetImageURL: http://boot.example.invalid/images/placeholder.tar.gz
+  # Required by the CRD (pattern ^sha256:<64-hex>$). Never verified here — no
+  # real image is fetched — so an all-zero placeholder digest satisfies
+  # admission without implying a real artifact.
+  targetImageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
   configurationURL: http://boot.example.invalid/configs/smoke.yaml
 ---
 # CAPI Machine with a PRE-BAKED bootstrap.dataSecretName. This bypasses the
