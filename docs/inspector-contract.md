@@ -132,7 +132,7 @@ boots the inspector image with the §5 parameters on the kernel cmdline:
 
 ```ipxe
 #!ipxe
-kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.timeout={t}] [beskar7.debug=true]
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.timeout={t}] [beskar7.debug=true]
 initrd {InspectionImageURL}/initrd.img
 boot
 ```
@@ -151,13 +151,17 @@ boot
 - The script boots the inspector image directly; it does NOT chainload another
   iPXE script (the per-host script IS this response).
 
-> **Implementation status (v2 spec-first):** this document is the specification
-> Phases A/B implement, not a description of shipped code. As of the v2 bump,
-> `Beskar7Machine.Spec.TargetImageDigest` and the `/boot` render of
-> `beskar7.target-digest` are **net-new** — the field does not yet exist on
-> `Beskar7MachineSpec` and `buildBootIPXEScript` does not yet render the param.
-> The present-tense MUSTs above describe the target state the controller PR adds;
-> `TargetImageURL`'s godoc (still "boot via kexec") is corrected by that same PR.
+> **Implementation status (v2):** the required parts of this section are
+> **implemented** in this repo. `Beskar7Machine.Spec.TargetImageDigest` exists
+> (required, `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders
+> `beskar7.target` + `beskar7.target-digest`; `TargetImageURL`'s godoc is
+> Kairos-correct. What remains **net-new** is the *optional* `beskar7.disk`
+> render shown in brackets above — it needs a new optional `Beskar7Machine`
+> target-disk spec field (e.g. `Spec.TargetDisk`) and a `/boot` render of it,
+> an additive controller follow-up (§11). It is absent from the rendered script
+> today, which is correct: default (auto-select) provisioning needs no
+> `beskar7.disk`. The **inspector** deploy path (§9.1 step 5) is the other
+> net-new surface, built in the inspector repo against this spec.
 
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
@@ -200,6 +204,7 @@ these from `/proc/cmdline`.
 | `beskar7.target` | yes | `Beskar7Machine.Spec.TargetImageURL` — the **Kairos whole-disk raw image** the inspector writes to the target disk. MUST be an `http://` or `https://` URL; plain HTTP is permitted (integrity comes from `beskar7.target-digest`, not TLS — see §8.1). Non-secret. |
 | `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
+| `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from an optional `Beskar7Machine` target-disk spec field rendered by `/boot` (an additive controller follow-up — see §11). Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 
@@ -408,8 +413,15 @@ The inspector MUST:
 
 1. Parse the §5 cmdline params from `/proc/cmdline`.
 2. Probe hardware natively (SMBIOS/DMI via `/sys/firmware/dmi/tables`, plus `/sys`
-   and `/proc`) and build the §6 report satisfying §6.1. Select the target disk
-   for provisioning (selection policy is an implementation decision — see §11).
+   and `/proc`) and build the §6 report satisfying §6.1. **Select the target disk**:
+   if `beskar7.disk` is set, resolve it once to its canonical whole-disk kernel node
+   (§5) and use exactly that device — aborting if it is missing, not a block device,
+   not a whole disk (partition/`dm`/loop), removable, read-only, backs the running
+   ramdisk, or smaller than the image, and never silently falling back; otherwise
+   auto-select the **smallest** whole disk large enough to hold the image (and meeting
+   `MinDiskGB`), excluding partitions, removable/USB media, read-only devices, and any
+   device backing the running ramdisk. The inspector MUST log (non-secret) which disk
+   it chose and why, and MUST refuse to provision if no disk qualifies.
 3. `POST` the report to `{api}/api/v1/inspection/{ns}/{host}` with the bearer
    token over verified TLS; treat **202** as success; retry transient failures
    with backoff.
@@ -425,15 +437,37 @@ The inspector MUST:
       read, or size-limit breach the inspector MUST abort: it MUST NOT mount,
       inject, or reboot — the unbootable disk is recovered on the next provisioning
       attempt (§7, §8.1).
-   3. Re-read the partition table; mount the image's `COS_OEM` partition (located by
-      its filesystem label) and write a numbered cloud-config file embedding the
-      fetched user-data. The user-data MUST be written **only** to the target disk's
+   3. Re-read the partition table of the **selected target disk** and locate the
+      `COS_OEM` partition **by enumerating that disk's own partitions only** — NOT by a
+      system-wide filesystem-label scan. The inspector MUST find the partition whose
+      `COS_OEM` filesystem label lives on a partition node whose parent block device is
+      the selected target disk, and MUST verify that parentage before mounting. If the
+      target disk has no `COS_OEM` partition after the image write, the inspector MUST
+      abort — it MUST NOT search other disks or mount a `COS_OEM` belonging to a
+      different device (an attacker-supplied or pre-existing disk could otherwise carry
+      a `COS_OEM` label and capture the join secret). Mount the verified partition with
+      `nodev,nosuid,noexec` and write the fetched user-data as a single **numbered
+      Kairos cloud-config file**, `99_beskar7.yaml`, on it. The `99_` prefix orders it
+      after the image's baked-in OEM configs so the per-host config takes precedence.
+      The file content MUST be a valid Kairos cloud-config; v2 assumes the CAPI
+      bootstrap provider emits Kairos-compatible cloud-config (the `#cloud-config` +
+      `stages`/`write_files` shape), so the inspector **places** the user-data rather
+      than transcoding it (transforming arbitrary cloud-init/Ignition is a §11
+      follow-up). The user-data MUST be written **only** to the verified target
       `COS_OEM` partition — never to the ramdisk's durable storage or logs — and the
       written file MUST be root-owned with mode `0600`.
-   4. `sync`, unmount, **zero the in-memory user-data buffer**, and `reboot(2)`. The
-      host firmware boots the provisioned OS; Kairos applies the injected config on
-      first boot. (`kexec` is an optional future speed optimization — see §11 — not
-      a contract requirement.)
+   4. `fsync` the written file **and** its containing directory, unmount the `COS_OEM`
+      partition, **zero the in-memory user-data buffer**, then `reboot(2)`. The
+      `COS_OEM` partition MUST be unmounted before `reboot(2)` on every path. The host
+      firmware boots the provisioned OS; Kairos applies the injected config on first
+      boot. (`kexec` is an optional future speed optimization — see §11 — not a
+      contract requirement.)
+   5. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
+      `fsync`, or a later abort), the inspector MUST remove the partial
+      `99_beskar7.yaml` and unmount `COS_OEM` before dropping to the debug shell or
+      rebooting — it MUST NOT leave the join secret on a mounted-then-abandoned
+      partition or in the partial file. The user-data buffer MUST still be zeroed on
+      this path.
 6. Never log the bearer token, the nonce, the cmdline, or the bootstrap/user-data
    bytes. The inspector MUST NOT let the bearer token or the user-data/join secret
    reach swap or any durable medium: the ramdisk MUST run swapless, or the inspector
@@ -488,17 +522,21 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   — has no equivalent byte-locked test and is a separate drift surface. At minimum
   it MUST be guarded by: a controller-side test that `/boot` renders
   `beskar7.target-digest` from `Beskar7MachineSpec.TargetImageDigest`; an inspector
-  test asserting a digest mismatch aborts before mount/inject/reboot; and a fixture
-  for the injected `COS_OEM` cloud-config shape. Until those land, "no test failed"
+  test asserting a digest mismatch aborts before mount/inject/reboot; a fixture
+  for the injected `COS_OEM` cloud-config shape; and an inspector test that a
+  pinned-but-ineligible `beskar7.disk` aborts with **no** fallback while
+  auto-selection picks the smallest eligible whole disk, excluding the
+  ramdisk-backing device (§9.1 step 2). Until those land, "no test failed"
   does **not** imply the deploy contract held (e.g. a changed OEM filename
-  convention would pass silently).
+  convention, or a regression to a system-wide `COS_OEM` label scan, would pass
+  silently).
 
 ### 10.1 Version history
 
 | Version | Delta |
 |---|---|
 | **v1** | Initial frozen contract: boot-nonce + bearer-token two-secret trust model, three HTTPS endpoints (`/boot`, `/inspection`, `/bootstrap`), §6 inspection report schema + golden fixture, inline `beskar7.ca`. Handoff was **kexec into `beskar7.target`** (a kernel+initrd image). |
-| **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) and the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side, however, gains a CRD delta:** a new required `Beskar7Machine.Spec.TargetImageDigest` field and a `/boot` render of `beskar7.target-digest` — net-new code in this repo, not a no-op (see implementation-status note at §4.1). The deploy path is a new, separately-tested drift surface (§10). |
+| **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the required CRD delta — the `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest` — is **implemented** in this repo. What stays net-new is the *optional* `beskar7.disk` render and its backing `Beskar7Machine` target-disk spec field (additive follow-up, §11), plus the entire inspector deploy path (§9.1 step 5). The deploy path is a new, separately-tested drift surface (§10). |
 
 ---
 
@@ -518,13 +556,13 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   into status on first boot / from `InspectionReport.NICs` for inventory. It MUST
   NOT become a required spec field (it duplicates the operator's DHCP mapping and
   is not a trust anchor).
-- **Target-disk selection policy** (implementation decision for Phase B): step 2
-  selects *a* disk; the policy (smallest disk above `MinDiskGB`? first non-removable
-  NVMe? an explicit `beskar7.target-disk` hint?) is unspecified in v2 and left to
-  the inspector. If it becomes operator-configurable via a spec field or cmdline
-  param, that is a contract bump. Until then the inspector MUST log (non-secret)
-  which disk it chose and MUST refuse to provision if no disk meets the hardware
-  requirements.
+- **Operator-pinned target disk — controller render** (additive Phase A follow-up):
+  §5/§9.1 now specify disk selection — the smallest eligible disk by default, or an
+  explicit `beskar7.disk` override. The inspector honors `beskar7.disk` whenever it is
+  present, so the override is forward-compatible. The controller-side change to
+  *expose* it — an optional `Beskar7Machine` target-disk spec field and its `/boot`
+  render — is a separate, additive PR and is **not** required for default
+  (auto-select) provisioning.
 - **kexec for boot-time speed** (future optimization): v2 reboots via host
   firmware (one POST cycle). A later version MAY `kexec` directly into the freshly
   written OS to skip the firmware POST, but kexec needs real firmware and a
@@ -536,12 +574,14 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   a `cidata` ISO / config-drive partition instead of `COS_OEM`) is a future
   variant and would be a contract bump, as it changes how the per-host user-data
   is injected.
-- **CAPI-bootstrap → Kairos-config mapping** (open design): how the raw CAPI
-  bootstrap user-data (cloud-init/Ignition from the bootstrap provider) maps onto
-  the Kairos cloud-config the inspector injects is not yet specified. The cleanest
-  fit is a Kairos "standard" (k3s/k0s-baked) image paired with a matching CAPI
-  bootstrap provider; this must be resolved before the end-to-end join path is
-  claimed working.
+- **Non-Kairos bootstrap user-data → Kairos-config transcoding** (open design): v2
+  fixes the injection *mechanism* — the inspector writes the fetched user-data as a
+  numbered Kairos cloud-config (`99_beskar7.yaml`) on `COS_OEM` (§9.1 step 5.3) — and
+  assumes a Kairos "standard" (k3s/k0s-baked) image paired with a bootstrap provider
+  that emits Kairos-compatible cloud-config. Transcoding raw cloud-init/Ignition from
+  a generic CAPI bootstrap provider into Kairos stages is **not** done in v2; pairing
+  Beskar7 with a Kairos-native bootstrap provider must be validated before the
+  end-to-end join path is claimed working.
 - **Provisioning-failure recovery** (open design, controller-side): §8.1 covers the
   digest-mismatch abort, but the contract does not yet specify how a host that
   fails *after* a successful inspection — `dd` write error, `COS_OEM` mount/inject
