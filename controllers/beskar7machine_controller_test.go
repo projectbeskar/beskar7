@@ -591,7 +591,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					Spec: infrastructurev1beta1.Beskar7MachineSpec{
 						InspectionImageURL:   "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:       "http://boot-server/images/kairos.tar.gz",
-						TargetImageDigest:  bootTestDigest,
+						TargetImageDigest:    bootTestDigest,
 						HardwareRequirements: reqs,
 					},
 				}
