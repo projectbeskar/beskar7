@@ -362,6 +362,7 @@ func createBeskar7Machine(ctx context.Context, ns, b7mName string, ownerMachine 
 		Spec: infrastructurev1beta1.Beskar7MachineSpec{
 			InspectionImageURL: "http://boot-server/inspect.ipxe",
 			TargetImageURL:     "http://boot-server/kairos.tar.gz",
+			TargetImageDigest:  "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
 			// HardwareRequirements is nil intentionally: with no requirements the
 			// validateInspectionReport fast-paths to "passed" for any report, which
 			// keeps the fixture minimal.

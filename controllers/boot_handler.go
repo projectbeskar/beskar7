@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -298,6 +299,23 @@ func validateBootURL(field, raw string) error {
 	return nil
 }
 
+// bootDigestPattern is compiled once at init time. It accepts only the
+// canonical contract §5/§8.1 form: "sha256:" followed by exactly 64
+// lowercase-hex characters. A value matching this pattern contains no
+// whitespace or control characters, so the pattern match alone is a
+// sufficient and stronger guard against cmdline injection (SEC-7 posture).
+var bootDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
+// validateBootDigest rejects a digest that does not match the contract §5/§8.1
+// canonical form. Defence-in-depth (SEC-7) on top of the CRD pattern: operates
+// on the value actually rendered, not the value admitted.
+func validateBootDigest(raw string) error {
+	if !bootDigestPattern.MatchString(raw) {
+		return fmt.Errorf("TargetImageDigest is not a valid sha256 digest (must match ^sha256:[0-9a-f]{64}$)")
+	}
+	return nil
+}
+
 // renderBootScript resolves the consuming Beskar7Machine, reads the bearer-token
 // plaintext from the per-host Secret, and renders the §4.1 iPXE script.
 //
@@ -320,21 +338,26 @@ func (h *BootHandler) renderBootScript(
 		return "", fmt.Errorf("get Beskar7Machine %s/%s: %w", cr.Namespace, cr.Name, err)
 	}
 
-	// InspectionImageURL is the base URL for vmlinuz + initrd.img (contract v1
-	// re-purposes this previously-unused field as the inspector image base).
+	// InspectionImageURL is the base URL for vmlinuz + initrd.img (contract v2:
+	// this field is the HTTPS base URL of a location serving the inspector
+	// vmlinuz and initrd.img).
 	if b7m.Spec.InspectionImageURL == "" {
 		return "", fmt.Errorf("Beskar7Machine %s/%s has empty InspectionImageURL", b7m.Namespace, b7m.Name)
 	}
 
-	// Validate both URL fields before rendering (SEC-7 / C-1a). A space or control
-	// character in either value would break out of its cmdline parameter and allow
-	// the tenant to inject or override subsequent beskar7.* parameters. This check
-	// is defence-in-depth on top of the CRD pattern (C-1b); it is the airtight
-	// fix because it operates on the value actually rendered, not the value admitted.
+	// Validate URL fields and the digest before rendering (SEC-7 / C-1a). A space
+	// or control character in any value would break out of its cmdline parameter
+	// and allow injection or override of subsequent beskar7.* parameters. This
+	// check is defence-in-depth on top of the CRD pattern (C-1b); it is the
+	// airtight fix because it operates on the value actually rendered, not the
+	// value admitted.
 	if err := validateBootURL("InspectionImageURL", b7m.Spec.InspectionImageURL); err != nil {
 		return "", err
 	}
 	if err := validateBootURL("TargetImageURL", b7m.Spec.TargetImageURL); err != nil {
+		return "", err
+	}
+	if err := validateBootDigest(b7m.Spec.TargetImageDigest); err != nil {
 		return "", err
 	}
 
@@ -361,6 +384,7 @@ func (h *BootHandler) renderBootScript(
 		ph.Name,
 		string(tokenBytes),
 		b7m.Spec.TargetImageURL,
+		b7m.Spec.TargetImageDigest,
 		caB64,
 	)
 
@@ -383,8 +407,12 @@ func (h *BootHandler) renderBootScript(
 // script. All inputs are caller-resolved; this function performs no I/O.
 // Package-level so tests can call it directly for golden-string assertions.
 //
+// The parameter order on the kernel cmdline follows contract v2 §4.1 exactly:
+// beskar7.api, beskar7.namespace, beskar7.host, beskar7.token, beskar7.target,
+// beskar7.target-digest, beskar7.ca.
+//
 // Optional parameters (beskar7.timeout, beskar7.debug) are omitted in
-// contract v1 — no operator UI to supply them yet.
+// contract v2 — no operator UI to supply them yet.
 func buildBootIPXEScript(
 	inspectionImageURL string,
 	apiBase string,
@@ -392,16 +420,18 @@ func buildBootIPXEScript(
 	hostName string,
 	token string,
 	targetImageURL string,
+	targetDigest string,
 	caB64 string,
 ) string {
 	return fmt.Sprintf(
-		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.ca=%s\ninitrd %s/initrd.img\nboot\n",
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s\ninitrd %s/initrd.img\nboot\n",
 		inspectionImageURL,
 		apiBase,
 		namespace,
 		hostName,
 		token,
 		targetImageURL,
+		targetDigest,
 		caB64,
 		inspectionImageURL,
 	)

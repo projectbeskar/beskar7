@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,10 @@ import (
 const (
 	bootTestAPIBase = "https://beskar7.example.com:8082"
 	bootTestCABytes = "FAKE-CA-PEM-DATA"
+
+	// bootTestDigest is a realistic sha256 digest used in fixtures.
+	// The 64-char hex string below is arbitrary but correctly formed.
+	bootTestDigest = "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a"
 )
 
 // buildBootMux wires a BootHandler onto a ServeMux using the same route pattern
@@ -110,6 +115,7 @@ func bootTestFixture(testNs string) (
 		Spec: infrastructurev1beta1.Beskar7MachineSpec{
 			InspectionImageURL: "https://boot.example.com/inspect",
 			TargetImageURL:     "https://boot.example.com/kairos.tar.gz",
+			TargetImageDigest:  bootTestDigest,
 		},
 	}
 	Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -238,9 +244,19 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(body).To(ContainSubstring("beskar7.host=" + ph.Name))
 		Expect(body).To(ContainSubstring("beskar7.token="))
 		Expect(body).To(ContainSubstring("beskar7.target=" + b7m.Spec.TargetImageURL))
+		Expect(body).To(ContainSubstring("beskar7.target-digest=" + b7m.Spec.TargetImageDigest))
 		Expect(body).To(ContainSubstring("beskar7.ca="))
 		Expect(body).To(ContainSubstring("initrd " + b7m.Spec.InspectionImageURL + "/initrd.img"))
 		Expect(body).To(ContainSubstring("\nboot\n"))
+
+		By("asserting beskar7.target-digest appears between beskar7.target and beskar7.ca (contract §4.1 ordering)")
+		targetIdx := strings.Index(body, "beskar7.target=")
+		digestIdx := strings.Index(body, "beskar7.target-digest=")
+		caIdx := strings.Index(body, "beskar7.ca=")
+		Expect(targetIdx).To(BeNumerically("<", digestIdx),
+			"beskar7.target must precede beskar7.target-digest")
+		Expect(digestIdx).To(BeNumerically("<", caIdx),
+			"beskar7.target-digest must precede beskar7.ca")
 
 		By("asserting BootNonceConsumedAt is set")
 		Eventually(func(g Gomega) {
@@ -514,6 +530,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "https://boot.example.com/inspect",
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -590,6 +607,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: inspectionURL,
 				TargetImageURL:     targetURL,
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		tokenSecret := &corev1.Secret{
@@ -661,7 +679,172 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		})
 	}
 
-	// ── 6. Script length cap (SEC-10) ──────────────────────────────────────
+	// ── 6. Digest validation (contract §5 / §8.1 / SEC-7) ───────────────────
+	//
+	// validateBootDigest unit tests exercise the helper directly. Each case is
+	// also an implicit integration test because renderBootScript calls it before
+	// rendering; an invalid digest would yield an opaque 404 on the live handler.
+
+	type digestCase struct {
+		name    string
+		digest  string
+		wantErr bool
+	}
+	digestCases := []digestCase{
+		// ── accept ──
+		{
+			name:    "valid lowercase sha256",
+			digest:  "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
+			wantErr: false,
+		},
+		{
+			name:    "valid sha256 all-zeros",
+			digest:  "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+			wantErr: false,
+		},
+		// ── reject ──
+		{
+			name:    "empty string",
+			digest:  "",
+			wantErr: true,
+		},
+		{
+			name:    "missing sha256: prefix",
+			digest:  "a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
+			wantErr: true,
+		},
+		{
+			name:    "wrong algorithm prefix (sha512:)",
+			digest:  "sha512:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
+			wantErr: true,
+		},
+		{
+			name:    "too short (63 hex chars)",
+			digest:  "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f10111213141516171819",
+			wantErr: true,
+		},
+		{
+			name:    "too long (65 hex chars)",
+			digest:  "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a1b",
+			wantErr: true,
+		},
+		{
+			name:    "uppercase hex (non-canonical per contract §5/§8.1)",
+			digest:  "sha256:A3B4C5D6E7F80102030405060708090A0B0C0D0E0F101112131415161718191A",
+			wantErr: true,
+		},
+		{
+			name:    "mixed case hex",
+			digest:  "sha256:A3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
+			wantErr: true,
+		},
+		{
+			name:    "embedded space (cmdline injection vector)",
+			digest:  "sha256:a3b4c5d6e7f80102030405060708 beskar7.token=ATTACKER00000000000000000",
+			wantErr: true,
+		},
+		{
+			name:    "embedded newline (cmdline injection vector)",
+			digest:  "sha256:a3b4c5d6e7f80102030405060708\nbeskar7.token=ATTACKER0000000000000000",
+			wantErr: true,
+		},
+		{
+			name:    "non-hex chars in digest body",
+			digest:  "sha256:z3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range digestCases {
+		tc := tc // capture range variable
+		It("validateBootDigest: "+tc.name, func() {
+			err := validateBootDigest(tc.digest)
+			if tc.wantErr {
+				Expect(err).To(HaveOccurred(),
+					"expected validateBootDigest to reject %q but it accepted it", tc.digest)
+			} else {
+				Expect(err).NotTo(HaveOccurred(),
+					"expected validateBootDigest to accept %q but it rejected: %v", tc.digest, err)
+			}
+		})
+	}
+
+	// ── 6b. Digest handler integration: invalid digest on Beskar7Machine → opaque 404
+
+	It("opaque 404: invalid TargetImageDigest on Beskar7Machine (fake client)", func() {
+		noncePlaintext, nonceHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		_, tokenHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+
+		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
+		issuedAt := metav1.NewTime(time.Now())
+		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
+
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "h-bad-digest", Namespace: "n"},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
+				},
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "Beskar7Machine",
+					APIVersion: InfrastructureAPIVersion,
+					Name:       "b7m-bad-digest",
+					Namespace:  "n",
+				},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash:          tokenHash,
+					IssuedAt:           &issuedAt,
+					ExpiresAt:          &tokenExpiresAt,
+					BootNonceHash:      nonceHash,
+					BootNonceExpiresAt: &nonceExpiresAt,
+				},
+			},
+		}
+		// TargetImageDigest is intentionally malformed — uppercase hex, rejected
+		// by validateBootDigest (contract §5/§8.1, SEC-7). Bypasses CRD validation
+		// via fake client to test the handler's own guard.
+		b7mBadDigest := &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "b7m-bad-digest", Namespace: "n"},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "https://boot.example.com/inspect",
+				TargetImageURL:     "https://boot.example.com/target.tar.gz",
+				TargetImageDigest:  "sha256:A3B4C5D6E7F80102030405060708090A0B0C0D0E0F101112131415161718191A",
+			},
+		}
+		tokenSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName("h-bad-digest"), Namespace: "n"},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{"plaintext-token": []byte("fake-token")},
+		}
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(k8sClient.Scheme()).
+			WithObjects(b7mBadDigest, tokenSecret).
+			WithStatusSubresource(ph).
+			WithObjects(ph).
+			Build()
+
+		handler := &BootHandler{
+			Client: fakeClient,
+			Log:    ctrl.Log.WithName("boot-bad-digest-test"),
+			Config: bootTestConfig(),
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/boot/n/h-bad-digest/"+noncePlaintext, nil)
+		req.SetPathValue("namespace", "n")
+		req.SetPathValue("hostName", "h-bad-digest")
+		req.SetPathValue("nonce", noncePlaintext)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		Expect(w.Code).To(Equal(http.StatusNotFound),
+			"invalid TargetImageDigest must yield an opaque 404, not a 200 with a broken script")
+		Expect(w.Body.String()).To(ContainSubstring(bootHandlerOpaqueFailureBody))
+	})
+
+	// ── 7. Script length cap (SEC-10) ──────────────────────────────────────
 
 	It("length cap (SEC-10): oversized CA → opaque 404", func() {
 		// Construct a BootHandlerConfig with a CA large enough to push the
@@ -713,6 +896,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "https://boot.example.com/inspect",
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		tokenSecret := &corev1.Secret{

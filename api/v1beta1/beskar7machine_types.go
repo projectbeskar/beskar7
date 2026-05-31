@@ -72,11 +72,26 @@ type Beskar7MachineSpec struct {
 	// +kubebuilder:validation:Pattern="^https?://[^\\s]+$"
 	InspectionImageURL string `json:"inspectionImageURL"`
 
-	// TargetImageURL is the URL of the final OS image to boot via kexec after inspection.
-	// This should be a kernel+initrd or complete bootable image.
+	// TargetImageURL is the URL of the Kairos whole-disk raw image the inspector
+	// writes to the target disk during provisioning. The image is served over
+	// http(s); integrity is verified by the inspector against TargetImageDigest
+	// (digest pinning, not TLS — see contract §8.1). Plain HTTP is permitted
+	// because the digest is the sole integrity and authenticity anchor for the
+	// OS image.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^https?://[^\\s]+$"
 	TargetImageURL string `json:"targetImageURL"`
+
+	// TargetImageDigest is the expected SHA-256 digest of the bytes at
+	// TargetImageURL, formatted as "sha256:<64-lowercase-hex>". The inspector
+	// verifies the written image against this digest and refuses to proceed to
+	// mount, inject user-data, or reboot on a mismatch (contract §8.1). It is
+	// the sole integrity and authenticity anchor for the OS image — the image
+	// is fetched over plain HTTP and there is no signature; the operator must
+	// compute this digest over the exact, pinned artifact served at TargetImageURL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
+	TargetImageDigest string `json:"targetImageDigest"`
 
 	// ConfigurationURL is an optional URL for OS-specific configuration.
 	// The inspection image will pass this to the target OS during kexec.

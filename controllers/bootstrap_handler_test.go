@@ -147,6 +147,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 			Spec: infrastructurev1beta1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
 			},
 		}
 		Expect(k8sClient.Create(ctx, b7machine)).To(Succeed())
