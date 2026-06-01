@@ -57,6 +57,9 @@ spec:
                         type: string
                       providerID:
                         type: string
+                      targetDisk:
+                        pattern: ^[A-Za-z0-9._:/+-]+$
+                        type: string
                       targetImageDigest:
                         pattern: ^sha256:[a-f0-9]{64}$
                         type: string

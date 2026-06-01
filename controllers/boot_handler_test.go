@@ -1047,3 +1047,113 @@ func (c *logCaptureSinkChild) WithName(_ string) logr.LogSink { return c }
 func logWithSink(s logr.LogSink) logr.Logger {
 	return logr.New(s)
 }
+
+// ── TargetDisk feature tests (contract §5 beskar7.disk, §9.1 step 2) ─────────
+
+var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
+	const (
+		testInspectionURL = "https://boot.example.com/inspect"
+		testAPIBase       = "https://beskar7.example.com:8082"
+		testNamespace     = "default"
+		testHost          = "host-01"
+		testToken         = "tok-abc123"
+		testTargetURL     = "https://images.example.com/kairos.img"
+		testCA            = "FAKECABASE64=="
+	)
+
+	It("renders beskar7.disk immediately after beskar7.ca when TargetDisk is set", func() {
+		disk := "/dev/disk/by-id/nvme-FOO"
+		script := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			disk,
+		)
+
+		By("asserting beskar7.disk appears in the kernel line")
+		Expect(script).To(ContainSubstring("beskar7.disk=" + disk))
+
+		By("asserting beskar7.disk is positioned immediately after beskar7.ca")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		diskIdx := strings.Index(script, "beskar7.disk=")
+		Expect(diskIdx).To(BeNumerically(">", caIdx),
+			"beskar7.disk must appear after beskar7.ca")
+		// The token between the two params must be exactly " beskar7.disk=":
+		// no intervening content (no other params between them).
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA)
+		Expect(script[caEnd:caEnd+len(" beskar7.disk=")]).To(Equal(" beskar7.disk="),
+			"beskar7.disk must be the immediate successor of beskar7.ca with a single space")
+
+		By("asserting beskar7.disk appears before the initrd line")
+		initrdIdx := strings.Index(script, "\ninitrd ")
+		Expect(diskIdx).To(BeNumerically("<", initrdIdx),
+			"beskar7.disk must precede the initrd line")
+	})
+
+	It("omits beskar7.disk entirely when TargetDisk is empty", func() {
+		script := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			"",
+		)
+
+		By("asserting beskar7.disk is absent")
+		Expect(script).NotTo(ContainSubstring("beskar7.disk"),
+			"empty TargetDisk must produce no beskar7.disk token in the script")
+
+		By("asserting the kernel line ends with beskar7.ca=<value> immediately followed by newline+initrd")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		Expect(caIdx).To(BeNumerically(">", 0))
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA)
+		Expect(script[caEnd]).To(Equal(byte('\n')),
+			"no trailing space after beskar7.ca when TargetDisk is empty — byte-identical to pre-change format")
+	})
+})
+
+var _ = Describe("validateBootDisk", func() {
+	type diskCase struct {
+		name    string
+		input   string
+		wantErr bool
+	}
+	cases := []diskCase{
+		// ── accept ──
+		{name: "empty string (optional field)", input: "", wantErr: false},
+		{name: "kernel short name", input: "sda", wantErr: false},
+		{name: "kernel nvme name", input: "nvme0n1", wantErr: false},
+		{name: "by-id path", input: "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S6Z0NX0W123456", wantErr: false},
+		{name: "by-path path", input: "/dev/disk/by-path/pci-0000:02:00.0-nvme-1", wantErr: false},
+		{name: "dot-separated label", input: "disk.by-id.nvme+foo", wantErr: false},
+		// ── reject ──
+		{name: "value with space (injection vector)", input: "/dev/sda beskar7.api=ATTACKER", wantErr: true},
+		{name: "value with newline (injection vector)", input: "/dev/sda\nbeskar7.token=ATTACKER", wantErr: true},
+		{name: "value with tab (injection vector)", input: "/dev/sda\tbeskar7.api=ATTACKER", wantErr: true},
+		{name: "value with control char (injection vector)", input: "/dev/sda\x01evil", wantErr: true},
+		{name: "value with shell metachar dollar", input: "/dev/sda$PWD", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		It("validateBootDisk: "+tc.name, func() {
+			err := validateBootDisk(tc.input)
+			if tc.wantErr {
+				Expect(err).To(HaveOccurred(),
+					"expected validateBootDisk to reject %q but it accepted it", tc.input)
+			} else {
+				Expect(err).NotTo(HaveOccurred(),
+					"expected validateBootDisk to accept %q but it rejected: %v", tc.input, err)
+			}
+		})
+	}
+})

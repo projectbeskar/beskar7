@@ -117,6 +117,7 @@ spec:
       inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
       targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
       targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
+      # targetDisk: /dev/disk/by-id/nvme-...  # optional: pin the install disk; omit to let the inspector auto-select
       configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
       hardwareRequirements:
         minCPUCores: 4
@@ -165,6 +166,7 @@ spec:
       inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
       targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
       targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
+      # targetDisk: /dev/disk/by-id/nvme-...  # optional: pin the install disk; omit to let the inspector auto-select
       configurationURL:   "http://boot-server.local/configs/worker.yaml"
       hardwareRequirements:
         minCPUCores: 4
