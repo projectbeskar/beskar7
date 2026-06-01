@@ -93,6 +93,16 @@ type Beskar7MachineSpec struct {
 	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
 	TargetImageDigest string `json:"targetImageDigest"`
 
+	// TargetDisk optionally pins the disk the inspector writes the OS image to.
+	// A stable device path (/dev/disk/by-id/..., /dev/disk/by-path/...) or a
+	// kernel name (/dev/nvme0n1, sda). When set, the inspector uses exactly that
+	// device and aborts (never falling back) if it is ineligible; when empty, the
+	// inspector auto-selects the smallest eligible disk (contract §5 beskar7.disk,
+	// §9.1 step 2). Non-secret.
+	// +kubebuilder:validation:Pattern="^[A-Za-z0-9._:/+-]+$"
+	// +optional
+	TargetDisk string `json:"targetDisk,omitempty"`
+
 	// ConfigurationURL is an optional URL for OS-specific configuration.
 	// The inspection image will pass this to the target OS during kexec.
 	// +kubebuilder:validation:Pattern="^https?://.*"

@@ -151,17 +151,15 @@ boot
 - The script boots the inspector image directly; it does NOT chainload another
   iPXE script (the per-host script IS this response).
 
-> **Implementation status (v2):** the required parts of this section are
-> **implemented** in this repo. `Beskar7Machine.Spec.TargetImageDigest` exists
-> (required, `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders
-> `beskar7.target` + `beskar7.target-digest`; `TargetImageURL`'s godoc is
-> Kairos-correct. What remains **net-new** is the *optional* `beskar7.disk`
-> render shown in brackets above — it needs a new optional `Beskar7Machine`
-> target-disk spec field (e.g. `Spec.TargetDisk`) and a `/boot` render of it,
-> an additive controller follow-up (§11). It is absent from the rendered script
-> today, which is correct: default (auto-select) provisioning needs no
-> `beskar7.disk`. The **inspector** deploy path (§9.1 step 5) is the other
-> net-new surface, built in the inspector repo against this spec.
+> **Implementation status (v2):** this section is **implemented** in this repo.
+> `Beskar7Machine.Spec.TargetImageDigest` exists (required,
+> `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders `beskar7.target` +
+> `beskar7.target-digest`; `TargetImageURL`'s godoc is Kairos-correct. The
+> *optional* `beskar7.disk` render shown in brackets above is also implemented:
+> `Beskar7Machine.Spec.TargetDisk` (optional, `^[A-Za-z0-9._:/+-]+$`) is rendered
+> by `/boot` immediately after `beskar7.ca` when set, and omitted when empty (the
+> default auto-select path). The **inspector** deploy path (§9.1 step 5) is built
+> in the inspector repo against this spec.
 
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
@@ -204,7 +202,7 @@ these from `/proc/cmdline`.
 | `beskar7.target` | yes | `Beskar7Machine.Spec.TargetImageURL` — the **Kairos whole-disk raw image** the inspector writes to the target disk. MUST be an `http://` or `https://` URL; plain HTTP is permitted (integrity comes from `beskar7.target-digest`, not TLS — see §8.1). Non-secret. |
 | `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
-| `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from an optional `Beskar7Machine` target-disk spec field rendered by `/boot` (an additive controller follow-up — see §11). Non-secret. |
+| `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 
@@ -536,7 +534,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | Version | Delta |
 |---|---|
 | **v1** | Initial frozen contract: boot-nonce + bearer-token two-secret trust model, three HTTPS endpoints (`/boot`, `/inspection`, `/bootstrap`), §6 inspection report schema + golden fixture, inline `beskar7.ca`. Handoff was **kexec into `beskar7.target`** (a kernel+initrd image). |
-| **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the required CRD delta — the `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest` — is **implemented** in this repo. What stays net-new is the *optional* `beskar7.disk` render and its backing `Beskar7Machine` target-disk spec field (additive follow-up, §11), plus the entire inspector deploy path (§9.1 step 5). The deploy path is a new, separately-tested drift surface (§10). |
+| **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the CRD delta is **implemented** in this repo — the required `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest`, plus the optional `Beskar7Machine.Spec.TargetDisk` field and its `beskar7.disk` render. The inspector deploy path (§9.1 step 5) is a new, separately-tested drift surface (§10). |
 
 ---
 
@@ -556,13 +554,11 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   into status on first boot / from `InspectionReport.NICs` for inventory. It MUST
   NOT become a required spec field (it duplicates the operator's DHCP mapping and
   is not a trust anchor).
-- **Operator-pinned target disk — controller render** (additive Phase A follow-up):
-  §5/§9.1 now specify disk selection — the smallest eligible disk by default, or an
-  explicit `beskar7.disk` override. The inspector honors `beskar7.disk` whenever it is
-  present, so the override is forward-compatible. The controller-side change to
-  *expose* it — an optional `Beskar7Machine` target-disk spec field and its `/boot`
-  render — is a separate, additive PR and is **not** required for default
-  (auto-select) provisioning.
+- **Operator-pinned target disk** (implemented): §5/§9.1 specify disk selection —
+  the smallest eligible disk by default, or an explicit `beskar7.disk` override.
+  The inspector honors `beskar7.disk`, and the controller now renders it from the
+  optional `Beskar7Machine.Spec.TargetDisk` field (`/boot`, after `beskar7.ca`,
+  only when set). It is **not** required for default (auto-select) provisioning.
 - **kexec for boot-time speed** (future optimization): v2 reboots via host
   firmware (one POST cycle). A later version MAY `kexec` directly into the freshly
   written OS to skip the firmware POST, but kexec needs real firmware and a

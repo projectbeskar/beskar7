@@ -306,12 +306,39 @@ func validateBootURL(field, raw string) error {
 // sufficient and stronger guard against cmdline injection (SEC-7 posture).
 var bootDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
+// bootDiskPattern is compiled once at init time. It accepts device paths and
+// kernel names that contain only the character set permitted by the CRD
+// +kubebuilder:validation:Pattern marker. An empty string is valid (the field
+// is optional). A value matching this pattern contains no whitespace or
+// control characters (SEC-7 posture).
+var bootDiskPattern = regexp.MustCompile(`^[A-Za-z0-9._:/+-]+$`)
+
 // validateBootDigest rejects a digest that does not match the contract §5/§8.1
 // canonical form. Defence-in-depth (SEC-7) on top of the CRD pattern: operates
 // on the value actually rendered, not the value admitted.
 func validateBootDigest(raw string) error {
 	if !bootDigestPattern.MatchString(raw) {
 		return fmt.Errorf("TargetImageDigest is not a valid sha256 digest (must match ^sha256:[0-9a-f]{64}$)")
+	}
+	return nil
+}
+
+// validateBootDisk rejects a non-empty disk value that contains whitespace or
+// control characters or falls outside the CRD-permitted character set. Defence-
+// in-depth (SEC-7 posture) on the value actually rendered onto the kernel
+// cmdline. An empty string is accepted — the field is optional (contract §5
+// beskar7.disk, §9.1 step 2).
+func validateBootDisk(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return fmt.Errorf("TargetDisk contains whitespace or control characters")
+	}
+	if !bootDiskPattern.MatchString(raw) {
+		return fmt.Errorf("TargetDisk contains characters outside the permitted set (^[A-Za-z0-9._:/+-]+$)")
 	}
 	return nil
 }
@@ -360,6 +387,11 @@ func (h *BootHandler) renderBootScript(
 	if err := validateBootDigest(b7m.Spec.TargetImageDigest); err != nil {
 		return "", err
 	}
+	if b7m.Spec.TargetDisk != "" {
+		if err := validateBootDisk(b7m.Spec.TargetDisk); err != nil {
+			return "", err
+		}
+	}
 
 	// Read the bearer-token plaintext from the per-host bootstrap-token Secret.
 	// The handler received the {nonce} in the URL; it hands back the bearer token
@@ -386,6 +418,7 @@ func (h *BootHandler) renderBootScript(
 		b7m.Spec.TargetImageURL,
 		b7m.Spec.TargetImageDigest,
 		caB64,
+		b7m.Spec.TargetDisk,
 	)
 
 	// Cap the rendered script length (SEC-10). The Linux kernel cmdline cap is
@@ -409,7 +442,16 @@ func (h *BootHandler) renderBootScript(
 //
 // The parameter order on the kernel cmdline follows contract v2 §4.1 exactly:
 // beskar7.api, beskar7.namespace, beskar7.host, beskar7.token, beskar7.target,
-// beskar7.target-digest, beskar7.ca.
+// beskar7.target-digest, beskar7.ca[, beskar7.disk].
+//
+// beskar7.disk is appended immediately after beskar7.ca when targetDisk is
+// non-empty, per contract §4.1 template:
+//
+//	... beskar7.ca={base64CA} [beskar7.disk={disk}]
+//	initrd ...
+//
+// When targetDisk is empty the line is byte-identical to the pre-D-011 §11
+// format (no trailing space, no empty param).
 //
 // Optional parameters (beskar7.timeout, beskar7.debug) are omitted in
 // contract v2 — no operator UI to supply them yet.
@@ -422,9 +464,14 @@ func buildBootIPXEScript(
 	targetImageURL string,
 	targetDigest string,
 	caB64 string,
+	targetDisk string,
 ) string {
+	diskParam := ""
+	if targetDisk != "" {
+		diskParam = " beskar7.disk=" + targetDisk
+	}
 	return fmt.Sprintf(
-		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s\ninitrd %s/initrd.img\nboot\n",
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s\ninitrd %s/initrd.img\nboot\n",
 		inspectionImageURL,
 		apiBase,
 		namespace,
@@ -433,6 +480,7 @@ func buildBootIPXEScript(
 		targetImageURL,
 		targetDigest,
 		caB64,
+		diskParam,
 		inspectionImageURL,
 	)
 }
