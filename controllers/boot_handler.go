@@ -249,7 +249,13 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// renderBootScript is a pure function of (ph, machine, secret, config) so
 	// the response is byte-identical on the fresh-consume and already-consumed
 	// paths.
-	script, err := h.renderBootScript(ctx, log, ph)
+	//
+	// The operator's first-stage iPXE chainload appends ?mac=${net0/mac} by
+	// convention so multi-NIC hosts can hint which NIC the inspector should treat
+	// as the provisioning interface. The value is optional: single-NIC hosts work
+	// without it (the inspector falls back to its own NIC selection heuristic).
+	mac := r.URL.Query().Get("mac")
+	script, err := h.renderBootScript(ctx, log, ph, mac)
 	if err != nil {
 		log.V(1).Info("boot GET: render failed", "err", err.Error())
 		h.opaqueFailure(w)
@@ -313,6 +319,33 @@ var bootDigestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // control characters (SEC-7 posture).
 var bootDiskPattern = regexp.MustCompile(`^[A-Za-z0-9._:/+-]+$`)
 
+// bootifMACPattern matches the colon-separated MAC form produced by iPXE's
+// ${net0/mac} expansion: exactly six lowercase-or-uppercase hex octets
+// separated by colons. Accepts no whitespace, no dashes — those only appear
+// in the pxelinux BOOTIF output form produced by formatBootif, not in the
+// iPXE query param. (SEC-7 posture: unrecognised shape → omit, don't inject.)
+var bootifMACPattern = regexp.MustCompile(`^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$`)
+
+// formatBootif converts an iPXE ${net0/mac} value (colon-separated, e.g.
+// "52:54:00:12:34:56") to the pxelinux BOOTIF form read by the inspector from
+// /proc/cmdline ("01-52-54-00-12-34-56"). The leading "01-" is the ARP hardware
+// type for Ethernet (RFC 5227). Returns ("", false) for an empty or
+// malformed MAC — the BOOTIF token is simply omitted (omit-on-invalid is correct
+// because BOOTIF is an optional hint; the inspector falls back to single-NIC
+// selection when it is absent). Unlike the CRD-backed beskar7.* params, the
+// `mac` query value has NO admission-time validation, so this regexp is the
+// SOLE guard against cmdline injection: it admits no whitespace or separator
+// other than ':' (and Go's `$` does not match before a trailing newline), so a
+// malformed or injection-attempt mac is dropped and never reaches the cmdline.
+func formatBootif(mac string) (string, bool) {
+	if mac == "" || !bootifMACPattern.MatchString(mac) {
+		return "", false
+	}
+	// Replace colons with dashes and lowercase the whole string.
+	dashed := strings.ToLower(strings.ReplaceAll(mac, ":", "-"))
+	return "01-" + dashed, true
+}
+
 // validateBootDigest rejects a digest that does not match the contract §5/§8.1
 // canonical form. Defence-in-depth (SEC-7) on top of the CRD pattern: operates
 // on the value actually rendered, not the value admitted.
@@ -346,14 +379,21 @@ func validateBootDisk(raw string) error {
 // renderBootScript resolves the consuming Beskar7Machine, reads the bearer-token
 // plaintext from the per-host Secret, and renders the §4.1 iPXE script.
 //
-// Pure function of (host, machine, secret, config): the rendered output is
-// byte-identical on fresh-consume and already-consumed paths for the same host.
-// No secret material is logged here; the caller logs only namespace + host +
-// outcome.
+// macParam is the raw value of the ?mac= query parameter supplied by the
+// first-stage iPXE chainload (iPXE convention: ${net0/mac}). It is validated
+// and converted to the pxelinux BOOTIF form by formatBootif; an empty or
+// malformed value results in no BOOTIF token on the kernel cmdline (omit-on-
+// invalid; see formatBootif).
+//
+// Pure function of (host, machine, secret, config, macParam): the rendered
+// output is byte-identical on fresh-consume and already-consumed paths for the
+// same host and the same macParam. No secret material is logged here; the
+// caller logs only namespace + host + outcome.
 func (h *BootHandler) renderBootScript(
 	ctx context.Context,
 	log logr.Logger,
 	ph *infrastructurev1beta1.PhysicalHost,
+	macParam string,
 ) (string, error) {
 	// Walk to the consuming Beskar7Machine via Spec.ConsumerRef.
 	cr := ph.Spec.ConsumerRef
@@ -409,6 +449,11 @@ func (h *BootHandler) renderBootScript(
 	// base64-encode the CA PEM for inline delivery via beskar7.ca=.
 	caB64 := base64.StdEncoding.EncodeToString(h.Config.CABytes)
 
+	// Convert the optional ?mac= query param to the pxelinux BOOTIF form.
+	// formatBootif returns ("", false) for an empty or malformed MAC so a bad
+	// value is simply omitted rather than rendered (omit-on-invalid; SEC-7).
+	bootif, _ := formatBootif(macParam)
+
 	script := buildBootIPXEScript(
 		b7m.Spec.InspectionImageURL,
 		h.Config.APIBase,
@@ -419,6 +464,7 @@ func (h *BootHandler) renderBootScript(
 		b7m.Spec.TargetImageDigest,
 		caB64,
 		b7m.Spec.TargetDisk,
+		bootif,
 	)
 
 	// Cap the rendered script length (SEC-10). The Linux kernel cmdline cap is
@@ -442,7 +488,7 @@ func (h *BootHandler) renderBootScript(
 //
 // The parameter order on the kernel cmdline follows contract v2 §4.1 exactly:
 // beskar7.api, beskar7.namespace, beskar7.host, beskar7.token, beskar7.target,
-// beskar7.target-digest, beskar7.ca[, beskar7.disk].
+// beskar7.target-digest, beskar7.ca[, beskar7.disk][, BOOTIF=<bootif>].
 //
 // beskar7.disk is appended immediately after beskar7.ca when targetDisk is
 // non-empty, per contract §4.1 template:
@@ -450,8 +496,12 @@ func (h *BootHandler) renderBootScript(
 //	... beskar7.ca={base64CA} [beskar7.disk={disk}]
 //	initrd ...
 //
-// When targetDisk is empty the line is byte-identical to the pre-D-011 §11
-// format (no trailing space, no empty param).
+// BOOTIF is appended after the beskar7.disk slot (or after beskar7.ca when
+// targetDisk is empty) when bootif is non-empty. BOOTIF is the pxelinux
+// convention read by the inspector from /proc/cmdline to identify the
+// provisioning NIC on multi-NIC hosts; it is NOT a beskar7.* key. When bootif
+// is empty the kernel line is byte-identical to the pre-D-013 format (no
+// trailing space, no empty param).
 //
 // Optional parameters (beskar7.timeout, beskar7.debug) are omitted in
 // contract v2 — no operator UI to supply them yet.
@@ -465,13 +515,18 @@ func buildBootIPXEScript(
 	targetDigest string,
 	caB64 string,
 	targetDisk string,
+	bootif string,
 ) string {
 	diskParam := ""
 	if targetDisk != "" {
 		diskParam = " beskar7.disk=" + targetDisk
 	}
+	bootifParam := ""
+	if bootif != "" {
+		bootifParam = " BOOTIF=" + bootif
+	}
 	return fmt.Sprintf(
-		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s\ninitrd %s/initrd.img\nboot\n",
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s%s\ninitrd %s/initrd.img\nboot\n",
 		inspectionImageURL,
 		apiBase,
 		namespace,
@@ -481,6 +536,7 @@ func buildBootIPXEScript(
 		targetDigest,
 		caB64,
 		diskParam,
+		bootifParam,
 		inspectionImageURL,
 	)
 }

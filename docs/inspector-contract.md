@@ -132,10 +132,18 @@ boots the inspector image with the §5 parameters on the kernel cmdline:
 
 ```ipxe
 #!ipxe
-kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.timeout={t}] [beskar7.debug=true]
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [BOOTIF={01-mac}] [beskar7.timeout={t}] [beskar7.debug=true]
 initrd {InspectionImageURL}/initrd.img
 boot
 ```
+
+The operator's first-stage iPXE (the one that fetches this `/boot` URL after
+DHCP+TFTP) SHOULD append the booting NIC's MAC as a `?mac=${net0/mac}` query
+parameter. `/boot` validates it (a well-formed colon-MAC; a malformed value is
+omitted, never rendered — no cmdline injection) and renders it as
+`BOOTIF=01-<mac-with-dashes>` so the inspector configures the correct interface
+on a multi-NIC host (§8.2). Omitted when no valid `mac` is supplied — the
+inspector then configures the single physical NIC.
 
 - `{InspectionImageURL}` is `Beskar7Machine.Spec.InspectionImageURL` (the
   consuming machine, resolved via the host's `ConsumerRef`) — the HTTPS base URL
@@ -205,6 +213,8 @@ these from `/proc/cmdline`.
 | `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
+| `BOOTIF` | no | The provisioning NIC's MAC in the pxelinux/iPXE form `01-aa-bb-cc-dd-ee-ff` (a `01` hardware-type prefix + the MAC with dashes). **Not** a `beskar7.*` key — it is the established netboot convention. `/boot` renders it from a `?mac=<mac>` query the operator's first-stage iPXE appends (e.g. `${net0/mac}`); see §4.1, §8.2. The inspector DHCP-configures the matching interface. **Absent** → the inspector configures the single physical NIC (multi-NIC hosts therefore need `BOOTIF`). Non-secret. |
+| `beskar7.ip` | reserved | Planned static-network fallback for DHCP-less / VLAN-pinned environments, kernel-`ip=` syntax (`<ip>::<gw>:<mask>[:<dns>]`). Not rendered in v2 — DHCP is the only network mechanism (§8.2); reserved here so the name is not reused. |
 
 The only **secret** on the cmdline is `beskar7.token`. This is acceptable for a
 single-purpose, ephemeral, operator-controlled inspection ramdisk (see §8); the
@@ -374,6 +384,43 @@ security:
   verified-TLS `/bootstrap` GET and is injected locally (§9), never embedded in
   the published image.
 
+### 8.2 Network bring-up (the inspector configures its own networking)
+
+The §4 endpoints assume the inspector can reach `beskar7.api`, but the inspector
+boots with the provisioning NIC **down and unaddressed**. It MUST therefore
+configure networking itself, in Phase 1, **before** the inspection POST:
+
+- **The kernel's `ip=` autoconfiguration MUST NOT be relied upon.** The inspector
+  ships a minimal initramfs and loads NIC drivers as modules *after* boot (a
+  packaging decision: the distro kernel builds them modular), which is past the
+  kernel's ipconfig stage — so kernel-level DHCP cannot bring the link up. The
+  inspector brings the link up and acquires an address itself.
+- **DHCP is the network mechanism.** The inspector runs a one-shot DHCP exchange
+  on the provisioning NIC (the provisioning network is, by construction, the
+  DHCP/PXE environment the host already booted from), then applies the leased
+  address + default route. No `dhclient`/`udhcpc` — it is done natively, in
+  keeping with the single-purpose ramdisk.
+- **NIC selection** is by `BOOTIF` (§5): the MAC of the interface that PXE-booted,
+  which `/boot` renders from the operator iPXE's `?mac=` query (§4.1). When
+  `BOOTIF` is absent the inspector configures the single physical NIC; a host with
+  **multiple** NICs therefore requires `BOOTIF` to disambiguate which network to
+  join.
+- **DNS / `beskar7.api` form.** v2 ships **no resolver** in the initramfs, so
+  `beskar7.api` SHOULD be an **IP-literal** (the controller renders it from the
+  externally-reachable callback address per §8 anyway). If an operator must use a
+  hostname, their DHCP must supply a usable DNS server and the inspector must
+  write `/etc/resolv.conf` from it — that resolver path is a §11 follow-up, not in
+  v2. A hostname `beskar7.api` with no resolver fails loudly at the report POST.
+- **Trust.** DHCP is unauthenticated and the provisioning L2 is **semi-trusted**:
+  a rogue DHCP server can deny or misdirect provisioning (a DoS), but it CANNOT
+  break join-secret confidentiality — that is gated by the verified-TLS
+  `/bootstrap` GET against the cmdline-delivered CA (§8), not by the network. This
+  is the same residual the boot-nonce L2 exposure already accepts (§11).
+
+Deferred (§11): multi-NIC "DHCP every link and race" when no `BOOTIF`; a
+`beskar7.ip=` static fallback; VLAN-tagged provisioning networks; the
+DHCP-option-6 → `/etc/resolv.conf` resolver.
+
 ---
 
 ## 9. Inspector required behavior (client contract)
@@ -409,7 +456,11 @@ and never rebooting — this is the CI / report-only mode.
 
 The inspector MUST:
 
-1. Parse the §5 cmdline params from `/proc/cmdline`.
+1. Parse the §5 cmdline params from `/proc/cmdline`, then **bring up the
+   provisioning network** (§8.2): load the NIC driver, select the interface by
+   `BOOTIF` (or the single physical NIC), DHCP for an address, and apply the
+   leased address + default route — so the callback is reachable for step 3.
+   (`--dry-run` skips network bring-up; the CI host is already networked.)
 2. Probe hardware natively (SMBIOS/DMI via `/sys/firmware/dmi/tables`, plus `/sys`
    and `/proc`) and build the §6 report satisfying §6.1. **Select the target disk**:
    if `beskar7.disk` is set, resolve it once to its canonical whole-disk kernel node
@@ -559,6 +610,15 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   The inspector honors `beskar7.disk`, and the controller now renders it from the
   optional `Beskar7Machine.Spec.TargetDisk` field (`/boot`, after `beskar7.ca`,
   only when set). It is **not** required for default (auto-select) provisioning.
+- **Network bring-up breadth** (additive, §8.2): v2 does single-NIC DHCP with
+  `BOOTIF` selection and an IP-literal `beskar7.api`. Deferred: multi-NIC "DHCP
+  every link and race" when `BOOTIF` is absent; a `beskar7.ip=` static-network
+  fallback (the §5-reserved param, plus an optional `Beskar7Machine` spec field
+  to render it — YAGNI until a real static-network requirement lands);
+  VLAN-tagged provisioning networks; and the DHCP-option-6 → `/etc/resolv.conf`
+  writer that would let `beskar7.api` be a hostname. Each is additive — the
+  inspector's single network-bring-up entry point absorbs them without changing
+  the Phase-1 flow.
 - **kexec for boot-time speed** (future optimization): v2 reboots via host
   firmware (one POST cycle). A later version MAY `kexec` directly into the freshly
   written OS to skip the firmware POST, but kexec needs real firmware and a

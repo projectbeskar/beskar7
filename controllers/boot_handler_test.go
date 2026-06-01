@@ -1073,6 +1073,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			bootTestDigest,
 			testCA,
 			disk,
+			"", // no BOOTIF
 		)
 
 		By("asserting beskar7.disk appears in the kernel line")
@@ -1105,7 +1106,8 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testTargetURL,
 			bootTestDigest,
 			testCA,
-			"",
+			"", // no disk
+			"", // no BOOTIF
 		)
 
 		By("asserting beskar7.disk is absent")
@@ -1118,6 +1120,118 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 		caEnd := caIdx + len("beskar7.ca=") + len(testCA)
 		Expect(script[caEnd]).To(Equal(byte('\n')),
 			"no trailing space after beskar7.ca when TargetDisk is empty — byte-identical to pre-change format")
+	})
+
+	// ── BOOTIF rendering (D-013) ────────────────────────────────────────────
+
+	It("renders BOOTIF after beskar7.disk when both disk and bootif are set", func() {
+		disk := "/dev/sda"
+		bootif := "01-52-54-00-12-34-56"
+		script := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			disk,
+			bootif,
+		)
+
+		By("asserting BOOTIF appears in the kernel line")
+		Expect(script).To(ContainSubstring("BOOTIF=" + bootif))
+
+		By("asserting BOOTIF is positioned after beskar7.disk")
+		diskIdx := strings.Index(script, "beskar7.disk=")
+		bootifIdx := strings.Index(script, "BOOTIF=")
+		Expect(bootifIdx).To(BeNumerically(">", diskIdx),
+			"BOOTIF must appear after beskar7.disk")
+
+		By("asserting BOOTIF appears before the initrd line")
+		initrdIdx := strings.Index(script, "\ninitrd ")
+		Expect(bootifIdx).To(BeNumerically("<", initrdIdx),
+			"BOOTIF must precede the initrd line")
+
+		By("asserting BOOTIF is immediately after beskar7.disk with a single space")
+		diskEnd := diskIdx + len("beskar7.disk=") + len(disk)
+		Expect(script[diskEnd:diskEnd+len(" BOOTIF=")]).To(Equal(" BOOTIF="),
+			"BOOTIF must be the immediate successor of beskar7.disk with a single space")
+	})
+
+	It("renders BOOTIF after beskar7.ca (no disk) when only bootif is set", func() {
+		bootif := "01-52-54-00-12-34-56"
+		script := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			"", // no disk
+			bootif,
+		)
+
+		By("asserting BOOTIF appears in the kernel line")
+		Expect(script).To(ContainSubstring("BOOTIF=" + bootif))
+
+		By("asserting beskar7.disk is absent")
+		Expect(script).NotTo(ContainSubstring("beskar7.disk"))
+
+		By("asserting BOOTIF is immediately after beskar7.ca with a single space")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA)
+		Expect(script[caEnd:caEnd+len(" BOOTIF=")]).To(Equal(" BOOTIF="),
+			"BOOTIF must be the immediate successor of beskar7.ca with a single space when disk is absent")
+
+		By("asserting BOOTIF appears before the initrd line")
+		bootifIdx := strings.Index(script, "BOOTIF=")
+		initrdIdx := strings.Index(script, "\ninitrd ")
+		Expect(bootifIdx).To(BeNumerically("<", initrdIdx),
+			"BOOTIF must precede the initrd line")
+	})
+
+	It("omits BOOTIF entirely when bootif is empty, output byte-identical to pre-D-013 format", func() {
+		script := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			"", // no disk
+			"", // no BOOTIF
+		)
+		scriptWithBootif := buildBootIPXEScript(
+			testInspectionURL,
+			testAPIBase,
+			testNamespace,
+			testHost,
+			testToken,
+			testTargetURL,
+			bootTestDigest,
+			testCA,
+			"",
+			"01-52-54-00-12-34-56",
+		)
+
+		By("asserting BOOTIF is absent when bootif is empty")
+		Expect(script).NotTo(ContainSubstring("BOOTIF"),
+			"empty bootif must produce no BOOTIF token in the script")
+
+		By("asserting the kernel line ends with beskar7.ca=<value> immediately followed by newline")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA)
+		Expect(script[caEnd]).To(Equal(byte('\n')),
+			"no trailing space after beskar7.ca when bootif is empty — byte-identical to pre-D-013 format")
+
+		By("the BOOTIF variant is different from the no-BOOTIF variant")
+		Expect(script).NotTo(Equal(scriptWithBootif))
 	})
 })
 
@@ -1153,6 +1267,103 @@ var _ = Describe("validateBootDisk", func() {
 			} else {
 				Expect(err).NotTo(HaveOccurred(),
 					"expected validateBootDisk to accept %q but it rejected: %v", tc.input, err)
+			}
+		})
+	}
+})
+
+// ── formatBootif unit tests (D-013 / SEC-7 posture) ───────────────────────────
+
+var _ = Describe("formatBootif", func() {
+	type bootifCase struct {
+		name       string
+		input      string
+		wantResult string
+		wantOK     bool
+	}
+	cases := []bootifCase{
+		// ── accept ──
+		{
+			name:       "well-formed lowercase MAC",
+			input:      "52:54:00:12:34:56",
+			wantResult: "01-52-54-00-12-34-56",
+			wantOK:     true,
+		},
+		{
+			name:       "well-formed uppercase MAC (lowercased in output)",
+			input:      "52:54:00:AA:BB:CC",
+			wantResult: "01-52-54-00-aa-bb-cc",
+			wantOK:     true,
+		},
+		{
+			name:       "all-zeros broadcast MAC",
+			input:      "00:00:00:00:00:00",
+			wantResult: "01-00-00-00-00-00-00",
+			wantOK:     true,
+		},
+		{
+			name:       "all-ff broadcast MAC",
+			input:      "ff:ff:ff:ff:ff:ff",
+			wantResult: "01-ff-ff-ff-ff-ff-ff",
+			wantOK:     true,
+		},
+		// ── reject ──
+		{
+			name:   "empty string",
+			input:  "",
+			wantOK: false,
+		},
+		{
+			name:   "too short (5 octets)",
+			input:  "52:54:00:12:34",
+			wantOK: false,
+		},
+		{
+			name:   "too long (7 octets)",
+			input:  "52:54:00:12:34:56:78",
+			wantOK: false,
+		},
+		{
+			name:   "non-hex characters (injection attempt)",
+			input:  "zz:54:00:12:34:56",
+			wantOK: false,
+		},
+		{
+			name:   "spaces instead of colons",
+			input:  "52 54 00 12 34 56",
+			wantOK: false,
+		},
+		{
+			name:   "dashes instead of colons (BOOTIF output form, not input form)",
+			input:  "52-54-00-12-34-56",
+			wantOK: false,
+		},
+		{
+			name:   "injection: key=value appended after valid prefix",
+			input:  "52:54:00:12:34:56 beskar7.api=ATTACKER",
+			wantOK: false,
+		},
+		{
+			name:   "injection: newline in value",
+			input:  "52:54:00:12:34:56\nbeskar7.token=ATTACKER",
+			wantOK: false,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		It("formatBootif: "+tc.name, func() {
+			result, ok := formatBootif(tc.input)
+			if tc.wantOK {
+				Expect(ok).To(BeTrue(),
+					"expected formatBootif(%q) to succeed but it returned false", tc.input)
+				Expect(result).To(Equal(tc.wantResult),
+					"formatBootif(%q) returned %q, want %q", tc.input, result, tc.wantResult)
+			} else {
+				Expect(ok).To(BeFalse(),
+					"expected formatBootif(%q) to return (false) but it returned (%q, true)", tc.input, result)
+				Expect(result).To(Equal(""),
+					"on failure formatBootif must return empty string")
 			}
 		})
 	}
