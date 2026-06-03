@@ -40,6 +40,15 @@ spec:
   targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
   targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   configurationURL: "http://boot-server.local/configs/test-config.yaml"
+  # staticIP is optional. Set it only when the provisioning network has no DHCP
+  # server (DHCP-less or VLAN-pinned environments). When set, /boot renders
+  # beskar7.ip=<value> on the inspector kernel cmdline; the inspector configures
+  # the NIC statically and skips DHCP. Format: <ip>::[<gw>]:<mask>[:<dns>].
+  # Examples:
+  #   staticIP: "192.168.150.10::192.168.150.1:255.255.255.0"
+  #   staticIP: "10.0.0.5:::24:8.8.8.8"
+  # Leave unset (or remove the field) to use DHCP (the default).
+  # staticIP: "192.168.150.10::192.168.150.1:255.255.255.0"
 
 ---
 # Monitor with:

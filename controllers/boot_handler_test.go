@@ -1074,6 +1074,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			disk,
 			"", // no BOOTIF
+			"", // no StaticIP
 		)
 
 		By("asserting beskar7.disk appears in the kernel line")
@@ -1108,6 +1109,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			"", // no disk
 			"", // no BOOTIF
+			"", // no StaticIP
 		)
 
 		By("asserting beskar7.disk is absent")
@@ -1138,6 +1140,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			disk,
 			bootif,
+			"", // no StaticIP
 		)
 
 		By("asserting BOOTIF appears in the kernel line")
@@ -1173,6 +1176,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			"", // no disk
 			bootif,
+			"", // no StaticIP
 		)
 
 		By("asserting BOOTIF appears in the kernel line")
@@ -1206,6 +1210,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			"", // no disk
 			"", // no BOOTIF
+			"", // no StaticIP
 		)
 		scriptWithBootif := buildBootIPXEScript(
 			testInspectionURL,
@@ -1218,6 +1223,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testCA,
 			"",
 			"01-52-54-00-12-34-56",
+			"", // no StaticIP
 		)
 
 		By("asserting BOOTIF is absent when bootif is empty")
@@ -1267,6 +1273,273 @@ var _ = Describe("validateBootDisk", func() {
 			} else {
 				Expect(err).NotTo(HaveOccurred(),
 					"expected validateBootDisk to accept %q but it rejected: %v", tc.input, err)
+			}
+		})
+	}
+})
+
+// ── StaticIP feature tests (contract v3 §5 beskar7.ip, §8.2) ─────────────────
+
+var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
+	const (
+		testInspectionURL2 = "https://boot.example.com/inspect"
+		testAPIBase2       = "https://beskar7.example.com:8082"
+		testNamespace2     = "default"
+		testHost2          = "host-01"
+		testToken2         = "tok-abc123"
+		testTargetURL2     = "https://images.example.com/kairos.img"
+		testCA2            = "FAKECABASE64=="
+	)
+
+	It("renders beskar7.ip after beskar7.ca (no disk) when StaticIP is set", func() {
+		staticIP := "192.168.150.10::192.168.150.1:255.255.255.0"
+		script := buildBootIPXEScript(
+			testInspectionURL2,
+			testAPIBase2,
+			testNamespace2,
+			testHost2,
+			testToken2,
+			testTargetURL2,
+			bootTestDigest,
+			testCA2,
+			"", // no disk
+			"", // no BOOTIF
+			staticIP,
+		)
+
+		By("asserting beskar7.ip appears in the kernel line")
+		Expect(script).To(ContainSubstring("beskar7.ip=" + staticIP))
+
+		By("asserting beskar7.ip is positioned immediately after beskar7.ca with a single space")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA2)
+		Expect(script[caEnd:caEnd+len(" beskar7.ip=")]).To(Equal(" beskar7.ip="),
+			"beskar7.ip must be the immediate successor of beskar7.ca with a single space when disk is absent")
+
+		By("asserting beskar7.ip appears before the initrd line")
+		ipIdx := strings.Index(script, "beskar7.ip=")
+		initrdIdx := strings.Index(script, "\ninitrd ")
+		Expect(ipIdx).To(BeNumerically("<", initrdIdx), "beskar7.ip must precede the initrd line")
+	})
+
+	It("renders beskar7.ip after beskar7.disk when both disk and staticIP are set", func() {
+		disk := "/dev/sda"
+		staticIP := "192.168.150.10::192.168.150.1:255.255.255.0"
+		script := buildBootIPXEScript(
+			testInspectionURL2,
+			testAPIBase2,
+			testNamespace2,
+			testHost2,
+			testToken2,
+			testTargetURL2,
+			bootTestDigest,
+			testCA2,
+			disk,
+			"", // no BOOTIF
+			staticIP,
+		)
+
+		By("asserting beskar7.disk and beskar7.ip both appear")
+		Expect(script).To(ContainSubstring("beskar7.disk=" + disk))
+		Expect(script).To(ContainSubstring("beskar7.ip=" + staticIP))
+
+		By("asserting beskar7.ip is immediately after beskar7.disk with a single space")
+		diskIdx := strings.Index(script, "beskar7.disk=")
+		diskEnd := diskIdx + len("beskar7.disk=") + len(disk)
+		Expect(script[diskEnd:diskEnd+len(" beskar7.ip=")]).To(Equal(" beskar7.ip="),
+			"beskar7.ip must be the immediate successor of beskar7.disk with a single space")
+
+		By("asserting ordering: beskar7.ca < beskar7.disk < beskar7.ip < initrd")
+		caIdx := strings.Index(script, "beskar7.ca=")
+		ipIdx := strings.Index(script, "beskar7.ip=")
+		initrdIdx := strings.Index(script, "\ninitrd ")
+		Expect(caIdx).To(BeNumerically("<", diskIdx))
+		Expect(diskIdx).To(BeNumerically("<", ipIdx))
+		Expect(ipIdx).To(BeNumerically("<", initrdIdx))
+	})
+
+	It("renders BOOTIF after beskar7.ip when all three optional params are set", func() {
+		disk := "/dev/sda"
+		staticIP := "192.168.150.10::192.168.150.1:255.255.255.0"
+		bootif := "01-52-54-00-12-34-56"
+		script := buildBootIPXEScript(
+			testInspectionURL2,
+			testAPIBase2,
+			testNamespace2,
+			testHost2,
+			testToken2,
+			testTargetURL2,
+			bootTestDigest,
+			testCA2,
+			disk,
+			bootif,
+			staticIP,
+		)
+
+		By("asserting all three optional params appear")
+		Expect(script).To(ContainSubstring("beskar7.disk=" + disk))
+		Expect(script).To(ContainSubstring("beskar7.ip=" + staticIP))
+		Expect(script).To(ContainSubstring("BOOTIF=" + bootif))
+
+		By("asserting ordering: beskar7.disk < beskar7.ip < BOOTIF")
+		diskIdx := strings.Index(script, "beskar7.disk=")
+		ipIdx := strings.Index(script, "beskar7.ip=")
+		bootifIdx := strings.Index(script, "BOOTIF=")
+		Expect(diskIdx).To(BeNumerically("<", ipIdx), "beskar7.disk must precede beskar7.ip")
+		Expect(ipIdx).To(BeNumerically("<", bootifIdx), "beskar7.ip must precede BOOTIF")
+	})
+
+	It("omits beskar7.ip entirely when StaticIP is empty, output byte-identical to v2 format", func() {
+		scriptV2 := buildBootIPXEScript(
+			testInspectionURL2,
+			testAPIBase2,
+			testNamespace2,
+			testHost2,
+			testToken2,
+			testTargetURL2,
+			bootTestDigest,
+			testCA2,
+			"", // no disk
+			"", // no BOOTIF
+			"", // no StaticIP
+		)
+		scriptWithIP := buildBootIPXEScript(
+			testInspectionURL2,
+			testAPIBase2,
+			testNamespace2,
+			testHost2,
+			testToken2,
+			testTargetURL2,
+			bootTestDigest,
+			testCA2,
+			"", // no disk
+			"", // no BOOTIF
+			"192.168.150.10::192.168.150.1:255.255.255.0",
+		)
+
+		By("asserting beskar7.ip is absent when staticIP is empty")
+		Expect(scriptV2).NotTo(ContainSubstring("beskar7.ip"),
+			"empty StaticIP must produce no beskar7.ip token in the script")
+
+		By("asserting the kernel line ends with beskar7.ca=<value> immediately followed by newline")
+		caIdx := strings.Index(scriptV2, "beskar7.ca=")
+		caEnd := caIdx + len("beskar7.ca=") + len(testCA2)
+		Expect(scriptV2[caEnd]).To(Equal(byte('\n')),
+			"no trailing space after beskar7.ca when StaticIP is empty — byte-identical to pre-v3 format")
+
+		By("the StaticIP variant differs from the empty-StaticIP variant")
+		Expect(scriptV2).NotTo(Equal(scriptWithIP))
+	})
+})
+
+// ── validateStaticIP unit tests (contract v3 §5, SEC-7) ──────────────────────
+
+var _ = Describe("validateStaticIP", func() {
+	type staticIPCase struct {
+		name    string
+		input   string
+		wantErr bool
+	}
+	cases := []staticIPCase{
+		// ── accept ──
+		{
+			name:    "valid ip+gw+netmask",
+			input:   "192.168.150.10::192.168.150.1:255.255.255.0",
+			wantErr: false,
+		},
+		{
+			name:    "valid ip+gw+CIDR-prefix",
+			input:   "10.0.0.5::10.0.0.1:24",
+			wantErr: false,
+		},
+		{
+			name:    "valid ip+no-gw+CIDR-prefix+dns",
+			input:   "10.0.0.5:::24:8.8.8.8",
+			wantErr: false,
+		},
+		{
+			name:    "valid ip+no-gw+netmask",
+			input:   "192.168.1.100:::255.255.255.0",
+			wantErr: false,
+		},
+		{
+			name:    "valid ip+gw+netmask+dns",
+			input:   "192.168.150.10::192.168.150.1:255.255.255.0:8.8.8.8",
+			wantErr: false,
+		},
+		{
+			name:    "valid CIDR prefix 0 (single digit)",
+			input:   "10.0.0.1:::0",
+			wantErr: false,
+		},
+		{
+			name:    "valid CIDR prefix 32 (two digits)",
+			input:   "10.0.0.1:::32",
+			wantErr: false,
+		},
+		{
+			name:    "empty string (optional field)",
+			input:   "",
+			wantErr: false,
+		},
+		// ── reject ──
+		{
+			name:    "plain IPv4 with no colons (non-ip= shape)",
+			input:   "192.168.1.1",
+			wantErr: true,
+		},
+		{
+			name:    "missing double-colon server-IP separator",
+			input:   "192.168.1.1:192.168.1.1:255.255.255.0",
+			wantErr: true,
+		},
+		{
+			name:    "garbage string",
+			input:   "not-an-ip-at-all",
+			wantErr: true,
+		},
+		{
+			name:    "value with space (cmdline injection vector)",
+			input:   "192.168.1.1::192.168.1.254:24 beskar7.token=ATTACKER",
+			wantErr: true,
+		},
+		{
+			name:    "value with newline (cmdline injection vector)",
+			input:   "192.168.1.1::192.168.1.254:24\nbeskar7.token=ATTACKER",
+			wantErr: true,
+		},
+		{
+			name:    "value with tab (cmdline injection vector)",
+			input:   "192.168.1.1::192.168.1.254:24\tbeskar7.api=ATTACKER",
+			wantErr: true,
+		},
+		{
+			name:    "beskar7.x= appended after valid prefix (injection via extra param)",
+			input:   "192.168.1.1::192.168.1.254:24:8.8.8.8 beskar7.x=INJECTED",
+			wantErr: true,
+		},
+		{
+			name:    "hostname instead of IP",
+			input:   "host.example.com:::24",
+			wantErr: true,
+		},
+		{
+			name:    "CIDR prefix three digits (out of shape)",
+			input:   "10.0.0.1:::128",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		It("validateStaticIP: "+tc.name, func() {
+			err := validateStaticIP(tc.input)
+			if tc.wantErr {
+				Expect(err).To(HaveOccurred(),
+					"expected validateStaticIP to reject %q but it accepted it", tc.input)
+			} else {
+				Expect(err).NotTo(HaveOccurred(),
+					"expected validateStaticIP to accept %q but it rejected: %v", tc.input, err)
 			}
 		})
 	}
