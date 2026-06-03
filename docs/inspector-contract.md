@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v2`**
+**Contract version: `v3`**
 
 This document is the single source of truth for the wire contract between the
 Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
@@ -9,12 +9,11 @@ change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#versioning-and-anti-drift)).
 
-> **v2 in one line:** the inspector no longer `kexec`s into a kernel+initrd. It
-> writes a complete Kairos whole-disk image to the target disk, injects the
-> per-host config (carrying CAPI bootstrap user-data) into the image's
-> `COS_OEM` partition, and reboots the host into the provisioned OS. The
-> inspection report schema (§6) is **unchanged** from v1. See
-> [Version history](#101-version-history) for the full delta.
+> **v3 in one line:** un-reserves the optional `beskar7.ip` kernel cmdline
+> parameter and adds the matching `Beskar7Machine.Spec.StaticIP` CRD field plus
+> its `/boot` render. The inspection report schema (§6) and the v2 whole-disk
+> deploy flow are **unchanged**. See [Version history](#101-version-history) for
+> the full delta.
 
 Requirement keywords (MUST, MUST NOT, SHOULD, MAY) are used per RFC 2119.
 
@@ -132,7 +131,7 @@ boots the inspector image with the §5 parameters on the kernel cmdline:
 
 ```ipxe
 #!ipxe
-kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [BOOTIF={01-mac}] [beskar7.timeout={t}] [beskar7.debug=true]
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.ip={ip}] [BOOTIF={01-mac}] [beskar7.timeout={t}] [beskar7.debug=true]
 initrd {InspectionImageURL}/initrd.img
 boot
 ```
@@ -160,15 +159,19 @@ gatewayed winner on a multi-NIC host (§8.2).
 - The script boots the inspector image directly; it does NOT chainload another
   iPXE script (the per-host script IS this response).
 
-> **Implementation status (v2):** this section is **implemented** in this repo.
+> **Implementation status (v3):** this section is **implemented** in this repo.
 > `Beskar7Machine.Spec.TargetImageDigest` exists (required,
 > `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders `beskar7.target` +
 > `beskar7.target-digest`; `TargetImageURL`'s godoc is Kairos-correct. The
 > *optional* `beskar7.disk` render shown in brackets above is also implemented:
 > `Beskar7Machine.Spec.TargetDisk` (optional, `^[A-Za-z0-9._:/+-]+$`) is rendered
 > by `/boot` immediately after `beskar7.ca` when set, and omitted when empty (the
-> default auto-select path). The **inspector** deploy path (§9.1 step 5) is built
-> in the inspector repo against this spec.
+> default auto-select path). The *optional* `beskar7.ip` render is implemented in
+> v3: `Beskar7Machine.Spec.StaticIP` (optional pointer, pattern matching the
+> `<ip>::[<gw>]:<mask>[:<dns>]` shape) is rendered by `/boot` after `beskar7.disk`
+> (or after `beskar7.ca` when `beskar7.disk` is absent) when set, and omitted when
+> nil/empty. The **inspector** deploy path (§9.1 step 5) is built in the inspector
+> repo against this spec.
 
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
@@ -215,7 +218,7 @@ these from `/proc/cmdline`.
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 | `BOOTIF` | no | The provisioning NIC's MAC in the pxelinux/iPXE form `01-aa-bb-cc-dd-ee-ff` (a `01` hardware-type prefix + the MAC with dashes). **Not** a `beskar7.*` key — it is the established netboot convention. `/boot` renders it from a `?mac=<mac>` query the operator's first-stage iPXE appends (e.g. `${net0/mac}`); see §4.1, §8.2. The inspector DHCP-configures the matching interface. **Absent** → a single-NIC host uses its one NIC; a multi-NIC host DHCP-races all links and applies the gatewayed winner (§8.2). `BOOTIF` is the deterministic pin and is the way to select a specific network. Non-secret. |
-| `beskar7.ip` | reserved | Planned static-network fallback for DHCP-less / VLAN-pinned environments, kernel-`ip=` syntax (`<ip>::<gw>:<mask>[:<dns>]`). Not rendered in v2 — DHCP is the only network mechanism (§8.2); reserved here so the name is not reused. |
+| `beskar7.ip` | no | Static-network override for DHCP-less / VLAN-pinned provisioning networks. Format: kernel `ip=` subset `<ip>::[<gw>]:<mask>[:<dns>]` where `<ip>` is a dotted IPv4, `<gw>` is an optional dotted IPv4 gateway (omit for a gateway-less net), `<mask>` is a dotted IPv4 netmask or a bare CIDR prefix-length integer (`0`–`32`), and `<dns>` is an optional dotted IPv4 resolver. Sourced from the optional `Beskar7Machine.Spec.StaticIP` field; rendered by `/boot` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set, and omitted entirely when absent. When `beskar7.ip` is present, the inspector configures the selected provisioning NIC statically and **skips DHCP**. The inspector selects the NIC by `BOOTIF` (when present); a multi-NIC host with `beskar7.ip` but no `BOOTIF` is rejected by the inspector (§8.2). Non-secret. |
 
 The only **secret** on the cmdline is `beskar7.token`. This is acceptable for a
 single-purpose, ephemeral, operator-controlled inspection ramdisk (see §8); the
@@ -426,9 +429,21 @@ configure networking itself, in Phase 1, **before** the inspection POST:
   break join-secret confidentiality — that is gated by the verified-TLS
   `/bootstrap` GET against the cmdline-delivered CA (§8), not by the network. This
   is the same residual the boot-nonce L2 exposure already accepts (§11).
+- **Static-network path (v3, `beskar7.ip`).** DHCP is the default; the
+  `beskar7.ip` param is the alternative for DHCP-less or VLAN-pinned provisioning
+  networks where no DHCP server is present. When `beskar7.ip` is set (rendered from
+  `Beskar7Machine.Spec.StaticIP` by `/boot`, §5), the inspector configures the
+  selected NIC statically with the given address, gateway, mask, and optional
+  resolver, and **skips DHCP entirely**. NIC selection still follows the `BOOTIF`
+  pin (§5, §8.2 above) — a multi-NIC host supplying `beskar7.ip` without `BOOTIF`
+  is ambiguous and MUST be rejected by the inspector (it cannot know which NIC to
+  configure statically). Single-NIC hosts work without `BOOTIF`. The
+  confidentiality model is unchanged: the static address is delivered over the same
+  verified-TLS `/boot` channel as the rest of the cmdline; a MITM on the
+  provisioning L2 cannot lift the join secret from the `/bootstrap` GET regardless
+  of whether DHCP or static addressing is used.
 
-Deferred (§11): a `beskar7.ip=` static fallback for DHCP-less / VLAN-pinned
-networks; VLAN-tagged provisioning networks.
+Deferred (§11): VLAN-tagged provisioning networks.
 
 ---
 
@@ -596,6 +611,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 |---|---|
 | **v1** | Initial frozen contract: boot-nonce + bearer-token two-secret trust model, three HTTPS endpoints (`/boot`, `/inspection`, `/bootstrap`), §6 inspection report schema + golden fixture, inline `beskar7.ca`. Handoff was **kexec into `beskar7.target`** (a kernel+initrd image). |
 | **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the CRD delta is **implemented** in this repo — the required `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest`, plus the optional `Beskar7Machine.Spec.TargetDisk` field and its `beskar7.disk` render. The inspector deploy path (§9.1 step 5) is a new, separately-tested drift surface (§10). |
+| **v3** | **Static-network override — §6 report schema and golden fixture unchanged.** Un-reserves the optional `beskar7.ip` cmdline param (§5): adds `Beskar7Machine.Spec.StaticIP` (optional `*string`, CRD validation pattern for the `<ip>::[<gw>]:<mask>[:<dns>]` shape); `/boot` renders `beskar7.ip=<value>` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set. The inspector configures the selected NIC statically and skips DHCP when `beskar7.ip` is present; a multi-NIC host with `beskar7.ip` and no `BOOTIF` is rejected. Handler-side `validateStaticIP` / `formatStaticIP` guard (C-1a, SEC-7 omit-on-invalid) mirrors `formatBootif`. **No inspector report-code or fixture change.** The v2 whole-disk deploy flow (§9.1 steps 4–5) is unchanged. |
 
 ---
 
@@ -620,15 +636,15 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   The inspector honors `beskar7.disk`, and the controller now renders it from the
   optional `Beskar7Machine.Spec.TargetDisk` field (`/boot`, after `beskar7.ca`,
   only when set). It is **not** required for default (auto-select) provisioning.
-- **Network bring-up breadth** (additive, §8.2): implemented so far — DHCP with
-  `BOOTIF` selection, the no-`BOOTIF` multi-NIC "DHCP every link and race"
-  (gatewayed-lease preference), and the DHCP-option-6 → `/etc/resolv.conf` writer
-  that lets `beskar7.api` be a hostname (IP-literal still recommended). Still
-  deferred: a `beskar7.ip=` static-network fallback (the §5-reserved param, plus
-  an optional `Beskar7Machine` spec field to render it — YAGNI until a real
-  static-network requirement lands) and VLAN-tagged provisioning networks. Each is
-  additive — the inspector's single network-bring-up entry point absorbs them
-  without changing the Phase-1 flow.
+- **Network bring-up breadth** (additive, §8.2): implemented — DHCP with `BOOTIF`
+  selection, the no-`BOOTIF` multi-NIC "DHCP every link and race"
+  (gatewayed-lease preference), the DHCP-option-6 → `/etc/resolv.conf` writer
+  that lets `beskar7.api` be a hostname (IP-literal still recommended), and (v3)
+  the `beskar7.ip=` static-network fallback for DHCP-less / VLAN-pinned networks
+  (`Beskar7Machine.Spec.StaticIP` → `/boot` renders `beskar7.ip=<value>` →
+  inspector configures the NIC statically, skips DHCP; multi-NIC requires `BOOTIF`
+  — §5, §8.2). Still deferred: VLAN-tagged provisioning networks (additive, does
+  not change the Phase-1 flow).
 - **kexec for boot-time speed** (future optimization): v2 reboots via host
   firmware (one POST cycle). A later version MAY `kexec` directly into the freshly
   written OS to skip the firmware POST, but kexec needs real firmware and a

@@ -68,6 +68,9 @@ spec:
                 type: string
               providerID:
                 type: string
+              staticIP:
+                pattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}::(([0-9]{1,3}\.){3}[0-9]{1,3})?:(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9]{1,2})(:([0-9]{1,3}\.){3}[0-9]{1,3})?$
+                type: string
               targetDisk:
                 pattern: ^[A-Za-z0-9._:/+-]+$
                 type: string

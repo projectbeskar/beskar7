@@ -326,6 +326,25 @@ var bootDiskPattern = regexp.MustCompile(`^[A-Za-z0-9._:/+-]+$`)
 // iPXE query param. (SEC-7 posture: unrecognised shape → omit, don't inject.)
 var bootifMACPattern = regexp.MustCompile(`^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$`)
 
+// staticIPPattern is compiled once at init time. It admits only the
+// kernel ip= subset shape the inspector accepts:
+//
+//	<ip>::[<gw>]:<mask>[:<dns>]
+//
+// where <ip>, <gw>, <dns> are dotted IPv4 and <mask> is either a dotted IPv4
+// netmask or a bare CIDR prefix-length integer (0–32 as one or two digits).
+// The pattern is anchored (Go regexp `$` does not match before a trailing `\n`,
+// so `^...$` is newline-safe — no whitespace or separator injection is possible
+// for a matching value). This is the C-1a handler-side guard for SEC-7; the
+// matching CRD +kubebuilder:validation:Pattern is C-1b (defence-in-depth at
+// admission time).
+//
+// The pattern accepts only `[0-9.:]` characters and the expected structure,
+// so a matching value is guaranteed whitespace-free and cannot contain cmdline
+// separators. Octet-range validation is left to the inspector (contract §5);
+// the controller's job is injection-safety + basic shape.
+var staticIPPattern = regexp.MustCompile(`^([0-9]{1,3}\.){3}[0-9]{1,3}::(([0-9]{1,3}\.){3}[0-9]{1,3})?:(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9]{1,2})(:([0-9]{1,3}\.){3}[0-9]{1,3})?$`)
+
 // formatBootif converts an iPXE ${net0/mac} value (colon-separated, e.g.
 // "52:54:00:12:34:56") to the pxelinux BOOTIF form read by the inspector from
 // /proc/cmdline ("01-52-54-00-12-34-56"). The leading "01-" is the ARP hardware
@@ -372,6 +391,32 @@ func validateBootDisk(raw string) error {
 	}
 	if !bootDiskPattern.MatchString(raw) {
 		return fmt.Errorf("TargetDisk contains characters outside the permitted set (^[A-Za-z0-9._:/+-]+$)")
+	}
+	return nil
+}
+
+// validateStaticIP rejects a non-empty static IP value that does not match the
+// contract v3 §5 beskar7.ip kernel-ip= subset shape, or that contains whitespace
+// or control characters (cmdline injection guard, SEC-7, C-1a). An empty string
+// is accepted — the field is optional; when empty no beskar7.ip token is rendered.
+//
+// The anchored staticIPPattern match is the primary guard: it admits only
+// `[0-9.:]` and the <ip>::[<gw>]:<mask>[:<dns>] structure, so a matching value
+// is guaranteed whitespace-free and cannot contain cmdline separators or inject
+// additional parameters. The explicit whitespace/control check is belt-and-
+// suspenders — the regex already excludes them, but the explicit check documents
+// the intent (same pattern as validateBootDisk).
+func validateStaticIP(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if strings.ContainsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) {
+		return fmt.Errorf("StaticIP contains whitespace or control characters")
+	}
+	if !staticIPPattern.MatchString(raw) {
+		return fmt.Errorf("StaticIP does not match the expected format <ip>::[<gw>]:<mask>[:<dns>] (^([0-9]{1,3}\\.){3}[0-9]{1,3}::(([0-9]{1,3}\\.){3}[0-9]{1,3})?:(([0-9]{1,3}\\.){3}[0-9]{1,3}|[0-9]{1,2})(:([0-9]{1,3}\\.){3}[0-9]{1,3})?$)")
 	}
 	return nil
 }
@@ -432,6 +477,20 @@ func (h *BootHandler) renderBootScript(
 			return "", err
 		}
 	}
+	// Validate StaticIP before rendering (SEC-7 / C-1a) and fail closed on an
+	// invalid value — for parity with the sibling rendered CRD fields (TargetDisk,
+	// TargetImageURL, …) and because StaticIP exists for DHCP-less networks, where
+	// silently omitting it (the formatBootif posture, right for an optional query
+	// hint) would leave the host with no usable network at all. An empty/unset
+	// field is the normal DHCP path and renders no beskar7.ip token. The anchored
+	// validateStaticIP guard still guarantees no cmdline injection either way.
+	var staticIP string
+	if b7m.Spec.StaticIP != nil && *b7m.Spec.StaticIP != "" {
+		if err := validateStaticIP(*b7m.Spec.StaticIP); err != nil {
+			return "", err
+		}
+		staticIP = *b7m.Spec.StaticIP
+	}
 
 	// Read the bearer-token plaintext from the per-host bootstrap-token Secret.
 	// The handler received the {nonce} in the URL; it hands back the bearer token
@@ -465,6 +524,7 @@ func (h *BootHandler) renderBootScript(
 		caB64,
 		b7m.Spec.TargetDisk,
 		bootif,
+		staticIP,
 	)
 
 	// Cap the rendered script length (SEC-10). The Linux kernel cmdline cap is
@@ -486,25 +546,28 @@ func (h *BootHandler) renderBootScript(
 // script. All inputs are caller-resolved; this function performs no I/O.
 // Package-level so tests can call it directly for golden-string assertions.
 //
-// The parameter order on the kernel cmdline follows contract v2 §4.1 exactly:
+// The parameter order on the kernel cmdline follows contract v3 §4.1 exactly:
 // beskar7.api, beskar7.namespace, beskar7.host, beskar7.token, beskar7.target,
-// beskar7.target-digest, beskar7.ca[, beskar7.disk][, BOOTIF=<bootif>].
+// beskar7.target-digest, beskar7.ca[, beskar7.disk][, beskar7.ip=<ip>][, BOOTIF=<bootif>].
 //
 // beskar7.disk is appended immediately after beskar7.ca when targetDisk is
 // non-empty, per contract §4.1 template:
 //
-//	... beskar7.ca={base64CA} [beskar7.disk={disk}]
+//	... beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.ip={ip}]
 //	initrd ...
 //
-// BOOTIF is appended after the beskar7.disk slot (or after beskar7.ca when
-// targetDisk is empty) when bootif is non-empty. BOOTIF is the pxelinux
-// convention read by the inspector from /proc/cmdline to identify the
-// provisioning NIC on multi-NIC hosts; it is NOT a beskar7.* key. When bootif
-// is empty the kernel line is byte-identical to the pre-D-013 format (no
-// trailing space, no empty param).
+// beskar7.ip is appended after the beskar7.disk slot (or after beskar7.ca when
+// targetDisk is empty) when staticIP is non-empty. It delivers the static IPv4
+// address to the inspector for DHCP-less / VLAN-pinned provisioning networks
+// (contract v3 §5, §8.2). When staticIP is empty the token is omitted entirely.
+//
+// BOOTIF is appended last (after beskar7.ip when present, after beskar7.disk
+// when staticIP is absent, after beskar7.ca when both are absent). When bootif
+// is empty the kernel line is byte-identical to the pre-D-013 / pre-v3 format
+// (no trailing space, no empty param).
 //
 // Optional parameters (beskar7.timeout, beskar7.debug) are omitted in
-// contract v2 — no operator UI to supply them yet.
+// contract v3 — no operator UI to supply them yet.
 func buildBootIPXEScript(
 	inspectionImageURL string,
 	apiBase string,
@@ -516,17 +579,22 @@ func buildBootIPXEScript(
 	caB64 string,
 	targetDisk string,
 	bootif string,
+	staticIP string,
 ) string {
 	diskParam := ""
 	if targetDisk != "" {
 		diskParam = " beskar7.disk=" + targetDisk
+	}
+	staticIPParam := ""
+	if staticIP != "" {
+		staticIPParam = " beskar7.ip=" + staticIP
 	}
 	bootifParam := ""
 	if bootif != "" {
 		bootifParam = " BOOTIF=" + bootif
 	}
 	return fmt.Sprintf(
-		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s%s\ninitrd %s/initrd.img\nboot\n",
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s%s%s\ninitrd %s/initrd.img\nboot\n",
 		inspectionImageURL,
 		apiBase,
 		namespace,
@@ -536,6 +604,7 @@ func buildBootIPXEScript(
 		targetDigest,
 		caB64,
 		diskParam,
+		staticIPParam,
 		bootifParam,
 		inspectionImageURL,
 	)

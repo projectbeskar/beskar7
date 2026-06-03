@@ -103,6 +103,36 @@ type Beskar7MachineSpec struct {
 	// +optional
 	TargetDisk string `json:"targetDisk,omitempty"`
 
+	// StaticIP pins a static IPv4 address on the provisioning NIC instead of
+	// DHCP. For use on DHCP-less or VLAN-pinned provisioning networks where no
+	// DHCP server is present (contract v3 §5 beskar7.ip, §8.2).
+	//
+	// Format: the kernel ip= subset "<ip>::<gw>:<mask>[:<dns>]" where:
+	//   - <ip>   dotted IPv4 (required)
+	//   - ::     always-empty server-IP field (two colons; required separator)
+	//   - <gw>   dotted IPv4 default gateway (optional; omit for a gateway-less net)
+	//   - <mask> dotted IPv4 netmask (255.255.255.0) or bare CIDR prefix (0–32)
+	//   - <dns>  dotted IPv4 resolver (optional)
+	//
+	// Examples:
+	//   "192.168.150.10::192.168.150.1:255.255.255.0"
+	//   "10.0.0.5:::24:8.8.8.8"
+	//
+	// When set, /boot renders this value as beskar7.ip=<value> on the inspector
+	// kernel cmdline; the inspector then configures the selected NIC statically
+	// and skips DHCP entirely. When empty, DHCP is used (the default).
+	//
+	// The inspector selects the NIC to configure by BOOTIF (if present on the
+	// cmdline), then falls back to its single NIC or the DHCP-race winner on
+	// multi-NIC hosts (§8.2). A multi-NIC host using beskar7.ip without BOOTIF
+	// is rejected by the inspector.
+	//
+	// Non-secret. The controller validates this field server-side at render time
+	// regardless of CRD admission (C-1a injection guard, SEC-7).
+	// +kubebuilder:validation:Pattern=`^([0-9]{1,3}\.){3}[0-9]{1,3}::(([0-9]{1,3}\.){3}[0-9]{1,3})?:(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9]{1,2})(:([0-9]{1,3}\.){3}[0-9]{1,3})?$`
+	// +optional
+	StaticIP *string `json:"staticIP,omitempty"`
+
 	// ConfigurationURL is an optional URL for OS-specific configuration.
 	// The inspection image will pass this to the target OS during kexec.
 	// +kubebuilder:validation:Pattern="^https?://.*"
@@ -224,6 +254,11 @@ func (in *Beskar7MachineSpec) DeepCopyInto(out *Beskar7MachineSpec) {
 	*out = *in
 	if in.ProviderID != nil {
 		in, out := &in.ProviderID, &out.ProviderID
+		*out = new(string)
+		**out = **in
+	}
+	if in.StaticIP != nil {
+		in, out := &in.StaticIP, &out.StaticIP
 		*out = new(string)
 		**out = **in
 	}
