@@ -1,0 +1,217 @@
+# Beskar7 — single-node Kairos k3s fixture (proven end-to-end)
+#
+# This file contains the exact CR structure validated on real bare-metal (a
+# libvirt VM with a Redfish-emulated BMC, contract v4, beskar7-inspector v4).
+# The full path — claim → PXE → inspection → Deploying → whole-disk write →
+# COS_OEM inject → /provisioned callback → Ready k3s node — was confirmed
+# working: the CAPI Machine advanced to Provisioned with ProviderID set and
+# the k3s node appeared Ready in kubectl get nodes.
+#
+# Replace every <...> placeholder with your actual values before applying.
+# See docs/ipxe-setup.md and docs/inspector-contract.md for prerequisites.
+#
+# Prerequisites:
+#   1. Beskar7 controller installed and --bootstrap-url-base set to an
+#      externally-reachable HTTPS address (see docs/ipxe-setup.md §beskar7.api).
+#   2. CAPI core controllers installed (cluster-api v1.10+).
+#   3. iPXE boot infrastructure operational (dnsmasq + dynamic boot service).
+#   4. Kairos k3s whole-disk raw image available at <target-image-url>.
+#      Compute the digest: sha256sum <image.raw>
+#   5. Inspector vmlinuz + initrd.img available at <inspection-image-url>.
+#
+# Usage:
+#   kubectl apply -f kairos-k3s-node.yaml
+#
+# After applying:
+#   kubectl -n <namespace> get machine <machine-name> -w
+#   # Watch phase advance: Pending -> Provisioning -> Provisioned
+#   # ProviderID will be set to b7://<namespace>/<host-name>
+
+---
+# Namespace — use your own or create one.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: <namespace>
+
+---
+# BMC credentials Secret. Must contain "username" and "password" keys.
+# The Redfish endpoint must expose exactly ONE System (use an allow-list on
+# sushy-tools if your emulator exposes multiple domains).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bmc-credentials
+  namespace: <namespace>
+type: Opaque
+stringData:
+  username: "<bmc-username>"
+  password: "<bmc-password>"
+
+---
+# Bootstrap Secret — a hand-authored Kairos #cloud-config.
+#
+# IMPORTANT: The controller delivers this Secret's "value" field byte-verbatim
+# to the inspector, which writes it byte-verbatim to 99_beskar7.yaml on the
+# image's COS_OEM partition. The value MUST be a valid Kairos #cloud-config or
+# the node will boot but not configure itself. The controller does not transcode
+# cloud-init/Ignition into Kairos format (D-014).
+#
+# The example below brings up a single-node k3s control-plane using Kairos's
+# native k3s integration. Adjust tls-san and node-ip to match your host's
+# provisioning-network address.
+#
+# Note on ProviderID / node association: k3s sets the Kubernetes Node's
+# ProviderID to "k3s://<nodename>" by default. CAPI matches the Machine to the
+# Node by ProviderID. To auto-associate, add
+#   --kubelet-arg=provider-id=b7://<namespace>/<host-name>
+# to the k3s args below. Without it, CAPI cannot match the Node to the Machine
+# and the Machine stays in Provisioned (infra ready) but the CAPI Machine never
+# advances to Running (node associated). This does not prevent the node from
+# working — it only affects the CAPI Machine status.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: <machine-name>-bootstrap
+  namespace: <namespace>
+type: Opaque
+stringData:
+  value: |
+    #cloud-config
+    hostname: <machine-name>
+    users:
+      - name: kairos
+        passwd: kairos
+        groups:
+          - admin
+    stages:
+      initramfs:
+        - name: sshd-passwordauth
+          files:
+            - path: /etc/ssh/sshd_config.d/99-lab.conf
+              permissions: "0644"
+              content: |
+                PasswordAuthentication yes
+      boot:
+        - name: enable-sshd
+          commands:
+            - systemctl enable --now sshd || systemctl enable --now ssh || true
+    k3s:
+      enabled: true
+      args:
+        - "--tls-san=<node-ip>"
+        - "--node-ip=<node-ip>"
+        # Uncomment to let CAPI auto-associate the Node with this Machine:
+        # - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
+
+---
+# PhysicalHost — one per bare-metal server.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: <host-name>
+  namespace: <namespace>
+spec:
+  redfishConnection:
+    # HTTP is acceptable for a co-located emulator (e.g. sushy-tools on the
+    # same host). Use HTTPS + caBundleSecretRef for production BMCs.
+    address: "http://<bmc-address>:<bmc-port>"
+    credentialsSecretRef: "bmc-credentials"
+    # insecureSkipVerify: true  # only for HTTPS BMCs without a trusted CA
+    # caBundleSecretRef:        # preferred over insecureSkipVerify for HTTPS BMCs
+    #   name: bmc-ca-bundle
+
+---
+# Beskar7Cluster — CAPI infra-cluster.
+# controlPlaneEndpoint is the address the k3s API will be reachable at.
+# For a single-node cluster this is typically the node's provisioning-network IP.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Cluster
+metadata:
+  name: <cluster-name>
+  namespace: <namespace>
+spec:
+  controlPlaneEndpoint:
+    host: "<node-ip>"
+    port: 6443
+
+---
+# CAPI Cluster — references the Beskar7Cluster.
+# No controlPlaneRef: there is no KubeadmControlPlane here. k3s management is
+# handled entirely by the Kairos cloud-config delivered via the bootstrap Secret.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: <cluster-name>
+  namespace: <namespace>
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["10.42.0.0/16"]
+    services:
+      cidrBlocks: ["10.43.0.0/16"]
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Beskar7Cluster
+    name: <cluster-name>
+
+---
+# CAPI Machine — standalone (no KubeadmControlPlane, no MachineDeployment).
+# spec.bootstrap.dataSecretName points directly to the bootstrap Secret above.
+# This is the validated, working pattern for a single-node Kairos k3s cluster.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: <machine-name>
+  namespace: <namespace>
+  labels:
+    cluster.x-k8s.io/cluster-name: <cluster-name>
+spec:
+  clusterName: <cluster-name>
+  version: v1.31.0
+  bootstrap:
+    dataSecretName: <machine-name>-bootstrap
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: Beskar7Machine
+    name: <machine-name>
+
+---
+# Beskar7Machine — the CAPI infra-machine that drives the provisioning loop.
+#
+# inspectionImageURL: HTTPS base URL serving the inspector vmlinuz + initrd.img.
+#   The controller renders: kernel {inspectionImageURL}/vmlinuz ...
+#                           initrd {inspectionImageURL}/initrd.img
+#
+# targetImageURL: URL of the Kairos k3s whole-disk raw image.
+#   Plain HTTP is acceptable; integrity comes from targetImageDigest.
+#   The image must contain a baked-in Kairos bootstrap agent (e.g. provider-k3s)
+#   that reads /oem/*.yaml on first boot. A plain Kairos image with no bootstrap
+#   agent will boot but silently ignore the injected cloud-config.
+#
+# targetImageDigest: sha256 of the exact bytes served at targetImageURL.
+#   Compute with: sha256sum <image.raw>
+#   Format: sha256:<64 hex chars>
+#
+# Optional fields:
+#   targetDisk: pin the install disk (e.g. /dev/disk/by-id/nvme-...).
+#               Omit to let the inspector auto-select the smallest eligible disk.
+#   staticIP:   static-network override for DHCP-less provisioning networks.
+#               Format: <ip>::[<gw>]:<mask>[:<dns>]  (see docs/inspector-contract.md §5)
+#   hardwareRequirements: gate provisioning on minimum CPU/memory/disk.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7Machine
+metadata:
+  name: <machine-name>
+  namespace: <namespace>
+  labels:
+    cluster.x-k8s.io/cluster-name: <cluster-name>
+spec:
+  inspectionImageURL: "https://<boot-server>/inspector"
+  targetImageURL: "http://<image-server>/kairos-k3s-<version>.raw"
+  targetImageDigest: "sha256:<sha256-of-the-image>"
+  # targetDisk: "/dev/disk/by-id/wwn-..."
+  hardwareRequirements:
+    minCPUCores: 2
+    minMemoryGB: 4
+    minDiskGB: 20

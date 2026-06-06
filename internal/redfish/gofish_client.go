@@ -376,8 +376,16 @@ func (c *gofishClient) ClearBootSourceOverride(ctx context.Context) error {
 		return fmt.Errorf("failed to get system to clear boot source override: %w", err)
 	}
 
+	// Clearing a boot override requires BOTH fields: Enabled=Disabled AND
+	// Target=None. Sending Enabled=Disabled alone is rejected by spec-strict
+	// Redfish implementations (sushy-tools returns
+	// "400: Missing the BootSourceOverrideTarget ... element"), which silently
+	// stranded the post-provision boot-to-disk transition (D-015 #2) and the
+	// release-path override clear. Target=None is the Redfish-canonical "no
+	// override" target and reverts the host to its normal boot order.
 	boot := redfish.Boot{
 		BootSourceOverrideEnabled: redfish.DisabledBootSourceOverrideEnabled,
+		BootSourceOverrideTarget:  redfish.NoneBootSourceOverrideTarget,
 	}
 	log.Info("Clearing boot source override")
 	if err := doWithCtx(ctx, func() error { return system.SetBoot(boot) }); err != nil {

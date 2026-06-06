@@ -51,10 +51,17 @@ const (
 	tokenBytes = 32
 
 	// TokenLifetime is the validity window applied at mint time per D-004.
-	// 30 minutes is comfortably above DefaultInspectionTimeout (10 min) and
-	// gives operators headroom for slow BIOS POST + first-boot inspector +
-	// bootstrap fetch.
-	TokenLifetime = 30 * time.Minute
+	// The same per-host bearer token authorizes the whole inspector run:
+	// inspection POST, bootstrap GET, AND (contract v4 / D-015) the
+	// provisioned POST that fires only after the whole-disk write + OEM inject.
+	// It must therefore outlive DefaultInspectionTimeout (10 min) + the OS
+	// deploy, bounded by DefaultDeploymentTimeout (20 min) — i.e. ~30 min in the
+	// worst case. 60 minutes keeps the token valid through that full span with
+	// headroom for slow BIOS POST and large images, so a slow-but-healthy deploy
+	// never sees the provisioned callback rejected as the token expires
+	// (SEC-D015-1). Keep TokenLifetime >= DefaultInspectionTimeout +
+	// DefaultDeploymentTimeout with margin if those defaults change.
+	TokenLifetime = 60 * time.Minute
 
 	// BootNonceLifetime is the validity window for per-host boot nonces (D-009).
 	// Shorter than TokenLifetime because the nonce is single-use and consumed at

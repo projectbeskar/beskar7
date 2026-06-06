@@ -43,6 +43,23 @@ const (
 	eventuallyInterval = "200ms"
 )
 
+// simulateProvisioned sets the ProvisionedRequestAnnotation on the host,
+// mimicking what the ProvisionedHandler writes when the inspector signals
+// OS deployment complete (D-015). The PhysicalHostReconciler's
+// applyProvisionedRequestAnnotation then consumes it and transitions the
+// host from Deploying to Ready.
+func simulateProvisioned(ctx context.Context, ns, hostName string) {
+	hostKey := client.ObjectKey{Namespace: ns, Name: hostName}
+	currentHost := &infrastructurev1beta1.PhysicalHost{}
+	Expect(mgr.GetClient().Get(ctx, hostKey, currentHost)).To(Succeed())
+	base := currentHost.DeepCopy()
+	if currentHost.Annotations == nil {
+		currentHost.Annotations = make(map[string]string)
+	}
+	currentHost.Annotations[controllers.ProvisionedRequestAnnotation] = "provisioned"
+	Expect(k8sClient.Patch(ctx, currentHost, client.MergeFrom(base))).To(Succeed())
+}
+
 // simulateInspector creates the inspection-result ConfigMap and sets the
 // InspectionResultAnnotation on the host, mimicking what the real HTTPS
 // callback server writes (locked-decision 2). The PhysicalHostReconciler's
@@ -149,13 +166,28 @@ var _ = Describe("Full provision flow", func() {
 		By("simulating the inspector: creating result ConfigMap and annotating the host")
 		simulateInspector(specCtx, ns.Name, host.Name)
 
-		By("waiting for PhysicalHostReconciler to consume the result (host → Ready)")
+		// D-015: inspection-complete now transitions to StateDeploying, not StateReady.
+		// The Beskar7Machine must not be Ready yet at this point.
+		By("waiting for PhysicalHostReconciler to consume the result (host → Deploying)")
 		Eventually(func(g Gomega) {
 			current := &infrastructurev1beta1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateReady))
+			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateDeploying),
+				"inspect-complete must land in Deploying, not Ready (D-015)")
 			g.Expect(current.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseComplete))
 			g.Expect(current.Status.InspectionReport).NotTo(BeNil())
+			g.Expect(current.Status.DeployingTimestamp).NotTo(BeNil())
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
+		By("simulating the inspector provisioned callback (OS image written, host rebooted)")
+		simulateProvisioned(specCtx, ns.Name, host.Name)
+
+		By("waiting for PhysicalHostReconciler to consume provisioned signal (host → Ready)")
+		Eventually(func(g Gomega) {
+			current := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
+			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateReady),
+				"provisioned callback must drive Deploying→Ready (D-015)")
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("waiting for Beskar7Machine to reach Ready=true with ProviderID set")
@@ -301,8 +333,15 @@ var _ = Describe("Delete and release", func() {
 			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
-		By("simulating the inspector to advance machine to Ready/Provisioned")
+		By("simulating the inspector: inspection result + provisioned callback (D-015 two-step)")
 		simulateInspector(specCtx, ns.Name, host.Name)
+		// Wait for Deploying before sending the provisioned callback.
+		Eventually(func(g Gomega) {
+			current := &infrastructurev1beta1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
+			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateDeploying))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+		simulateProvisioned(specCtx, ns.Name, host.Name)
 
 		By("waiting for Beskar7Machine to reach Ready=true (ProviderID set)")
 		Eventually(func(g Gomega) {

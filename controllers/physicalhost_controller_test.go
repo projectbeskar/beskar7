@@ -210,7 +210,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 		// The original test directly mutated PhysicalHost.Status which is no longer valid.
 		// This version verifies the annotation-based inspection signalling introduced by PR-2.1:
 		// when the InspectionRequestAnnotation is set to "inspect", the reconciler transitions
-		// state and clears the annotation; "inspect-complete" transitions to StateReady.
+		// state and clears the annotation; "inspect-complete" transitions to StateDeploying (D-015).
 		It("Should apply inspection-request annotation and drive state transitions", func() {
 			By("Creating the PhysicalHost resource and making it Available")
 			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
@@ -265,16 +265,21 @@ var _ = Describe("PhysicalHost Controller", func() {
 			ph2Patch.Annotations[InspectionRequestAnnotation] = "inspect-complete"
 			Expect(k8sClient.Patch(ctx, ph2Patch, client.MergeFrom(ph2))).To(Succeed())
 
-			By("Reconciling — controller should transition to StateReady")
+			// D-015: inspect-complete now transitions to StateDeploying, not StateReady.
+			// StateReady is only reached after the provisioned callback.
+			By("Reconciling — controller should transition to StateDeploying (D-015)")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				got := &infrastructurev1beta1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateReady))
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateDeploying),
+					"inspect-complete must land in Deploying, not Ready (D-015)")
 				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeTrue())
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+				g.Expect(got.Status.DeployingTimestamp).NotTo(BeNil(),
+					"DeployingTimestamp must be set on Deploying entry")
 			}, Timeout, Interval).Should(Succeed())
 		})
 

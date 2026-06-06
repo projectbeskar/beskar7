@@ -114,8 +114,8 @@ func TestLifetimeFor(t *testing.T) {
 	if !issued.Time.Equal(now) {
 		t.Errorf("IssuedAt = %v, want %v", issued.Time, now)
 	}
-	if expires.Sub(now) != 30*time.Minute {
-		t.Errorf("ExpiresAt - IssuedAt = %v, want 30m", expires.Sub(now))
+	if expires.Sub(now) != TokenLifetime {
+		t.Errorf("ExpiresAt - IssuedAt = %v, want %v", expires.Sub(now), TokenLifetime)
 	}
 }
 

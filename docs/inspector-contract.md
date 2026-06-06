@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v3`**
+**Contract version: `v4`**
 
 This document is the single source of truth for the wire contract between the
 Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
@@ -9,11 +9,14 @@ change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#versioning-and-anti-drift)).
 
-> **v3 in one line:** un-reserves the optional `beskar7.ip` kernel cmdline
-> parameter and adds the matching `Beskar7Machine.Spec.StaticIP` CRD field plus
-> its `/boot` render. The inspection report schema (§6) and the v2 whole-disk
-> deploy flow are **unchanged**. See [Version history](#101-version-history) for
-> the full delta.
+> **v4 in one line:** adds a provisioning-complete callback —
+> `POST /api/v1/provisioned/{ns}/{host}` — that the inspector calls after the
+> verified whole-disk write and `COS_OEM` inject, and before `reboot(2)`. This
+> signal drives a new `StateDeploying` phase on the host and moves `ProviderID` /
+> `Ready` / `Initialization.Provisioned` onto the provisioned signal instead of
+> the inspection signal. The inspection report schema (§6), the golden fixture,
+> and all v3 cmdline parameters are **unchanged**. See
+> [Version history](#101-version-history) for the full delta.
 
 Requirement keywords (MUST, MUST NOT, SHOULD, MAY) are used per RFC 2119.
 
@@ -60,26 +63,37 @@ inspector ramdisk (on the host) — Phase 1: enroll & inspect (always)
   ├─ select target disk
   └─ POST report  → {api}/api/v1/inspection/{ns}/{host}   (Bearer token, TLS-verified)  → 202
   │
+controller
+  └─ host → StateDeploying  (PhysicalHost reconciler on inspection-complete signal)
+  │
 inspector ramdisk — Phase 2: provision (when bootstrap data is available)
   ├─ GET bootstrap → {api}/api/v1/bootstrap/{ns}/{host}    (Bearer token, TLS-verified)  → user-data
   ├─ download beskar7.target (plain HTTP) → verify sha256 == beskar7.target-digest
   ├─ write the whole-disk image to the selected target disk (dd-equivalent)
   ├─ re-read the partition table; mount the image's COS_OEM partition
   ├─ inject a per-host cloud-config embedding the fetched user-data into COS_OEM
-  └─ sync, unmount, reboot(2) → host firmware boots the provisioned OS
+  ├─ sync, unmount — zero the in-memory user-data
+  ├─ POST provisioned → {api}/api/v1/provisioned/{ns}/{host}  (Bearer token, TLS-verified)  → 202
+  └─ reboot(2) → host firmware boots the provisioned OS
   │
 controller
-  └─ host → StateReady, Beskar7Machine.Spec.ProviderID set, Ready=true
+  └─ host → StateReady, Beskar7Machine.Spec.ProviderID set, Ready=true,
+            Initialization.Provisioned=true, ClearBootSourceOverride called
 ```
 
-**Success signal is out-of-band.** The inspector reboots and is gone before the OS
-finishes booting; it does **not** report "provisioning succeeded" — no such
-callback exists in this contract, by design. The final controller-side transition
-(`StateReady` / `ProviderID` / `Ready=true`) is driven by inspection completing,
-and the *real* proof the host provisioned correctly is the node registering with
-the management cluster via the injected join secret (CAPI's normal node-join path,
-matching the Metal³ posture). A host-reported provisioning-success/liveness signal
-is explicitly **out of scope** for v2 (see §11).
+**Success signal is in-band (v4).** The inspector POSTs
+`/api/v1/provisioned/{ns}/{host}` immediately after the verified write and
+`COS_OEM` inject succeed and before `reboot(2)`. This is the controller's signal
+that OS deployment completed. The controller sets `StateReady` / `ProviderID` /
+`Status.Ready=true` / `Status.Initialization.Provisioned=true` only upon
+receiving this signal — not at inspection completion. A deployment-timeout guard
+(`--deployment-timeout`, default 20 min) converts a silent abort into a terminal
+`DeploymentTimedOut` failure.
+
+The *real* proof the host joined the workload cluster correctly is the CAPI
+`Machine` advancing to `Running` — that requires the Kubernetes node to appear
+in `kubectl get nodes` with its `ProviderID` matching `b7://<namespace>/<name>`.
+This remains out-of-band from the controller's perspective.
 
 ---
 
@@ -90,7 +104,7 @@ Two distinct per-host secrets, by design (decision D-009). Do not conflate them.
 | Secret | Gates | Lifetime | Reuse | Delivered to host via |
 |---|---|---|---|---|
 | **Boot nonce** | `GET /api/v1/boot/...` | ~10 min | **single-use** | the operator's iPXE script URL (the nonce IS the capability) |
-| **Bearer token** | `POST /inspection`, `GET /bootstrap` | 30 min (`auth.TokenLifetime`) | multi-use | rendered into the kernel cmdline by `/boot` |
+| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned` | 60 min (`auth.TokenLifetime`) | multi-use | rendered into the kernel cmdline by `/boot` |
 
 The booting host holds no bearer token, so the endpoint that *hands out* the
 bearer token (`/boot`) cannot itself be bearer-gated. The boot nonce breaks that
@@ -107,7 +121,7 @@ and in host memory. See `internal/auth/token.go` for the primitives.
 
 ## 4. Endpoints
 
-All three endpoints are served by the controller's callback server on a single
+All four endpoints are served by the controller's callback server on a single
 HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 `SetupCallbackServer`). TLS is mandatory on all of them.
 
@@ -197,6 +211,32 @@ gatewayed winner on a multi-NIC host (§8.2).
 - **Failure**: opaque `404` for every resolution-chain failure (host → ConsumerRef
   → Beskar7Machine → owner Machine → `Spec.Bootstrap.DataSecretName` → Secret);
   `500` only for an oversize secret.
+
+### 4.4 `POST /api/v1/provisioned/{namespace}/{hostName}` — provisioning-complete signal
+
+Added in v4 (D-015). The inspector calls this endpoint after the verified
+whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
+
+- **Auth**: `Authorization: Bearer <token>`; same per-host bearer token as §4.2
+  and §4.3.
+- **Body**: advisory JSON `{"status":"provisioned"}` (~22 bytes). The body content
+  is informational only — the authenticated POST itself is the signal. The
+  controller reads and discards the body (capped at 64 KiB). A missing or
+  non-JSON body does not cause a rejection.
+- **Success**: **`202 Accepted`** with body `{"status":"accepted"}`.
+- **Failure**: opaque `500` on internal error. The inspector MUST treat a non-202
+  response as a failure that **propagates as an error** (not silently continues to
+  reboot); a `401`/`403` means the token expired during a long deploy and the
+  controller must re-drive the host.
+- **Controller action**: patches `ProvisionedRequestAnnotation="provisioned"` onto
+  the `PhysicalHost` metadata. The `PhysicalHostReconciler` reads this, transitions
+  `State` from `StateDeploying` to `StateReady`, and clears the annotation. This
+  handler does NOT write `PhysicalHost.Status` directly (D-005 invariant).
+
+The inspector MUST call this endpoint after zeroing the in-memory user-data buffer
+and before `reboot(2)`. After the reboot the inspector is gone; a silent reboot
+would leave the controller unable to confirm that OS deployment completed and the
+host would eventually fail with `DeploymentTimedOut`.
 
 ---
 
@@ -303,7 +343,7 @@ evaluate correctly:
 
 ## 8. TLS and reachability
 
-- **All three endpoints are HTTPS-only.** The inspector MUST verify the callback
+- **All four endpoints are HTTPS-only.** The inspector MUST verify the callback
   server's certificate against the CA delivered inline via `beskar7.ca`.
   The inspector MUST NOT offer or use an insecure-skip-verify option for the
   inspection POST or bootstrap GET — those carry/return cluster join secrets and a
@@ -523,32 +563,42 @@ The inspector MUST:
       `nodev,nosuid,noexec` and write the fetched user-data as a single **numbered
       Kairos cloud-config file**, `99_beskar7.yaml`, on it. The `99_` prefix orders it
       after the image's baked-in OEM configs so the per-host config takes precedence.
-      The file content MUST be a valid Kairos cloud-config; v2 assumes the CAPI
-      bootstrap provider emits Kairos-compatible cloud-config (the `#cloud-config` +
-      `stages`/`write_files` shape), so the inspector **places** the user-data rather
-      than transcoding it (transforming arbitrary cloud-init/Ignition is a §11
-      follow-up). The user-data MUST be written **only** to the verified target
+      The file content MUST be a valid Kairos cloud-config; the bootstrap Secret's
+      `data["value"]` is placed byte-verbatim and MUST already be a valid Kairos
+      `#cloud-config` (D-014 — see §11 for the closed design note). The inspector
+      **places** the user-data rather than transcoding it. The user-data MUST be written **only** to the verified target
       `COS_OEM` partition — never to the ramdisk's durable storage or logs — and the
       written file MUST be root-owned with mode `0600`.
    4. `fsync` the written file **and** its containing directory, unmount the `COS_OEM`
-      partition, **zero the in-memory user-data buffer**, then `reboot(2)`. The
-      `COS_OEM` partition MUST be unmounted before `reboot(2)` on every path. The host
-      firmware boots the provisioned OS; Kairos applies the injected config on first
-      boot. (`kexec` is an optional future speed optimization — see §11 — not a
-      contract requirement.)
-   5. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
-      `fsync`, or a later abort), the inspector MUST remove the partial
-      `99_beskar7.yaml` and unmount `COS_OEM` before dropping to the debug shell or
-      rebooting — it MUST NOT leave the join secret on a mounted-then-abandoned
-      partition or in the partial file. The user-data buffer MUST still be zeroed on
-      this path.
-6. Never log the bearer token, the nonce, the cmdline, or the bootstrap/user-data
+      partition, and **zero the in-memory user-data buffer**. The `COS_OEM` partition
+      MUST be unmounted and the user-data buffer MUST be zeroed before the provisioned
+      callback fires.
+   5. `POST` the provisioning-complete callback to
+      `{api}/api/v1/provisioned/{ns}/{host}` with the same bearer token over
+      verified TLS (§4.4). Treat **202** as success; treat any other response as a
+      fatal error that MUST NOT proceed to `reboot(2)`. A retry loop SHOULD NOT be
+      used here: the deploy is already committed at this point and the only question
+      is whether the controller was informed. A non-202 typically means the token
+      has expired (§3) or the controller is unreachable; both require the controller
+      to re-drive the host rather than an automatic retry.
+   6. `reboot(2)`. The `COS_OEM` partition MUST be unmounted before `reboot(2)` on
+      every path. The host firmware boots the provisioned OS; Kairos applies the
+      injected config on first boot. (`kexec` is an optional future speed
+      optimization — see §11 — not a contract requirement.)
+   7. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
+      `fsync`, or the provisioned callback, or a later abort), the inspector MUST
+      remove the partial `99_beskar7.yaml` and unmount `COS_OEM` before dropping to
+      the debug shell or rebooting — it MUST NOT leave the join secret on a
+      mounted-then-abandoned partition or in the partial file. The user-data buffer
+      MUST still be zeroed on this path.
+7. Never log the bearer token, the nonce, the cmdline, or the bootstrap/user-data
    bytes. The inspector MUST NOT let the bearer token or the user-data/join secret
    reach swap or any durable medium: the ramdisk MUST run swapless, or the inspector
    MUST `mlock` and zero those buffers.
-7. Provide a `--dry-run` / report-only mode that performs steps 1–3 (Phase 1) and
-   then exits **without** fetching bootstrap data, writing any disk, or rebooting
-   (for CI without real firmware or a real target disk).
+8. Provide a `--dry-run` / report-only mode that performs steps 1–3 (Phase 1) and
+   then exits **without** fetching bootstrap data, writing any disk, POSTing the
+   provisioned callback, or rebooting (for CI without real firmware or a real
+   target disk).
 
 ### 9.2 Phase 1 → Phase 2 transition (bootstrap readiness)
 
@@ -612,6 +662,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v1** | Initial frozen contract: boot-nonce + bearer-token two-secret trust model, three HTTPS endpoints (`/boot`, `/inspection`, `/bootstrap`), §6 inspection report schema + golden fixture, inline `beskar7.ca`. Handoff was **kexec into `beskar7.target`** (a kernel+initrd image). |
 | **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the CRD delta is **implemented** in this repo — the required `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest`, plus the optional `Beskar7Machine.Spec.TargetDisk` field and its `beskar7.disk` render. The inspector deploy path (§9.1 step 5) is a new, separately-tested drift surface (§10). |
 | **v3** | **Static-network override — §6 report schema and golden fixture unchanged.** Un-reserves the optional `beskar7.ip` cmdline param (§5): adds `Beskar7Machine.Spec.StaticIP` (optional `*string`, CRD validation pattern for the `<ip>::[<gw>]:<mask>[:<dns>]` shape); `/boot` renders `beskar7.ip=<value>` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set. The inspector configures the selected NIC statically and skips DHCP when `beskar7.ip` is present; a multi-NIC host with `beskar7.ip` and no `BOOTIF` is rejected. Handler-side `validateStaticIP` / `formatStaticIP` guard (C-1a, SEC-7 omit-on-invalid) mirrors `formatBootif`. **No inspector report-code or fixture change.** The v2 whole-disk deploy flow (§9.1 steps 4–5) is unchanged. |
+| **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
 
 ---
 
@@ -656,21 +707,32 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   a `cidata` ISO / config-drive partition instead of `COS_OEM`) is a future
   variant and would be a contract bump, as it changes how the per-host user-data
   is injected.
-- **Non-Kairos bootstrap user-data → Kairos-config transcoding** (open design): v2
-  fixes the injection *mechanism* — the inspector writes the fetched user-data as a
-  numbered Kairos cloud-config (`99_beskar7.yaml`) on `COS_OEM` (§9.1 step 5.3) — and
-  assumes a Kairos "standard" (k3s/k0s-baked) image paired with a bootstrap provider
-  that emits Kairos-compatible cloud-config. Transcoding raw cloud-init/Ignition from
-  a generic CAPI bootstrap provider into Kairos stages is **not** done in v2; pairing
-  Beskar7 with a Kairos-native bootstrap provider must be validated before the
-  end-to-end join path is claimed working.
-- **Provisioning-failure recovery** (open design, controller-side): §8.1 covers the
-  digest-mismatch abort, but the contract does not yet specify how a host that
-  fails *after* a successful inspection — `dd` write error, `COS_OEM` mount/inject
-  failure, or an image that writes cleanly but never boots into a joining node — is
-  detected and re-driven. The inspector is stateless across reboots (§9.2), so
-  recovery is necessarily controller-side: an inspection/provisioning-timeout that
-  re-mints a fresh nonce + token (§7) and re-PXEs, or operator delete/recreate.
-  Because the success signal is out-of-band (§2), the controller's only handle on
-  "provisioned but not joining" is a timeout — its bound and the retry policy are
-  unspecified in v2 and must be defined before GA.
+- **CAPI-bootstrap → Kairos-config format mapping** (closed, D-014): the
+  controller's `/bootstrap` endpoint and the inspector's `COS_OEM` inject are
+  **byte-verbatim** — Beskar7 never inspects or transcodes the CAPI bootstrap
+  Secret's `data["value"]` bytes. Those bytes are written as-is to `99_beskar7.yaml`
+  on `COS_OEM`. The Secret MUST therefore already be a valid **Kairos
+  `#cloud-config`** carrying the cluster-join directives. Format mapping is the
+  bootstrap provider's (or the in-image Kairos agent's) responsibility, not
+  Beskar7's. Two deployment patterns:
+  - **Standalone / k3s (validated)**: hand-author a Kairos `#cloud-config` Secret
+    with the `k3s:` stanza and reference it via `Machine.Spec.Bootstrap.DataSecretName`.
+    See `examples/kairos-k3s-node.yaml` for a proven example.
+  - **Production (Kairos bootstrap provider)**: use a maintained Kairos bootstrap
+    provider (e.g. `provider-kubeadm` baked into the Kairos image, or
+    `cluster-api-provider-kairos`) that emits Kairos-compatible cloud-config. Not
+    yet validated against Beskar7 end-to-end; treat as the *production* direction
+    rather than a confirmed working path.
+- **Provisioning-failure recovery** (partially closed, v4): §8.1 covers the
+  digest-mismatch abort, and v4 adds a `--deployment-timeout` (default 20 min,
+  measured from `PhysicalHost.Status.DeployingTimestamp`) that converts a silent
+  deploy abort into a terminal `DeploymentTimedOut` on the `Beskar7Machine`. An
+  inspector that fails after the disk write but before the provisioned callback —
+  `COS_OEM` mount/inject failure, network partition, provisioned-POST failure —
+  will time out at the controller and be re-driven (re-PXE, fresh nonce/token, §7).
+  An image that writes and injects cleanly but never boots into a joining Kubernetes
+  node is still a timeout at the CAPI level (the `Machine` stays `Pending` until
+  the node registers with `ProviderID=b7://...`). The exact retry policy and
+  node-join timeout are not specified in v4 and must be defined before GA. A v4.1
+  fast-follow may add `POST /api/v1/provision-failed` so a *failed* deploy is
+  reported promptly instead of waiting out the deployment-timeout (planned).

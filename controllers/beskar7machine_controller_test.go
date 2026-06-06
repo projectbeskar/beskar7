@@ -24,6 +24,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	"github.com/projectbeskar/beskar7/internal/auth"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
@@ -745,6 +746,157 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("timeout"))
 			})
 		})
+
+		// Regression test for the reordering fix: a Complete inspection whose
+		// reconcile fires after the timeout window must NOT be marked
+		// InspectionTimedOut — success must always win over the timeout check.
+		Context("inspection Complete but InspectionTimestamp older than timeout", func() {
+			It("Should advance to validateInspectionReport and NOT mark InspectionTimedOut", func() {
+				machine := &infrastructurev1beta1.Beskar7Machine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "late-complete-target",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
+						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+						TargetImageDigest:  bootTestDigest,
+					},
+				}
+				// Host: InspectionPhase=Complete, but timestamp is 2× past the timeout.
+				// Before the fix, this would have fired the timeout branch first.
+				// Persist the host so setInspectionRequestAnnotation can patch it
+				// (OptimisticLock requires a server-assigned resource version).
+				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
+				host := &infrastructurev1beta1.PhysicalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "late-complete-host",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.PhysicalHostSpec{
+						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+							Address:              "https://192.168.1.100",
+							CredentialsSecretRef: credentialSecret.Name,
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, host)).To(Succeed())
+				host.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
+				host.Status.InspectionTimestamp = &old
+				// Provide a minimal report so validateInspectionReport can proceed.
+				host.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
+					Timestamp: metav1.Now(),
+				}
+				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+
+				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred())
+				// validateInspectionReport returns Requeue=true on success; at minimum
+				// the machine must NOT be terminally failed.
+				Expect(machine.Status.FailureReason).To(BeNil(),
+					"Complete inspection must never be marked InspectionTimedOut, even when the timestamp is past the timeout window")
+				Expect(machine.Status.FailureMessage).To(BeNil())
+				// Confirm the success path was taken: the annotation must have been set.
+				patchedHost := &infrastructurev1beta1.PhysicalHost{}
+				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
+				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("inspect-complete"))
+				// result carries Requeue=true from the success path (not zero from a terminal failure).
+				Expect(result.Requeue).To(BeTrue())
+			})
+		})
+
+		// New terminal branch: InspectionPhaseFailed must produce a terminal failure
+		// with InspectionFailedReason.
+		Context("inspection phase Failed terminal failure", func() {
+			It("Should mark Beskar7Machine terminally Failed when PhysicalHost inspection phase is Failed", func() {
+				machine := &infrastructurev1beta1.Beskar7Machine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "failed-inspection-target",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
+						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+						TargetImageDigest:  bootTestDigest,
+					},
+				}
+				host := &infrastructurev1beta1.PhysicalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "failed-inspection-host",
+						Namespace: testNs.Name,
+					},
+					Status: infrastructurev1beta1.PhysicalHostStatus{
+						InspectionPhase: infrastructurev1beta1.InspectionPhaseFailed,
+					},
+				}
+
+				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
+				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
+
+				Expect(machine.Status.FailureReason).NotTo(BeNil())
+				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionFailedReason))
+				Expect(machine.Status.FailureMessage).NotTo(BeNil())
+				Expect(*machine.Status.FailureMessage).NotTo(BeEmpty())
+				Expect(machine.Status.Ready).To(BeFalse())
+				Expect(machine.Status.Phase).NotTo(BeNil())
+				Expect(*machine.Status.Phase).To(Equal("Failed"))
+
+				cond := conditions.Get(machine, infrastructurev1beta1.InfrastructureReadyCondition)
+				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
+				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				Expect(cond.Reason).To(Equal(infrastructurev1beta1.InspectionFailedReason))
+				Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
+			})
+		})
+
+		// Preserve existing behavior: still-in-progress past the timeout must be
+		// marked InspectionTimedOut (the timeout check still fires for non-terminal phases).
+		Context("inspection still in progress past timeout", func() {
+			It("Should mark Beskar7Machine terminally Failed with InspectionTimedOut when in-progress inspection times out", func() {
+				machine := &infrastructurev1beta1.Beskar7Machine{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "inprogress-timeout-target",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
+						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
+						TargetImageDigest:  bootTestDigest,
+					},
+				}
+				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
+				host := &infrastructurev1beta1.PhysicalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "inprogress-timeout-host",
+						Namespace: testNs.Name,
+					},
+					Spec: infrastructurev1beta1.PhysicalHostSpec{
+						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+							Address:              "https://192.168.1.100",
+							CredentialsSecretRef: credentialSecret.Name,
+						},
+					},
+				}
+				// Persist the host so setInspectionRequestAnnotation can patch it.
+				Expect(k8sClient.Create(ctx, host)).To(Succeed())
+				host.Status.State = infrastructurev1beta1.StateInspecting
+				host.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseInProgress
+				host.Status.InspectionTimestamp = &old
+				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+
+				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
+				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
+				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
+
+				Expect(machine.Status.FailureReason).NotTo(BeNil())
+				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionTimedOutReason))
+				Expect(machine.Status.FailureMessage).NotTo(BeNil())
+				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
+				Expect(machine.Status.Ready).To(BeFalse())
+				Expect(*machine.Status.Phase).To(Equal("Failed"))
+			})
+		})
 	})
 })
 
@@ -1380,8 +1532,8 @@ var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func(
 		Expect(value.Hash).To(HaveLen(64), "hash must be hex-encoded sha256 (64 chars)")
 		Expect(value.ExpiresAt.Time.After(value.IssuedAt.Time)).To(BeTrue(),
 			"expiresAt must be after issuedAt")
-		Expect(value.ExpiresAt.Time.Sub(value.IssuedAt.Time)).To(BeNumerically("~", 30*time.Minute, time.Second),
-			"lifetime must match auth.TokenLifetime (30 min)")
+		Expect(value.ExpiresAt.Time.Sub(value.IssuedAt.Time)).To(BeNumerically("~", auth.TokenLifetime, time.Second),
+			"lifetime must match auth.TokenLifetime")
 
 		// Annotation must NOT contain the plaintext.
 		Expect(strings.Contains(raw, string(getSecretPlaintext(ctx, physicalHost.Namespace, secretName)))).To(BeFalse(),

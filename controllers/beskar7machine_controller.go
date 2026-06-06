@@ -57,8 +57,18 @@ const (
 	// InfrastructureAPIVersion for owner references
 	InfrastructureAPIVersion = "infrastructure.cluster.x-k8s.io/v1beta1"
 
-	// Inspection timeout
+	// DefaultInspectionTimeout is the default bound on the Inspecting phase.
 	DefaultInspectionTimeout = 10 * time.Minute
+
+	// DefaultDeploymentTimeout is the default bound on the Deploying phase (D-015).
+	// Deploying encompasses the inspector writing a multi-GB OS image to disk, so
+	// the default is larger than the inspection timeout. Operators with fast storage
+	// or very small images may lower it; operators with slow links should raise it.
+	DefaultDeploymentTimeout = 20 * time.Minute
+
+	// DeploymentTimedOutReason is the FailureReason set when a host stays in
+	// StateDeploying longer than the configured deployment timeout (D-015).
+	DeploymentTimedOutReason = "DeploymentTimedOut"
 
 	// ForceReleaseAnnotation, when set to "true" on a Beskar7Machine being deleted,
 	// causes the controller to skip the Redfish power-off and boot-override clear
@@ -88,6 +98,10 @@ type Beskar7MachineReconciler struct {
 	// DefaultInspectionTimeout. Set from the --inspection-timeout manager flag so
 	// operators with slow-POST hardware can raise it.
 	InspectionTimeout time.Duration
+	// DeploymentTimeout bounds how long a host may stay in Deploying before the
+	// machine is marked terminally failed (DeploymentTimedOut, D-015). Zero means
+	// use DefaultDeploymentTimeout. Set from the --deployment-timeout manager flag.
+	DeploymentTimeout time.Duration
 }
 
 // inspectionTimeout returns the configured inspection timeout, falling back to
@@ -98,6 +112,16 @@ func (r *Beskar7MachineReconciler) inspectionTimeout() time.Duration {
 		return r.InspectionTimeout
 	}
 	return DefaultInspectionTimeout
+}
+
+// deploymentTimeout returns the configured deployment timeout (D-015), falling back
+// to DefaultDeploymentTimeout when unset (zero). Guards against a zero-value field
+// that would otherwise time out every deployment instantly.
+func (r *Beskar7MachineReconciler) deploymentTimeout() time.Duration {
+	if r.DeploymentTimeout > 0 {
+		return r.DeploymentTimeout
+	}
+	return DefaultDeploymentTimeout
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines,verbs=get;list;watch;create;update;patch;delete
@@ -262,9 +286,14 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	switch physicalHost.Status.State {
 	case infrastructurev1beta1.StateReady:
-		// Inspection complete and validated, host ready for final provisioning
-		logger.Info("PhysicalHost inspection complete and ready")
+		// OS deployment complete (provisioned callback received); set ProviderID + Ready.
+		logger.Info("PhysicalHost deployment complete and ready")
 		return r.handleReadyHost(ctx, logger, b7machine, physicalHost)
+
+	case infrastructurev1beta1.StateDeploying:
+		// Inspector is writing the OS image; monitor for completion or timeout (D-015).
+		logger.Info("PhysicalHost OS deployment in progress")
+		return r.handleDeployingHost(ctx, logger, b7machine, physicalHost)
 
 	case infrastructurev1beta1.StateInspecting:
 		// Inspection in progress
@@ -714,12 +743,34 @@ func (r *Beskar7MachineReconciler) setBootNonceAnnotation(
 // handleInspectingHost monitors the inspection phase.
 // On timeout it signals the PhysicalHost controller via annotation rather than
 // writing to PhysicalHost.Status directly (BUG-1 fix).
+//
+// Evaluation order matters: terminal/complete states are checked before the
+// timeout so that an inspection that actually completed is never spuriously
+// marked InspectionTimedOut just because the reconcile fires after the timeout
+// window.
 func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Monitoring inspection phase", "inspectionPhase", physicalHost.Status.InspectionPhase)
 
-	// Check for timeout. Inspection timeout is terminal: we cannot recover
-	// automatically — the operator must investigate (likely an iPXE
-	// misconfiguration or unreachable callback endpoint) and either
+	// 1. Inspection succeeded — validate the report. The timeout must NOT fire
+	// once a report is in: validateInspectionReport is bounded and idempotent.
+	if physicalHost.Status.InspectionPhase == infrastructurev1beta1.InspectionPhaseComplete {
+		logger.Info("Inspection complete, validating")
+		return r.validateInspectionReport(ctx, logger, b7machine, physicalHost)
+	}
+
+	// 2. Inspection hard-failed on the host side (inspector booted but reported
+	// an error). Terminal: operator must investigate the PhysicalHost status.
+	if physicalHost.Status.InspectionPhase == infrastructurev1beta1.InspectionPhaseFailed {
+		msg := fmt.Sprintf("PhysicalHost %s/%s reported inspection failure; inspect PhysicalHost status for details",
+			physicalHost.Namespace, physicalHost.Name)
+		logger.Info("Inspection failed (terminal)", "host", physicalHost.Name)
+		r.markTerminalFailure(b7machine, infrastructurev1beta1.InspectionFailedReason, msg)
+		return ctrl.Result{}, nil
+	}
+
+	// 3. Still in progress — check for timeout. Inspection timeout is terminal:
+	// we cannot recover automatically — the operator must investigate (likely an
+	// iPXE misconfiguration or unreachable callback endpoint) and either
 	// delete-and-recreate the Beskar7Machine or fix the iPXE setup.
 	if physicalHost.Status.InspectionTimestamp != nil {
 		timeout := r.inspectionTimeout()
@@ -738,14 +789,42 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 		}
 	}
 
-	// Check if inspection is complete
-	if physicalHost.Status.InspectionPhase == infrastructurev1beta1.InspectionPhaseComplete {
-		logger.Info("Inspection complete, validating")
-		return r.validateInspectionReport(ctx, logger, b7machine, physicalHost)
-	}
-
 	phase := "Inspecting"
 	b7machine.Status.Phase = &phase
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// handleDeployingHost monitors the Deploying phase (D-015).
+//
+// The host is in StateDeploying when the inspector is writing the OS image to disk.
+// We requeue every 30 s and enforce a deployment timeout (--deployment-timeout, default
+// 20 m) measured from PhysicalHost.Status.DeployingTimestamp. A timeout is terminal:
+// the operator must investigate (e.g. the image URL is unreachable, the disk failed).
+//
+// The transition to StateReady is driven by the provisioned callback handler setting
+// ProvisionedRequestAnnotation, which the PhysicalHostReconciler consumes and applies.
+// This function does NOT set StateReady — it only waits for it.
+func (r *Beskar7MachineReconciler) handleDeployingHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
+	logger.Info("Monitoring deployment phase", "deployingTimestamp", physicalHost.Status.DeployingTimestamp)
+
+	// Enforce the deployment timeout measured from the DeployingTimestamp recorded by
+	// the PhysicalHost controller when it processed the inspect-complete annotation.
+	if physicalHost.Status.DeployingTimestamp != nil {
+		timeout := r.deploymentTimeout()
+		elapsed := time.Since(physicalHost.Status.DeployingTimestamp.Time)
+		if elapsed > timeout {
+			logger.Info("Deployment timed out (terminal)", "elapsed", elapsed, "timeout", timeout)
+			msg := fmt.Sprintf("OS deployment did not complete within %s", timeout)
+			r.markTerminalFailure(b7machine, DeploymentTimedOutReason, msg)
+			return ctrl.Result{}, nil
+		}
+	}
+
+	phase := "Provisioning"
+	b7machine.Status.Phase = &phase
+	conditions.MarkFalse(b7machine, infrastructurev1beta1.InfrastructureReadyCondition,
+		infrastructurev1beta1.PhysicalHostNotReadyReason, clusterv1.ConditionSeverityInfo,
+		"PhysicalHost %q is deploying OS image", physicalHost.Name)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
@@ -859,6 +938,22 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	b7machine.Status.Phase = &phase
 
 	if firstProvisioning {
+		// Clear the PXE boot-source override so the host boots from disk on the
+		// next power-on (D-015 / issue #2). The inspector already rebooted into
+		// the provisioned OS; this is belt-and-suspenders for firmwares that don't
+		// consume Once correctly. Best-effort: log on error, don't fail the reconcile.
+		rfClient, rfErr := r.getRedfishClientForHost(ctx, logger, physicalHost)
+		if rfErr != nil {
+			logger.Info("Could not get Redfish client to clear boot override; skipping", "err", rfErr)
+		} else {
+			if err := rfClient.ClearBootSourceOverride(ctx); err != nil {
+				logger.Info("Failed to clear boot source override on first provisioning; continuing", "err", err)
+			} else {
+				logger.V(1).Info("Cleared boot source override after first provisioning")
+			}
+			rfClient.Close(ctx)
+		}
+
 		internalmetrics.RecordBeskar7MachineProvisioning(
 			b7machine.Namespace,
 			internalmetrics.ProvisioningOutcomeSuccess,

@@ -81,6 +81,15 @@ type BootstrapTokenAnnotationValue struct {
 // BootstrapTokenAnnotation. Value is a JSON encoding of BootNonceAnnotationValue.
 const BootNonceAnnotation = "infrastructure.cluster.x-k8s.io/boot-nonce"
 
+// ProvisionedRequestAnnotation is set by the provisioned HTTP handler on a PhysicalHost
+// to signal that the inspector has completed OS deployment and the host is ready.
+// The PhysicalHost controller reads this annotation, transitions State from Deploying
+// to Ready, and clears the annotation so it is not acted on twice (D-015).
+//
+// Value: "provisioned" — a fixed string, no data payload.
+// The authenticated POST itself is the signal; the body is advisory only (D-015).
+const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisioned-request"
+
 // BootNonceAnnotationValue is the wire format for BootNonceAnnotation.
 // Producer (Beskar7Machine controller) JSON-marshals one of these; consumer
 // (PhysicalHost controller) unmarshals and persists to Status.Bootstrap.

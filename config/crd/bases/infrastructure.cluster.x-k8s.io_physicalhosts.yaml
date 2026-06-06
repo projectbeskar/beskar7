@@ -161,6 +161,9 @@ spec:
                   - type
                   type: object
                 type: array
+              deployingTimestamp:
+                format: date-time
+                type: string
               errorMessage:
                 type: string
               hardwareDetails:
