@@ -19,6 +19,14 @@ import (
 // reconcile loop will requeue and retry.
 const defaultHTTPTimeout = 30 * time.Second
 
+// defaultCloseTimeout bounds the Redfish session Logout performed by Close. It is
+// deliberately short and deliberately decoupled from defaultHTTPTimeout: Close
+// runs a fresh context (see Close) so a deferred teardown against a partitioned
+// BMC cannot block the reconcile goroutine for the full per-call timeout. There
+// is intentionally no flag for this — Logout is best-effort and its outcome does
+// not affect provisioning; the session expires server-side regardless.
+const defaultCloseTimeout = 5 * time.Second
+
 // gofishClient implements the Client interface using the gofish library.
 type gofishClient struct {
 	gofishClient *gofish.APIClient
@@ -225,13 +233,13 @@ func NewClientWithHTTPClient(
 	}, nil
 }
 
-// Close disconnects the client. It uses a fresh 5-second context so that a
-// partitioned BMC doesn't block a deferred Close indefinitely, even when the
-// caller's ctx is already cancelled.
+// Close disconnects the client. It uses a fresh context bounded by
+// defaultCloseTimeout so that a partitioned BMC doesn't block a deferred Close
+// indefinitely, even when the caller's ctx is already cancelled.
 func (c *gofishClient) Close(_ context.Context) {
 	if c.gofishClient != nil {
 		log.Info("Disconnecting Redfish client", "address", c.apiEndpoint)
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancel := context.WithTimeout(context.Background(), defaultCloseTimeout)
 		defer cancel()
 		if err := doWithCtx(closeCtx, func() error {
 			c.gofishClient.Logout()
