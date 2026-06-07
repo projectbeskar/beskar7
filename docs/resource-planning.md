@@ -171,7 +171,7 @@ Memory Limit = (Host Count × 0.5MB) + (Webhook Concurrency × 10MB) + 100MB (ba
 Configure reconciliation intervals based on your needs:
 
 ```yaml
-# Real flags accepted by cmd/manager/main.go in v0.4.0-alpha.6.
+# Real flags accepted by cmd/manager/main.go in v0.4.0-alpha.7.
 args:
 - --leader-elect=true
 - --metrics-bind-address=:8443

@@ -6,7 +6,17 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.0-alpha.7] - 2026-06-07
+
+The "controller↔inspector contract" release: defines and ships the full provisioning contract (v1 → v4) between the Beskar7 controller and the new Rust `beskar7-inspector`, replacing the early kexec model with a digest-pinned whole-disk image handoff and a per-host iPXE boot/token flow with a provisioning-complete callback. Validated end-to-end on real bare metal: a blank host → `Ready` k3s node with `ProviderID` set.
+
 ### Added
+- **Controller↔inspector contract spec + golden-fixture test** (#110, #114) — `docs/inspector-contract.md` (now v4) plus a Go golden-fixture test guarding the `InspectionReportRequest` schema against drift with the inspector.
+- **Per-host iPXE `/boot` endpoint + single-use boot nonce** (D-009/D-010, #111, #112) — nonce-gated `GET /api/v1/boot/{ns}/{host}/{nonce}` renders the per-host kernel cmdline (`beskar7.api/token/ca/target/digest`); the boot nonce is minted alongside, and is distinct from, the bearer token, and is single-use (consumed on first fetch).
+- **External callback Service + serving-cert SAN sizing** (H-1, #113) — the chart exposes the callback Service externally and sizes the serving-cert SAN via `callback.externalNames`/`callback.externalIPs`, so bare-metal hosts can reach `:8082` with a verifiable cert.
+- **Whole-disk image handoff with digest pinning** (contract v2, D-011, #115, #116, #117) — repurposed `Beskar7Machine.Spec.TargetImageURL` + new **required** `TargetImageDigest`; the inspector streams the image to the target disk verifying sha256, discovers/mounts the `COS_OEM` partition, injects the per-host cloud-config, and reboots. `beskar7.target-digest` rendered on the cmdline. Supersedes the kexec model.
+- **Target-disk selection** (#118) — optional `Beskar7Machine.Spec.TargetDisk` rendered as `beskar7.disk`; absent → the inspector auto-selects the smallest eligible whole disk.
+- **D-013 provisioning networking** (#119, #121, #122) — `BOOTIF` rendered from the `?mac=` query param; native DHCP with multi-NIC race resolution (gatewayed-winner) + DNS `resolv.conf`; static-network override `Beskar7Machine.Spec.StaticIP` → `beskar7.ip` for DHCP-less / VLAN-pinned provisioning networks.
 - **`StateDeploying` phase** — `PhysicalHost` now transitions `Inspecting → Deploying` when the inspection report is accepted, and `Deploying → Ready` only when the inspector POSTs the provisioned-complete callback. `ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` on `Beskar7Machine` are set at `Ready` entry, not at inspection completion (D-015).
 - **`POST /api/v1/provisioned/{namespace}/{hostName}` callback endpoint** — bearer-gated HTTPS endpoint on `:8082`; the inspector calls it after the verified whole-disk write and `COS_OEM` inject, before `reboot(2)`. Returns `202 Accepted`. Implemented in `controllers/provisioned_handler.go`; route registered in `SetupCallbackServer` (D-015).
 - **`--deployment-timeout` manager flag** — bounds how long a host may stay in `Deploying` before the `Beskar7Machine` is marked terminally failed with `FailureReason=DeploymentTimedOut`. Default 20 min. Measured from `PhysicalHost.Status.DeployingTimestamp` (D-015).
@@ -17,6 +27,11 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - **`ClearBootSourceOverride` now sends `Target=NoneBootSourceOverrideTarget`** — previously sent `Enabled=Disabled` with no `BootSourceOverrideTarget`, which caused a `400` on real BMCs (Redfish requires the field). Corrected in `internal/redfish/gofish_client.go` (D-015 bonus fix).
 - **Inspection timeout no longer fires on a completed inspection** — `handleInspectingHost` now checks `InspectionPhase==Complete` before the timeout, so a completed-but-slow inspection is not spuriously failed `InspectionTimedOut` (D-015 finding #1).
 - **Bearer token lifetime extended to 60 min** — `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token before the provisioned callback fires on a slow deploy. `TokenLifetime` raised from 30 min to 60 min in `internal/auth/token.go` (SEC-D015-1).
+
+### Documentation
+- **Inspector contract → v4** — `docs/inspector-contract.md` documents the `/provisioned` endpoint (§4.4), the `StateDeploying` flow (§2), and the deploy timeout; §11 closes the CAPI-bootstrap→Kairos mapping open item with the D-014 ruling (byte-verbatim; the bootstrap provider owns the format).
+- **Callback serving-cert constraint (TEST-2)** — §8 now states the callback serving cert must be a non-CA leaf with its issuing CA in `ca.crt`; the Rust inspector verifies with rustls/webpki (stricter than OpenSSL) and rejects a self-signed `CA:TRUE` cert used as both leaf and CA. cert-manager and the chart's self-signed path (`genCA`+`genSignedCert`) already comply.
+- **Examples** — replaced the broken kubeadm `examples/complete-cluster.yaml` (cannot produce a Kairos node) with the end-to-end-proven `examples/kairos-k3s-node.yaml`; `state-management.md` and `ipxe-setup.md` updated for the `StateDeploying` phase and `/provisioned` step.
 
 ## [v0.4.0-alpha.6] - 2026-05-29
 
