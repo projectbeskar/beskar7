@@ -169,9 +169,13 @@ func sanitizeFailureReason(reason string) string {
 	if cleaned == "" {
 		return provisionFailedReasonGeneric
 	}
-	// Cap to provisionFailedReasonMaxLen before prepending the prefix.
+	// Cap to provisionFailedReasonMaxLen before prepending the prefix. The cap is a
+	// byte length, but IsPrint admits multibyte runes, so a naive byte slice can
+	// split a rune and emit invalid UTF-8 — which etcd/protobuf rejects on the
+	// status write, defeating the fast-fail (SEC-D016-1). ToValidUTF8 drops any
+	// dangling partial rune left at the cut.
 	if len(cleaned) > provisionFailedReasonMaxLen {
-		cleaned = cleaned[:provisionFailedReasonMaxLen]
+		cleaned = strings.ToValidUTF8(cleaned[:provisionFailedReasonMaxLen], "")
 	}
 	return provisionFailedReasonPrefix + cleaned
 }

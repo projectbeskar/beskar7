@@ -34,6 +34,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -429,6 +430,20 @@ var _ = Describe("v4.1 sanitizeFailureReason", func() {
 		// plus the prefix.
 		expectedCapped := provisionFailedReasonPrefix + strings.Repeat("x", provisionFailedReasonMaxLen)
 		Expect(result).To(Equal(expectedCapped))
+	})
+
+	It("rune-boundary-truncates a multibyte reason to valid UTF-8 (SEC-D016-1)", func() {
+		// A multibyte reason overflowing the byte cap must NOT split mid-rune into
+		// invalid UTF-8 (etcd/protobuf would reject the status write, defeating fast-fail).
+		for _, r := range []string{
+			"x" + strings.Repeat("é", 200), // 2-byte runes; cut lands mid-rune
+			strings.Repeat("漢", 100),       // 3-byte runes
+			strings.Repeat("🚀", 80),        // 4-byte runes
+		} {
+			result := sanitizeFailureReason(r)
+			Expect(utf8.ValidString(result)).To(BeTrue(), "sanitized reason must be valid UTF-8")
+			Expect(len(result)).To(BeNumerically("<=", len(provisionFailedReasonPrefix)+provisionFailedReasonMaxLen))
+		}
 	})
 
 	It("preserves a short reason exactly (minus whitespace trim)", func() {
