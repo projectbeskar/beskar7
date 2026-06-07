@@ -85,7 +85,43 @@ The `infrastructure.cluster.x-k8s.io/force-release: "true"` annotation skips the
 
 ## ProviderID format
 
-The provider ID is `b7://<namespace>/<name>`. The parser uses `strings.CutPrefix` + `strings.SplitN(rest, "/", 2)` and rejects empty segments and multi-segment names. See `controllers/beskar7machine_controller.go:parseProviderID`.
+The provider ID is `b7://<namespace>/<name>`, where `<name>` is the **PhysicalHost** name (the controller builds it from `providerID(physicalHost.Namespace, physicalHost.Name)`). The parser uses `strings.CutPrefix` + `strings.SplitN(rest, "/", 2)` and rejects empty segments and multi-segment names. See `controllers/beskar7machine_controller.go:parseProviderID`.
+
+## ProviderID & Node association
+
+Setting `Beskar7Machine.Spec.ProviderID` marks the **infrastructure** ready, which advances the CAPI `Machine` to `Provisioned`. It does **not**, on its own, advance the Machine to `Running`. CAPI reaches `Running` only after it associates the Machine with a Kubernetes Node, and it does that by matching the Machine's `spec.providerID` against the Node's `spec.providerID` — **the two must be exactly equal**.
+
+A freshly provisioned node's kubelet, left to its defaults, registers a ProviderID that does **not** match `b7://...` (k3s, for example, uses `k3s://<hostname>`). So you must tell the node's kubelet to register with the value Beskar7 assigns:
+
+```
+b7://<namespace>/<physicalhost-name>
+```
+
+You set this in the **per-machine bootstrap config** (the `#cloud-config` / `KubeadmConfig` referenced by `Machine.Spec.Bootstrap.DataSecretName`), because the value is only known once you know which PhysicalHost the Machine uses.
+
+**k3s** (proven path — see [`examples/kairos-k3s-node.yaml`](../examples/kairos-k3s-node.yaml)):
+
+```yaml
+k3s:
+  enabled: true
+  args:
+    - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
+```
+
+**kubeadm** (CAPI `KubeadmConfig` / `KubeadmConfigTemplate`):
+
+```yaml
+initConfiguration:    # use joinConfiguration for worker / secondary control-plane nodes
+  nodeRegistration:
+    kubeletExtraArgs:
+      provider-id: "b7://<namespace>/<host-name>"
+```
+
+**Other distros** (k0s, plain kubelet): set the kubelet `--provider-id` flag to the same value via your distro's kubelet-args mechanism.
+
+If you skip this, the node still comes up and is `Ready`, but the CAPI `Machine` stays at `Provisioned` and never reaches `Running` (the Node is never bound). See [Troubleshooting → CAPI Machine stuck at Provisioned](troubleshooting.md#12-capi-machine-stuck-at-provisioned-never-reaches-running-node-not-associated).
+
+> **Scaled deployments:** this manual wiring works when you author the per-machine bootstrap config and therefore know which PhysicalHost the Machine will use (a single node, or hosts pinned to specific machines). A templated `MachineDeployment` that claims hosts from a pool cannot pin a per-host ProviderID in one shared template; automatic provision-time delivery is planned future work.
 
 ## Example
 

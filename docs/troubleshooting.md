@@ -525,6 +525,44 @@ resources:
     memory: 128Mi
 ```
 
+### 12. CAPI Machine stuck at `Provisioned`, never reaches `Running` (Node not associated)
+
+**Symptom:** Beskar7 finishes provisioning — `Beskar7Machine.status.phase` is `Provisioned`, `ProviderID` is set, and the workload node even shows up in the workload cluster's `kubectl get nodes` — but the **CAPI `Machine`** (not the `Beskar7Machine`) never advances from `Provisioned` to `Running`.
+
+```bash
+# The CAPI Machine, not the Beskar7Machine:
+kubectl get machine <machine-name> -o jsonpath='{.status.phase}'   # shows: Provisioned (not Running)
+kubectl get machine <machine-name> -o jsonpath='{.spec.providerID}' # b7://<namespace>/<host-name>
+
+# On the WORKLOAD cluster — what ProviderID did the node self-register?
+kubectl --kubeconfig <workload.kubeconfig> get node <node> -o jsonpath='{.spec.providerID}'
+# If this is e.g. "k3s://<hostname>" instead of "b7://<namespace>/<host-name>", that is the bug.
+```
+
+**Cause:** CAPI marks a `Machine` `Running` only after it matches the Machine's `spec.providerID` to a Node's `spec.providerID` (they must be **equal**). Beskar7 stamps `b7://<namespace>/<host-name>` on the Machine, but the node's kubelet, left to its defaults, self-registers a different value (k3s uses `k3s://<hostname>`). The mismatch means CAPI never associates the Node, so the Machine never reaches `Running` — even though the node itself is healthy and `Ready`.
+
+**Solution:** Tell the node's kubelet to register with the exact ProviderID Beskar7 assigns — `b7://<namespace>/<host-name>` (the `<host-name>` is the **PhysicalHost** name) — via the per-machine bootstrap config. For k3s, add to the `k3s.args` in the bootstrap `#cloud-config`:
+
+```yaml
+k3s:
+  enabled: true
+  args:
+    - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
+```
+
+For kubeadm (CAPI `KubeadmConfig`/`KubeadmConfigTemplate`), set it under `nodeRegistration`:
+
+```yaml
+initConfiguration:    # (use joinConfiguration for worker/secondary nodes)
+  nodeRegistration:
+    kubeletExtraArgs:
+      provider-id: "b7://<namespace>/<host-name>"
+```
+
+For other distros (k0s, plain kubelet), set the kubelet's `--provider-id` flag to the same value by your distro's mechanism. See [docs/beskar7machine.md → ProviderID & Node association](beskar7machine.md#providerid--node-association) for the full contract.
+
+> **Scaled deployments:** this works when you author the per-machine bootstrap config and know which PhysicalHost the Machine will use (e.g. a single node, or hosts pinned to specific machines). A templated `MachineDeployment` that claims hosts from a pool can't yet pin the per-host ProviderID in a shared template — automatic provision-time delivery is planned (see the D-014 design).
+
 ## Getting Help
 
 If you can't resolve your issue:

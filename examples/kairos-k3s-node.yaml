@@ -61,14 +61,15 @@ stringData:
 # native k3s integration. Adjust tls-san and node-ip to match your host's
 # provisioning-network address.
 #
-# Note on ProviderID / node association: k3s sets the Kubernetes Node's
-# ProviderID to "k3s://<nodename>" by default. CAPI matches the Machine to the
-# Node by ProviderID. To auto-associate, add
-#   --kubelet-arg=provider-id=b7://<namespace>/<host-name>
-# to the k3s args below. Without it, CAPI cannot match the Node to the Machine
-# and the Machine stays in Provisioned (infra ready) but the CAPI Machine never
-# advances to Running (node associated). This does not prevent the node from
-# working — it only affects the CAPI Machine status.
+# ProviderID / node association (REQUIRED for the CAPI Machine to reach Running):
+# k3s defaults the Node's ProviderID to "k3s://<nodename>", but Beskar7 stamps
+#   b7://<namespace>/<host-name>
+# on the Machine (the <host-name> is the PhysicalHost name below). CAPI binds the
+# Machine to the Node by matching these, so the k3s args MUST set the kubelet
+# provider-id to Beskar7's value (done by default below). Omit it and the node
+# still comes up Ready, but the CAPI Machine stays at Provisioned and never
+# advances to Running (Node never associated). See docs/beskar7machine.md
+# (ProviderID & Node association) and docs/troubleshooting.md #12.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -101,8 +102,9 @@ stringData:
       args:
         - "--tls-san=<node-ip>"
         - "--node-ip=<node-ip>"
-        # Uncomment to let CAPI auto-associate the Node with this Machine:
-        # - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
+        # Required so CAPI associates the Node with this Machine (Machine -> Running).
+        # <host-name> is the PhysicalHost name defined below; <namespace> matches it.
+        - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
 
 ---
 # PhysicalHost — one per bare-metal server.
