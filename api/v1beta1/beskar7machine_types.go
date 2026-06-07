@@ -57,6 +57,13 @@ const (
 	// automatically; the operator must investigate and either delete-and-recreate the
 	// Beskar7Machine or fix the iPXE setup.
 	InspectionTimedOutReason string = "InspectionTimedOut"
+	// DeploymentFailedReason (Severity=Error, terminal) indicates that the inspector
+	// explicitly reported a deploy failure via POST /api/v1/provision-failed (v4.1).
+	// Distinct from DeploymentTimedOut (timeout waiting for the callback) and from
+	// PhysicalHostError (Redfish/BMC-level error). Use this reason when the inspector
+	// itself signals that the image fetch, digest verify, disk write, or COS_OEM
+	// inject failed and provisioning cannot proceed.
+	DeploymentFailedReason string = "DeploymentFailed"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.

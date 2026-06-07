@@ -333,6 +333,12 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// controller can complete provisioning.
 	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
+	// Consume the provision-failed-request annotation (v4.1): the provision-failed
+	// HTTP handler sets it when the inspector signals a fatal deploy failure. We
+	// transition State from Deploying to Error and set Status.ErrorMessage so the
+	// Beskar7Machine controller can mark a terminal failure promptly.
+	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
+
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
 		// Host is claimed: guard transitions that must NOT overwrite the
@@ -608,6 +614,46 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 	}
 
 	delete(physicalHost.Annotations, ProvisionedRequestAnnotation)
+}
+
+// applyProvisionFailedRequestAnnotation reads the ProvisionFailedRequestAnnotation and,
+// when present on a host in StateDeploying, transitions Status.State to StateError and
+// sets Status.ErrorMessage to the sanitized failure reason carried in the annotation
+// value (v4.1). The provision-failed HTTP handler is the sole writer of this annotation.
+//
+// Guard: only acts when the host is in StateDeploying. An annotation on a host in any
+// other state is cleared without transition — the Beskar7Machine controller detects the
+// unexpected state on its next reconcile.
+//
+// Idempotent: if the host is already in StateError when the annotation fires again (e.g.
+// a duplicate delivery before the first annotation is cleared), we clear the annotation
+// and return without re-writing status.
+func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	val, ok := physicalHost.Annotations[ProvisionFailedRequestAnnotation]
+	if !ok {
+		return
+	}
+
+	switch physicalHost.Status.State {
+	case infrastructurev1beta1.StateDeploying:
+		logger.Info("Applying provision-failed annotation: transitioning Deploying→Error",
+			"host", physicalHost.Name)
+		physicalHost.Status.State = infrastructurev1beta1.StateError
+		physicalHost.Status.Ready = false
+		physicalHost.Status.ErrorMessage = val
+	case infrastructurev1beta1.StateError:
+		// Already in error (idempotent delivery or second annotation before first was cleared).
+		logger.V(1).Info("Provision-failed annotation on already-errored host; clearing idempotently",
+			"host", physicalHost.Name)
+	default:
+		// Unexpected state: the host received a provision-failed signal while not in
+		// Deploying. Log at Info (operator-visible) and clear the annotation; the
+		// Beskar7Machine controller will detect the unexpected state on its next reconcile.
+		logger.Info("Provision-failed annotation on host in unexpected state; clearing without transition",
+			"host", physicalHost.Name, "state", physicalHost.Status.State)
+	}
+
+	delete(physicalHost.Annotations, ProvisionFailedRequestAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.

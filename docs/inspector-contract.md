@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v4`**
+**Contract version: `v4.1`**
 
 This document is the single source of truth for the wire contract between the
 Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
@@ -9,13 +9,14 @@ change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#versioning-and-anti-drift)).
 
-> **v4 in one line:** adds a provisioning-complete callback —
-> `POST /api/v1/provisioned/{ns}/{host}` — that the inspector calls after the
-> verified whole-disk write and `COS_OEM` inject, and before `reboot(2)`. This
-> signal drives a new `StateDeploying` phase on the host and moves `ProviderID` /
-> `Ready` / `Initialization.Provisioned` onto the provisioned signal instead of
-> the inspection signal. The inspection report schema (§6), the golden fixture,
-> and all v3 cmdline parameters are **unchanged**. See
+> **v4.1 in one line:** adds an explicit deploy-failure callback —
+> `POST /api/v1/provision-failed/{ns}/{host}` — so a failing inspector reports
+> the failure promptly instead of silently aborting and waiting out the
+> deployment-timeout (20 min, `--deployment-timeout`). Backward-compatible: a
+> v4 controller without this endpoint returns 404; the v4.1 inspector MUST
+> tolerate that and treat it as if the endpoint were unavailable. A v4.1
+> controller with a v4 inspector simply leaves the new endpoint unused.
+> **No §5 cmdline, §6 report, or existing endpoint change.** See
 > [Version history](#101-version-history) for the full delta.
 
 Requirement keywords (MUST, MUST NOT, SHOULD, MAY) are used per RFC 2119.
@@ -73,6 +74,10 @@ inspector ramdisk — Phase 2: provision (when bootstrap data is available)
   ├─ re-read the partition table; mount the image's COS_OEM partition
   ├─ inject a per-host cloud-config embedding the fetched user-data into COS_OEM
   ├─ sync, unmount — zero the in-memory user-data
+  │  (on any step failure above)
+  │  └─ POST provision-failed → {api}/api/v1/provision-failed/{ns}/{host}
+  │         (Bearer token, TLS-verified)  → 202
+  │         body: {"reason":"<short description>"}   [advisory, v4.1 fast-fail path]
   ├─ POST provisioned → {api}/api/v1/provisioned/{ns}/{host}  (Bearer token, TLS-verified)  → 202
   └─ reboot(2) → host firmware boots the provisioned OS
   │
@@ -89,6 +94,16 @@ that OS deployment completed. The controller sets `StateReady` / `ProviderID` /
 receiving this signal — not at inspection completion. A deployment-timeout guard
 (`--deployment-timeout`, default 20 min) converts a silent abort into a terminal
 `DeploymentTimedOut` failure.
+
+**Deploy failure is reported promptly (v4.1).** When Phase 2 fails (image fetch,
+digest-verify, disk write, `COS_OEM` mount/inject), the inspector SHOULD POST
+`/api/v1/provision-failed/{ns}/{host}` with an advisory `{"reason":"..."}` body
+before exiting. The controller transitions the `PhysicalHost` to `StateError`
+immediately (fast-fail path) and marks the `Beskar7Machine` with
+`FailureReason=DeploymentFailed`, surfacing the error to `kubectl describe machine`
+without waiting out the deployment-timeout. If the inspector cannot reach the
+endpoint (404 on a v4 controller, or a network failure), the host falls back to
+timing out at `--deployment-timeout`.
 
 The *real* proof the host joined the workload cluster correctly is the CAPI
 `Machine` advancing to `Running` — that requires the Kubernetes node to appear
@@ -237,6 +252,41 @@ The inspector MUST call this endpoint after zeroing the in-memory user-data buff
 and before `reboot(2)`. After the reboot the inspector is gone; a silent reboot
 would leave the controller unable to confirm that OS deployment completed and the
 host would eventually fail with `DeploymentTimedOut`.
+
+### 4.5 `POST /api/v1/provision-failed/{namespace}/{hostName}` — deploy-failure signal
+
+Added in v4.1. The inspector SHOULD call this endpoint when Phase 2 fails at any
+step (image fetch, digest verify, disk write, `COS_OEM` mount/inject, user-data
+injection) so the controller can fail the host promptly instead of waiting out the
+deployment-timeout.
+
+- **Auth**: `Authorization: Bearer <token>`; same per-host bearer token as §4.2–§4.4.
+- **Body**: advisory JSON `{"reason":"<short failure description>"}`. The body
+  content is a human-readable hint for the operator; it is not trusted for control
+  flow. The controller sanitizes the reason before storage: strips control
+  characters and newlines, caps to 256 characters, and prepends a fixed prefix
+  (`"inspector reported deploy failure: "`) so the operator knows the message
+  origin. A missing, empty, or non-JSON body results in a generic error message.
+  The body is capped at 64 KiB; an oversized body does not cause a rejection.
+- **Success**: **`202 Accepted`** with body `{"status":"accepted"}`.
+- **Failure**: opaque `401` on expired/invalid bearer; opaque `500` on internal
+  error; opaque `404` if the controller is v4 (does not implement this endpoint).
+- **Controller action**: only acts when the `PhysicalHost` is in `StateDeploying`.
+  On a valid call, patches `ProvisionFailedRequestAnnotation` carrying the
+  sanitized reason onto the `PhysicalHost` metadata. The `PhysicalHostReconciler`
+  reads this on its next pass, transitions `State` from `StateDeploying` to
+  `StateError`, sets `Status.ErrorMessage`, and clears the annotation (D-005
+  invariant). The `Beskar7MachineReconciler` then marks a terminal failure with
+  `FailureReason=DeploymentFailed`. A non-`Deploying` host returns 202 but
+  receives no state transition (no-op guard).
+- **Inspector MUST**: call this endpoint on any Phase 2 error, then exit (do NOT
+  continue to the provisioned POST or `reboot(2)` after a failure).
+- **Inspector MUST**: tolerate a `404` response (v4 controller without this
+  endpoint). Treat `404` as "endpoint unavailable" — the failure is still visible
+  to the operator via the deployment-timeout; do not retry as an error.
+- **Backward compatibility**: a v4.1 controller + v4 inspector → endpoint simply
+  unused (host times out at `--deployment-timeout`). A v4 controller + v4.1
+  inspector → 404, which the inspector tolerates.
 
 ---
 
@@ -674,6 +724,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the CRD delta is **implemented** in this repo — the required `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest`, plus the optional `Beskar7Machine.Spec.TargetDisk` field and its `beskar7.disk` render. The inspector deploy path (§9.1 step 5) is a new, separately-tested drift surface (§10). |
 | **v3** | **Static-network override — §6 report schema and golden fixture unchanged.** Un-reserves the optional `beskar7.ip` cmdline param (§5): adds `Beskar7Machine.Spec.StaticIP` (optional `*string`, CRD validation pattern for the `<ip>::[<gw>]:<mask>[:<dns>]` shape); `/boot` renders `beskar7.ip=<value>` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set. The inspector configures the selected NIC statically and skips DHCP when `beskar7.ip` is present; a multi-NIC host with `beskar7.ip` and no `BOOTIF` is rejected. Handler-side `validateStaticIP` / `formatStaticIP` guard (C-1a, SEC-7 omit-on-invalid) mirrors `formatBootif`. **No inspector report-code or fixture change.** The v2 whole-disk deploy flow (§9.1 steps 4–5) is unchanged. |
 | **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
+| **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (via `FailureReason=DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
 
 ---
 
@@ -744,6 +795,6 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   An image that writes and injects cleanly but never boots into a joining Kubernetes
   node is still a timeout at the CAPI level (the `Machine` stays `Pending` until
   the node registers with `ProviderID=b7://...`). The exact retry policy and
-  node-join timeout are not specified in v4 and must be defined before GA. A v4.1
-  fast-follow may add `POST /api/v1/provision-failed` so a *failed* deploy is
-  reported promptly instead of waiting out the deployment-timeout (planned).
+  node-join timeout are not specified in v4.1 and must be defined before GA.
+  **The `POST /api/v1/provision-failed` fast-fail path is now implemented (v4.1,
+  §4.5)** — a deploy failure is reported promptly instead of timing out.

@@ -90,6 +90,18 @@ const BootNonceAnnotation = "infrastructure.cluster.x-k8s.io/boot-nonce"
 // The authenticated POST itself is the signal; the body is advisory only (D-015).
 const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisioned-request"
 
+// ProvisionFailedRequestAnnotation is set by the provision-failed HTTP handler on a
+// PhysicalHost to signal that the inspector encountered a fatal error during OS
+// deployment (image fetch, digest-verify, whole-disk write, or COS_OEM inject) and
+// the deploy cannot proceed. The PhysicalHost controller reads this annotation,
+// transitions State from Deploying to Error, sets Status.ErrorMessage to the sanitized
+// failure message, and clears the annotation so it is not acted on twice (v4.1).
+//
+// Value: a sanitized human-readable failure reason (≤256 chars, control-chars stripped,
+// prefixed with "inspector reported deploy failure: "). The authenticated POST itself is
+// the failure signal; the reason is advisory only and MUST be treated as untrusted input.
+const ProvisionFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provision-failed-request"
+
 // BootNonceAnnotationValue is the wire format for BootNonceAnnotation.
 // Producer (Beskar7Machine controller) JSON-marshals one of these; consumer
 // (PhysicalHost controller) unmarshals and persists to Status.Bootstrap.

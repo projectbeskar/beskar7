@@ -415,7 +415,7 @@ func readCallbackCA(certDir string) ([]byte, error) {
 
 // SetupCallbackServer wires the host-callback HTTPS server into the manager.
 //
-// The server hosts four host-scoped endpoints:
+// The server hosts five host-scoped endpoints:
 //
 //   - POST /api/v1/inspection/{namespace}/{hostName}: receives inspection
 //     reports from the inspection image (handled by InspectionHandler).
@@ -426,6 +426,9 @@ func readCallbackCA(certDir string) ([]byte, error) {
 //   - POST /api/v1/provisioned/{namespace}/{hostName}: receives the OS-deployment
 //     complete signal from the inspector (handled by ProvisionedHandler). Bearer-gated.
 //     Returns 202 Accepted; body is advisory only — the authenticated POST is the signal.
+//   - POST /api/v1/provision-failed/{namespace}/{hostName}: receives an explicit
+//     OS-deployment failure signal from the inspector (handled by ProvisionFailedHandler).
+//     Bearer-gated. Returns 202 Accepted; body carries an advisory reason field.
 //   - GET  /api/v1/boot/{namespace}/{hostName}/{nonce}: serves the per-host
 //     iPXE boot script (handled by BootHandler). NOT bearer-gated — gated by
 //     the single-use boot nonce (D-009). Rate-limited per source IP.
@@ -495,6 +498,12 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Log:    provisionedLog,
 	}
 
+	provisionFailedLog := ctrl.Log.WithName("provision-failed-handler")
+	provisionFailedHandler := &ProvisionFailedHandler{
+		Client: mgr.GetClient(),
+		Log:    provisionFailedLog,
+	}
+
 	bootLog := ctrl.Log.WithName("boot-handler")
 	bootHandler := &BootHandler{
 		Client: mgr.GetClient(),
@@ -512,6 +521,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
 	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
 	provisionedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionedLog)
+	provisionFailedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionFailedLog)
 
 	mux := http.NewServeMux()
 	// Go 1.22+ pattern matching: bind path values for the verifier and handler.
@@ -523,6 +533,11 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// Bearer-gated with the same per-host token as inspection/bootstrap.
 	mux.Handle("POST /api/v1/provisioned/{namespace}/{hostName}",
 		auth.RequireBearer(provisionedLog, provisionedVerifier, provisionedHandler))
+	// Provision-failed callback (v4.1): inspector signals an explicit deploy failure.
+	// Bearer-gated with the same per-host token as inspection/bootstrap/provisioned.
+	// A v4 controller without this route returns 404, which the v4.1 inspector tolerates.
+	mux.Handle("POST /api/v1/provision-failed/{namespace}/{hostName}",
+		auth.RequireBearer(provisionFailedLog, provisionFailedVerifier, provisionFailedHandler))
 	// /boot is NOT bearer-gated. Rate limiting is applied inside BootHandler.ServeHTTP.
 	mux.Handle("GET /api/v1/boot/{namespace}/{hostName}/{nonce}", bootHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
