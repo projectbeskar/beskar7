@@ -1,220 +1,25 @@
-# Complete Beskar7 Cluster Example
-# Deploys a 1 control-plane + 2 worker cluster using Beskar7 v0.4.0-alpha.6.
+# NOTE: This file has been superseded.
 #
-# Prerequisites:
-#   1. Beskar7 controller is installed (Helm or release manifests).
-#   2. cert-manager is installed and Ready.
-#   3. Cluster API core + KubeadmControlPlane + KubeadmBootstrap providers are installed.
-#   4. iPXE infrastructure is set up (see docs/ipxe-setup.md).
-#   5. The beskar7-inspector image and target OS image are reachable from the bare-metal nodes.
+# The KubeadmControlPlane + KubeadmConfigTemplate stack it previously contained
+# cannot produce a working Kairos node: kubeadm bootstrap providers emit
+# cloud-init/Ignition, not Kairos #cloud-config. The controller delivers the
+# bootstrap Secret byte-verbatim to the inspector (D-014), so a kubeadm Secret
+# written verbatim to COS_OEM will be ignored by the Kairos agent and the node
+# will never join. The fake targetImageDigest (all-zeros) also blocked any real
+# image download.
 #
-# Usage:
-#   kubectl apply -f complete-cluster.yaml
+# Use examples/kairos-k3s-node.yaml instead.
 #
-# Replace the BMC IPs, image URLs, and credentials with your own.
-
----
-# Step 1: BMC credentials. Must contain "username" and "password" data keys.
-apiVersion: v1
-kind: Secret
-metadata:
-  name: bmc-credentials
-  namespace: default
-type: Opaque
-stringData:
-  username: "admin"
-  password: "changeme"
-
----
-# Step 2: PhysicalHost objects, one per server. The topology label is consumed
-# by Beskar7Cluster.Status.FailureDomains.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: PhysicalHost
-metadata:
-  name: control-plane-01
-  namespace: default
-  labels:
-    topology.kubernetes.io/zone: rack-1
-spec:
-  redfishConnection:
-    address: "https://172.16.56.101"
-    credentialsSecretRef: "bmc-credentials"
-    insecureSkipVerify: true   # Set to false in production. See docs/security/configuration.md for caBundleSecretRef.
-
----
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: PhysicalHost
-metadata:
-  name: worker-01
-  namespace: default
-  labels:
-    topology.kubernetes.io/zone: rack-2
-spec:
-  redfishConnection:
-    address: "https://172.16.56.102"
-    credentialsSecretRef: "bmc-credentials"
-    insecureSkipVerify: true
-
----
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: PhysicalHost
-metadata:
-  name: worker-02
-  namespace: default
-  labels:
-    topology.kubernetes.io/zone: rack-3
-spec:
-  redfishConnection:
-    address: "https://172.16.56.103"
-    credentialsSecretRef: "bmc-credentials"
-    insecureSkipVerify: true
-
----
-# Step 3: Beskar7Cluster — the CAPI infra-cluster.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7Cluster
-metadata:
-  name: my-cluster
-  namespace: default
-spec:
-  controlPlaneEndpoint:
-    host: "172.16.56.10"   # VIP / load balancer for the control-plane API
-    port: 6443
-
----
-# Step 4: CAPI Cluster, owning the Beskar7Cluster.
-apiVersion: cluster.x-k8s.io/v1beta1
-kind: Cluster
-metadata:
-  name: my-cluster
-  namespace: default
-spec:
-  clusterNetwork:
-    pods:
-      cidrBlocks: ["10.244.0.0/16"]
-    services:
-      cidrBlocks: ["10.96.0.0/12"]
-  infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-    kind: Beskar7Cluster
-    name: my-cluster
-  controlPlaneRef:
-    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-    kind: KubeadmControlPlane
-    name: my-cluster-control-plane
-
----
-# Step 5: Beskar7MachineTemplate for the control plane. CAPI clones the
-# template's spec into one Beskar7Machine per replica.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7MachineTemplate
-metadata:
-  name: my-cluster-control-plane
-  namespace: default
-spec:
-  template:
-    spec:
-      inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-      targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
-      # targetDisk: /dev/disk/by-id/nvme-...  # optional: pin the install disk; omit to let the inspector auto-select
-      configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
-      hardwareRequirements:
-        minCPUCores: 4
-        minMemoryGB: 16
-        minDiskGB:   100
-
----
-# Step 6: KubeadmControlPlane drives 1 control-plane Machine.
-apiVersion: controlplane.cluster.x-k8s.io/v1beta1
-kind: KubeadmControlPlane
-metadata:
-  name: my-cluster-control-plane
-  namespace: default
-spec:
-  replicas: 1
-  version: v1.31.0
-  machineTemplate:
-    infrastructureRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-      kind: Beskar7MachineTemplate
-      name: my-cluster-control-plane
-  kubeadmConfigSpec:
-    clusterConfiguration:
-      apiServer:
-        certSANs:
-          - localhost
-          - 127.0.0.1
-          - "172.16.56.10"
-    initConfiguration:
-      nodeRegistration:
-        criSocket: /run/containerd/containerd.sock
-    joinConfiguration:
-      nodeRegistration:
-        criSocket: /run/containerd/containerd.sock
-
----
-# Step 7: Beskar7MachineTemplate for the workers.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: Beskar7MachineTemplate
-metadata:
-  name: my-cluster-workers
-  namespace: default
-spec:
-  template:
-    spec:
-      inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-      targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
-      # targetDisk: /dev/disk/by-id/nvme-...  # optional: pin the install disk; omit to let the inspector auto-select
-      configurationURL:   "http://boot-server.local/configs/worker.yaml"
-      hardwareRequirements:
-        minCPUCores: 4
-        minMemoryGB: 8
-        minDiskGB:   50
-
----
-# Step 8: MachineDeployment scales workers using the worker template.
-apiVersion: cluster.x-k8s.io/v1beta1
-kind: MachineDeployment
-metadata:
-  name: my-cluster-workers
-  namespace: default
-spec:
-  clusterName: my-cluster
-  replicas: 2
-  selector:
-    matchLabels:
-      cluster.x-k8s.io/cluster-name: my-cluster
-      cluster.x-k8s.io/deployment-name: my-cluster-workers
-  template:
-    metadata:
-      labels:
-        cluster.x-k8s.io/cluster-name: my-cluster
-        cluster.x-k8s.io/deployment-name: my-cluster-workers
-    spec:
-      clusterName: my-cluster
-      version: v1.31.0
-      bootstrap:
-        configRef:
-          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-          kind: KubeadmConfigTemplate
-          name: my-cluster-workers
-      infrastructureRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: Beskar7MachineTemplate
-        name: my-cluster-workers
-
----
-# Step 9: KubeadmConfigTemplate for the workers.
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-kind: KubeadmConfigTemplate
-metadata:
-  name: my-cluster-workers
-  namespace: default
-spec:
-  template:
-    spec:
-      joinConfiguration:
-        nodeRegistration:
-          criSocket: /run/containerd/containerd.sock
+# That file contains the exact CR structure that was validated end-to-end on real
+# bare-metal (contract v4, beskar7-inspector v4): claim → PXE → inspection →
+# Deploying → whole-disk write → COS_OEM inject → /provisioned callback → Ready
+# k3s node with ProviderID set.
+#
+# Multi-node / production path:
+# A maintained Kairos bootstrap provider (e.g. provider-kubeadm baked into the
+# Kairos image, or cluster-api-provider-kairos) can emit Kairos-compatible
+# cloud-config and pair with a KubeadmControlPlane or MachineDeployment. That
+# path has not been validated against Beskar7 end-to-end; do not treat it as a
+# confirmed working configuration. Track cluster-api-provider-kairos
+# (https://github.com/kairos-io/cluster-api-provider-kairos) for HA-capable
+# multi-node support.

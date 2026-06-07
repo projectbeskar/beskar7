@@ -20,7 +20,13 @@ const (
 	StateInUse = "InUse"
 	// StateInspecting indicates the inspection image is running on the host
 	StateInspecting = "Inspecting"
-	// StateReady indicates inspection is complete and host is ready for provisioning
+	// StateDeploying indicates hardware inspection has passed and the inspector is
+	// writing the OS image to disk. The host transitions here after the
+	// "inspect-complete" signal (D-015) and leaves only when the inspector POSTs
+	// the provisioned callback, at which point it moves to StateReady.
+	StateDeploying = "Deploying"
+	// StateReady indicates the OS has been fully deployed and the host is ready.
+	// Entered only after the provisioned callback (D-015), not at inspection-complete.
 	StateReady = "Ready"
 	// StateError indicates the host is in an error state
 	StateError = "Error"
@@ -302,6 +308,12 @@ type PhysicalHostStatus struct {
 	// +optional
 	InspectionTimestamp *metav1.Time `json:"inspectionTimestamp,omitempty"`
 
+	// DeployingTimestamp is when the host entered the Deploying state (D-015).
+	// Set by the PhysicalHost controller on the Inspecting→Deploying transition;
+	// used by the Beskar7Machine controller to enforce the deployment timeout.
+	// +optional
+	DeployingTimestamp *metav1.Time `json:"deployingTimestamp,omitempty"`
+
 	// Bootstrap holds the per-host data the inspection image and target OS use
 	// to fetch bootstrap data (cloud-init / Ignition) from the manager, plus
 	// the hashed credential the manager checks on each fetch.
@@ -336,7 +348,7 @@ type BootstrapStatus struct {
 	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
 
 	// ExpiresAt is the time the current token stops being accepted.
-	// Defaults to IssuedAt + 30m at mint time (D-004).
+	// Set to IssuedAt + auth.TokenLifetime at mint time (D-004).
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
@@ -474,6 +486,10 @@ func (in *PhysicalHostStatus) DeepCopyInto(out *PhysicalHostStatus) {
 	}
 	if in.InspectionTimestamp != nil {
 		in, out := &in.InspectionTimestamp, &out.InspectionTimestamp
+		*out = (*in).DeepCopy()
+	}
+	if in.DeployingTimestamp != nil {
+		in, out := &in.DeployingTimestamp, &out.DeployingTimestamp
 		*out = (*in).DeepCopy()
 	}
 	if in.Bootstrap != nil {

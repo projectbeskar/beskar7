@@ -323,15 +323,23 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
 	// HTTP handler stored the validated InspectionReport on a ConfigMap and
 	// pointed at it via this annotation. We persist the report to Status, mark
-	// HostInspectedCondition, transition state to Ready, then delete the
-	// ConfigMap and clear the annotation so we don't act on it twice.
+	// HostInspectedCondition, transition state to Deploying (D-015), then delete
+	// the ConfigMap and clear the annotation so we don't act on it twice.
 	r.applyInspectionResultAnnotation(ctx, logger, physicalHost)
+
+	// Consume the provisioned-request annotation (D-015): the provisioned HTTP
+	// handler sets it when the inspector signals OS deployment is complete.
+	// We transition State from Deploying to Ready here so the Beskar7Machine
+	// controller can complete provisioning.
+	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
-		// Host is claimed
+		// Host is claimed: guard transitions that must NOT overwrite the
+		// inspection/deploying/ready sub-states driven by the annotation handlers above.
 		if physicalHost.Status.State != infrastructurev1beta1.StateInUse &&
 			physicalHost.Status.State != infrastructurev1beta1.StateInspecting &&
+			physicalHost.Status.State != infrastructurev1beta1.StateDeploying &&
 			physicalHost.Status.State != infrastructurev1beta1.StateReady {
 			logger.Info("Host claimed, transitioning to InUse", "consumer", physicalHost.Spec.ConsumerRef.Name)
 			r.updateStatus(physicalHost, infrastructurev1beta1.StateInUse, true, "")
@@ -369,10 +377,18 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseBooting
 
 	case "inspect-complete":
-		logger.Info("Applying inspection-request annotation: marking inspection complete")
-		physicalHost.Status.State = infrastructurev1beta1.StateReady
+		// D-015: inspection-complete transitions to StateDeploying (not StateReady).
+		// StateReady is now reached only after the provisioned callback signals that
+		// the OS image has been written and the host has rebooted successfully.
+		logger.Info("Applying inspection-request annotation: transitioning to Deploying")
+		physicalHost.Status.State = infrastructurev1beta1.StateDeploying
 		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
 		conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
+		// Record when Deploying started so Beskar7Machine can enforce the deploy timeout.
+		if physicalHost.Status.DeployingTimestamp == nil {
+			t := metav1.Now()
+			physicalHost.Status.DeployingTimestamp = &t
+		}
 
 	case "timeout":
 		logger.Info("Applying inspection-request annotation: recording inspection timeout")
@@ -556,6 +572,42 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 			"configmap", cmName, "err", err.Error())
 	}
 	delete(physicalHost.Annotations, InspectionResultAnnotation)
+}
+
+// applyProvisionedRequestAnnotation reads the ProvisionedRequestAnnotation and,
+// when present, transitions Status.State from Deploying to Ready (D-015). The
+// provisioned HTTP handler is the sole writer of this annotation; the Beskar7Machine
+// controller never writes PhysicalHost.Status directly (BUG-1 invariant).
+//
+// Idempotent: if the host is already in StateReady (e.g. the annotation fires twice
+// before we clear it), we simply clear the annotation and return without re-writing
+// status. If the host is NOT in StateDeploying when the annotation fires (e.g. an
+// out-of-order delivery), we log and clear — the Beskar7Machine controller is
+// responsible for detecting unexpected states and marking a terminal failure there.
+func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	val := physicalHost.Annotations[ProvisionedRequestAnnotation]
+	if val != "provisioned" {
+		return
+	}
+
+	switch physicalHost.Status.State {
+	case infrastructurev1beta1.StateDeploying:
+		logger.Info("Applying provisioned-request annotation: transitioning Deploying→Ready")
+		physicalHost.Status.State = infrastructurev1beta1.StateReady
+		physicalHost.Status.Ready = true
+	case infrastructurev1beta1.StateReady:
+		// Already ready (idempotent delivery). Clear annotation only.
+		logger.V(1).Info("Provisioned annotation on already-ready host; clearing idempotently", "host", physicalHost.Name)
+	default:
+		// Unexpected state — the host received a provisioned callback while not in
+		// Deploying. Log at Info (operator-visible) and clear the annotation; the
+		// Beskar7Machine controller will detect the unexpected state on its next
+		// reconcile and act accordingly.
+		logger.Info("Provisioned annotation on host in unexpected state; clearing without transition",
+			"host", physicalHost.Name, "state", physicalHost.Status.State)
+	}
+
+	delete(physicalHost.Annotations, ProvisionedRequestAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.

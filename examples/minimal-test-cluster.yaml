@@ -2,7 +2,7 @@
 #
 # A simplified single-host scenario for quick testing of the Beskar7 v0.4.0-alpha.6
 # inspection workflow. NOT a working cluster — bring this up first to verify the
-# inspection round-trip, then graduate to examples/complete-cluster.yaml.
+# inspection round-trip, then graduate to examples/kairos-k3s-node.yaml.
 #
 # Prerequisites:
 #   1. Beskar7 controller installed and Ready.

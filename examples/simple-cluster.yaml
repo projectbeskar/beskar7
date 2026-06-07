@@ -9,8 +9,9 @@
 # Scope: this fixture shows the resource graph but is NOT a one-shot deployable
 # cluster. A real cluster also needs a `KubeadmControlPlane` (referenced from
 # `Cluster.spec.controlPlaneRef`) and typically a `MachineDeployment` + matching
-# `Beskar7MachineTemplate` for the workers. See `examples/complete-cluster.yaml`
-# for the complete setup. The `controlPlaneRef` is omitted from the `Cluster`
+# `Beskar7MachineTemplate` for the workers. For a fixture proven end-to-end on
+# real hardware, see `examples/kairos-k3s-node.yaml` (single-node Kairos k3s).
+# The `controlPlaneRef` is omitted from the `Cluster`
 # below so this YAML can be `kubectl apply`-ed for demos without an unresolved
 # reference; the resulting cluster will block at "Waiting for control plane"
 # until you add the KCP.

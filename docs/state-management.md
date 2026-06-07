@@ -16,7 +16,8 @@ The state constants are defined in `api/v1beta1/physicalhost_types.go`. The tran
 | `StateAvailable` | `"Available"` | BMC reachable; no consumer claim. Eligible for a Beskar7Machine to claim. |
 | `StateInUse` | `"InUse"` | A Beskar7Machine has claimed the host (`Spec.ConsumerRef` is set). |
 | `StateInspecting` | `"Inspecting"` | The inspection image is booting / running on the host. |
-| `StateReady` | `"Ready"` | The inspection report has been validated and persisted; the host is ready for the target OS. |
+| `StateDeploying` | `"Deploying"` | Hardware inspection passed and the inspector is writing the OS image to disk. Entered when the inspection report is accepted; exited when the inspector POSTs the provisioned callback or the deployment-timeout fires. |
+| `StateReady` | `"Ready"` | OS deployment complete (the inspector's provisioned callback was received). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are set at this point. |
 | `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. |
 
 The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code previously kept deprecated alias constants (`StateClaimed = "InUse"`, etc.); those aliases have been removed. Code that imported them must switch to the canonical state constants above.
@@ -38,11 +39,15 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
                   ▼                                              │
               Inspecting                                         │
                   │                                              │
-   Beskar7Machine │ patches inspection-request="inspect-complete"│
-                  │ after validating the report                  │
+   PhysicalHost   │ inspection-result ConfigMap consumed,        │
+   controller     │ report validated (inspection-complete signal)│
+                  ▼                                              │
+              Deploying  ── deployment-timeout ──► Error         │
+                  │                                              │
+   inspector      │ POSTs /api/v1/provisioned (202)              │
                   ▼                                              │
                 Ready  ───────────────────────────────────────► (deletion)
-                  
+
               ┌───────────────────────────┐
               │   Error  (any state)      │  recovers when the underlying
               └───────────────────────────┘  problem clears (e.g. BMC reachable)
@@ -55,11 +60,13 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
 | (no state) | `Available` | First successful Redfish reconcile, no `ConsumerRef`. | `physicalhost_controller.go:reconcileNormal` |
 | `Available` | `InUse` | A Beskar7Machine writes `Spec.ConsumerRef`. | `beskar7machine_controller.go:findAndClaimOrGetAssociatedHost` |
 | `InUse` | `Inspecting` | Beskar7Machine writes `inspection-request: inspect` annotation. | `beskar7machine_controller.go:triggerInspection` |
-| `Inspecting` | `Ready` | Beskar7Machine writes `inspection-request: inspect-complete` after hardware validation, OR the inspection-result ConfigMap is consumed and the report is good. | `beskar7machine_controller.go:validateInspectionReport`, `physicalhost_controller.go:applyInspectionResultAnnotation` |
-| `Inspecting` | `Error` | Inspection timeout (10 min default) — Beskar7Machine writes `inspection-request: timeout`. | `beskar7machine_controller.go:handleInspectingHost` |
+| `Inspecting` | `Deploying` | PhysicalHost controller consumes the inspection-result ConfigMap, validates the report, and advances the phase. Beskar7Machine then drives the state forward via `inspection-request: inspect-complete`. | `physicalhost_controller.go:applyInspectionResultAnnotation`, `beskar7machine_controller.go:validateInspectionReport` |
+| `Inspecting` | `Error` | Inspection timeout (`--inspection-timeout`, default 10 min) — Beskar7Machine writes `inspection-request: timeout`. | `beskar7machine_controller.go:handleInspectingHost` |
+| `Deploying` | `Ready` | Inspector POSTs `POST /api/v1/provisioned/{ns}/{host}` (§4.4 of `docs/inspector-contract.md`). The provisioned handler patches `ProvisionedRequestAnnotation`; the PhysicalHost reconciler transitions to `Ready` and clears the annotation. | `controllers/provisioned_handler.go`, `physicalhost_controller.go` |
+| `Deploying` | `Error` | Deployment timeout (`--deployment-timeout`, default 20 min, measured from `Status.DeployingTimestamp`). | `beskar7machine_controller.go:handleDeployingHost` |
 | any | `Error` | BMC unreachable, credentials missing, TLS-config conflict, Redfish query failed. | `physicalhost_controller.go:reconcileNormal` |
 | `Error` | `Available` | The underlying error clears (BMC reachable again, secret fixed, TLS config fixed). | `physicalhost_controller.go:reconcileNormal` |
-| `InUse` / `Inspecting` / `Ready` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
+| `InUse` / `Inspecting` / `Deploying` / `Ready` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
 
 ## Atomic claim
 
@@ -84,6 +91,7 @@ Annotations consumed by the `PhysicalHost` reconciler:
 | `infrastructure.cluster.x-k8s.io/bootstrap-url` | `Beskar7Machine` controller | Persist URL to `Status.Bootstrap.URL`. |
 | `infrastructure.cluster.x-k8s.io/bootstrap-token` | `Beskar7Machine` controller | Persist hash + lifetime to `Status.Bootstrap.{TokenHash,IssuedAt,ExpiresAt}`. |
 | `infrastructure.cluster.x-k8s.io/inspection-result-ref` | Inspection HTTP handler | Read referenced ConfigMap, persist the `InspectionReport`, mark `HostInspected=True`, delete the ConfigMap. |
+| `infrastructure.cluster.x-k8s.io/provisioned-request` | `ProvisionedHandler` (HTTP) | Transition `Status.State` from `Deploying` to `Ready` (D-015). Value: `"provisioned"`. Clear after action. |
 
 ## Recovery
 
@@ -107,6 +115,22 @@ kubectl get physicalhost <name> -o jsonpath='{.status.inspectionTimestamp}'
 ```
 
 If `inspectionTimestamp` is more than 10 minutes ago, the Beskar7Machine controller will mark `InspectionTimedOut` (terminal) and write `inspection-request: timeout`, which moves the host to `Error`. To recover, fix the underlying iPXE / inspection-image / network issue, then delete-and-recreate the `Beskar7Machine` (which deletes the BMC token Secret, clears `ConsumerRef`, and lets the host return to `Available`).
+
+### Stuck in `Deploying`
+
+The host entered `Deploying` (inspection passed and the inspector is writing the OS image) but the provisioned callback never arrived. Check `Status.DeployingTimestamp`:
+
+```bash
+kubectl get physicalhost <name> -o jsonpath='{.status.deployingTimestamp}'
+```
+
+If the timestamp is older than the `--deployment-timeout` (default 20 min), the Beskar7Machine controller will set `FailureReason=DeploymentTimedOut` on the `Beskar7Machine` and mark it failed. Common causes:
+
+- The OS image download is slow or stalled — check network reachability from the host to `Beskar7Machine.Spec.TargetImageURL`.
+- The inspector's TLS verification failed for the provisioned-callback endpoint — check that `beskar7.api` is externally reachable and that the certificate uses a two-tier PKI (CA cert distinct from the server cert; see the TLS note in `docs/inspector-contract.md` §8).
+- The inspector aborted after the disk write (e.g. digest mismatch, `COS_OEM` mount failure) — check the host's serial console or BMC event log.
+
+To recover, delete and recreate the `Beskar7Machine`. This clears `ConsumerRef`, releases the host to `Available`, and starts a fresh provision cycle with new nonce and token.
 
 ### Stuck in `Error`
 

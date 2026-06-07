@@ -6,7 +6,17 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
-*No unreleased work — see the per-tag entries below. Going forward, each released tag gets its own entry; this section stays empty between tags.*
+### Added
+- **`StateDeploying` phase** — `PhysicalHost` now transitions `Inspecting → Deploying` when the inspection report is accepted, and `Deploying → Ready` only when the inspector POSTs the provisioned-complete callback. `ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` on `Beskar7Machine` are set at `Ready` entry, not at inspection completion (D-015).
+- **`POST /api/v1/provisioned/{namespace}/{hostName}` callback endpoint** — bearer-gated HTTPS endpoint on `:8082`; the inspector calls it after the verified whole-disk write and `COS_OEM` inject, before `reboot(2)`. Returns `202 Accepted`. Implemented in `controllers/provisioned_handler.go`; route registered in `SetupCallbackServer` (D-015).
+- **`--deployment-timeout` manager flag** — bounds how long a host may stay in `Deploying` before the `Beskar7Machine` is marked terminally failed with `FailureReason=DeploymentTimedOut`. Default 20 min. Measured from `PhysicalHost.Status.DeployingTimestamp` (D-015).
+- **`PhysicalHost.Status.DeployingTimestamp`** — set by the `PhysicalHostReconciler` on the `Inspecting → Deploying` transition; used by the `Beskar7Machine` controller to enforce the deployment timeout (D-015).
+- **Inspector contract v4** — `docs/inspector-contract.md` bumped to v4; §4.4 documents the new `/provisioned` endpoint; §2 provisioning sequence updated; §9.1 step ordering updated; §11 open item on CAPI-bootstrap → Kairos mapping closed with the D-014 ruling (byte-verbatim, bootstrap provider owns the format).
+
+### Fixed
+- **`ClearBootSourceOverride` now sends `Target=NoneBootSourceOverrideTarget`** — previously sent `Enabled=Disabled` with no `BootSourceOverrideTarget`, which caused a `400` on real BMCs (Redfish requires the field). Corrected in `internal/redfish/gofish_client.go` (D-015 bonus fix).
+- **Inspection timeout no longer fires on a completed inspection** — `handleInspectingHost` now checks `InspectionPhase==Complete` before the timeout, so a completed-but-slow inspection is not spuriously failed `InspectionTimedOut` (D-015 finding #1).
+- **Bearer token lifetime extended to 60 min** — `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token before the provisioned callback fires on a slow deploy. `TokenLifetime` raised from 30 min to 60 min in `internal/auth/token.go` (SEC-D015-1).
 
 ## [v0.4.0-alpha.6] - 2026-05-29
 

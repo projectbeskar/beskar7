@@ -89,6 +89,60 @@ func TestDeriveInspectionURL(t *testing.T) {
 	}
 }
 
+func TestDeriveProvisionedURL(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		input       string
+		want        string
+		wantErrSubs string
+	}{
+		{
+			name:  "happy path",
+			input: "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/beskar7-smoke/smoke-host-01",
+			want:  "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/provisioned/beskar7-smoke/smoke-host-01",
+		},
+		{
+			name:  "replaces only the first occurrence",
+			input: "https://host:8082/api/v1/bootstrap/ns/name/api/v1/bootstrap/extra",
+			want:  "https://host:8082/api/v1/provisioned/ns/name/api/v1/bootstrap/extra",
+		},
+		{
+			name:        "missing bootstrap segment",
+			input:       "https://host:8082/api/v2/bootstrap/ns/name",
+			wantErrSubs: "does not contain",
+		},
+		{
+			name:        "empty URL",
+			input:       "",
+			wantErrSubs: "does not contain",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := deriveProvisionedURL(tc.input)
+			if tc.wantErrSubs != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErrSubs)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrSubs) {
+					t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErrSubs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // buildPayload
 // ---------------------------------------------------------------------------

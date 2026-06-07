@@ -194,6 +194,101 @@ func main() {
 	}
 
 	log.Printf("mock-inspector: inspection accepted for host %s/%s", namespace, hostName)
+
+	// Step 8 (contract v4 / D-015): after inspection the controller advances the
+	// host to StateDeploying and only sets StateReady/ProviderID once it receives
+	// the provisioning-complete callback. The real inspector POSTs /provisioned
+	// after writing the OS image + injecting the cloud-config; the mock simulates
+	// that here. We wait for StateDeploying first because the provisioned handler
+	// only transitions a host that is already Deploying (a callback that races
+	// ahead of the inspection→Deploying reconcile would be dropped).
+	provisionedURL, err := deriveProvisionedURL(bootstrapURL)
+	if err != nil {
+		log.Fatalf("derive provisioned URL: %v", err)
+	}
+	if err := waitForState(ctx, dynClient, namespace, hostName, 2*time.Minute, "Deploying", "Ready"); err != nil {
+		log.Fatalf("waiting for StateDeploying before provisioned callback: %v", err)
+	}
+	if err := postProvisioned(ctx, httpClient, provisionedURL, token); err != nil {
+		log.Fatalf("provisioned POST failed: %v", err)
+	}
+
+	log.Printf("mock-inspector: provisioned callback accepted for host %s/%s", namespace, hostName)
+}
+
+// deriveProvisionedURL swaps "/api/v1/bootstrap/" for "/api/v1/provisioned/" in
+// the bootstrap URL (contract v4). Returns an error if the bootstrap path
+// segment is absent.
+func deriveProvisionedURL(bootstrapURL string) (string, error) {
+	const (
+		bootstrapSeg   = "/api/v1/bootstrap/"
+		provisionedSeg = "/api/v1/provisioned/"
+	)
+	if !strings.Contains(bootstrapURL, bootstrapSeg) {
+		return "", fmt.Errorf("bootstrap URL %q does not contain %q; cannot derive provisioned URL", bootstrapURL, bootstrapSeg)
+	}
+	return strings.Replace(bootstrapURL, bootstrapSeg, provisionedSeg, 1), nil
+}
+
+// waitForState polls PhysicalHost.Status.State until it equals one of wantStates
+// or the timeout elapses.
+func waitForState(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	namespace, hostName string,
+	timeout time.Duration,
+	wantStates ...string,
+) error {
+	const pollInterval = 3 * time.Second
+	want := make(map[string]bool, len(wantStates))
+	for _, s := range wantStates {
+		want[s] = true
+	}
+	log.Printf("waiting up to %s for PhysicalHost %s/%s to reach state %v", timeout, namespace, hostName, wantStates)
+	deadline := time.Now().Add(timeout)
+	for {
+		ph, getErr := dynClient.Resource(physicalHostGVR).Namespace(namespace).Get(ctx, hostName, metav1.GetOptions{})
+		if getErr == nil {
+			if st := nestedString(ph.Object, "status", "state"); want[st] {
+				log.Printf("PhysicalHost %s/%s reached state %s", namespace, hostName, st)
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for PhysicalHost %s/%s to reach one of %v", namespace, hostName, wantStates)
+		}
+		time.Sleep(pollInterval)
+	}
+}
+
+// postProvisioned POSTs the contract-v4 provisioning-complete callback. The body
+// is the fixed advisory JSON the controller treats as advisory-only; the
+// authenticated POST itself is the signal. Returns an error on a non-2xx status.
+func postProvisioned(ctx context.Context, httpClient *http.Client, url, token string) error {
+	body := []byte(`{"status":"provisioned"}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.ContentLength = int64(len(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	log.Printf("POSTing provisioned callback to %s (tokenPresent: true)", url)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("provisioned POST returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	log.Printf("provisioned POST succeeded: status=%d", resp.StatusCode)
+	return nil
 }
 
 // buildRestConfig returns a *rest.Config from the provided kubeconfig path or,

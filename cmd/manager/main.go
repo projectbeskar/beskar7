@@ -82,6 +82,7 @@ func main() {
 	var inspectionCertDir string
 	var watchNamespacesRaw string
 	var inspectionTimeout time.Duration
+	var deploymentTimeout time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -123,6 +124,10 @@ func main() {
 		"How long a host may stay in the Inspecting phase before the Beskar7Machine is "+
 			"marked terminally failed (InspectionTimedOut). Raise this for hardware with "+
 			"slow BIOS POST or slow first-boot inspection.")
+	flag.DurationVar(&deploymentTimeout, "deployment-timeout", controllers.DefaultDeploymentTimeout,
+		"How long a host may stay in the Deploying phase before the Beskar7Machine is "+
+			"marked terminally failed (DeploymentTimedOut). Raise this for hardware with "+
+			"slow storage or very large OS images (D-015).")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -213,6 +218,7 @@ func main() {
 		Log:               ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
 		BootstrapURLBase:  bootstrapURLBase,
 		InspectionTimeout: inspectionTimeout,
+		DeploymentTimeout: deploymentTimeout,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)

@@ -3,7 +3,7 @@
 > **Audience:** Operators
 
 This guide explains how to set up the iPXE boot infrastructure required for
-Beskar7's network provisioning workflow under contract v2. Read it alongside
+Beskar7's network provisioning workflow under contract v4. Read it alongside
 `docs/inspector-contract.md`, which is the authoritative specification for every
 wire-protocol detail referenced here.
 
@@ -134,10 +134,14 @@ vector.
 The inspector runs in two phases (see `docs/inspector-contract.md` §9):
 
 - **Phase 1** (always): probe hardware, POST report to `/api/v1/inspection`, wait
-  for `202 Accepted`.
+  for `202 Accepted`. The controller advances the host to `StateDeploying`.
 - **Phase 2** (when bootstrap data is ready): GET `/api/v1/bootstrap`, stream the
   Kairos whole-disk raw image to the target disk (verifying its SHA-256), inject
-  the per-host cloud-config into `COS_OEM`, and reboot.
+  the per-host cloud-config into `COS_OEM`, POST the provisioned-complete callback
+  to `/api/v1/provisioned` (202 required), then reboot into the provisioned OS.
+  The controller sets `Beskar7Machine.Spec.ProviderID` + `Status.Ready` +
+  `Status.Initialization.Provisioned` only after receiving the provisioned
+  callback — not at inspection completion.
 
 Both callback requests are over verified TLS, using the CA delivered inline via
 `beskar7.ca`. The target image download (via `beskar7.target`) MAY be plain HTTP
@@ -150,7 +154,7 @@ because its integrity and authenticity come entirely from `beskar7.target-digest
 
 `beskar7.api` is the base URL of the controller's callback server. It MUST be
 reachable from bare-metal hosts on the provisioning network — it cannot be a
-cluster-internal name. The inspector runs with no DNS resolver in v2; an
+cluster-internal name. The inspector has no public DNS resolver; an
 **IP-literal** is strongly recommended (e.g. `https://192.0.2.10:8082`). If you
 use a hostname, your DHCP server must supply a working DNS server that resolves it
 at the time the inspector runs (§8.2 of `docs/inspector-contract.md`).
@@ -178,7 +182,7 @@ Common exposure options:
 | Chainload URL (`https://<api>/api/v1/boot/.../{nonce}`) | HTTPS mandatory | The nonce is in the URL; plain HTTP leaks it to an attacker before it is consumed |
 | Kernel (`vmlinuz`) and initrd (`initrd.img`) fetches | HTTPS mandatory | Plain HTTP allows OS-image MITM |
 | Target OS image (`beskar7.target`) | HTTP or HTTPS | Integrity comes from `beskar7.target-digest`; TLS is not the trust anchor here |
-| Callback (`/inspection`, `/bootstrap`) | HTTPS mandatory | The bootstrap endpoint returns the cluster join secret |
+| Callback (`/inspection`, `/bootstrap`, `/provisioned`) | HTTPS mandatory | The bootstrap endpoint returns the cluster join secret; the provisioned callback is bearer-gated by the same token |
 
 ---
 
@@ -521,7 +525,7 @@ MAC_TO_HOST = {
 
 # External address of the Beskar7 callback server.
 # Must be reachable from bare metal; use an IP-literal (the inspector has no
-# DNS resolver in v2 — see docs/inspector-contract.md §8.2).
+# DNS resolver; see docs/inspector-contract.md §8.2).
 BESKAR7_API = "https://192.0.2.10:8082"
 
 def get_nonce(namespace, host_name):
@@ -903,8 +907,8 @@ kubectl delete beskar7machine <name> -n <namespace>
 3. Is the `/boot` endpoint reachable from the provisioning network?
 4. Review the serial console for kernel panics or inspector error messages.
 5. Enable `beskar7.debug=true` in the boot parameters — not available via the CRD
-   in v2, but you can temporarily set it by patching `buildBootIPXEScript` in a
-   local build.
+   This is not currently a CRD field; you can temporarily enable it by patching
+   `buildBootIPXEScript` in a local build.
 
 ### Digest Verification Failures
 
