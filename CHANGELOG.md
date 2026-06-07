@@ -6,6 +6,11 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+- **`POST /api/v1/provision-failed/{namespace}/{hostName}` callback endpoint** (contract v4.1) — bearer-gated HTTPS endpoint on `:8082`; the inspector calls it when Phase 2 fails (image fetch, digest verify, disk write, or `COS_OEM` inject) before exiting, reporting the failure promptly instead of waiting out `--deployment-timeout` (up to 20 min). The `PhysicalHost` transitions `StateDeploying → StateError` immediately; the `Beskar7Machine` is marked `FailureReason=DeploymentFailed` with the sanitized inspector reason in `FailureMessage`. Backward-compatible: a v4 controller without the endpoint returns 404, which the v4.1 inspector tolerates. Implemented in `controllers/provision_failed_handler.go`; route registered in `SetupCallbackServer`.
+- **`DeploymentFailed` failure reason** — new `FailureReason` constant on `Beskar7Machine` (`DeploymentFailedReason = "DeploymentFailed"`), distinct from `DeploymentTimedOut` (timeout) and `PhysicalHostError` (Redfish/BMC-level error). The `StateError` handler in `Beskar7MachineReconciler` attributes the reason by inspecting the `PhysicalHost.Status.ErrorMessage` prefix set by the provision-failed handler.
+- **Inspector contract v4.1** — `docs/inspector-contract.md` bumped to v4.1; §4.5 documents the new `/provision-failed` endpoint; §2 provisioning sequence updated with the fast-fail path; §11 open item on provisioning-failure recovery closed.
+
 ## [v0.4.0-alpha.7] - 2026-06-07
 
 The "controller↔inspector contract" release: defines and ships the full provisioning contract (v1 → v4) between the Beskar7 controller and the new Rust `beskar7-inspector`, replacing the early kexec model with a digest-pinned whole-disk image handoff and a per-host iPXE boot/token flow with a provisioning-complete callback. Validated end-to-end on real bare metal: a blank host → `Ready` k3s node with `ProviderID` set.

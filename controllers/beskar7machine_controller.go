@@ -307,12 +307,20 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 
 	case infrastructurev1beta1.StateError:
 		logger.Error(nil, "PhysicalHost is in error state", "errorMessage", physicalHost.Status.ErrorMessage)
-		conditions.MarkFalse(b7machine, infrastructurev1beta1.InfrastructureReadyCondition,
-			infrastructurev1beta1.PhysicalHostErrorReason, clusterv1.ConditionSeverityError,
-			"PhysicalHost %q in error state: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
-		phase := "Failed"
-		b7machine.Status.Phase = &phase
-		b7machine.Status.Ready = false
+		// Distinguish a deploy-reported failure (inspector POST /provision-failed, v4.1) from
+		// a Redfish/BMC-level error. The provision-failed handler prefixes ErrorMessage with
+		// provisionFailedReasonPrefix; all other error paths do not use that prefix.
+		// Using the prefix as the discriminator keeps the distinction simple and avoids adding
+		// a new CRD field — the PhysicalHost.Status.ErrorMessage already carries the full
+		// sanitized reason that the operator needs to diagnose the failure.
+		reason := infrastructurev1beta1.PhysicalHostErrorReason
+		if strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix) {
+			reason = infrastructurev1beta1.DeploymentFailedReason
+		}
+		msg := fmt.Sprintf("PhysicalHost %q in error state: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
+		// markTerminalFailure sets FailureReason, FailureMessage, Phase=Failed, Ready=false,
+		// and marks InfrastructureReadyCondition=False in one call.
+		r.markTerminalFailure(b7machine, reason, msg)
 		return ctrl.Result{}, nil
 
 	default:
