@@ -358,6 +358,17 @@ evaluate correctly:
   from bare metal and a `.svc`-only cert forces operators toward insecure-skip —
   operators MUST override it (the manager SHOULD warn at startup if it is a
   `.svc` name).
+- **Serving-cert structure (the inspector verifies with rustls/webpki, which is
+  stricter than OpenSSL)**: the callback serving cert MUST be a non-CA **leaf**
+  (`basicConstraints: CA:FALSE`, `extendedKeyUsage: serverAuth`) issued by a
+  separate CA, and `beskar7.ca` MUST be that **issuing CA**, not the leaf. A
+  single self-signed cert that is its own CA (`CA:TRUE`) used as both the served
+  cert and `beskar7.ca` is **rejected** by the inspector at the TLS handshake
+  even though `curl`/OpenSSL accept it — webpki requires the end-entity to differ
+  from the trust anchor. cert-manager and the chart's self-signed path
+  (`genCA` + `genSignedCert`, with `ca.crt` in the secret so `/boot` sources the
+  CA, not the leaf) both satisfy this; a hand-rolled cert dir with only a
+  self-signed `tls.crt` and no `ca.crt` does NOT.
 - **Chainload hop**: the operator's boot infrastructure serves the per-host iPXE
   script (containing the `/boot/...{nonce}` URL) and the kernel/initrd. That hop
   MUST be HTTPS — it carries the nonce in the clear otherwise, and a plain-HTTP

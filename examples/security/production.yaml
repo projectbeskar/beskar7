@@ -1,4 +1,4 @@
-# Production-style security configuration for Beskar7 v0.4.0-alpha.6.
+# Production-style security configuration for Beskar7 v0.4.0-alpha.7.
 #
 # This file demonstrates the enforced security knobs only — the
 # beskar7-security-policy ConfigMap and the various "security framework"

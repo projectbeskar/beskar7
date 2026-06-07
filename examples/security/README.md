@@ -1,6 +1,6 @@
 # Beskar7 Security Examples
 
-Two short examples demonstrating the security knobs Beskar7 v0.4.0-alpha.6 actually enforces. The "comprehensive security framework" advertised in earlier drafts (a `beskar7-security-policy` ConfigMap, the `--enable-security-monitoring` flag, the `beskar7-security-monitor` CronJob, CIS/NIST/SOC 2 compliance scoring) was never implemented and has been removed.
+Two short examples demonstrating the security knobs Beskar7 v0.4.0-alpha.7 actually enforces. The "comprehensive security framework" advertised in earlier drafts (a `beskar7-security-policy` ConfigMap, the `--enable-security-monitoring` flag, the `beskar7-security-monitor` CronJob, CIS/NIST/SOC 2 compliance scoring) was never implemented and has been removed.
 
 ## What's actually enforced
 

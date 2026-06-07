@@ -378,8 +378,13 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 // subsequent inspection POST and bootstrap GET (§8). Preference order:
 //  1. ca.crt — written by cert-manager and the chart's self-signed path;
 //     a dedicated CA cert is the best choice.
-//  2. tls.crt — self-signed certificates are their own CA; fall back to it
-//     when ca.crt is absent.
+//  2. tls.crt — last-resort fallback when ca.crt is absent. NOTE: the Rust
+//     inspector verifies with rustls/webpki, which REJECTS a CA:TRUE cert
+//     presented as the end-entity. A single self-signed CA:TRUE cert used as
+//     both the served leaf and this CA fails the callback TLS handshake (even
+//     though curl/OpenSSL accept it). Always provide a dedicated ca.crt plus a
+//     non-CA leaf in tls.crt — cert-manager and the chart's self-signed path
+//     (genCA + genSignedCert) both do. See docs/inspector-contract.md §8.
 //
 // Returns the raw PEM bytes. An error here blocks manager startup so
 // misconfiguration is loud (fail at setup, not at first /boot request).

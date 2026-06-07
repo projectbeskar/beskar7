@@ -31,7 +31,7 @@ kustomize is pulled by the Makefile when needed.
 make docker-build docker-push IMG=my-registry/my-repo:dev
 ```
 
-The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.6`. Override it to push to your own registry.
+The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.7`. Override it to push to your own registry.
 
 ## Regenerate CRDs and RBAC
 

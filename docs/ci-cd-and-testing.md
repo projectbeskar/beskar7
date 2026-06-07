@@ -273,8 +273,8 @@ trivy image ghcr.io/projectbeskar/beskar7/beskar7:latest
 
 1. **Create Release Tag** — the current release line is `v0.4.0-alpha.N`; bump N for each release. Use a `vX.Y.Z` (or `vX.Y.Z-pre`) format the `release.yml` workflow recognises.
    ```bash
-   git tag v0.4.0-alpha.6
-   git push origin v0.4.0-alpha.6
+   git tag v0.4.0-alpha.7
+   git push origin v0.4.0-alpha.7
    ```
 
 2. **Automated Release** - GitHub Actions automatically:
