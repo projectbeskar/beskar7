@@ -48,8 +48,7 @@ spec:
     address: "https://bmc.internal.example.com"
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false
-    caBundleSecretRef:
-      name: bmc-ca-bundle
+    caBundleSecretRef: bmc-ca-bundle
 ```
 
 Cert-manager-driven equivalent (auto-rotates the CA Secret):

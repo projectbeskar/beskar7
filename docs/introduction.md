@@ -10,7 +10,7 @@ Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines.
 
 ## Beskar7Machine
 
-`Beskar7Machine` is the CAPI infrastructure-machine resource. One `Beskar7Machine` maps to one Kubernetes node. It finds a compatible `PhysicalHost`, claims it, triggers the inspection boot via Redfish + iPXE, validates the returned hardware report against `spec.hardwareRequirements`, and — once validation passes — kexecs into the target OS image. The provisioning workflow is driven by `spec.inspectionImageURL`, `spec.targetImageURL`, and `spec.configurationURL`. `Beskar7Machine` gets its bootstrap data (kubeadm join token, cloud-init, etc.) from the CAPI `Machine` object's `spec.bootstrap.dataSecretName`; the manager serves that data over HTTPS at `GET /api/v1/bootstrap/{namespace}/{name}`.
+`Beskar7Machine` is the CAPI infrastructure-machine resource. One `Beskar7Machine` maps to one Kubernetes node. It finds a compatible `PhysicalHost`, claims it, triggers the inspection boot via Redfish + iPXE, validates the returned hardware report against `spec.hardwareRequirements`, and — once validation passes — kexecs into the target OS image. The provisioning workflow is driven by `spec.inspectionImageURL` and `spec.targetImageURL`. `Beskar7Machine` gets its bootstrap data (kubeadm join token, cloud-init, etc.) from the CAPI `Machine` object's `spec.bootstrap.dataSecretName`; the manager serves that data over HTTPS at `GET /api/v1/bootstrap/{namespace}/{name}`.
 
 ## Beskar7MachineTemplate
 

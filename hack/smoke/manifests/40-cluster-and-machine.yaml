@@ -90,7 +90,6 @@ spec:
   # real image is fetched — so an all-zero placeholder digest satisfies
   # admission without implying a real artifact.
   targetImageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-  configurationURL: http://boot.example.invalid/configs/smoke.yaml
 ---
 # CAPI Machine with a PRE-BAKED bootstrap.dataSecretName. This bypasses the
 # KubeadmConfig generation flow (which waits for the control-plane node to

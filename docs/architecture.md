@@ -382,7 +382,6 @@ status:
 spec:
   inspectionImageURL: "http://boot-server/ipxe/inspect.ipxe"   # iPXE boot script or kernel/initrd
   targetImageURL:     "http://boot-server/images/kairos-v2.8.1.tar.gz"
-  configurationURL:   "http://boot-server/configs/worker-config.yaml"   # optional
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 8

@@ -851,7 +851,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		reqs := b7machine.Spec.HardwareRequirements
 
 		// Calculate total cores from all CPUs
-		totalCores := 0
+		var totalCores int32
 		for _, cpu := range report.CPUs {
 			totalCores += cpu.Cores
 		}
@@ -869,14 +869,14 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		}
 
 		// Calculate total memory from all DIMMs
-		totalMemoryGB := 0
+		var totalMemoryGB int32
 		for _, mem := range report.Memory {
 			memGB, err := parseMemoryCapacityGB(mem.Capacity)
 			if err != nil {
 				logger.Error(err, "Failed to parse memory capacity", "capacity", mem.Capacity)
 				continue
 			}
-			totalMemoryGB += memGB
+			totalMemoryGB += int32(memGB)
 		}
 
 		if reqs.MinMemoryGB > 0 && totalMemoryGB < reqs.MinMemoryGB {
@@ -887,7 +887,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		}
 
 		if reqs.MinDiskGB > 0 {
-			totalDisk := 0
+			var totalDisk int32
 			for _, disk := range report.Disks {
 				totalDisk += disk.SizeGB
 			}

@@ -19,7 +19,6 @@ For the full field reference, see [API Reference: Beskar7Machine](api-reference.
 spec:
   inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
   targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-  configurationURL:   "http://boot-server.local/configs/worker.yaml"   # optional
   hardwareRequirements:                                                 # optional
     minCPUCores: 4
     minMemoryGB: 8
@@ -27,7 +26,7 @@ spec:
   # providerID is set by the controller on claim — do not set manually
 ```
 
-All three URL fields must match `^https?://.*`. There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, or `configURL` — those v0.3 fields were removed in v0.4.
+Both URL fields must match `^https?://.*`. There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, `configURL` (removed v0.3 fields), or `configurationURL` (a dead, never-wired v0.4 field removed before GA).
 
 ## Reconcile flow
 
@@ -137,7 +136,6 @@ metadata:
 spec:
   inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
   targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-  configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 16

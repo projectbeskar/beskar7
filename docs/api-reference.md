@@ -56,7 +56,7 @@ Connection coordinates for the Redfish BMC.
 | `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`. |
 | `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys. Min length 1. |
 | `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. |
-| `caBundleSecretRef` | `*LocalObjectReference` | no | Reference to a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
+| `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
 
 When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`; the host is moved to `Error`.
 
@@ -112,7 +112,7 @@ The report is an array-of-structs shape — never a single flat object. Source: 
 
 `MemoryInfo`: `id`, `type`, `capacity` (string, e.g. `"32GB"` or `"32GiB"`; parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`), `speed`.
 
-`DiskInfo`: `name`, `model`, `sizeGB` (int), `type` (`SSD`/`HDD`/`NVMe`), `serialNumber`.
+`DiskInfo`: `name`, `model`, `sizeGB` (int32), `type` (`SSD`/`HDD`/`NVMe`), `serialNumber`.
 
 `NICInfo`: `name`, `macAddress`, `driver`, `speed`, `ipAddresses` (`[]string`).
 
@@ -178,18 +178,17 @@ kind: Beskar7Machine
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `providerID` | `*string` | no | Set by the controller when the host is claimed. Format: `b7://<namespace>/<name>`. Do not set manually. |
-| `inspectionImageURL` | string | yes | iPXE boot script URL or kernel/initrd URL for the inspection image. Validated against `^https?://.*`. |
+| `inspectionImageURL` | string | yes | Base URL serving the inspection image's boot artifacts. The controller renders an iPXE script that boots `<inspectionImageURL>/vmlinuz` with `<inspectionImageURL>/initrd.img` as the initrd. Validated against `^https?://[^\s]+$`. |
 | `targetImageURL` | string | yes | URL of the final OS image (kexec target). Validated against `^https?://.*`. |
-| `configurationURL` | string | no | URL passed to the target OS during kexec. Validated against `^https?://.*`. |
 | `hardwareRequirements` | `*HardwareRequirements` | no | Minimum hardware. The inspection report is validated against these; failures are terminal. |
 
 #### `HardwareRequirements`
 
 | Field | Type | Description |
 |---|---|---|
-| `minCPUCores` | int | Minimum CPU cores summed across all CPUs (`>= 1`). |
-| `minMemoryGB` | int | Minimum installed memory in decimal GB summed across all DIMMs (`>= 1`). The capacity parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`. |
-| `minDiskGB` | int | Minimum disk space summed across all disks (`>= 1`). |
+| `minCPUCores` | int32 | Minimum CPU cores summed across all CPUs (`>= 1`). |
+| `minMemoryGB` | int32 | Minimum installed memory in decimal GB summed across all DIMMs (`>= 1`). The capacity parser accepts `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB`. |
+| `minDiskGB` | int32 | Minimum disk space summed across all disks (`>= 1`). |
 
 If the inspection report does not meet any of these, the controller sets `Status.FailureReason = HardwareRequirementsNotMet` and `InfrastructureReady = False (Severity=Error)`. This is terminal — operator must lower requirements, allocate to different hardware, or delete-and-recreate.
 
@@ -234,7 +233,6 @@ metadata:
 spec:
   inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
   targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-  configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 16
@@ -271,7 +269,6 @@ spec:
     spec:
       inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
       targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-      configurationURL:   "http://boot-server.local/configs/worker.yaml"
       hardwareRequirements:
         minCPUCores: 4
         minMemoryGB: 8

@@ -120,8 +120,7 @@ spec:
     address: "http://<bmc-address>:<bmc-port>"
     credentialsSecretRef: "bmc-credentials"
     # insecureSkipVerify: true  # only for HTTPS BMCs without a trusted CA
-    # caBundleSecretRef:        # preferred over insecureSkipVerify for HTTPS BMCs
-    #   name: bmc-ca-bundle
+    # caBundleSecretRef: bmc-ca-bundle  # preferred over insecureSkipVerify for HTTPS BMCs
 
 ---
 # Beskar7Cluster — CAPI infra-cluster.

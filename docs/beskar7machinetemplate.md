@@ -25,7 +25,6 @@ spec:
       # Identical to Beskar7Machine.spec
       inspectionImageURL: ...
       targetImageURL: ...
-      configurationURL: ...
       hardwareRequirements:
         minCPUCores: ...
         minMemoryGB: ...
@@ -65,7 +64,6 @@ spec:
     spec:
       inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
       targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-      configurationURL:   "http://boot-server.local/configs/control-plane.yaml"
       hardwareRequirements:
         minCPUCores: 4
         minMemoryGB: 16
@@ -115,7 +113,6 @@ spec:
     spec:
       inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
       targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
-      configurationURL:   "http://boot-server.local/configs/worker.yaml"
       hardwareRequirements:
         minCPUCores: 4
         minMemoryGB: 8

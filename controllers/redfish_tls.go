@@ -39,7 +39,8 @@ const (
 
 // fetchRedfishCABundle returns PEM bytes from the BMC CA bundle Secret
 // referenced by host.Spec.RedfishConnection.CABundleSecretRef, or nil if no
-// such ref is set. The Secret must live in the same namespace as the host.
+// such ref is set (empty string). The Secret must live in the same namespace
+// as the host.
 //
 // Precedence: data["ca.crt"] is preferred; if absent, data["tls.crt"] is used.
 // If neither is present (or both are empty), returns an error so the caller
@@ -48,18 +49,18 @@ const (
 // The Secret data is non-sensitive (a public CA bundle), but we still avoid
 // logging it; the only diagnostic we emit is the byte length, via the caller.
 func fetchRedfishCABundle(ctx context.Context, c client.Reader, host *infrastructurev1beta1.PhysicalHost) ([]byte, error) {
-	ref := host.Spec.RedfishConnection.CABundleSecretRef
-	if ref == nil || ref.Name == "" {
+	name := host.Spec.RedfishConnection.CABundleSecretRef
+	if name == "" {
 		return nil, nil
 	}
 
 	secret := &corev1.Secret{}
-	key := types.NamespacedName{Namespace: host.Namespace, Name: ref.Name}
+	key := types.NamespacedName{Namespace: host.Namespace, Name: name}
 	if err := c.Get(ctx, key, secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("CA bundle secret %q not found in namespace %q", ref.Name, host.Namespace)
+			return nil, fmt.Errorf("CA bundle secret %q not found in namespace %q", name, host.Namespace)
 		}
-		return nil, fmt.Errorf("failed to get CA bundle secret %q: %w", ref.Name, err)
+		return nil, fmt.Errorf("failed to get CA bundle secret %q: %w", name, err)
 	}
 
 	if data, ok := secret.Data[caBundleKeyCA]; ok && len(data) > 0 {
@@ -69,15 +70,16 @@ func fetchRedfishCABundle(ctx context.Context, c client.Reader, host *infrastruc
 		return data, nil
 	}
 	return nil, fmt.Errorf("CA bundle secret %q has no usable %q or %q data key",
-		ref.Name, caBundleKeyCA, caBundleKeyTLS)
+		name, caBundleKeyCA, caBundleKeyTLS)
 }
 
 // validateRedfishTLSCombination rejects the (InsecureSkipVerify=true,
-// CABundleSecretRef!=nil) combination. The two are mutually exclusive: a custom
-// CA bundle and "skip verification" together is incoherent and almost certainly
-// an operator misconfiguration. Returns nil when the configuration is valid.
-func validateRedfishTLSCombination(insecure bool, caBundleRef *corev1.LocalObjectReference) error {
-	if insecure && caBundleRef != nil && caBundleRef.Name != "" {
+// CABundleSecretRef != "") combination. The two are mutually exclusive: a
+// custom CA bundle and "skip verification" together is incoherent and almost
+// certainly an operator misconfiguration. Returns nil when the configuration
+// is valid.
+func validateRedfishTLSCombination(insecure bool, caBundleSecretRef string) error {
+	if insecure && caBundleSecretRef != "" {
 		return fmt.Errorf(
 			"redfishConnection.insecureSkipVerify=true is mutually exclusive with caBundleSecretRef; choose one")
 	}

@@ -64,8 +64,7 @@ spec:
     address: "https://bmc.prod.example.com"
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false              # mutually exclusive with caBundleSecretRef
-    caBundleSecretRef:
-      name: bmc-ca-bundle
+    caBundleSecretRef: bmc-ca-bundle
 
 ---
 # Tighten the chart's NetworkPolicy egress to a known BMC subnet. Apply this

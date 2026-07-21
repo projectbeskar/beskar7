@@ -52,8 +52,7 @@ spec:
     address: "https://bmc.internal.example.com"
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false
-    caBundleSecretRef:
-      name: bmc-ca-bundle
+    caBundleSecretRef: bmc-ca-bundle
 ```
 
 The Secret data must include either a `ca.crt` (preferred) or `tls.crt` key. If both are present, `ca.crt` wins. Empty values are rejected with `CABundleFetchFailed`.
@@ -167,7 +166,7 @@ Source: `cmd/manager/main.go:135-145`.
 | What | How |
 |---|---|
 | Disable TLS verification on a single BMC (test only) | `PhysicalHost.spec.redfishConnection.insecureSkipVerify: true` |
-| Use a private CA on a BMC | `PhysicalHost.spec.redfishConnection.caBundleSecretRef.name: <secret>` |
+| Use a private CA on a BMC | `PhysicalHost.spec.redfishConnection.caBundleSecretRef: <secret>` |
 | Force-release a host whose BMC is dead | annotate the consuming Beskar7Machine: `infrastructure.cluster.x-k8s.io/force-release=true` |
 | Open metrics for plain-HTTP development | manager flag `--secure-metrics=false` |
 

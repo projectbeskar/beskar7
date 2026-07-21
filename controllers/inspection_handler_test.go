@@ -216,7 +216,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 			g.Expect(report.Model).To(Equal("Test-7000"))
 			g.Expect(report.SerialNumber).To(Equal("SN-12345"))
 			g.Expect(report.CPUs).To(HaveLen(1))
-			g.Expect(report.CPUs[0].Cores).To(Equal(8))
+			g.Expect(report.CPUs[0].Cores).To(Equal(int32(8)))
 			// Owner reference back to PhysicalHost so the CM is GC'd on host delete.
 			g.Expect(cm.OwnerReferences).NotTo(BeEmpty())
 			g.Expect(cm.OwnerReferences[0].Kind).To(Equal("PhysicalHost"))

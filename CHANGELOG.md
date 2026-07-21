@@ -6,6 +6,9 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING (API): v1beta1 pre-freeze cleanup toward v0.4.0 GA** — removed the dead `Beskar7Machine.Spec.configurationURL` field (consumed nowhere); normalized `PhysicalHost.Spec.redfishConnection.caBundleSecretRef` from an object (`{name: <secret>}`) to a bare `string`, matching the sibling `credentialsSecretRef`; changed `Beskar7Machine.Spec.hardwareRequirements` (`minCPUCores`/`minMemoryGB`/`minDiskGB`) and the `PhysicalHost` inspection ints (`cores`/`threads`/`sizeGB`) from `int` to `int32` (Kubernetes API convention); removed the dead `RedfishConnectionInfo` Go type; and corrected the `inspectionImageURL` field description (it is the base URL under which `vmlinuz`/`initrd.img` are served, not an iPXE boot script). **Action required:** any existing CR using `configurationURL` or the object-form `caBundleSecretRef` must be updated. Part of the API-stability freeze work.
+
 ## [v0.4.0-alpha.8] - 2026-07-21
 
 The "contract v4.1 + hardening" release: adds the provision-failed fast-fail callback so a failed Phase-2 deploy is surfaced immediately instead of waiting out the deployment timeout, documents the ProviderID/Node-association contract that takes a provisioned node all the way to a CAPI `Machine: Running`, and adds two regression guards (a Redfish read-robustness corpus and a structural RBAC drift guard).
