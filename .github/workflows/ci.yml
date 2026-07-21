@@ -92,7 +92,17 @@ jobs:
         
     - name: Install dependencies
       run: go mod download
-      
+
+    - name: Install Helm
+      # Required by test/rbac (SEC-2 RBAC drift guard): it shells out to
+      # `helm template` to render charts/beskar7 and compare the result
+      # against config/rbac/role.yaml. Without helm on PATH those sub-tests
+      # would just t.Skip — installing it here is what makes chart-vs-role.yaml
+      # drift actually fail this job instead of silently skipping.
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.12.1'
+
     - name: Set up envtest (etcd, kube-apiserver)
       run: |
         # setup-envtest is now a separate submodule inside controller-runtime;
