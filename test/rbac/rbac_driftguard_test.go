@@ -48,6 +48,7 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -385,4 +386,297 @@ func TestHelmChartNamespacedRBACMatchesGeneratedRole(t *testing.T) {
 	)
 
 	assertTriplesEqual(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns]: *-manager-clusterscope + *-manager-leaderelection + *-manager-watch)", want, got)
+}
+
+// ---------------------------------------------------------------------------
+// Binding / subject-graph guard (SEC-2 follow-up).
+//
+// The triple-set guards above prove every Role/ClusterRole carries the right
+// *rules*. They say nothing about whether that Role/ClusterRole is actually
+// *bound* to the manager's ServiceAccount: a RoleBinding with a stale
+// roleRef.name, or a subject with the wrong name/namespace, silently denies
+// the manager its permissions without tripping any rule-content check. This
+// section closes that gap by walking the binding graph directly.
+// ---------------------------------------------------------------------------
+
+// collectBindings walks a multi-document YAML stream and returns every
+// RoleBinding and ClusterRoleBinding object found, in document order.
+// Everything else is skipped by kind, mirroring collectRoles.
+func collectBindings(t *testing.T, raw []byte) (roleBindings []rbacv1.RoleBinding, clusterRoleBindings []rbacv1.ClusterRoleBinding) {
+	t.Helper()
+	for _, doc := range splitYAMLDocs(raw) {
+		var km struct {
+			Kind string `json:"kind"`
+		}
+		if err := yaml.Unmarshal(doc, &km); err != nil {
+			t.Fatalf("unmarshal document kind: %v\ndocument:\n%s", err, doc)
+		}
+		switch km.Kind {
+		case "RoleBinding":
+			var rb rbacv1.RoleBinding
+			if err := yaml.Unmarshal(doc, &rb); err != nil {
+				t.Fatalf("unmarshal RoleBinding: %v\ndocument:\n%s", err, doc)
+			}
+			roleBindings = append(roleBindings, rb)
+		case "ClusterRoleBinding":
+			var crb rbacv1.ClusterRoleBinding
+			if err := yaml.Unmarshal(doc, &crb); err != nil {
+				t.Fatalf("unmarshal ClusterRoleBinding: %v\ndocument:\n%s", err, doc)
+			}
+			clusterRoleBindings = append(clusterRoleBindings, crb)
+		}
+	}
+	return roleBindings, clusterRoleBindings
+}
+
+// findServiceAccount walks a multi-document YAML stream and returns the
+// single ServiceAccount object found. label identifies the source in
+// failure messages.
+func findServiceAccount(t *testing.T, raw []byte, label string) corev1.ServiceAccount {
+	t.Helper()
+	var found []corev1.ServiceAccount
+	for _, doc := range splitYAMLDocs(raw) {
+		var km struct {
+			Kind string `json:"kind"`
+		}
+		if err := yaml.Unmarshal(doc, &km); err != nil {
+			t.Fatalf("unmarshal document kind: %v\ndocument:\n%s", err, doc)
+		}
+		if km.Kind != "ServiceAccount" {
+			continue
+		}
+		var sa corev1.ServiceAccount
+		if err := yaml.Unmarshal(doc, &sa); err != nil {
+			t.Fatalf("unmarshal ServiceAccount: %v\ndocument:\n%s", err, doc)
+		}
+		found = append(found, sa)
+	}
+	if len(found) != 1 {
+		t.Fatalf("%s: expected exactly 1 ServiceAccount, found %d", label, len(found))
+	}
+	return found[0]
+}
+
+// bindingTarget identifies what a binding's roleRef resolves to: a role
+// kind ("Role" or "ClusterRole") and name. Namespace is set only for a
+// Role target (taken from the binding's own namespace, since a RoleBinding
+// can only reference a Role that lives alongside it) — ClusterRole targets
+// are cluster-scoped and carry no namespace.
+type bindingTarget struct {
+	Kind      string
+	Name      string
+	Namespace string
+}
+
+func (bt bindingTarget) String() string {
+	if bt.Namespace == "" {
+		return fmt.Sprintf("%s/%s", bt.Kind, bt.Name)
+	}
+	return fmt.Sprintf("%s/%s/%s", bt.Kind, bt.Namespace, bt.Name)
+}
+
+// roleTargetSet returns the bindingTarget for every collected Role and
+// ClusterRole — the set of roles that must each be bound exactly once.
+func roleTargetSet(clusterRoles []rbacv1.ClusterRole, roles []rbacv1.Role) map[bindingTarget]struct{} {
+	out := make(map[bindingTarget]struct{})
+	for _, cr := range clusterRoles {
+		out[bindingTarget{Kind: "ClusterRole", Name: cr.Name}] = struct{}{}
+	}
+	for _, r := range roles {
+		out[bindingTarget{Kind: "Role", Name: r.Name, Namespace: r.Namespace}] = struct{}{}
+	}
+	return out
+}
+
+// bindingDescriptor pairs a human-readable binding identity with the
+// bindingTarget its roleRef resolves to and its raw subjects.
+type bindingDescriptor struct {
+	Label    string
+	Target   bindingTarget
+	Subjects []rbacv1.Subject
+}
+
+func describeBindings(roleBindings []rbacv1.RoleBinding, clusterRoleBindings []rbacv1.ClusterRoleBinding) []bindingDescriptor {
+	out := make([]bindingDescriptor, 0, len(roleBindings)+len(clusterRoleBindings))
+	for _, rb := range roleBindings {
+		ns := ""
+		if rb.RoleRef.Kind == "Role" {
+			ns = rb.Namespace
+		}
+		out = append(out, bindingDescriptor{
+			Label:    fmt.Sprintf("RoleBinding/%s/%s", rb.Namespace, rb.Name),
+			Target:   bindingTarget{Kind: rb.RoleRef.Kind, Name: rb.RoleRef.Name, Namespace: ns},
+			Subjects: rb.Subjects,
+		})
+	}
+	for _, crb := range clusterRoleBindings {
+		out = append(out, bindingDescriptor{
+			Label:    fmt.Sprintf("ClusterRoleBinding/%s", crb.Name),
+			Target:   bindingTarget{Kind: crb.RoleRef.Kind, Name: crb.RoleRef.Name},
+			Subjects: crb.Subjects,
+		})
+	}
+	return out
+}
+
+func hasManagerSASubject(subjects []rbacv1.Subject, sa corev1.ServiceAccount) bool {
+	for _, s := range subjects {
+		if s.Kind == "ServiceAccount" && s.Name == sa.Name && s.Namespace == sa.Namespace {
+			return true
+		}
+	}
+	return false
+}
+
+func subjectsString(subjects []rbacv1.Subject) string {
+	if len(subjects) == 0 {
+		return "(none)"
+	}
+	parts := make([]string, len(subjects))
+	for i, s := range subjects {
+		parts[i] = fmt.Sprintf("%s/%s/%s", s.Kind, s.Namespace, s.Name)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// assertBindingsWireRolesToSA enforces the binding-graph invariant for one
+// RBAC topology: every Role/ClusterRole in clusterRoles+roles must be bound
+// to sa by exactly one of roleBindings+clusterRoleBindings, with no
+// dangling roleRef (a binding pointing at a role that doesn't exist) and no
+// wrong-identity subject.
+func assertBindingsWireRolesToSA(
+	t *testing.T,
+	label string,
+	clusterRoles []rbacv1.ClusterRole,
+	roles []rbacv1.Role,
+	roleBindings []rbacv1.RoleBinding,
+	clusterRoleBindings []rbacv1.ClusterRoleBinding,
+	sa corev1.ServiceAccount,
+) {
+	t.Helper()
+	targets := roleTargetSet(clusterRoles, roles)
+	bindings := describeBindings(roleBindings, clusterRoleBindings)
+
+	var errs []string
+
+	// Dangling roleRef: a binding whose target isn't a role we collected.
+	boundBy := make(map[bindingTarget][]bindingDescriptor)
+	for _, b := range bindings {
+		if _, ok := targets[b.Target]; !ok {
+			errs = append(errs, fmt.Sprintf("%s has roleRef %s, which does not match any known Role/ClusterRole (dangling roleRef)", b.Label, b.Target))
+			continue
+		}
+		boundBy[b.Target] = append(boundBy[b.Target], b)
+	}
+
+	// Unbound roles, multiply-bound roles, and subject correctness.
+	for target := range targets {
+		bs := boundBy[target]
+		switch len(bs) {
+		case 0:
+			errs = append(errs, fmt.Sprintf("%s has no binding pointing at it (unbound role)", target))
+		case 1:
+			b := bs[0]
+			if !hasManagerSASubject(b.Subjects, sa) {
+				errs = append(errs, fmt.Sprintf("%s is bound by %s, but it has no ServiceAccount subject matching the manager SA %s/%s (subjects found: %s)", target, b.Label, sa.Namespace, sa.Name, subjectsString(b.Subjects)))
+			}
+		default:
+			names := make([]string, len(bs))
+			for i, b := range bs {
+				names[i] = b.Label
+			}
+			sort.Strings(names)
+			errs = append(errs, fmt.Sprintf("%s is bound by %d bindings (expected exactly 1): %s", target, len(bs), strings.Join(names, ", ")))
+		}
+	}
+
+	if len(errs) == 0 {
+		return
+	}
+	sort.Strings(errs)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "RBAC binding-graph drift in %s (manager ServiceAccount %s/%s):\n", label, sa.Namespace, sa.Name)
+	for _, e := range errs {
+		fmt.Fprintf(&sb, "  - %s\n", e)
+	}
+	t.Error(sb.String())
+}
+
+// TestKustomizeRBACBindingsWireToManagerSA is the binding-graph counterpart
+// to TestKustomizeRBACMatchesGeneratedRole: it proves every Role/ClusterRole
+// in both kustomize topologies (cluster-wide config/rbac/, and the
+// namespace-scoped overlay) is actually bound to the manager ServiceAccount,
+// not just that the rule content matches. Pure Go, no external tooling —
+// must always run.
+func TestKustomizeRBACBindingsWireToManagerSA(t *testing.T) {
+	root := repoRoot(t)
+	saRaw := mustReadFile(t, filepath.Join(root, "config", "rbac", "service_account.yaml"))
+	sa := findServiceAccount(t, saRaw, "config/rbac/service_account.yaml")
+
+	t.Run("cluster-wide", func(t *testing.T) {
+		roleRaw := mustReadFile(t, filepath.Join(root, "config", "rbac", "role.yaml"))
+		bindingRaw := mustReadFile(t, filepath.Join(root, "config", "rbac", "role_binding.yaml"))
+		crs, roles := collectRoles(t, roleRaw)
+		rbs, crbs := collectBindings(t, bindingRaw)
+		assertBindingsWireRolesToSA(t, "cluster-wide kustomize (config/rbac/role.yaml + role_binding.yaml)", crs, roles, rbs, crbs, sa)
+	})
+
+	t.Run("namespace-scoped", func(t *testing.T) {
+		overlayDir := filepath.Join(root, "config", "rbac", "namespace-scoped")
+		minimalRaw := mustReadFile(t, filepath.Join(overlayDir, "minimal-clusterrole.yaml"))
+		leaderRaw := mustReadFile(t, filepath.Join(overlayDir, "leader-election-role.yaml"))
+		watchRaw := mustReadFile(t, filepath.Join(overlayDir, "watch-role.template.yaml"))
+		watchRaw = bytes.ReplaceAll(watchRaw, []byte("REPLACE_WITH_WATCHED_NAMESPACE"), []byte("dummy-namespace"))
+
+		var crs []rbacv1.ClusterRole
+		var roles []rbacv1.Role
+		var rbs []rbacv1.RoleBinding
+		var crbs []rbacv1.ClusterRoleBinding
+		for _, raw := range [][]byte{minimalRaw, leaderRaw, watchRaw} {
+			c, r := collectRoles(t, raw)
+			crs = append(crs, c...)
+			roles = append(roles, r...)
+			rb, crb := collectBindings(t, raw)
+			rbs = append(rbs, rb...)
+			crbs = append(crbs, crb...)
+		}
+		assertBindingsWireRolesToSA(t, "kustomize namespace-scoped overlay (config/rbac/namespace-scoped/, watched namespace substituted for the template placeholder)", crs, roles, rbs, crbs, sa)
+	})
+}
+
+// TestHelmChartRBACBindingsWireToManagerSA is the binding-graph counterpart
+// to the two Helm chart triple-set tests: it proves every rendered
+// Role/ClusterRole, in both the cluster-wide (watchNamespaces empty) and
+// namespaced (watchNamespaces set) branches, is bound to the chart's own
+// rendered ServiceAccount — read from the render itself, never hardcoded,
+// since the SA name is templated on the release name.
+//
+// Rendered with an explicit --namespace so beskar7.namespace (which falls
+// back to .Release.Namespace when .Values.namespace.create is false, the
+// chart default) resolves deterministically instead of to whatever the
+// local `helm template` default release namespace happens to be.
+//
+// Same helm-availability caveat as the triple-set chart tests: skips
+// locally without helm, always runs in CI (see .github/workflows/ci.yml).
+func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
+	if !helmAvailable() {
+		t.Skip("helm not found on PATH; skipping chart binding-graph check (CI installs helm for this job; see .github/workflows/ci.yml)")
+	}
+	root := repoRoot(t)
+
+	t.Run("cluster-wide", func(t *testing.T) {
+		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system")
+		crs, roles := collectRoles(t, rendered)
+		rbs, crbs := collectBindings(t, rendered)
+		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces empty)")
+		assertBindingsWireRolesToSA(t, "Helm chart cluster-wide branch (watchNamespaces empty)", crs, roles, rbs, crbs, sa)
+	})
+
+	t.Run("namespaced", func(t *testing.T) {
+		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system", "--set", "watchNamespaces={rbac-driftguard-test-ns}")
+		crs, roles := collectRoles(t, rendered)
+		rbs, crbs := collectBindings(t, rendered)
+		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces=[rbac-driftguard-test-ns])")
+		assertBindingsWireRolesToSA(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns])", crs, roles, rbs, crbs, sa)
+	})
 }
