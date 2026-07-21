@@ -26,8 +26,8 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.0-alpha.6  
-**Status:** Alpha - Under active development. API may still change before v0.4.0 GA.  
+**Version:** v0.4.0-alpha.8  
+**Status:** Alpha (pre-GA). The `v1beta1` API is **frozen** — no further breaking changes; the schema evolves **additive-only** until a future `v1beta2` (introduced with a conversion webhook) is needed.  
 **Breaking Changes:** v0.4.0 is NOT compatible with v0.3.x ([see CHANGELOG](CHANGELOG.md))
 
 ## Installation
