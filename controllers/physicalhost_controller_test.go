@@ -360,9 +360,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			conflictPh := physicalHost.DeepCopy()
 			conflictPh.Name = "tls-conflict-host"
 			conflictPh.Spec.RedfishConnection.InsecureSkipVerify = &insecure
-			conflictPh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
-				Name: "irrelevant-bundle",
-			}
+			conflictPh.Spec.RedfishConnection.CABundleSecretRef = "irrelevant-bundle"
 
 			// Build a reconciler whose factory would panic if invoked — we want to
 			// prove the conflict gate fires BEFORE the factory.
@@ -420,9 +418,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Creating a host that references the CA bundle")
 			withBundlePh := physicalHost.DeepCopy()
 			withBundlePh.Name = "with-ca-bundle-host"
-			withBundlePh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
-				Name: caSecret.Name,
-			}
+			withBundlePh.Spec.RedfishConnection.CABundleSecretRef = caSecret.Name
 
 			var observedBundle []byte
 			withBundleReconciler := &PhysicalHostReconciler{
@@ -454,9 +450,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Creating a host that references a non-existent CA bundle")
 			missingBundlePh := physicalHost.DeepCopy()
 			missingBundlePh.Name = "missing-ca-bundle-host"
-			missingBundlePh.Spec.RedfishConnection.CABundleSecretRef = &corev1.LocalObjectReference{
-				Name: "ghost-bundle",
-			}
+			missingBundlePh.Spec.RedfishConnection.CABundleSecretRef = "ghost-bundle"
 
 			factoryCalled := false
 			missingBundleReconciler := &PhysicalHostReconciler{

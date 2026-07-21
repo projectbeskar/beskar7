@@ -196,7 +196,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		insecure = *physicalHost.Spec.RedfishConnection.InsecureSkipVerify
 	}
 
-	// Reject the (insecure=true, caBundleSecretRef!=nil) combination terminally.
+	// Reject the (insecure=true, caBundleSecretRef!="") combination terminally.
 	// There is no PhysicalHost validating webhook, so this is the gate; we set a
 	// clear condition + ErrorMessage and stop reconciling rather than silently
 	// picking one side of the conflict. Returning a non-error result with a
@@ -211,7 +211,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
-	// Fetch optional CA bundle (returns nil bytes when CABundleSecretRef is unset).
+	// Fetch optional CA bundle (returns nil bytes when CABundleSecretRef is "").
 	caBundle, err := fetchRedfishCABundle(ctx, r.Client, physicalHost)
 	if err != nil {
 		logger.Error(err, "Failed to fetch Redfish CA bundle")

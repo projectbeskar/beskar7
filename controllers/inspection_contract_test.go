@@ -176,7 +176,7 @@ func TestInspectorReportContract(t *testing.T) {
 		}
 		report := buildInspectionReport(req)
 
-		totalCores := 0
+		var totalCores int32
 		for _, c := range report.CPUs {
 			totalCores += c.Cores
 		}
@@ -200,7 +200,7 @@ func TestInspectorReportContract(t *testing.T) {
 			t.Errorf("total memory: got %d GB, want %d GB", totalMem, goldenTotalMemoryGB)
 		}
 
-		totalDisk := 0
+		var totalDisk int32
 		for _, d := range report.Disks {
 			totalDisk += d.SizeGB
 		}

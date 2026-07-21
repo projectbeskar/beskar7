@@ -73,8 +73,13 @@ type Beskar7MachineSpec struct {
 	// +optional
 	ProviderID *string `json:"providerID,omitempty"`
 
-	// InspectionImageURL is the iPXE boot script URL that boots the inspection image.
-	// The inspection image will collect hardware information and report back to Beskar7.
+	// InspectionImageURL is the base URL of a location serving the inspection
+	// image's boot artifacts. The controller renders an iPXE script that boots
+	// "<InspectionImageURL>/vmlinuz" with "<InspectionImageURL>/initrd.img" as
+	// the initrd (contract v2+ §4.1; see controllers/boot_handler.go). It is
+	// not itself an iPXE script or a single kernel/initrd URL — both artifacts
+	// must be reachable under this one base URL. The inspection image collects
+	// hardware information and reports it back to Beskar7.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^https?://[^\\s]+$"
 	InspectionImageURL string `json:"inspectionImageURL"`
@@ -140,12 +145,6 @@ type Beskar7MachineSpec struct {
 	// +optional
 	StaticIP *string `json:"staticIP,omitempty"`
 
-	// ConfigurationURL is an optional URL for OS-specific configuration.
-	// The inspection image will pass this to the target OS during kexec.
-	// +kubebuilder:validation:Pattern="^https?://.*"
-	// +optional
-	ConfigurationURL string `json:"configurationURL,omitempty"`
-
 	// HardwareRequirements specifies minimum hardware requirements for this machine.
 	// The inspection phase will validate against these requirements.
 	// +optional
@@ -157,17 +156,17 @@ type HardwareRequirements struct {
 	// MinCPUCores is the minimum number of CPU cores required.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	MinCPUCores int `json:"minCPUCores,omitempty"`
+	MinCPUCores int32 `json:"minCPUCores,omitempty"`
 
 	// MinMemoryGB is the minimum amount of memory in GB required.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	MinMemoryGB int `json:"minMemoryGB,omitempty"`
+	MinMemoryGB int32 `json:"minMemoryGB,omitempty"`
 
 	// MinDiskGB is the minimum disk space in GB required.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
-	MinDiskGB int `json:"minDiskGB,omitempty"`
+	MinDiskGB int32 `json:"minDiskGB,omitempty"`
 }
 
 // Beskar7MachineInitializationStatus carries CAPI v1beta2 contract fields

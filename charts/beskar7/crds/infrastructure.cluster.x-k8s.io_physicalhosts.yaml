@@ -70,12 +70,7 @@ spec:
                     pattern: ^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$
                     type: string
                   caBundleSecretRef:
-                    properties:
-                      name:
-                        default: ""
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
+                    type: string
                   credentialsSecretRef:
                     minLength: 1
                     type: string
@@ -194,6 +189,7 @@ spec:
                     items:
                       properties:
                         cores:
+                          format: int32
                           type: integer
                         frequency:
                           type: string
@@ -202,6 +198,7 @@ spec:
                         model:
                           type: string
                         threads:
+                          format: int32
                           type: integer
                         vendor:
                           type: string
@@ -217,6 +214,7 @@ spec:
                         serialNumber:
                           type: string
                         sizeGB:
+                          format: int32
                           type: integer
                         type:
                           type: string

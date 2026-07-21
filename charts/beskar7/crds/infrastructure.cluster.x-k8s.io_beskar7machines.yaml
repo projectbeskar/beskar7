@@ -48,18 +48,18 @@ spec:
             type: object
           spec:
             properties:
-              configurationURL:
-                pattern: ^https?://.*
-                type: string
               hardwareRequirements:
                 properties:
                   minCPUCores:
+                    format: int32
                     minimum: 1
                     type: integer
                   minDiskGB:
+                    format: int32
                     minimum: 1
                     type: integer
                   minMemoryGB:
+                    format: int32
                     minimum: 1
                     type: integer
                 type: object

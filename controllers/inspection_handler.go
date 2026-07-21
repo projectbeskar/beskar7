@@ -110,8 +110,8 @@ type CPUData struct {
 	ID        string `json:"id,omitempty"`
 	Vendor    string `json:"vendor,omitempty"`
 	Model     string `json:"model,omitempty"`
-	Cores     int    `json:"cores,omitempty"`
-	Threads   int    `json:"threads,omitempty"`
+	Cores     int32  `json:"cores,omitempty"`
+	Threads   int32  `json:"threads,omitempty"`
 	Frequency string `json:"frequency,omitempty"`
 }
 
@@ -125,7 +125,7 @@ type MemData struct {
 type DiskData struct {
 	Name         string `json:"name,omitempty"`
 	Model        string `json:"model,omitempty"`
-	SizeGB       int    `json:"sizeGB,omitempty"`
+	SizeGB       int32  `json:"sizeGB,omitempty"`
 	Type         string `json:"type,omitempty"`
 	SerialNumber string `json:"serialNumber,omitempty"`
 }

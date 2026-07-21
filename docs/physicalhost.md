@@ -22,8 +22,7 @@ spec:
     address: "https://192.168.1.100"
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false        # default
-    # caBundleSecretRef:             # optional, mutually exclusive with insecureSkipVerify=true
-    #   name: bmc-ca-bundle
+    # caBundleSecretRef: bmc-ca-bundle  # optional, mutually exclusive with insecureSkipVerify=true
   # consumerRef is set by the Beskar7Machine controller; do not set manually
 ```
 

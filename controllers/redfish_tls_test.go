@@ -81,7 +81,7 @@ func TestFetchRedfishCABundle_PrefersCACrt(t *testing.T) {
 			RedfishConnection: infrastructurev1beta1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
-				CABundleSecretRef:    &corev1.LocalObjectReference{Name: "ca-bundle"},
+				CABundleSecretRef:    "ca-bundle",
 			},
 		},
 	}
@@ -110,7 +110,7 @@ func TestFetchRedfishCABundle_FallsBackToTLSCrt(t *testing.T) {
 			RedfishConnection: infrastructurev1beta1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
-				CABundleSecretRef:    &corev1.LocalObjectReference{Name: "ca-bundle"},
+				CABundleSecretRef:    "ca-bundle",
 			},
 		},
 	}
@@ -132,7 +132,7 @@ func TestFetchRedfishCABundle_SecretMissing(t *testing.T) {
 			RedfishConnection: infrastructurev1beta1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
-				CABundleSecretRef:    &corev1.LocalObjectReference{Name: "missing"},
+				CABundleSecretRef:    "missing",
 			},
 		},
 	}
@@ -162,7 +162,7 @@ func TestFetchRedfishCABundle_NoUsableKeys(t *testing.T) {
 			RedfishConnection: infrastructurev1beta1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
-				CABundleSecretRef:    &corev1.LocalObjectReference{Name: "ca-bundle"},
+				CABundleSecretRef:    "ca-bundle",
 			},
 		},
 	}
@@ -196,7 +196,7 @@ func TestFetchRedfishCABundle_EmptyDataValue(t *testing.T) {
 			RedfishConnection: infrastructurev1beta1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
-				CABundleSecretRef:    &corev1.LocalObjectReference{Name: "ca-bundle"},
+				CABundleSecretRef:    "ca-bundle",
 			},
 		},
 	}
@@ -211,16 +211,14 @@ func TestValidateRedfishTLSCombination(t *testing.T) {
 	cases := []struct {
 		name      string
 		insecure  bool
-		bundleRef *corev1.LocalObjectReference
+		bundleRef string
 		wantErr   bool
 	}{
-		{name: "neither", insecure: false, bundleRef: nil, wantErr: false},
-		{name: "insecure-only", insecure: true, bundleRef: nil, wantErr: false},
-		{name: "bundle-only", insecure: false, bundleRef: &corev1.LocalObjectReference{Name: "b"}, wantErr: false},
-		{name: "both-rejected", insecure: true, bundleRef: &corev1.LocalObjectReference{Name: "b"}, wantErr: true},
-		// Empty-name LocalObjectReference is treated as "no ref" — defensive
-		// behaviour for callers who construct an empty reference object.
-		{name: "insecure-and-empty-ref", insecure: true, bundleRef: &corev1.LocalObjectReference{Name: ""}, wantErr: false},
+		{name: "neither", insecure: false, bundleRef: "", wantErr: false},
+		// Empty-string ref is treated as "no ref" even when insecure=true.
+		{name: "insecure-only", insecure: true, bundleRef: "", wantErr: false},
+		{name: "bundle-only", insecure: false, bundleRef: "b", wantErr: false},
+		{name: "both-rejected", insecure: true, bundleRef: "b", wantErr: true},
 	}
 	for _, tc := range cases {
 		tc := tc
