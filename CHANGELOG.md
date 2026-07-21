@@ -6,10 +6,22 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.0-alpha.8] - 2026-07-21
+
+The "contract v4.1 + hardening" release: adds the provision-failed fast-fail callback so a failed Phase-2 deploy is surfaced immediately instead of waiting out the deployment timeout, documents the ProviderID/Node-association contract that takes a provisioned node all the way to a CAPI `Machine: Running`, and adds two regression guards (a Redfish read-robustness corpus and a structural RBAC drift guard).
+
 ### Added
 - **`POST /api/v1/provision-failed/{namespace}/{hostName}` callback endpoint** (contract v4.1) — bearer-gated HTTPS endpoint on `:8082`; the inspector calls it when Phase 2 fails (image fetch, digest verify, disk write, or `COS_OEM` inject) before exiting, reporting the failure promptly instead of waiting out `--deployment-timeout` (up to 20 min). The `PhysicalHost` transitions `StateDeploying → StateError` immediately; the `Beskar7Machine` is marked `FailureReason=DeploymentFailed` with the sanitized inspector reason in `FailureMessage`. Backward-compatible: a v4 controller without the endpoint returns 404, which the v4.1 inspector tolerates. Implemented in `controllers/provision_failed_handler.go`; route registered in `SetupCallbackServer`.
 - **`DeploymentFailed` failure reason** — new `FailureReason` constant on `Beskar7Machine` (`DeploymentFailedReason = "DeploymentFailed"`), distinct from `DeploymentTimedOut` (timeout) and `PhysicalHostError` (Redfish/BMC-level error). The `StateError` handler in `Beskar7MachineReconciler` attributes the reason by inspecting the `PhysicalHost.Status.ErrorMessage` prefix set by the provision-failed handler.
 - **Inspector contract v4.1** — `docs/inspector-contract.md` bumped to v4.1; §4.5 documents the new `/provision-failed` endpoint; §2 provisioning sequence updated with the fast-fail path; §11 open item on provisioning-failure recovery closed.
+
+### Docs
+- **ProviderID / Node-association contract (D-014 P1)** (#128) — new "ProviderID & Node association" section in `docs/beskar7machine.md` with per-distro `kubelet` `--provider-id` snippets (k3s proven, kubeadm, k0s/generic), a troubleshooting entry ("CAPI Machine stuck at `Provisioned`, never reaches `Running`"), and the `provider-id` line made default-on in `examples/kairos-k3s-node.yaml`. Covers the explicitly-authored per-machine case; the scaled `MachineDeployment` case is noted as future work (D-014 P2).
+
+### Internal
+- **Structural RBAC drift guard** (SEC-2, #129) — `test/rbac` asserts the hand-authored RBAC copies (Helm chart both `watchNamespaces` branches + the `config/rbac/namespace-scoped/` kustomize overlay) carry the same `(apiGroup, resource, verb)` rule-set as the controller-gen `config/rbac/role.yaml`, failing CI on either over- or under-grant. CI installs `helm` in the unit-test job so the chart checks run rather than skip.
+- **Redfish read-robustness corpus** (TEST-1, #127) — vendored a curated subset of the DMTF `public-rackmount1` mockup under `internal/redfish/testdata/corpus/` plus a static handler and `corpus_robustness_test.go` that points the real gofish client at it, exercising the `GetSystemInfo`/`GetPowerState`/`GetNetworkAddresses` read paths. Complements (does not replace) the stateful `internal/redfishmock` fake.
+- **`defaultCloseTimeout` const** (MEDIUM-2, #126) — extracted the Redfish `Close`/logout timeout literal to a named const in `internal/redfish/gofish_client.go`; no behavior change.
 
 ## [v0.4.0-alpha.7] - 2026-06-07
 
