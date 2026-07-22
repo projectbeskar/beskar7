@@ -132,7 +132,7 @@ func LifetimeFor(now time.Time) (issuedAt, expiresAt metav1.Time) {
 // PhysicalHost.Status.Bootstrap when a boot nonce is minted at the given
 // instant. The nonce has no issuedAt field in Status — only expiresAt and the
 // consumed marker matter for the validity check. Uses BootNonceLifetime (10 min)
-// rather than TokenLifetime (30 min) because the nonce is single-use.
+// rather than TokenLifetime (60 min) because the nonce is single-use.
 func NonceLifetimeFor(now time.Time) (expiresAt metav1.Time) {
 	return metav1.NewTime(now.Add(BootNonceLifetime))
 }
