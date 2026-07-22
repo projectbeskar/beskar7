@@ -10,7 +10,7 @@ Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines.
 
 ## Beskar7Machine
 
-`Beskar7Machine` is the CAPI infrastructure-machine resource. One `Beskar7Machine` maps to one Kubernetes node. It finds a compatible `PhysicalHost`, claims it, triggers the inspection boot via Redfish + iPXE, validates the returned hardware report against `spec.hardwareRequirements`, and — once validation passes — kexecs into the target OS image. The provisioning workflow is driven by `spec.inspectionImageURL` and `spec.targetImageURL`. `Beskar7Machine` gets its bootstrap data (kubeadm join token, cloud-init, etc.) from the CAPI `Machine` object's `spec.bootstrap.dataSecretName`; the manager serves that data over HTTPS at `GET /api/v1/bootstrap/{namespace}/{name}`.
+`Beskar7Machine` is the CAPI infrastructure-machine resource. One `Beskar7Machine` maps to one Kubernetes node. It finds a compatible `PhysicalHost`, claims it, triggers the inspection boot via Redfish + iPXE, validates the returned hardware report against `spec.hardwareRequirements`, and — once validation passes — writes a digest-pinned whole-disk image to the target disk and injects a per-host cloud-config into the image's `COS_OEM` partition before rebooting into it. The provisioning workflow is driven by `spec.inspectionImageURL`, `spec.targetImageURL`, and `spec.targetImageDigest`. `Beskar7Machine` gets its bootstrap data (a Kairos `#cloud-config` carrying the cluster-join directives) from the CAPI `Machine` object's `spec.bootstrap.dataSecretName`; the manager serves that data over HTTPS at `GET /api/v1/bootstrap/{namespace}/{name}`, which the inspector — not the target OS — fetches and embeds into the image.
 
 ## Beskar7MachineTemplate
 
@@ -27,7 +27,7 @@ Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines.
 3. It mints a per-host bearer token and sets a one-time PXE boot flag via Redfish, then powers on the host.
 4. The host PXE-boots the inspection image (`beskar7-inspector`), which posts hardware details to `POST /api/v1/inspection/{namespace}/{name}` on the manager.
 5. The controller validates the report against requirements. On failure it releases the host and tries another.
-6. On success the host kexecs into the target OS image. The machine fetches its bootstrap data from `GET /api/v1/bootstrap/{namespace}/{name}`, joins the cluster, and the `Beskar7Machine` sets `Status.Ready = true`.
+6. On success the inspector fetches the machine's bootstrap data from `GET /api/v1/bootstrap/{namespace}/{name}`, streams the digest-verified whole-disk image to the target disk, injects the bootstrap data into the image's `COS_OEM` partition, and reboots the host into the provisioned OS via host firmware (no `kexec`). Once the inspector confirms the write with `POST /api/v1/provisioned/{namespace}/{name}`, the `Beskar7Machine` sets `Status.Ready = true` and the node joins the cluster.
 
 ## Where to go next
 

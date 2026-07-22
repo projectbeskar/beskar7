@@ -64,6 +64,6 @@ metadata:
   labels:
     cluster.x-k8s.io/cluster-name: test-cluster
 spec:
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
   targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL

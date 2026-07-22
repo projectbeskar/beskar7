@@ -224,7 +224,7 @@ If the inspection report does not meet any of these, the controller sets `Status
 | `PhysicalHostAssociated` | `Beskar7Machine` | True after a host is claimed. False reasons: `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost`. |
 | `BootstrapDataReady` | `Beskar7Machine` | True after `Machine.Spec.Bootstrap.DataSecretName` is set and the bootstrap URL has been signalled to the host. False reasons: `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
 
-`MachineProvisionedCondition` (`"MachineProvisioned"`) is declared in `api/v1beta1/beskar7machine_types.go` but the reconciler never calls `conditions.MarkTrue`/`MarkFalse` on it — it is not set by any code path and will not appear on a `Beskar7Machine` object. Treat `InfrastructureReady` as the provisioned signal until this is wired up or removed.
+There is no `MachineProvisionedCondition` — the dead constant (declared but never set by any reconciler) has been removed from `api/v1beta1/beskar7machine_types.go`. `InfrastructureReady`, backed by `Status.Ready` and `Status.Initialization.Provisioned`, is the provisioned signal.
 
 ### Example
 
