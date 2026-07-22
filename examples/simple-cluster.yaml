@@ -121,10 +121,11 @@ metadata:
     cluster.x-k8s.io/control-plane: "true"
 spec:
   # Inspector boot via iPXE
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  
-  # Final OS (Kairos example)
-  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"
+
+  # Final OS (Kairos whole-disk raw image, written to the target disk and
+  # digest-verified by the inspector — see docs/inspector-contract.md §8.1)
+  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
   targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
 
   # Hardware requirements for control plane
@@ -144,8 +145,8 @@ metadata:
     cluster.x-k8s.io/cluster-name: test-cluster
     cluster.x-k8s.io/worker: "true"
 spec:
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"
+  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
   targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   hardwareRequirements:
     minCPUCores: 4
@@ -162,8 +163,8 @@ metadata:
     cluster.x-k8s.io/cluster-name: test-cluster
     cluster.x-k8s.io/worker: "true"
 spec:
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"
+  targetImageURL: "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
   targetImageDigest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"  # sha256 of the bytes at targetImageURL
   hardwareRequirements:
     minCPUCores: 4

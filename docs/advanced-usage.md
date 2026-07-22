@@ -2,20 +2,20 @@
 
 > **Audience:** Operators
 
-This page covers Beskar7 features beyond the basic "register a host, claim a host" flow. The v0.3 `RemoteConfig`/`PreBakedISO`/`UefiTargetBootSourceOverride` approaches were removed in v0.4 — the only provisioning path now is iPXE network boot to an inspection image, followed by kexec into the target OS.
+This page covers Beskar7 features beyond the basic "register a host, claim a host" flow. The v0.3 `RemoteConfig`/`PreBakedISO`/`UefiTargetBootSourceOverride` approaches were removed in v0.4 — the only provisioning path now is iPXE network boot to an inspection image, which writes a digest-pinned whole-disk image to the target disk and injects a per-host cloud-config into the image's `COS_OEM` partition before rebooting (no `kexec`; see [Architecture](architecture.md#inspection-workflow) and `docs/inspector-contract.md`).
 
 ## Bootstrap data flow
 
-Beskar7 honours the CAPI bootstrap-provider contract: every `Beskar7Machine` requires its owning `Machine` to expose a `Spec.Bootstrap.DataSecretName`. The Secret's `value` key holds the user-data the target OS consumes (cloud-init, ignition, or whatever your bootstrap provider produces).
+Beskar7 honours the CAPI bootstrap-provider contract: every `Beskar7Machine` requires its owning `Machine` to expose a `Spec.Bootstrap.DataSecretName`. The Secret's `value` key holds the user-data the host applies — and because the inspector writes those bytes byte-verbatim into the target image's `COS_OEM` partition (never transcoding them, decision D-014), the value **must already be a valid Kairos `#cloud-config`**. See `examples/kairos-k3s-node.yaml` for a proven Kairos k3s cloud-config.
 
 End-to-end:
 
-1. The bootstrap provider (e.g. `kubeadm` via `KubeadmConfig` or `KubeadmConfigTemplate`) writes a Secret in the workload namespace with key `value`.
+1. The bootstrap provider (e.g. a hand-authored Kairos `#cloud-config` Secret, or a Kairos-aware bootstrap provider) writes a Secret in the workload namespace with key `value`.
 2. The `Beskar7Machine` reconciler reads `Machine.Spec.Bootstrap.DataSecretName` to confirm the Secret exists. It does NOT read the bytes — that's the manager's bootstrap GET endpoint's job.
 3. The reconciler computes the deterministic per-host URL `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and signals it to the PhysicalHost via the `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation. The PhysicalHost reconciler persists it to `Status.Bootstrap.URL`.
-4. The reconciler mints a per-host bearer token (`internal/auth/token.go`), stores the plaintext in a per-host Secret named `<host>-bootstrap-token`, and signals the SHA-256 hash + 30-minute lifetime to the PhysicalHost via `infrastructure.cluster.x-k8s.io/bootstrap-token`. The PhysicalHost reconciler persists the hash and lifetime to `Status.Bootstrap.{TokenHash,IssuedAt,ExpiresAt}`.
-5. The iPXE infrastructure renders the URL and the plaintext token into the kernel cmdline (see [iPXE Setup](ipxe-setup.md)).
-6. After kexec into the target OS, cloud-init / ignition fetches `https://<manager>:8082/api/v1/bootstrap/<ns>/<host>` with `Authorization: Bearer <plaintext>`. The manager validates the token (`controllers/inspection_handler.go:newBearerTokenVerifier`), walks `PhysicalHost → ConsumerRef → Beskar7Machine → owner Machine → Spec.Bootstrap.DataSecretName → Secret`, and serves `secret.data["value"]` with `Cache-Control: no-store`.
+4. The reconciler mints a per-host bearer token (`internal/auth/token.go`), stores the plaintext in a per-host Secret named `<host>-bootstrap-token`, and signals the SHA-256 hash + 60-minute lifetime to the PhysicalHost via `infrastructure.cluster.x-k8s.io/bootstrap-token`. The PhysicalHost reconciler persists the hash and lifetime to `Status.Bootstrap.{TokenHash,IssuedAt,ExpiresAt}`.
+5. The controller's nonce-gated `/boot` endpoint renders the bearer token — along with the API base, target image URL, and target image digest — into the inspector's kernel cmdline (see [iPXE Setup](ipxe-setup.md) and `docs/inspector-contract.md` §4.1/§5).
+6. Once hardware inspection passes, the **inspector itself** — not the target OS — fetches the bootstrap data: `GET https://<manager>:8082/api/v1/bootstrap/<ns>/<host>` with `Authorization: Bearer <plaintext>`. The manager validates the token (`controllers/inspection_handler.go:newBearerTokenVerifier`), walks `PhysicalHost → ConsumerRef → Beskar7Machine → owner Machine → Spec.Bootstrap.DataSecretName → Secret`, and serves `secret.data["value"]` with `Cache-Control: no-store`. The inspector writes those bytes byte-verbatim as `99_beskar7.yaml` (mode `0600`, root-owned) on the target image's `COS_OEM` partition, then reboots the host via host firmware into the provisioned OS, which applies the config on first boot (no `kexec`).
 
 If the named Secret does not exist when the Beskar7Machine reconciles, `BootstrapDataReady=False (BootstrapDataUnavailable)` is set and the reconciler stops requeueing — operator must intervene (the bootstrap provider failed or the name is wrong).
 

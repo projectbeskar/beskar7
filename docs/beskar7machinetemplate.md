@@ -25,6 +25,7 @@ spec:
       # Identical to Beskar7Machine.spec
       inspectionImageURL: ...
       targetImageURL: ...
+      targetImageDigest: ...
       hardwareRequirements:
         minCPUCores: ...
         minMemoryGB: ...
@@ -62,8 +63,9 @@ metadata:
 spec:
   template:
     spec:
-      inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+      inspectionImageURL: "https://boot-server.local/inspector"
+      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
+      targetImageDigest:  "sha256:0000000000000000000000000000000000000000000000000000000000000000"
       hardwareRequirements:
         minCPUCores: 4
         minMemoryGB: 16
@@ -111,8 +113,9 @@ metadata:
 spec:
   template:
     spec:
-      inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+      inspectionImageURL: "https://boot-server.local/inspector"
+      targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
+      targetImageDigest:  "sha256:0000000000000000000000000000000000000000000000000000000000000000"
       hardwareRequirements:
         minCPUCores: 4
         minMemoryGB: 8

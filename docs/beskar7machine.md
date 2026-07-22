@@ -17,8 +17,9 @@ For the full field reference, see [API Reference: Beskar7Machine](api-reference.
 
 ```yaml
 spec:
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"              # base URL serving vmlinuz + initrd.img
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"  # Kairos whole-disk raw image
+  targetImageDigest:  "sha256:<64-hex-digest-of-the-bytes-at-targetImageURL>"
   hardwareRequirements:                                                 # optional
     minCPUCores: 4
     minMemoryGB: 8
@@ -26,7 +27,7 @@ spec:
   # providerID is set by the controller on claim — do not set manually
 ```
 
-Both URL fields must match `^https?://.*`. There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, `configURL` (removed v0.3 fields), or `configurationURL` (a dead, never-wired v0.4 field removed before GA).
+`inspectionImageURL` and `targetImageURL` must match `^https?://[^\s]+$`; `targetImageDigest` is required and must match `^sha256:[a-f0-9]{64}$` — the inspector refuses to mount, inject user-data, or reboot on a digest mismatch (`docs/inspector-contract.md` §8.1). There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, `configURL` (removed v0.3 fields), or `configurationURL` (a dead, never-wired v0.4 field removed before GA).
 
 ## Reconcile flow
 
@@ -54,10 +55,11 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 
 | Type | Meaning | Common reasons |
 |---|---|---|
-| `InfrastructureReady` | Standard CAPI infra-ready condition. Summary across the others. | – |
+| `InfrastructureReady` | Standard CAPI infra-ready condition. Summary across the others; True once the host reaches `Ready` (the inspector's provisioned callback was received) and `ProviderID` is set. | – |
 | `PhysicalHostAssociated` | A host has been claimed. | `WaitingForPhysicalHost`, `PhysicalHostAssociationFailed`. |
-| `MachineProvisioned` | Host is `Ready` and `ProviderID` is set. | – |
 | `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
+
+There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed from the API. Use `InfrastructureReady` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) as the provisioned signal.
 
 ## Terminal failures
 
@@ -134,8 +136,9 @@ metadata:
     cluster.x-k8s.io/cluster-name: production-cluster
     cluster.x-k8s.io/control-plane: "true"
 spec:
-  inspectionImageURL: "http://boot-server.local/ipxe/inspect.ipxe"
-  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server.local/inspector"
+  targetImageURL:     "http://boot-server.local/images/kairos-alpine-v2.8.1.raw"
+  targetImageDigest:  "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 16

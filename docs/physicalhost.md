@@ -35,14 +35,15 @@ When `caBundleSecretRef` is set, the manager builds an HTTP client whose TLS roo
 The reconciler drives `Status.State` through these transitions:
 
 ```
-created → Available           (BMC reachable, no consumer)
-Available → InUse             (Beskar7Machine claims via spec.consumerRef)
-InUse → Inspecting            (Beskar7Machine sets the inspection-request annotation)
-Inspecting → Ready            (inspection report consumed from ConfigMap)
-Ready → InUse                 (back to InUse after the host stays claimed)
-any → Error                   (BMC unreachable, TLS conflict, inspection timeout)
-Error → Available             (operator fixes spec, BMC recovers)
-Ready/InUse → Available       (Beskar7Machine deletion clears consumerRef)
+created → Available                            (BMC reachable, no consumer)
+Available → InUse                              (Beskar7Machine claims via spec.consumerRef)
+InUse → Inspecting                             (Beskar7Machine sets the inspection-request annotation)
+Inspecting → Deploying                         (inspection report consumed from ConfigMap, validated)
+Deploying → Ready                              (inspector POSTs /api/v1/provisioned; see contract §4.4)
+Deploying → Error                              (deployment timeout, default 20 min)
+any → Error                                    (BMC unreachable, TLS conflict, inspection timeout)
+Error → Available                              (operator fixes spec, BMC recovers)
+InUse/Inspecting/Deploying/Ready → Available   (Beskar7Machine deletion clears consumerRef)
 ```
 
 For the diagram and the full transition table, see [State Management](state-management.md).

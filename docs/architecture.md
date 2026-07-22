@@ -65,11 +65,11 @@ graph TD
 2. These trigger the creation of corresponding `Beskar7Cluster` and `Beskar7Machine` resources
 3. Beskar7Machine controller claims an available PhysicalHost
 4. PhysicalHost is powered on with PXE boot flag via Redfish
-5. Server network boots to inspection image via iPXE
+5. Server network boots to the inspection image via iPXE
 6. Inspection image collects hardware details and reports back
 7. Controller validates hardware meets requirements
-8. Inspection image kexecs into final operating system
-9. Machine becomes ready and joins the cluster
+8. Inspection image fetches the machine's bootstrap data, streams a digest-verified whole-disk image to the target disk, injects the bootstrap data into the image's `COS_OEM` partition, and reboots the host into the provisioned OS (no `kexec` — host firmware boots it)
+9. Inspector confirms the write with a provisioned callback; the machine becomes ready and joins the cluster
 
 ## Controllers
 
@@ -91,7 +91,8 @@ graph TD
 - `Available` - Ready to be claimed by a machine
 - `InUse` - Claimed by a Beskar7Machine
 - `Inspecting` - Running hardware inspection
-- `Ready` - Inspection complete and validated
+- `Deploying` - Inspection passed; the inspector is writing the OS image to disk
+- `Ready` - OS deployment complete (the inspector's provisioned callback was received)
 - `Error` - Problem occurred
 
 **Note:** This controller does NOT handle provisioning. It only manages power and tracks state.
@@ -129,9 +130,11 @@ graph TD
 - Rejects machine if requirements not met
 
 **Phase 5: Provisioning**
-- Inspection image kexecs into final OS
-- Waits for final OS to report ready
-- Sets `providerID` and marks `InfrastructureReady` condition as `True`
+- Once bootstrap data is ready, the inspector fetches it over the bearer-gated `/bootstrap` endpoint
+- Inspector streams the digest-pinned whole-disk image to the target disk, verifying SHA-256 after the write
+- Inspector injects the bootstrap data into the image's `COS_OEM` partition as a per-host Kairos cloud-config, then reboots the host into the provisioned OS via host firmware (no `kexec`)
+- Inspector confirms success with `POST /api/v1/provisioned/{namespace}/{hostName}` before rebooting; a `--deployment-timeout` (default 20 min) bounds how long the host may stay in `Deploying` waiting for that signal
+- Controller sets `providerID`, `Status.Ready`, `Status.Initialization.Provisioned`, and marks `InfrastructureReady` condition as `True` on receiving the provisioned callback
 
 **Cleanup:**
 - When deleted, releases the claimed PhysicalHost by clearing `spec.consumerRef`
@@ -215,7 +218,7 @@ This minimal interface ensures vendor-agnostic operation and reduces complexity.
 
 ## Inspection Workflow
 
-The inspection workflow is the core innovation in Beskar7 v0.4.0+. It provides reliable hardware discovery without vendor-specific code.
+The inspection workflow is the core innovation in Beskar7. It provides reliable hardware discovery and OS deployment without vendor-specific code, and without a kexec handoff — see `docs/inspector-contract.md` for the full normative wire contract this section summarizes.
 
 ### Workflow Steps
 
@@ -223,37 +226,42 @@ The inspection workflow is the core innovation in Beskar7 v0.4.0+. It provides r
 1. Beskar7Machine created, claims PhysicalHost
    |
    v
-2. Controller sets PXE boot flag via Redfish
-   Controller powers on server via Redfish
+2. Controller mints a per-host bearer token and a single-use boot nonce
+   Controller sets PXE boot flag via Redfish, powers on server
    |
    v
 3. Server network boots (DHCP -> iPXE chainload)
+   The operator's first-stage iPXE fetches the per-host boot script from the
+   controller's nonce-gated GET /api/v1/boot/{ns}/{host}/{nonce} endpoint
    |
    v
-4. iPXE fetches boot script from HTTP server
-   Boot script includes: API URL, token, namespace, host name
+4. The controller's /boot handler consumes the nonce (single-use) and
+   renders the inspector's kernel cmdline: beskar7.api, beskar7.namespace,
+   beskar7.host, beskar7.token, beskar7.target, beskar7.target-digest,
+   beskar7.ca (docs/inspector-contract.md §5)
    |
    v
-5. iPXE boots inspection image (Alpine Linux)
-   Kernel parameters: beskar7.api=URL beskar7.token=XXX
+5. iPXE boots the inspector image (beskar7-inspector, a static Rust/musl
+   binary used directly as initramfs /init)
    |
    v
-6. Inspection scripts run automatically:
-   - Detect CPUs (lscpu, /proc/cpuinfo)
-   - Detect Memory (free, /proc/meminfo)
-   - Detect Disks (lsblk, smartctl)
-   - Detect NICs (ip link, ethtool)
-   - Collect system info (dmidecode)
+6. Inspector Phase 1 runs automatically:
+   - Bring up the provisioning NIC (native one-shot DHCP, or a static
+     address from beskar7.ip)
+   - Probe hardware natively from SMBIOS/DMI + /sys + /proc — no external
+     tools
+   - Select the target disk (beskar7.disk override, or auto-select the
+     smallest eligible whole disk)
    |
    v
-7. Inspection image POSTs report to Beskar7 API
-   POST /api/v1/inspection/{namespace}/{host}
-   Body: JSON with all hardware details
+7. Inspector POSTs the report to the Beskar7 API
+   POST /api/v1/inspection/{namespace}/{host}   (Bearer token, TLS-verified)
+   Body: JSON with all hardware details -> 202 Accepted
    |
    v
 8. Inspection Handler validates the report, writes it to a per-host
    ConfigMap (`<host>-inspection-result`), and patches an
-   `infrastructure.cluster.x-k8s.io/inspection-result` annotation onto
+   `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto
    the PhysicalHost. The handler itself does NOT touch PhysicalHost
    status (D-005: each controller owns its resource's status).
    |
@@ -266,47 +274,59 @@ The inspection workflow is the core innovation in Beskar7 v0.4.0+. It provides r
    v
 9. Beskar7Machine controller validates hardware
    Checks minCPUCores, minMemoryGB, minDiskGB
-   If validation fails: mark machine as failed
-   If validation passes: continue to provisioning
+   If validation fails: mark machine as failed (terminal)
+   If validation passes: signal inspect-complete; PhysicalHost -> Deploying
    |
    v
-10. Inspection image downloads final OS
-    Downloads target image (e.g., Kairos tar.gz)
-    Extracts kernel and initrd
-    Prepares kexec command
+10. Inspector Phase 2 (polls until the bootstrap Secret is ready):
+    - GET /api/v1/bootstrap/{ns}/{host}  (Bearer token, TLS-verified) ->
+      the CAPI bootstrap user-data (a Kairos #cloud-config, see D-014)
+    - Stream the digest-pinned whole-disk image (beskar7.target) to the
+      selected disk, computing SHA-256 incrementally
+    - Verify the computed digest against beskar7.target-digest; abort with
+      no mount/inject/reboot on any mismatch
+    - Mount the image's COS_OEM partition and write the fetched user-data
+      as 99_beskar7.yaml (0600, root-owned); unmount and zero the
+      in-memory user-data buffer
     |
     v
-11. Kexec into final OS
-    Server reboots directly into production OS
-    No additional network boot needed
+11. Inspector POSTs the provisioning-complete signal, then reboots
+    POST /api/v1/provisioned/{namespace}/{host}  (Bearer token) -> 202
+    reboot(2) — host firmware boots the provisioned OS directly (no kexec)
     |
     v
-12. Final OS boots and joins cluster
-    Beskar7Machine marked as Ready
-    Node appears in cluster
+12. Controller receives the provisioned callback
+    PhysicalHost transitions Deploying -> Ready; Beskar7Machine sets
+    ProviderID, Status.Ready, Status.Initialization.Provisioned
+    |
+    v
+13. Provisioned OS boots, applies the injected COS_OEM config, and joins
+    the cluster
 ```
 
 ### Inspection Image
 
-The inspection image is a lightweight Alpine Linux environment with hardware detection tools. It is maintained in a separate repository: https://github.com/projectbeskar/beskar7-inspector
+The inspection image (`beskar7-inspector`) is a static, single-purpose binary written in Rust and statically linked against musl, used directly as the initramfs `/init` — no shell, no package manager, no external tools. It is maintained in a separate repository: https://github.com/projectbeskar/beskar7-inspector
 
 **Components:**
-- Base: Alpine Linux 3.19
-- Tools: dmidecode, lshw, lsblk, smartctl, ethtool, kexec-tools
-- Scripts: Hardware detection, report generation, kexec boot
-- Size: <100 MB
+- A curated, dependency-resolved set of kernel modules (NIC, disk, filesystem drivers) loaded natively via `finit_module(2)` — no `udev`/`modprobe`/`busybox`
+- Native hardware probing from SMBIOS/DMI (`/sys/firmware/dmi/tables`), `/sys`, and `/proc` — no `dmidecode`/`lshw`/`smartctl`/`ethtool`
+- A hand-rolled DHCP client and RTNETLINK layer for network bring-up — no `dhclient`/`udhcpc`
+- A whole-disk image writer with incremental SHA-256 verification and `COS_OEM` cloud-config injection — no `kexec-tools`
 
-**Kernel Parameters** (the iPXE infrastructure renders these per host — see [iPXE Setup](ipxe-setup.md)):
+**Kernel Parameters** (rendered per host by the controller's nonce-gated `GET /api/v1/boot/{namespace}/{hostName}/{nonce}` endpoint — see [iPXE Setup](ipxe-setup.md) and `docs/inspector-contract.md` §4.1/§5):
 
 ```
-beskar7.api=https://beskar7-controller-manager.beskar7-system.svc:8082
+beskar7.api=https://<externally-reachable-address>:8082
 beskar7.namespace=default
 beskar7.host=server-01
-beskar7.bootstrap-url=https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/server-01
 beskar7.token=<plaintext-bearer-token>
+beskar7.target=http://<image-server>/kairos-k3s.raw
+beskar7.target-digest=sha256:<64-hex-digest>
+beskar7.ca=<base64-encoded-callback-CA>
 ```
 
-The inspector POSTs to `${beskar7.api}/api/v1/inspection/${beskar7.namespace}/${beskar7.host}` with `Authorization: Bearer ${beskar7.token}`. The target OS, after kexec, fetches bootstrap data from `${beskar7.bootstrap-url}` with the same `Authorization` header.
+There is no `beskar7.bootstrap-url` parameter — the bootstrap endpoint's path is fixed (`{beskar7.api}/api/v1/bootstrap/{beskar7.namespace}/{beskar7.host}`); only the coordinates to build it are on the cmdline. The inspector POSTs the hardware report to `${beskar7.api}/api/v1/inspection/${beskar7.namespace}/${beskar7.host}` with `Authorization: Bearer ${beskar7.token}`. Once bootstrap data is ready, the **inspector itself** — not the target OS — fetches it from `${beskar7.api}/api/v1/bootstrap/${beskar7.namespace}/${beskar7.host}` with the same header, injects it into the target image's `COS_OEM` partition, and reboots the host via host firmware (no `kexec`). See the full parameter list in `docs/inspector-contract.md` §5.
 
 ## API Types
 
@@ -327,7 +347,7 @@ spec:
     namespace: default
 
 status:
-  state: Available  # Enrolling, Available, InUse, Inspecting, Ready, Error
+  state: Available  # Enrolling, Available, InUse, Inspecting, Deploying, Ready, Error
   ready: true
   inspectionPhase: Complete  # Pending, Booting, InProgress, Complete, Failed, Timeout
   inspectionReport:
@@ -380,20 +400,23 @@ status:
 
 ```yaml
 spec:
-  inspectionImageURL: "http://boot-server/ipxe/inspect.ipxe"   # iPXE boot script or kernel/initrd
-  targetImageURL:     "http://boot-server/images/kairos-v2.8.1.tar.gz"
+  inspectionImageURL: "https://boot-server/inspector"              # base URL serving vmlinuz + initrd.img
+  targetImageURL:     "http://boot-server/images/kairos-k3s.raw"   # Kairos whole-disk raw image
+  targetImageDigest:  "sha256:<64-hex-digest-of-the-bytes-at-targetImageURL>"
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 8
     minDiskGB:   50
 
 status:
-  phase: Provisioned   # Pending, Inspecting, Provisioned, Failed
+  phase: Provisioned   # Pending, Inspecting, Provisioning, Provisioned, Failed
   ready: true
   conditions:
-    - type: MachineProvisioned
+    - type: InfrastructureReady
       status: "True"
 ```
+
+There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed. `InfrastructureReady` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) is the provisioned signal.
 
 ### Beskar7Cluster
 
@@ -498,7 +521,7 @@ The same per-host bearer token authenticates the inspection POST and the bootstr
 - 32 bytes from `crypto/rand`, encoded as base64-raw-url (43 chars).
 - SHA-256 hash persisted on `PhysicalHost.Status.Bootstrap.TokenHash` (64 hex chars).
 - Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`); GC'd on host delete via owner-ref.
-- Lifetime: 30 minutes (`auth.TokenLifetime` in `internal/auth/token.go`).
+- Lifetime: 60 minutes (`auth.TokenLifetime` in `internal/auth/token.go`).
 - Constant-time SHA-256 compare (`crypto/subtle`) on every request.
 - The plaintext travels on the iPXE kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](ipxe-setup.md).
 
