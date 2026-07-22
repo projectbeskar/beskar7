@@ -1,4 +1,4 @@
-# Inspector contract fixtures (contract: v1)
+# Inspector contract fixtures (contract: v4.1)
 
 This directory holds the **canonical golden fixture** for the controller ↔
 inspector wire contract. It is the anti-drift guardrail between this repo and
@@ -27,7 +27,9 @@ Both repos assert against the **same bytes**:
 
 If the inspector adds, renames, or retypes a field, one side's test goes red.
 **Keep the two copies identical.** When the contract changes, bump the version in
-`docs/inspector-contract.md`, update this fixture, and update both repos in lockstep.
+`docs/inspector-contract.md` **and** this directory's `VERSION` file, update this
+fixture, and see "Cross-repo sync contract" below for how the inspector picks up
+the change.
 
 ## Documented aggregates
 
@@ -47,3 +49,64 @@ The controller's hardware-requirements validation sums these from the fixture
 > `MinMemoryGB`, not 32. Inspector authors emitting capacity strings must expect
 > this. Accepted suffixes: `GB`, `GiB`, `MB`, `MiB`, `TB`, `TiB` — a bare number
 > with no unit is rejected.
+
+## `VERSION`
+
+A one-line plain-text marker: the contract version this checkout implements
+(currently `v4.1`). It is the root of truth for the version — beskar7 pins a
+Go const to it (`contract.Version`, `version.go` in this directory), and
+`beskar7-inspector` pins its own Rust `CONTRACT_VERSION` to a vendored copy of
+the same bytes. `TestContractVersion` (`version_test.go`) is the intra-repo
+guard: it fails if the Go const and this file ever say different things.
+
+## Cross-repo sync contract
+
+**beskar7 is the single source of truth for everything in this directory.**
+`beskar7-inspector` never edits these files directly; it **vendors
+byte-copies** into its own tree and **pins an immutable `contract/<version>`
+git tag** in this repo as the ref those copies were taken from. The two repos
+stay in sync through one CI job that lives entirely on the inspector's side:
+
+1. The inspector's CI fetches beskar7's canonical files (`VERSION`,
+   `golden_inspection_report.json`, and any other file added to this
+   directory) at its pinned `contract/<version>` tag.
+2. It `diff`s the fetched bytes against its own vendored copies. Any
+   difference — a single byte — fails the job.
+3. It asserts its Rust `CONTRACT_VERSION` equals the vendored `VERSION`
+   contents.
+
+beskar7's own CI does **not** reach across repos. It stays hermetic: the only
+new obligation on this side is `TestContractVersion`, which just proves the
+`contract.Version` Go const and this directory's `VERSION` file agree with
+each other — a self-consistency check, not a cross-repo one. Whether the
+inspector has caught up to whatever beskar7 currently ships is visible only in
+the inspector's own CI.
+
+### Release checklist — the one manual step
+
+**Every time a file in this directory changes (a fixture edit or a `VERSION`
+bump), beskar7 must push a new immutable `contract/<version>` tag** at the
+commit that lands the change, e.g. `contract/v4.1`. This is not automated by
+anything in this repo — add it to the release checklist.
+
+**Known blind spot:** if the tag push is forgotten, nothing in either repo's
+CI catches it. The inspector's drift `diff` only ever compares its vendored
+copies against whatever tag it has pinned — if that pin is stale, both sides
+still match each other byte-for-byte, and the job stays green while the
+inspector silently falls behind the contract beskar7 actually ships. The CI
+diff detects *byte drift against the pinned ref*; it cannot detect *a ref that
+was never advanced*. Treat the tag push as a hard requirement of any PR that
+touches this directory, not an optional follow-up.
+
+### What is and isn't covered
+
+This mechanism keeps the **fixture bytes and the version marker** identical
+across repos. It says nothing about whether the inspector's Rust code
+actually parses or emits those bytes correctly — that is the inspector's own
+behavioral test suite, run against its vendored copies (no network required
+for those tests; only the drift `diff` step needs to reach GitHub).
+
+Detection is intentionally one-directional: beskar7's hermetic CI cannot tell
+whether the inspector has caught up, and does not try to. The party that must
+react to a contract change is the inspector, so its CI is the one that gates
+on drift.
