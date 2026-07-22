@@ -11,8 +11,6 @@ const (
 	// PhysicalHostAssociatedCondition indicates whether the Beskar7Machine has
 	// successfully associated with a PhysicalHost.
 	PhysicalHostAssociatedCondition clusterv1.ConditionType = "PhysicalHostAssociated"
-	// MachineProvisionedCondition indicates whether the machine has been provisioned
-	MachineProvisionedCondition clusterv1.ConditionType = "MachineProvisioned"
 	// BootstrapDataReadyCondition indicates the bootstrap data secret named by
 	// Machine.Spec.Bootstrap.DataSecretName is present and the per-host bootstrap
 	// URL has been signaled to the PhysicalHost.
