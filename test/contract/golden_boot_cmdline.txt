@@ -1,0 +1,4 @@
+#!ipxe
+kernel http://images.example.invalid/vmlinuz beskar7.api=https://beskar7.example.invalid:8082 beskar7.namespace=contract-test beskar7.host=host-01 beskar7.token=test-token-0123456789abcdef beskar7.target=http://images.example.invalid/kairos.raw beskar7.target-digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa beskar7.provider-id=b7://contract-test/host-01 beskar7.ca=dGVzdC1jYS1wZW0tcGxhY2Vob2xkZXI= beskar7.disk=/dev/vda BOOTIF=01-52-54-00-12-34-56
+initrd http://images.example.invalid/initrd.img
+boot

@@ -326,6 +326,12 @@ var bootDiskPattern = regexp.MustCompile(`^[A-Za-z0-9._:/+-]+$`)
 // iPXE query param. (SEC-7 posture: unrecognised shape → omit, don't inject.)
 var bootifMACPattern = regexp.MustCompile(`^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$`)
 
+// providerIDPattern is compiled once at init time. It accepts only the
+// canonical ProviderID form rendered by providerID() / stamped onto
+// Beskar7Machine.Spec.ProviderID: "b7://" followed by a namespace segment and
+// a name segment, each restricted to lowercase RFC 1123 label characters.
+var providerIDPattern = regexp.MustCompile(`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`)
+
 // staticIPPattern is compiled once at init time. It admits only the
 // kernel ip= subset shape the inspector accepts:
 //
@@ -371,6 +377,25 @@ func formatBootif(mac string) (string, bool) {
 func validateBootDigest(raw string) error {
 	if !bootDigestPattern.MatchString(raw) {
 		return fmt.Errorf("TargetImageDigest is not a valid sha256 digest (must match ^sha256:[0-9a-f]{64}$)")
+	}
+	return nil
+}
+
+// validateProviderID rejects a value that does not match the canonical
+// b7://<namespace>/<name> ProviderID form (contract v4.2 §5, GA-CONTRACT-FREEZE
+// §3.4). Defence-in-depth (SEC-7) on the value actually rendered onto the
+// kernel cmdline, mirroring validateBootDigest / validateStaticIP.
+//
+// Unlike TargetImageURL/StaticIP/TargetDisk (operator-supplied, CRD-admitted),
+// the value validated here is always controller-computed — providerID(ph.Namespace,
+// ph.Name) — from Kubernetes object names that are already DNS-1123-validated
+// at admission. This guard can therefore never actually reject a
+// production-computed value; it is defence-in-depth against a hypothetical
+// future regression in providerID() itself, not a behavioral safety net for
+// operator-controlled input (see GA-P2-VALIDATION.md §1.7).
+func validateProviderID(raw string) error {
+	if !providerIDPattern.MatchString(raw) {
+		return fmt.Errorf("provider ID %q does not match the expected form %s<namespace>/<name> (^b7://[a-z0-9.-]+/[a-z0-9.-]+$)", raw, ProviderIDPrefix)
 	}
 	return nil
 }
@@ -472,6 +497,17 @@ func (h *BootHandler) renderBootScript(
 	if err := validateBootDigest(b7m.Spec.TargetImageDigest); err != nil {
 		return "", err
 	}
+	// providerID is controller-computed (not operator-supplied) — the same
+	// call site handleReadyHost uses to stamp Beskar7Machine.Spec.ProviderID
+	// (contract v4.2, GA-CONTRACT-FREEZE §3.4). Reusing providerID() here,
+	// rather than re-deriving the string, is what guarantees the rendered
+	// cmdline value and the stamped value can never diverge. Always rendered:
+	// the controller always knows the host's namespace/name, regardless of
+	// inspection/ready state.
+	hostProviderID := providerID(ph.Namespace, ph.Name)
+	if err := validateProviderID(hostProviderID); err != nil {
+		return "", err
+	}
 	if b7m.Spec.TargetDisk != "" {
 		if err := validateBootDisk(b7m.Spec.TargetDisk); err != nil {
 			return "", err
@@ -521,6 +557,7 @@ func (h *BootHandler) renderBootScript(
 		string(tokenBytes),
 		b7m.Spec.TargetImageURL,
 		b7m.Spec.TargetImageDigest,
+		hostProviderID,
 		caB64,
 		b7m.Spec.TargetDisk,
 		bootif,
@@ -546,9 +583,18 @@ func (h *BootHandler) renderBootScript(
 // script. All inputs are caller-resolved; this function performs no I/O.
 // Package-level so tests can call it directly for golden-string assertions.
 //
-// The parameter order on the kernel cmdline follows contract v3 §4.1 exactly:
-// beskar7.api, beskar7.namespace, beskar7.host, beskar7.token, beskar7.target,
-// beskar7.target-digest, beskar7.ca[, beskar7.disk][, beskar7.ip=<ip>][, BOOTIF=<bootif>].
+// The parameter order on the kernel cmdline follows contract v4.2 §4.1/§5
+// exactly: beskar7.api, beskar7.namespace, beskar7.host, beskar7.token,
+// beskar7.target, beskar7.target-digest, beskar7.provider-id, beskar7.ca[,
+// beskar7.disk][, beskar7.ip=<ip>][, BOOTIF=<bootif>].
+//
+// beskar7.provider-id is always rendered, immediately after
+// beskar7.target-digest and before beskar7.ca (contract v4.2, GA-CONTRACT-FREEZE
+// §3.4 / GA-P2-VALIDATION §1.2) — the controller always knows the host's
+// namespace/name, so unlike the bracketed optional params below it is never
+// omitted. It MUST be the same value providerID(ph.Namespace, ph.Name)
+// computes and handleReadyHost stamps onto Beskar7Machine.Spec.ProviderID; the
+// caller (renderBootScript) is responsible for that reuse, not this function.
 //
 // beskar7.disk is appended immediately after beskar7.ca when targetDisk is
 // non-empty, per contract §4.1 template:
@@ -567,7 +613,7 @@ func (h *BootHandler) renderBootScript(
 // (no trailing space, no empty param).
 //
 // Optional parameters (beskar7.timeout, beskar7.debug) are omitted in
-// contract v3 — no operator UI to supply them yet.
+// contract v4.2 — no operator UI to supply them yet.
 func buildBootIPXEScript(
 	inspectionImageURL string,
 	apiBase string,
@@ -576,6 +622,7 @@ func buildBootIPXEScript(
 	token string,
 	targetImageURL string,
 	targetDigest string,
+	providerID string,
 	caB64 string,
 	targetDisk string,
 	bootif string,
@@ -594,7 +641,7 @@ func buildBootIPXEScript(
 		bootifParam = " BOOTIF=" + bootif
 	}
 	return fmt.Sprintf(
-		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.ca=%s%s%s%s\ninitrd %s/initrd.img\nboot\n",
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.target=%s beskar7.target-digest=%s beskar7.provider-id=%s beskar7.ca=%s%s%s%s\ninitrd %s/initrd.img\nboot\n",
 		inspectionImageURL,
 		apiBase,
 		namespace,
@@ -602,6 +649,7 @@ func buildBootIPXEScript(
 		token,
 		targetImageURL,
 		targetDigest,
+		providerID,
 		caB64,
 		diskParam,
 		staticIPParam,

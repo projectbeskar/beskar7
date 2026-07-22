@@ -245,18 +245,22 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(body).To(ContainSubstring("beskar7.token="))
 		Expect(body).To(ContainSubstring("beskar7.target=" + b7m.Spec.TargetImageURL))
 		Expect(body).To(ContainSubstring("beskar7.target-digest=" + b7m.Spec.TargetImageDigest))
+		Expect(body).To(ContainSubstring("beskar7.provider-id=" + providerID(testNs.Name, ph.Name)))
 		Expect(body).To(ContainSubstring("beskar7.ca="))
 		Expect(body).To(ContainSubstring("initrd " + b7m.Spec.InspectionImageURL + "/initrd.img"))
 		Expect(body).To(ContainSubstring("\nboot\n"))
 
-		By("asserting beskar7.target-digest appears between beskar7.target and beskar7.ca (contract §4.1 ordering)")
+		By("asserting beskar7.target-digest < beskar7.provider-id < beskar7.ca (contract v4.2 §4.1 ordering)")
 		targetIdx := strings.Index(body, "beskar7.target=")
 		digestIdx := strings.Index(body, "beskar7.target-digest=")
+		providerIDIdx := strings.Index(body, "beskar7.provider-id=")
 		caIdx := strings.Index(body, "beskar7.ca=")
 		Expect(targetIdx).To(BeNumerically("<", digestIdx),
 			"beskar7.target must precede beskar7.target-digest")
-		Expect(digestIdx).To(BeNumerically("<", caIdx),
-			"beskar7.target-digest must precede beskar7.ca")
+		Expect(digestIdx).To(BeNumerically("<", providerIDIdx),
+			"beskar7.target-digest must precede beskar7.provider-id")
+		Expect(providerIDIdx).To(BeNumerically("<", caIdx),
+			"beskar7.provider-id must precede beskar7.ca")
 
 		By("asserting BootNonceConsumedAt is set")
 		Eventually(func(g Gomega) {
@@ -266,6 +270,43 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			g.Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
 				"BootNonceConsumedAt must be set after first /boot fetch")
 		}, Timeout, Interval).Should(Succeed())
+	})
+
+	// ── 1b. beskar7.provider-id regression guard (contract v4.2, P2) ──────
+	//
+	// GA-P2-VALIDATION.md §1.4: proves the render-time value (this handler,
+	// via renderBootScript) and the stamp-time value
+	// (Beskar7MachineReconciler.handleReadyHost, beskar7machine_controller.go)
+	// can never diverge, because both call providerID(ph.Namespace, ph.Name) —
+	// the same function, not two independently-maintained derivations.
+
+	It("beskar7.provider-id in /boot equals providerID(ph.Namespace, ph.Name) — the exact value stamped onto Spec.ProviderID", func() {
+		ph, _, _, nonce := bootTestFixture(testNs.Name)
+
+		resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+		body := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+
+		want := providerID(ph.Namespace, ph.Name)
+		Expect(body).To(ContainSubstring("beskar7.provider-id=" + want))
+
+		By("cross-checking against the b7://<ns>/<host> form handleReadyHost stamps onto Spec.ProviderID")
+		Expect(want).To(Equal(fmt.Sprintf("%s%s/%s", ProviderIDPrefix, ph.Namespace, ph.Name)),
+			"providerID() must derive the identical form the controller stamps")
+	})
+
+	It("beskar7.provider-id is always rendered, even before the host reaches Ready (any valid ConsumerRef)", func() {
+		ph, _, _, nonce := bootTestFixture(testNs.Name)
+
+		By("confirming the fixture host has not been marked Ready/inspected — Status.State is unset")
+		Expect(ph.Status.State).To(BeEmpty(),
+			"fixture must represent a pre-inspection host so this test proves provider-id renders unconditionally")
+
+		resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+		body := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		Expect(body).To(ContainSubstring("beskar7.provider-id="+providerID(ph.Namespace, ph.Name)),
+			"the controller always knows the host's namespace/name, so provider-id must never be omitted")
 	})
 
 	// ── 2. Single-use under concurrency (load-bearing) ────────────────────
@@ -1060,6 +1101,9 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 		testTargetURL     = "https://images.example.com/kairos.img"
 		testCA            = "FAKECABASE64=="
 	)
+	// testProviderID is computed via the real providerID() (not hand-typed) so
+	// these fixtures stay honest about the contract v4.2 render/stamp reuse.
+	testProviderID := providerID(testNamespace, testHost)
 
 	It("renders beskar7.disk immediately after beskar7.ca when TargetDisk is set", func() {
 		disk := "/dev/disk/by-id/nvme-FOO"
@@ -1071,6 +1115,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			disk,
 			"", // no BOOTIF
@@ -1106,6 +1151,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			"", // no disk
 			"", // no BOOTIF
@@ -1137,6 +1183,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			disk,
 			bootif,
@@ -1173,6 +1220,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			"", // no disk
 			bootif,
@@ -1207,6 +1255,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			"", // no disk
 			"", // no BOOTIF
@@ -1220,6 +1269,7 @@ var _ = Describe("buildBootIPXEScript — TargetDisk rendering", func() {
 			testToken,
 			testTargetURL,
 			bootTestDigest,
+			testProviderID,
 			testCA,
 			"",
 			"01-52-54-00-12-34-56",
@@ -1290,6 +1340,9 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 		testTargetURL2     = "https://images.example.com/kairos.img"
 		testCA2            = "FAKECABASE64=="
 	)
+	// testProviderID2 is computed via the real providerID() (not hand-typed) so
+	// these fixtures stay honest about the contract v4.2 render/stamp reuse.
+	testProviderID2 := providerID(testNamespace2, testHost2)
 
 	It("renders beskar7.ip after beskar7.ca (no disk) when StaticIP is set", func() {
 		staticIP := "192.168.150.10::192.168.150.1:255.255.255.0"
@@ -1301,6 +1354,7 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 			testToken2,
 			testTargetURL2,
 			bootTestDigest,
+			testProviderID2,
 			testCA2,
 			"", // no disk
 			"", // no BOOTIF
@@ -1333,6 +1387,7 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 			testToken2,
 			testTargetURL2,
 			bootTestDigest,
+			testProviderID2,
 			testCA2,
 			disk,
 			"", // no BOOTIF
@@ -1370,6 +1425,7 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 			testToken2,
 			testTargetURL2,
 			bootTestDigest,
+			testProviderID2,
 			testCA2,
 			disk,
 			bootif,
@@ -1398,6 +1454,7 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 			testToken2,
 			testTargetURL2,
 			bootTestDigest,
+			testProviderID2,
 			testCA2,
 			"", // no disk
 			"", // no BOOTIF
@@ -1411,6 +1468,7 @@ var _ = Describe("buildBootIPXEScript — StaticIP rendering", func() {
 			testToken2,
 			testTargetURL2,
 			bootTestDigest,
+			testProviderID2,
 			testCA2,
 			"", // no disk
 			"", // no BOOTIF

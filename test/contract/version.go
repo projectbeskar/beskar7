@@ -30,4 +30,4 @@ package contract
 // file can never silently drift from each other. Bump both together, in the
 // same commit as any fixture change, then push the immutable tag
 // contract/<version> (see README.md "Release checklist").
-const Version = "v4.1"
+const Version = "v4.2"

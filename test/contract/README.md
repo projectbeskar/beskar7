@@ -1,11 +1,12 @@
-# Inspector contract fixtures (contract: v4.1)
+# Inspector contract fixtures (contract: v4.2)
 
-This directory holds the **canonical golden fixture** for the controller ↔
-inspector wire contract. It is the anti-drift guardrail between this repo and
+This directory holds the **canonical golden fixtures** for the controller ↔
+inspector wire contract — the inbound inspection-report body and the outbound
+deploy-path artifacts. They are the anti-drift guardrail between this repo and
 [`beskar7-inspector`](https://github.com/projectbeskar/beskar7-inspector).
 
 The authoritative prose spec is [`docs/inspector-contract.md`](../../docs/inspector-contract.md);
-this fixture is the machine-checked half of it.
+these fixtures are the machine-checked half of it.
 
 ## `golden_inspection_report.json`
 
@@ -50,10 +51,28 @@ The controller's hardware-requirements validation sums these from the fixture
 > this. Accepted suffixes: `GB`, `GiB`, `MB`, `MiB`, `TB`, `TiB` — a bare number
 > with no unit is rejected.
 
+## `golden_boot_cmdline.txt` (contract v4.2, deploy-path)
+
+The byte-exact iPXE `/boot` script the controller renders for a host — pinning
+the kernel cmdline param order and values, including `beskar7.provider-id=b7://{ns}/{host}`
+(D-014 P2, added in v4.2, immediately after `beskar7.target-digest`). Beskar7's
+`controllers/deploy_contract_test.go` regenerates the render from the real
+`buildBootIPXEScript`/`providerID()` and asserts byte-equality; the inspector's
+cmdline parser must accept every param present here.
+
+## `golden_provider_id_artifact.json` (contract v4.2, deploy-path)
+
+The descriptor for the `COS_OEM` artifact the inspector writes for P2: path
+`/oem/beskar7/provider-id`, `content` = the `beskar7.provider-id` value verbatim
+with **no trailing newline**, mode `0600`, owner `root`. The inspector writes it
+in the same mount session as `99_beskar7.yaml`; a shared bootstrap stage reads it
+to set a per-host kubelet `--provider-id`. Beskar7 asserts the `content` equals
+the computed `providerID(ns, host)`; the inspector asserts it writes exactly this.
+
 ## `VERSION`
 
 A one-line plain-text marker: the contract version this checkout implements
-(currently `v4.1`). It is the root of truth for the version — beskar7 pins a
+(currently `v4.2`). It is the root of truth for the version — beskar7 pins a
 Go const to it (`contract.Version`, `version.go` in this directory), and
 `beskar7-inspector` pins its own Rust `CONTRACT_VERSION` to a vendored copy of
 the same bytes. `TestContractVersion` (`version_test.go`) is the intra-repo
