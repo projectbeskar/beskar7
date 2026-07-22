@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v4.1`**
+**Contract version: `v4.2`**
 
 This document is the single source of truth for the wire contract between the
 Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
@@ -9,15 +9,17 @@ change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#versioning-and-anti-drift)).
 
-> **v4.1 in one line:** adds an explicit deploy-failure callback —
-> `POST /api/v1/provision-failed/{ns}/{host}` — so a failing inspector reports
-> the failure promptly instead of silently aborting and waiting out the
-> deployment-timeout (20 min, `--deployment-timeout`). Backward-compatible: a
-> v4 controller without this endpoint returns 404; the v4.1 inspector MUST
-> tolerate that and treat it as if the endpoint were unavailable. A v4.1
-> controller with a v4 inspector simply leaves the new endpoint unused.
-> **No §5 cmdline, §6 report, or existing endpoint change.** See
-> [Version history](#101-version-history) for the full delta.
+> **v4.2 in one line:** adds per-host `ProviderID` delivery for templated
+> pools/HA control planes (D-014 P2) — a new required cmdline param
+> `beskar7.provider-id=b7://<ns>/<host>` (§5) and a new `COS_OEM` artifact
+> `/oem/beskar7/provider-id` (§9.1) the inspector writes alongside
+> `99_beskar7.yaml`, so a *shared* bootstrap template can read a *per-host*
+> value at boot instead of requiring a hand-authored Machine per host.
+> Additive and backward-compatible: a v4.1 inspector ignores the unknown
+> cmdline param and simply never writes the new artifact; a v4.2 controller
+> tolerates a v4.1 inspector (the operator opts in by upgrading controller +
+> inspector + template together). **No §6 report or existing endpoint
+> change.** See [Version history](#101-version-history) for the full delta.
 
 Requirement keywords (MUST, MUST NOT, SHOULD, MAY) are used per RFC 2119.
 
@@ -57,7 +59,7 @@ operator DHCP/boot-infra (NOT Beskar7)
 controller /boot endpoint (nonce-gated, NOT bearer-gated)
   └─ verify nonce → consume (single-use) → render kernel cmdline:
         beskar7.api / beskar7.namespace / beskar7.host / beskar7.token
-        / beskar7.target / beskar7.target-digest / beskar7.ca
+        / beskar7.target / beskar7.target-digest / beskar7.provider-id / beskar7.ca
   │
 inspector ramdisk (on the host) — Phase 1: enroll & inspect (always)
   ├─ probe hardware (native SMBIOS/DMI + /sys + /proc)
@@ -73,6 +75,7 @@ inspector ramdisk — Phase 2: provision (when bootstrap data is available)
   ├─ write the whole-disk image to the selected target disk (dd-equivalent)
   ├─ re-read the partition table; mount the image's COS_OEM partition
   ├─ inject a per-host cloud-config embedding the fetched user-data into COS_OEM
+  ├─ write beskar7.provider-id verbatim to COS_OEM:/oem/beskar7/provider-id
   ├─ sync, unmount — zero the in-memory user-data
   │  (on any step failure above)
   │  └─ POST provision-failed → {api}/api/v1/provision-failed/{ns}/{host}
@@ -160,7 +163,7 @@ boots the inspector image with the §5 parameters on the kernel cmdline:
 
 ```ipxe
 #!ipxe
-kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.ip={ip}] [BOOTIF={01-mac}] [beskar7.timeout={t}] [beskar7.debug=true]
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.provider-id={providerID} beskar7.ca={base64CA} [beskar7.disk={disk}] [beskar7.ip={ip}] [BOOTIF={01-mac}] [beskar7.timeout={t}] [beskar7.debug=true]
 initrd {InspectionImageURL}/initrd.img
 boot
 ```
@@ -185,22 +188,33 @@ gatewayed winner on a multi-NIC host (§8.2).
   image URL) and `{digest}` is `Beskar7Machine.Spec.TargetImageDigest`
   (`sha256:<hex>`). Both are required spec fields; if either is empty, `/boot`
   returns the opaque failure — a host MUST NOT be booted without a pinned target.
+- `{providerID}` is `b7://{ns}/{host}` — the exact string
+  `providerID(PhysicalHost.Namespace, PhysicalHost.Name)` computes, which is
+  also the value `Beskar7Machine.Spec.ProviderID` is stamped with once the host
+  is ready (§5). It is **always** rendered — the controller always knows the
+  host's namespace and name, so this parameter has no omitted/optional form
+  (contract v4.2, see §5).
 - The script boots the inspector image directly; it does NOT chainload another
   iPXE script (the per-host script IS this response).
 
-> **Implementation status (v3):** this section is **implemented** in this repo.
-> `Beskar7Machine.Spec.TargetImageDigest` exists (required,
+> **Implementation status (v4.2):** this section is **implemented** in this
+> repo. `Beskar7Machine.Spec.TargetImageDigest` exists (required,
 > `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders `beskar7.target` +
-> `beskar7.target-digest`; `TargetImageURL`'s godoc is Kairos-correct. The
-> *optional* `beskar7.disk` render shown in brackets above is also implemented:
-> `Beskar7Machine.Spec.TargetDisk` (optional, `^[A-Za-z0-9._:/+-]+$`) is rendered
-> by `/boot` immediately after `beskar7.ca` when set, and omitted when empty (the
-> default auto-select path). The *optional* `beskar7.ip` render is implemented in
-> v3: `Beskar7Machine.Spec.StaticIP` (optional pointer, pattern matching the
-> `<ip>::[<gw>]:<mask>[:<dns>]` shape) is rendered by `/boot` after `beskar7.disk`
-> (or after `beskar7.ca` when `beskar7.disk` is absent) when set, and omitted when
-> nil/empty. The **inspector** deploy path (§9.1 step 5) is built in the inspector
-> repo against this spec.
+> `beskar7.target-digest` + `beskar7.provider-id`; `TargetImageURL`'s godoc is
+> Kairos-correct. The *optional* `beskar7.disk` render shown in brackets above
+> is also implemented: `Beskar7Machine.Spec.TargetDisk` (optional,
+> `^[A-Za-z0-9._:/+-]+$`) is rendered by `/boot` immediately after `beskar7.ca`
+> when set, and omitted when empty (the default auto-select path). The
+> *optional* `beskar7.ip` render is implemented in v3: `Beskar7Machine.Spec.StaticIP`
+> (optional pointer, pattern matching the `<ip>::[<gw>]:<mask>[:<dns>]` shape) is
+> rendered by `/boot` after `beskar7.disk` (or after `beskar7.ca` when
+> `beskar7.disk` is absent) when set, and omitted when nil/empty.
+> `beskar7.provider-id` (v4.2) is unconditional — `renderBootScript` computes it
+> via the same `providerID()` call `handleReadyHost` uses to stamp
+> `Spec.ProviderID`, and `validateProviderID` guards it (SEC-7 defence-in-depth;
+> see `test/contract/golden_boot_cmdline.txt` for the byte-pinned render).
+> The **inspector** deploy path (§9.1 step 5) is built in the inspector repo
+> against this spec.
 
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
@@ -303,6 +317,7 @@ these from `/proc/cmdline`.
 | `beskar7.token` | yes | The per-host bearer token (43-char `base64url`, no padding). Secret. |
 | `beskar7.target` | yes | `Beskar7Machine.Spec.TargetImageURL` — the **Kairos whole-disk raw image** the inspector writes to the target disk. MUST be an `http://` or `https://` URL; plain HTTP is permitted (integrity comes from `beskar7.target-digest`, not TLS — see §8.1). Non-secret. |
 | `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
+| `beskar7.provider-id` | yes (v4.2) | `b7://{PhysicalHost.Namespace}/{PhysicalHost.Name}` — the exact string `providerID(ph.Namespace, ph.Name)` computes, which is also the value stamped onto `Beskar7Machine.Spec.ProviderID` once the host is ready. **Always rendered** (the controller always knows the host's identity); there is no omitted form, unlike the bracketed optional params below. The inspector MUST write it verbatim (no trailing newline, mode `0600`, root-owned) to `/oem/beskar7/provider-id` on the `COS_OEM` partition during the same mount session as `99_beskar7.yaml` (§9.1 step 5.4). This is the P2 mechanism that lets a *shared* bootstrap template produce a *per-host* kubelet `--provider-id`, so the workload Node's `ProviderID` matches its Machine's without a hand-authored-per-host config — required for templated `MachineDeployment` pools and multi-replica control planes (see D-014/D-017, `docs/beskar7machine.md`). Anchored server-side by `validateProviderID` (`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth — the value is controller-computed from already-validated k8s object names, so this guard cannot fail in production). Non-secret. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
 | `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
@@ -630,11 +645,18 @@ The inspector MUST:
       **places** the user-data rather than transcoding it. The user-data MUST be written **only** to the verified target
       `COS_OEM` partition — never to the ramdisk's durable storage or logs — and the
       written file MUST be root-owned with mode `0600`.
-   4. `fsync` the written file **and** its containing directory, unmount the `COS_OEM`
-      partition, and **zero the in-memory user-data buffer**. The `COS_OEM` partition
-      MUST be unmounted and the user-data buffer MUST be zeroed before the provisioned
-      callback fires.
-   5. `POST` the provisioning-complete callback to
+   4. *(v4.2)* On the same mounted `COS_OEM` partition, write `beskar7.provider-id`
+      **verbatim** to `/oem/beskar7/provider-id`: exactly the bytes of the cmdline
+      value (`b7://{ns}/{host}`), **no trailing newline**, mode `0600`, root-owned.
+      No new mount, no new fetch — this happens inside the same mount session as
+      step 3's `99_beskar7.yaml` write, before `fsync`/unmount (step 5). This is
+      non-secret (unlike the user-data), so it MAY be logged for debugging, but the
+      inspector SHOULD NOT do so routinely.
+   5. `fsync` the written files **and** their containing directory, unmount the
+      `COS_OEM` partition, and **zero the in-memory user-data buffer**. The
+      `COS_OEM` partition MUST be unmounted and the user-data buffer MUST be
+      zeroed before the provisioned callback fires.
+   6. `POST` the provisioning-complete callback to
       `{api}/api/v1/provisioned/{ns}/{host}` with the same bearer token over
       verified TLS (§4.4). Treat **202** as success; treat any other response as a
       fatal error that MUST NOT proceed to `reboot(2)`. A retry loop SHOULD NOT be
@@ -642,15 +664,16 @@ The inspector MUST:
       is whether the controller was informed. A non-202 typically means the token
       has expired (§3) or the controller is unreachable; both require the controller
       to re-drive the host rather than an automatic retry.
-   6. `reboot(2)`. The `COS_OEM` partition MUST be unmounted before `reboot(2)` on
+   7. `reboot(2)`. The `COS_OEM` partition MUST be unmounted before `reboot(2)` on
       every path. The host firmware boots the provisioned OS; Kairos applies the
       injected config on first boot. (`kexec` is an optional future speed
       optimization — see §11 — not a contract requirement.)
-   7. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
+   8. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
       `fsync`, or the provisioned callback, or a later abort), the inspector MUST
-      remove the partial `99_beskar7.yaml` and unmount `COS_OEM` before dropping to
-      the debug shell or rebooting — it MUST NOT leave the join secret on a
-      mounted-then-abandoned partition or in the partial file. The user-data buffer
+      remove the partial `99_beskar7.yaml` (and, if written, the partial
+      `provider-id` file) and unmount `COS_OEM` before dropping to the debug shell
+      or rebooting — it MUST NOT leave the join secret on a mounted-then-abandoned
+      partition or in the partial file. The user-data buffer
       MUST still be zeroed on this path.
 7. Never log the bearer token, the nonce, the cmdline, or the bootstrap/user-data
    bytes. The inspector MUST NOT let the bearer token or the user-data/join secret
@@ -701,20 +724,47 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   entries to lock the hardware-aggregate math. The inspector mirrors the same bytes
   in a serde round-trip test asserting byte-equivalent JSON. A schema change on
   either side fails one or both tests, forcing a coordinated contract bump.
-- **The deploy path (Phase 2) is NOT covered by the golden fixture.** The fixture
-  locks only the §6 *report* wire format. v2's destructive disk behavior — digest
-  verification, `COS_OEM` injection, the cmdline render of `beskar7.target-digest`
-  — has no equivalent byte-locked test and is a separate drift surface. At minimum
-  it MUST be guarded by: a controller-side test that `/boot` renders
-  `beskar7.target-digest` from `Beskar7MachineSpec.TargetImageDigest`; an inspector
-  test asserting a digest mismatch aborts before mount/inject/reboot; a fixture
-  for the injected `COS_OEM` cloud-config shape; and an inspector test that a
-  pinned-but-ineligible `beskar7.disk` aborts with **no** fallback while
-  auto-selection picks the smallest eligible whole disk, excluding the
-  ramdisk-backing device (§9.1 step 2). Until those land, "no test failed"
-  does **not** imply the deploy contract held (e.g. a changed OEM filename
-  convention, or a regression to a system-wide `COS_OEM` label scan, would pass
-  silently).
+- **The deploy path (Phase 2) is now partially covered by golden fixtures
+  (v4.2).** Two new byte-pinned fixtures close part of the gap the report-only
+  fixture left open:
+  - [`test/contract/golden_boot_cmdline.txt`](../test/contract/golden_boot_cmdline.txt) —
+    the exact, byte-for-byte `/boot` render (including `beskar7.provider-id`)
+    for a fixed set of inputs. Guarded by `TestBuildBootIPXEScript_GoldenCmdline`
+    (`controllers/deploy_contract_test.go`), which calls `buildBootIPXEScript`
+    directly — any param reorder, rename, or stray space fails it.
+  - [`test/contract/golden_provider_id_artifact.json`](../test/contract/golden_provider_id_artifact.json) —
+    a language-neutral descriptor of the `/oem/beskar7/provider-id` artifact
+    (path, content, mode, owner, no-trailing-newline). Guarded on the beskar7
+    side by `TestGoldenProviderIDArtifact_MatchesComputedValue`, which decodes
+    the fixture and asserts its `content` equals the **real** `providerID()`
+    output — proving the fixture is not hand-typed drift from what the
+    controller actually computes. It does **not** prove the inspector writes
+    those bytes correctly; that half is the inspector's own test (spec'd in
+    `.claude/context/GA-P2-VALIDATION.md` §1.5) plus, ultimately, a dome
+    end-to-end proof — Go CI cannot execute Rust or mount a `COS_OEM` block
+    device, so this is a legitimate two-tier guard, not full coverage by
+    itself.
+  - `controllers/boot_handler_test.go` additionally proves the render-time and
+    stamp-time `ProviderID` values can never diverge (both call the same
+    `providerID()`) and that `beskar7.provider-id` renders unconditionally,
+    even before the host reaches `Ready`.
+  - `validateProviderID` (`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`) is table-tested in
+    `TestValidateProviderID_InjectionGuard`. Unlike `TargetImageURL`/`StaticIP`/
+    `TargetDisk` (operator-controlled, so their guards are reachable in
+    production), this value is always controller-computed from already-validated
+    Kubernetes object names — the guard is defence-in-depth against a
+    hypothetical future regression in `providerID()`, not a behavioral safety
+    net for operator input.
+  - **Still open (not closed by v4.2):** a fixture for the `99_beskar7.yaml`
+    `COS_OEM` cloud-config *shape* (filename/mode/owner — content is
+    operator-supplied, so only the shape is pinnable); an inspector test that a
+    pinned-but-ineligible `beskar7.disk` aborts with **no** fallback while
+    auto-selection picks the smallest eligible whole disk, excluding the
+    ramdisk-backing device (§9.1 step 2); and request/response-shape guards for
+    `/provisioned` and `/provision-failed`. Until those land, "no test failed"
+    does **not** fully imply the deploy contract held for those specific
+    surfaces (e.g. a regression to a system-wide `COS_OEM` label scan would
+    still pass silently).
 
 ### 10.1 Version history
 
@@ -725,6 +775,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v3** | **Static-network override — §6 report schema and golden fixture unchanged.** Un-reserves the optional `beskar7.ip` cmdline param (§5): adds `Beskar7Machine.Spec.StaticIP` (optional `*string`, CRD validation pattern for the `<ip>::[<gw>]:<mask>[:<dns>]` shape); `/boot` renders `beskar7.ip=<value>` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set. The inspector configures the selected NIC statically and skips DHCP when `beskar7.ip` is present; a multi-NIC host with `beskar7.ip` and no `BOOTIF` is rejected. Handler-side `validateStaticIP` / `formatStaticIP` guard (C-1a, SEC-7 omit-on-invalid) mirrors `formatBootif`. **No inspector report-code or fixture change.** The v2 whole-disk deploy flow (§9.1 steps 4–5) is unchanged. |
 | **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
 | **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (via `FailureReason=DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
+| **v4.2** | **Per-host `ProviderID` delivery for templated pools/HA (D-014 P2) — §6 report schema and golden fixture unchanged. Additive and backward-compatible.** A shared `Beskar7MachineTemplate`/bootstrap-config template cannot pin a per-host `ProviderID` (P1's hand-authored, one-Machine-at-a-time pattern breaks for `MachineDeployment` pools and multi-replica control planes). Adds a new required cmdline param `beskar7.provider-id=b7://{ns}/{host}` (§5), rendered by `/boot` immediately after `beskar7.target-digest` and before `beskar7.ca`, and **always** rendered (the controller always knows the host's identity — no omitted form). The value is `providerID(ph.Namespace, ph.Name)`, the identical call `handleReadyHost` uses to stamp `Beskar7Machine.Spec.ProviderID`, so the rendered and stamped values cannot diverge by construction. Adds a new `COS_OEM` artifact `/oem/beskar7/provider-id` (§9.1 step 5.4): the inspector writes the cmdline value verbatim (no trailing newline, mode `0600`, root-owned) during the *same* mount session as `99_beskar7.yaml`, no new mount or fetch. A shared boot-time stage in the node's bootstrap config reads this file to set a per-host kubelet `--provider-id` before the k8s distro starts — the residual per-distro glue that lets a shared template still produce a correct, unique `Node.spec.providerID` per replica. **Backward-compatible:** a v4.1 inspector ignores the unknown cmdline param and never writes the new artifact (P1's single hand-authored Machine path is unaffected); a v4.2 controller tolerates a v4.1 inspector. **Controller side**: `controllers/boot_handler.go` — `validateProviderID` (anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth) + the `beskar7.provider-id` render in `buildBootIPXEScript`/`renderBootScript`; new golden fixtures `test/contract/golden_boot_cmdline.txt` and `test/contract/golden_provider_id_artifact.json` (§10); `controllers/deploy_contract_test.go` (new). Inspector side: `CONTRACT_VERSION="v4.2"`, cmdline parser + `COS_OEM` writer for `/oem/beskar7/provider-id`, per `.claude/context/GA-P2-VALIDATION.md` §1.5 (spec only from this repo's side — cross-repo). |
 
 ---
 

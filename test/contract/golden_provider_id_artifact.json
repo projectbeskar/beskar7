@@ -1,0 +1,9 @@
+{
+  "namespace": "contract-test",
+  "host": "host-01",
+  "artifactPath": "/oem/beskar7/provider-id",
+  "content": "b7://contract-test/host-01",
+  "contentHasTrailingNewline": false,
+  "mode": "0600",
+  "owner": "root"
+}
