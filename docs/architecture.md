@@ -494,14 +494,14 @@ If no inspection report received within 10 minutes:
 1. PhysicalHost.status.inspectionPhase set to `Timeout`
 2. Beskar7Machine marked as Failed with appropriate condition
 3. PhysicalHost powered off
-4. Host transitions back to Available (can be retried)
+4. `PhysicalHost` transitions to `StateError` (terminal); the `Beskar7Machine` is failed with `FailureReason=InspectionTimedOut`. There is no automatic retry — the operator deletes and recreates the `Beskar7Machine`.
 
 ### Hardware Validation Failure
 
 If inspection report doesn't meet requirements:
 1. Beskar7Machine condition updated with validation error
 2. PhysicalHost powered off
-3. Host transitions back to Available
+3. `PhysicalHost` transitions to `StateError` (terminal); the `Beskar7Machine` is failed with `FailureReason=HardwareRequirementsNotMet`
 4. User must adjust requirements or use different hardware
 
 ### Redfish Connection Failure
