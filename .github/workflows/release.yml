@@ -71,6 +71,36 @@ jobs:
         name: sbom
         path: sbom.spdx.json
 
+    - name: Install cosign
+      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+    # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
+    #   cosign verify $IMAGE --certificate-identity-regexp \
+    #     'https://github.com/{owner}/{repo}/.github/workflows/release.yml@refs/tags/.*' \
+    #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    - name: Sign controller image (keyless)
+      env:
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        image="$(echo "$image" | tr '[:upper:]' '[:lower:]')"
+        cosign sign --yes "${image}@${DIGEST}"
+        echo "signed ${image}@${DIGEST}"
+
+    # Bind the SBOM to the image as a signed, verifiable attestation rather than
+    # leaving it as a loose release artifact. Verify with:
+    #   cosign verify-attestation --type spdxjson $IMAGE ...
+    - name: Attest SBOM to the image (keyless)
+      env:
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        image="$(echo "$image" | tr '[:upper:]' '[:lower:]')"
+        cosign attest --yes --type spdxjson --predicate sbom.spdx.json "${image}@${DIGEST}"
+        echo "attested SBOM to ${image}@${DIGEST}"
+
   # Job 2: Build and Push Mock Redfish Image (parallel with build-and-push)
   build-and-push-mock-redfish:
     name: Build and Push Mock Redfish Image
@@ -107,6 +137,7 @@ jobs:
           type=semver,pattern={{major}}
 
     - name: Build and push mock-redfish image
+      id: build
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -117,6 +148,23 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         provenance: false
         sbom: false
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+    # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
+    #   cosign verify $IMAGE --certificate-identity-regexp \
+    #     'https://github.com/{owner}/{repo}/.github/workflows/release.yml@refs/tags/.*' \
+    #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    - name: Sign mock-redfish image (keyless)
+      env:
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        image="$(echo "$image" | tr '[:upper:]' '[:lower:]')"
+        cosign sign --yes "${image}@${DIGEST}"
+        echo "signed ${image}@${DIGEST}"
 
   # Job 3: Build and Push Mock Inspector Image (parallel with build-and-push and build-and-push-mock-redfish)
   build-and-push-mock-inspector:
@@ -154,6 +202,7 @@ jobs:
           type=semver,pattern={{major}}
 
     - name: Build and push mock-inspector image
+      id: build
       uses: docker/build-push-action@v5
       with:
         context: .
@@ -164,6 +213,23 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         provenance: false
         sbom: false
+
+    - name: Install cosign
+      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+
+    # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
+    #   cosign verify $IMAGE --certificate-identity-regexp \
+    #     'https://github.com/{owner}/{repo}/.github/workflows/release.yml@refs/tags/.*' \
+    #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+    - name: Sign mock-inspector image (keyless)
+      env:
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+        image="$(echo "$image" | tr '[:upper:]' '[:lower:]')"
+        cosign sign --yes "${image}@${DIGEST}"
+        echo "signed ${image}@${DIGEST}"
 
   # Job 4: Security Scan Released Image
   security-scan:

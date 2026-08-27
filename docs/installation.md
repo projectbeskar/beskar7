@@ -75,6 +75,37 @@ kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `beskar7-system` namespace and the default `bootstrap.urlBase`.
 
+## Verify release artifacts (supply chain)
+
+Container images are signed with [cosign](https://docs.sigstore.dev/) using keyless
+(OIDC) signing bound to the release workflow's identity — there is no long-lived
+signing key. The controller image also carries a signed SPDX SBOM attestation.
+
+Verify an image before deploying it:
+
+```bash
+IMAGE=ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.8
+
+cosign verify "$IMAGE" \
+  --certificate-identity-regexp '^https://github.com/projectbeskar/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+Inspect the SBOM attestation:
+
+```bash
+cosign verify-attestation --type spdxjson "$IMAGE" \
+  --certificate-identity-regexp '^https://github.com/projectbeskar/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+A failed verification means the image was not produced by this project's release
+workflow — do not deploy it.
+
+> The `beskar7-inspector` boot artifacts (`vmlinuz`, `initrd.img`) ship with
+> `sha256sums.txt` on each inspector release; verify them with
+> `sha256sum -c sha256sums.txt --ignore-missing`.
+
 ## Verify the installation
 
 ```bash
