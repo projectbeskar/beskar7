@@ -21,8 +21,8 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 5. Inspection image collects hardware details
 6. Reports back to Beskar7
 7. Validates hardware requirements
-8. Kexecs into target OS
-9. Machine joins cluster
+8. Writes the digest-verified whole-disk OS image and injects the bootstrap config
+9. Reboots into the provisioned OS; the machine joins the cluster
 
 ## Current Status
 
@@ -38,7 +38,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 2. Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 3. cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 4. iPXE infrastructure - DHCP + HTTP server ([setup guide](docs/ipxe-setup.md))
-5. Inspection image - beskar7-inspector ([repository](https://github.com/projectbeskar/beskar7-inspector))
+5. Inspection image - `vmlinuz` + `initrd.img` from [beskar7-inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases), served by your boot server. Match the inspector to the contract version your controller speaks (see [iPXE Setup](docs/ipxe-setup.md)).
 
 ### Quick Install
 
@@ -51,12 +51,12 @@ helm install --devel beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace
 ```
 
-The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.6`); drop it once a non-prerelease tag is cut.
+The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.8`); drop it once a non-prerelease tag is cut.
 
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.6/beskar7-manifests-v0.4.0-alpha.6.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.8/beskar7-manifests-v0.4.0-alpha.8.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
@@ -84,12 +84,25 @@ kind: Beskar7Machine
 metadata:
   name: worker-01
 spec:
-  inspectionImageURL: "http://boot-server/beskar7-inspector/boot"
-  targetImageURL: "http://boot-server/kairos/v2.8.1.tar.gz"
+  # Directory the boot server serves the inspector from; the controller
+  # appends /vmlinuz and /initrd.img when it renders the iPXE script.
+  inspectionImageURL: "http://boot-server/beskar7-inspector"
+  # A whole-disk raw OS image (not a tarball or ISO) with a bootstrap agent
+  # baked in — see docs/beskar7machine.md for the image requirements.
+  targetImageURL: "http://boot-server/images/kairos-k3s.raw"
+  # Required. The inspector verifies the downloaded bytes against this and
+  # refuses to write the disk on a mismatch — it is the integrity anchor.
+  #   sha256sum kairos-k3s.raw
+  targetImageDigest: "sha256:<64-hex-digest-of-the-bytes-at-targetImageURL>"
   hardwareRequirements:
     minCPUCores: 4
     minMemoryGB: 16
 ```
+
+> These snippets assume the boot infrastructure from the prerequisites is already
+> in place (DHCP/TFTP + iPXE, a boot server serving the inspector and the OS
+> image, and the controller's callback endpoint reachable from the host network).
+> [Quick Start](docs/quick-start.md) walks the first provisioning flow end to end.
 
 **Complete examples:** See [examples/](examples/) directory for full cluster configurations.
 
