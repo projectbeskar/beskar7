@@ -6,9 +6,20 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.0-alpha.9] - 2026-08-31
+
+The "adoption readiness" release: the `v1beta1` API is **frozen**, the
+controller↔inspector contract moves to **v4.2** with per-host `ProviderID`
+delivery, release images are **signed**, and the `beskar7-inspector` is now
+**distributable** — published as versioned, checksummed, signed artifacts
+instead of something every adopter had to build from source.
+
+**Upgrading from alpha.8 requires action** — see the BREAKING entry under
+Changed: `configurationURL` was removed and `caBundleSecretRef` changed shape.
+
 ### Added
 - **Per-host `ProviderID` delivery for templated pools/HA control planes** (contract v4.2, D-014 P2) — `/boot` now always renders a new required cmdline param `beskar7.provider-id=b7://<namespace>/<host>` (`controllers/boot_handler.go`), positioned immediately after `beskar7.target-digest` and before `beskar7.ca`. The value is `providerID(ph.Namespace, ph.Name)` — the exact call `handleReadyHost` already uses to stamp `Beskar7Machine.Spec.ProviderID` — so the rendered and stamped values cannot diverge. New `validateProviderID` injection guard (SEC-7 defence-in-depth, anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`). This closes the gap where a *shared* `Beskar7MachineTemplate`/bootstrap config could not pin a *per-host* `ProviderID`, blocking `MachineDeployment` worker pools and multi-replica control planes; the inspector writes the value verbatim to a new `COS_OEM` artifact `/oem/beskar7/provider-id` (no trailing newline, mode `0600`, root-owned) that a shared boot-time stage reads to set a per-host kubelet `--provider-id`. Additive and backward-compatible: a v4.1 inspector ignores the unknown param and never writes the artifact.
-- **Deploy-path golden fixtures** (`test/contract/golden_boot_cmdline_v4_2.txt`, `test/contract/golden_provider_id_artifact.json`) and `controllers/deploy_contract_test.go` — byte-exact `/boot` cmdline render guard, a language-neutral descriptor of the `COS_OEM` provider-id artifact cross-checked against the real `providerID()`, and an injection-guard table test for `validateProviderID`. `controllers/boot_handler_test.go` adds the regression guard proving the render-time and stamp-time `ProviderID` values are identical and that `beskar7.provider-id` renders unconditionally, even before the host reaches `Ready`.
+- **Deploy-path golden fixtures** (`test/contract/golden_boot_cmdline.txt`, `test/contract/golden_provider_id_artifact.json`) and `controllers/deploy_contract_test.go` — byte-exact `/boot` cmdline render guard, a language-neutral descriptor of the `COS_OEM` provider-id artifact cross-checked against the real `providerID()`, and an injection-guard table test for `validateProviderID`. `controllers/boot_handler_test.go` adds the regression guard proving the render-time and stamp-time `ProviderID` values are identical and that `beskar7.provider-id` renders unconditionally, even before the host reaches `Ready`.
 - **Contract version bumped to v4.2** — `test/contract/VERSION`, `contract.Version`, and `docs/inspector-contract.md` all bumped; `TestContractVersion` unaffected (self-consistency check only).
 
 ### Changed
@@ -16,6 +27,17 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Removed
 - **`MachineProvisionedCondition` constant** — removed from `api/v1beta1/beskar7machine_types.go`. It was declared but never set by any reconciler (verified: zero non-declaration references), so a caller scripting against it would wait forever. Use `InfrastructureReady`, `Status.Ready`, and `Status.Initialization.Provisioned` instead. Not a CRD-schema change (condition types are runtime values, not schema); no `make manifests` diff.
+
+### Security
+- **Release images are signed with cosign** (keyless/OIDC, bound by digest to the release workflow identity — no long-lived key). The controller image additionally carries its SPDX SBOM as a **signed attestation** rather than a detached artifact. Verification instructions in `docs/installation.md`. Signing applies from this release onward; `v0.4.0-alpha.8` and earlier are unsigned and will not verify.
+- **RBAC binding/subject-graph guard** (SEC-2, #131) — `test/rbac` now also asserts every `Role`/`ClusterRole` in each topology (cluster-wide kustomize, namespace-scoped overlay, both Helm branches) is bound to the manager ServiceAccount by exactly one binding with a matching `roleRef`, catching unbound roles, dangling `roleRef`s, and wrong-identity subjects that the rule-content guard cannot see.
+
+### Documentation
+- **v1beta1 declared frozen** (D-018, #133) — stable and **additive-only** until a future `v1beta2` introduced with a conversion webhook.
+- **`docs/api-reference.md` reconciled** against the frozen types (#135) — added the missing `targetImageDigest`/`targetDisk`/`staticIP`, the `Deploying` state and `Provisioning` phase, all seven terminal `failureReason` values, corrected the bearer-token lifetime (30 → 60 min), and fixed two embedded examples that were CRD-invalid.
+- **Removed-kexec sweep** (#137, #140) — `docs/` and `examples/` reconciled to the v2 whole-disk-image model, and the README's "How It Works" and `Beskar7Machine` example corrected (the example was **CRD-invalid**: it omitted the required `targetImageDigest` and used the removed `.tar.gz` format).
+- **Honest hardware-compatibility claims** — five vendors were marked "Tested" with per-vendor experience claims; no physical vendor BMC has ever been validated. The doc now separates the *design* property (no vendor-specific code paths) from *validation status*, states exactly what has been exercised (a stateful fake, the DMTF `public-rackmount1` mockup, and sushy-tools emulation), and invites real-hardware reports.
+- **Cross-repo contract sync documented** (D-019, #134) — `test/contract/` is the single source of truth; the inspector vendors byte-copies pinned to an immutable `contract/<version>` tag and gates on drift in its own CI.
 
 ## [v0.4.0-alpha.8] - 2026-07-21
 

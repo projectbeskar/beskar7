@@ -35,45 +35,63 @@ That's it! These are universally supported across all Redfish implementations.
 
 See [iPXE Setup Guide](ipxe-setup.md) for network architecture examples.
 
-## Tested Vendors
+## Vendor compatibility
 
-While Beskar7 works with any Redfish BMC, we've specifically tested:
+Beskar7 has **no vendor-specific code paths** — one code path drives every BMC
+through the small Redfish subset listed above. Any BMC that implements those
+operations to spec is expected to work.
 
-| Vendor | BMC Type | Redfish Version | Status | Notes |
-|--------|----------|-----------------|--------|-------|
-| **Dell** | iDRAC 8/9 | 1.4+ | Tested | no special handling |
-| **HPE** | iLO 4/5/6 | 1.2+ | Tested | Redfish compliance |
-| **Lenovo** | XCC | 1.6+ | Tested | Clean implementation |
-| **Supermicro** | BMC | 1.4+ | Tested | Newer BMC versions recommended |
-| **Generic** | AMI MegaRAC | 1.4+ | Tested | Used by many whitebox vendors |
-| **Generic** | Aspeed OpenBMC | 1.0+ | Partial | Some implementations incomplete |
+That expectation is a design property, not a test result. Be precise about the
+difference when planning a deployment:
 
-### Notes on Tested Hardware
+| Vendor | BMC | Redfish | Expected | Validated on real hardware |
+|---|---|---|---|---|
+| Dell | iDRAC 8/9 | 1.4+ | Yes | Not yet |
+| HPE | iLO 4/5/6 | 1.2+ | Yes | Not yet |
+| Lenovo | XCC | 1.6+ | Yes | Not yet |
+| Supermicro | BMC (X12+ recommended) | 1.4+ | Yes | Not yet |
+| Generic | AMI MegaRAC | 1.4+ | Yes | Not yet |
+| Generic | Aspeed OpenBMC | 1.0+ | Varies — see below | Not yet |
 
-**Dell (iDRAC):**
-- Excellent Redfish implementation
-- No quirks or workarounds needed
-- Power management very reliable
+### What has actually been validated
 
-**HPE (iLO):**
-- Industry-leading Redfish compliance
-- All tested features work flawlessly
-- Highly recommended
+Beskar7's Redfish surface is exercised against three things today, none of which
+is a physical vendor BMC:
 
-**Lenovo (XCC):**
-- Clean, standards-compliant implementation
-- No issues encountered
-- Good documentation
+- **A stateful fake** (`internal/redfishmock`) that emulates Dell/HPE/Lenovo/
+  Supermicro/Generic service roots, used for claim → power → boot-override →
+  release state-machine tests.
+- **The DMTF reference mockup** (`public-rackmount1`, vendored under
+  `internal/redfish/testdata/corpus/`), walked by the *real* gofish client to
+  catch parsing and link-navigation regressions.
+- **sushy-tools** (libvirt-backed Redfish emulator), used for the full
+  end-to-end provisioning loop: claim → PXE → inspect → whole-disk write →
+  callback → `Ready` node.
 
-**Supermicro:**
-- Quality varies by BMC version
-- Update to latest BMC firmware for best results
-- X12+ series recommended
+**No physical vendor BMC has been validated.** Emulators are faithful to the
+spec, which is exactly why they cannot surface the firmware quirks real BMCs
+have. Treat the table above as "should work, unverified" and pilot on a small
+number of hosts before committing a fleet.
 
-**Whitebox/Generic:**
-- AMI MegaRAC generally works well
-- OpenBMC implementations vary by vendor
-- Test thoroughly before production use
+### Known spec-conformance caveats
+
+General Redfish guidance, not Beskar7 findings:
+
+- **Supermicro** — Redfish completeness varies by firmware revision; update to
+  current BMC firmware before testing.
+- **OpenBMC/Aspeed** — implementation coverage differs significantly between
+  vendors shipping it; verify boot-source override in particular.
+- **One-time boot override** — Beskar7 sets `BootSourceOverrideEnabled=Once` and
+  relies on firmware to consume it after the provisioning boot. Real BMCs honor
+  this; note that the sushy-tools emulator does **not** (it persists the boot
+  device), which is a harness limitation rather than a product behavior.
+
+### Reporting real-hardware results
+
+Validation reports are welcome and are the fastest way to move a row from
+"Not yet" to a real result — please
+[open an issue](https://github.com/projectbeskar/beskar7/issues) with the vendor,
+BMC model, firmware revision, and what did or did not work.
 
 ## What's Different from Other Bare-Metal Tools?
 
@@ -311,20 +329,23 @@ Submit to: https://github.com/projectbeskar/beskar7/issues
 
 ## Feature Support Matrix
 
-| Feature | Requirement | All Vendors |
-|---------|-------------|-------------|
+| Feature | Requirement | Mandated by the Redfish spec |
+|---------|-------------|------------------------------|
 | **Power On/Off** | `/redfish/v1/Systems/{id}/Actions/ComputerSystem.Reset` | Yes |
 | **Power Status** | `/redfish/v1/Systems/{id}` -> `PowerState` | Yes |
 | **Set PXE Boot** | `/redfish/v1/Systems/{id}` -> `Boot.BootSourceOverrideTarget = Pxe` | Yes |
 | **System Info** | `/redfish/v1/Systems/{id}` -> Manufacturer, Model, Serial | Yes |
 | **Network Info** | `/redfish/v1/Systems/{id}/EthernetInterfaces` | Yes |
 
-Everything Beskar7 needs is universally supported!
+Everything Beskar7 needs is part of the base Redfish specification, which is
+why no vendor-specific handling is required. Whether a given BMC *implements*
+the spec correctly is a firmware question — see "What has actually been
+validated" above.
 
 ## FAQ
 
 **Q: Do I need vendor-specific configuration?**
-A: No! Beskar7 works the same on all vendors.
+A: No — Beskar7 uses the same code path on every vendor, with no vendor-specific branches.
 
 **Q: Do I need to update BMC firmware?**
 A: Recommended but not required. Latest firmware usually has best Redfish compliance.
