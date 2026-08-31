@@ -81,10 +81,14 @@ Container images are signed with [cosign](https://docs.sigstore.dev/) using keyl
 (OIDC) signing bound to the release workflow's identity — there is no long-lived
 signing key. The controller image also carries a signed SPDX SBOM attestation.
 
+> **Applies from `v0.4.0-alpha.9` onward.** Signing was enabled after
+> `v0.4.0-alpha.8` was published, so that and earlier alpha images carry no
+> signature and will not verify — this is expected, not a tampering signal.
+
 Verify an image before deploying it:
 
 ```bash
-IMAGE=ghcr.io/projectbeskar/beskar7/beskar7:v0.4.0-alpha.8
+IMAGE=ghcr.io/projectbeskar/beskar7/beskar7:<tag>   # a release from alpha.9 onward
 
 cosign verify "$IMAGE" \
   --certificate-identity-regexp '^https://github.com/projectbeskar/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
