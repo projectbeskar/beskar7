@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.0-alpha.8  
+**Version:** v0.4.0-alpha.9  
 **Status:** Alpha (pre-GA). The `v1beta1` API is **frozen** — no further breaking changes; the schema evolves **additive-only** until a future `v1beta2` (introduced with a conversion webhook) is needed.  
 **Breaking Changes:** v0.4.0 is NOT compatible with v0.3.x ([see CHANGELOG](CHANGELOG.md))
 
@@ -51,12 +51,12 @@ helm install --devel beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace
 ```
 
-The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.8`); drop it once a non-prerelease tag is cut.
+The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.9`); drop it once a non-prerelease tag is cut.
 
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.8/beskar7-manifests-v0.4.0-alpha.8.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.9/beskar7-manifests-v0.4.0-alpha.9.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
@@ -118,7 +118,9 @@ Beskar7 consists of three main controllers:
 
 ## Hardware Compatibility
 
-Works with **any Redfish-compliant BMC**. Tested with Dell, HPE, Lenovo, Supermicro, and generic BMCs.
+Designed for **any Redfish-compliant BMC** — one code path, no vendor-specific
+handling. Validated against emulated BMCs and the DMTF reference mockup; **no
+physical vendor BMC has been validated yet**, so pilot before committing a fleet.
 
 **Details:** See [docs/hardware-compatibility.md](docs/hardware-compatibility.md)
 
