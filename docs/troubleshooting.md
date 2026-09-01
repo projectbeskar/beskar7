@@ -501,7 +501,29 @@ kubectl get beskar7machine -o custom-columns=NAME:.metadata.name,PHASE:.status.p
 
 **Symptom:** Resources take long time to update.
 
-There is no per-controller `--max-concurrent-reconciles-*` flag in v0.4. The reconcilers use controller-runtime's default (`MaxConcurrentReconciles = 1`). If you genuinely need to raise concurrency, the change is in code — `controllers/<kind>_controller.go:SetupWithManager` — not configuration. Open an issue with your scaling profile if the default is a real constraint.
+Each controller runs **one reconcile worker by default** (`--max-concurrent-reconciles=1`,
+matching controller-runtime). With a single worker, reconciles are serialised — and
+because every Redfish call carries a 30s timeout, **one unreachable BMC can occupy the
+only worker and stall reconciles for healthy hosts**. That head-of-line blocking, not
+raw throughput, is usually what "slow reconciliation" turns out to be.
+
+Check whether a few unreachable BMCs are consuming the worker:
+
+```bash
+kubectl get physicalhosts -A -o custom-columns=\
+NAME:.metadata.name,STATE:.status.state,ERROR:.status.errorMessage | grep -iv '<none>'
+```
+
+If so, raise concurrency so healthy hosts are not queued behind failing ones:
+
+```yaml
+- --max-concurrent-reconciles=4
+```
+
+This is safe with respect to BMC load: controller-runtime never reconciles the same
+object concurrently, so distinct workers always act on distinct `PhysicalHost`s — and
+therefore distinct BMCs. Size it to your fleet; there is no benefit to setting it far
+above the number of hosts you expect to reconcile in parallel.
 
 ### High CPU/Memory Usage
 

@@ -6,6 +6,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+- **`--max-concurrent-reconciles` manager flag** — sets the reconcile worker count for all three controllers. Defaults to `1`, matching controller-runtime, so deployments that do not set it are unaffected. The motivation is fault isolation more than throughput: with a single worker, one unreachable BMC can occupy it for a full 30s Redfish timeout and stall reconciles for healthy hosts. Raising it is safe with respect to BMC load because controller-runtime never reconciles the same object concurrently, so distinct workers always act on distinct `PhysicalHost`s. Supersedes the earlier MEDIUM-1 decision to leave concurrency code-only, which assumed operators could patch and rebuild — no longer true once external adopters run fleets. Documented in `docs/{troubleshooting,resource-planning,deployment-best-practices}.md`.
+
+### Fixed
+- **`Beskar7ClusterReconciler.SetupWithManager` silently discarded its `options` argument** — the `controller.Options` parameter was accepted and never applied, so any caller-supplied controller configuration was dropped. The options are now passed through to the builder (with the worker count overlaid). No behaviour change today, since the only caller passed an empty struct.
+
+
 ## [v0.4.0-alpha.9] - 2026-08-31
 
 The "adoption readiness" release: the `v1beta1` API is **frozen**, the

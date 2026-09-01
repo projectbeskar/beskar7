@@ -48,8 +48,9 @@ import (
 )
 
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	scheme                  = runtime.NewScheme()
+	setupLog                = ctrl.Log.WithName("setup")
+	maxConcurrentReconciles int
 )
 
 func init() {
@@ -128,6 +129,12 @@ func main() {
 		"How long a host may stay in the Deploying phase before the Beskar7Machine is "+
 			"marked terminally failed (DeploymentTimedOut). Raise this for hardware with "+
 			"slow storage or very large OS images (D-015).")
+	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", controllers.DefaultMaxConcurrentReconciles,
+		"Number of concurrent reconcile workers per controller. The default (1) matches "+
+			"controller-runtime and preserves historical behaviour. Raise it when a fleet is "+
+			"large enough that a single unreachable BMC's 30s Redfish timeout stalls reconciles "+
+			"for healthy hosts; controller-runtime never reconciles the same object "+
+			"concurrently, so distinct workers always act on distinct BMCs.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -209,6 +216,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	if maxConcurrentReconciles < 1 {
+		setupLog.Info("--max-concurrent-reconciles below 1; using the default",
+			"requested", maxConcurrentReconciles, "effective", controllers.DefaultMaxConcurrentReconciles)
+		maxConcurrentReconciles = controllers.DefaultMaxConcurrentReconciles
+	}
+	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", maxConcurrentReconciles)
+
 	// Setup controllers
 	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
 	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
@@ -219,24 +233,28 @@ func main() {
 		BootstrapURLBase:  bootstrapURLBase,
 		InspectionTimeout: inspectionTimeout,
 		DeploymentTimeout: deploymentTimeout,
+
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
 		os.Exit(1)
 	}
 
 	if err = (&controllers.Beskar7ClusterReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(context.Background(), mgr, controller.Options{}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Cluster")
 		os.Exit(1)
 	}
 
 	if err = (&controllers.PhysicalHostReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Log:      ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
-		Recorder: mgr.GetEventRecorderFor("beskar7-physicalhost-controller"),
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
+		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"),
+		MaxConcurrentReconciles: maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PhysicalHost")
 		os.Exit(1)

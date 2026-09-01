@@ -734,14 +734,20 @@ args:
 - --leader-elect-renew-deadline=10s   # default 10s
 - --leader-elect-retry-period=2s      # default 2s
 - --inspection-timeout=10m            # raise for slow-POST hardware
+- --max-concurrent-reconciles=1       # default 1; raise for larger fleets
 ```
 
-There is **no** `--concurrent-reconciles`, `--max-concurrent-reconciles`,
-`--worker-count`, or `--resync-period` flag. Each controller runs with
-controller-runtime's default `MaxConcurrentReconciles = 1`. Raising
-per-controller concurrency is a code change in
-`controllers/<kind>_controller.go:SetupWithManager`, not configuration — open
-an issue with your scaling profile if the serial default is a real constraint.
+`--max-concurrent-reconciles` sets the reconcile worker count for all three
+controllers; the default `1` matches controller-runtime, so leaving it unset
+preserves the historical serial behaviour exactly. There is no `--worker-count`
+or `--resync-period` flag.
+
+Raising it is safe with respect to BMC load — controller-runtime never
+reconciles the same object concurrently, so distinct workers always act on
+distinct `PhysicalHost`s and therefore distinct BMCs. The usual reason to raise
+it is fault isolation rather than throughput: with one worker, a single
+unreachable BMC can occupy it for a full 30s Redfish timeout and stall
+reconciles for healthy hosts.
 
 ### 2. Caching and rate limiting
 

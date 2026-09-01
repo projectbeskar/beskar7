@@ -54,6 +54,9 @@ type Beskar7ClusterReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 	Log    logr.Logger
+	// MaxConcurrentReconciles is the worker count for this controller. Zero
+	// means DefaultMaxConcurrentReconciles (1).
+	MaxConcurrentReconciles int
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,verbs=get;list;watch;create;update;patch;delete
@@ -435,6 +438,12 @@ func (r *Beskar7ClusterReconciler) SetupWithManager(ctx context.Context, mgr ctr
 			&infrastructurev1beta1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Clusters),
 		).
+		// options was previously accepted and silently discarded; apply it, with
+		// the worker count overlaid from the reconciler's own configuration.
+		WithOptions(func() controller.Options {
+			options.MaxConcurrentReconciles = maxConcurrentOrDefault(r.MaxConcurrentReconciles)
+			return options
+		}()).
 		Complete(r)
 }
 

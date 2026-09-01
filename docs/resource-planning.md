@@ -185,9 +185,21 @@ args:
 # Optional: how long a host may stay Inspecting before InspectionTimedOut.
 # Default 10m; raise for hardware with slow BIOS POST / slow first-boot inspection.
 - --inspection-timeout=10m
+# Optional: reconcile workers per controller. Default 1. Raise for larger fleets
+# or to stop one unreachable BMC's 30s timeout blocking healthy hosts.
+- --max-concurrent-reconciles=4
 ```
 
-There is no `--max-concurrent-reconciles*` or `--reconciliation-interval` flag; the controller-runtime defaults apply (one reconciler per controller; per-resource requeue intervals encoded in the controllers themselves). Per-controller concurrency would have to be raised in code in `controllers/<kind>_controller.go:SetupWithManager`.
+`--max-concurrent-reconciles` sets the worker count for **all three** controllers
+(default `1`, matching controller-runtime). There is no `--reconciliation-interval`
+flag; per-resource requeue intervals are encoded in the controllers themselves
+(steady-state `PhysicalHost` resync is 5 minutes).
+
+Sizing: a healthy `PhysicalHost` reconcile makes a Redfish connect plus three reads,
+so it is dominated by BMC latency rather than CPU. The single-worker default is
+adequate for small fleets; raise it when either the 5-minute resync cannot keep up
+with your host count, or — more commonly — when unreachable BMCs burning 30s timeouts
+would otherwise block reconciles for healthy hosts.
 
 ### Health Check Tuning
 

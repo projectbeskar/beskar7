@@ -36,3 +36,23 @@ func isClusterPaused(cluster *clusterv1.Cluster) bool {
 	}
 	return annotations.HasPaused(cluster)
 }
+
+// DefaultMaxConcurrentReconciles is the per-controller worker count used when
+// none is configured. It matches controller-runtime's own default, so the
+// zero value preserves historical single-worker behaviour exactly.
+//
+// Raising it is safe with respect to BMC load: controller-runtime never
+// reconciles the same object key concurrently, so distinct workers always act
+// on distinct PhysicalHosts — and therefore distinct BMCs. The reason to raise
+// it is head-of-line blocking: a single unreachable BMC can occupy the only
+// worker for a full 30s Redfish timeout, stalling reconciles for healthy hosts.
+const DefaultMaxConcurrentReconciles = 1
+
+// maxConcurrentOrDefault normalises an unset (zero) or negative worker count to
+// DefaultMaxConcurrentReconciles.
+func maxConcurrentOrDefault(n int) int {
+	if n < 1 {
+		return DefaultMaxConcurrentReconciles
+	}
+	return n
+}

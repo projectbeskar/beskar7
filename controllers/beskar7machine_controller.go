@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -93,6 +94,9 @@ type Beskar7MachineReconciler struct {
 	// <BootstrapURLBase>/api/v1/bootstrap/<namespace>/<name>. Must be non-empty;
 	// validated in SetupWithManager.
 	BootstrapURLBase string
+	// MaxConcurrentReconciles is the worker count for this controller. Zero
+	// means DefaultMaxConcurrentReconciles (1).
+	MaxConcurrentReconciles int
 	// InspectionTimeout bounds how long a host may stay in Inspecting before the
 	// machine is marked terminally failed (InspectionTimedOut). Zero means use
 	// DefaultInspectionTimeout. Set from the --inspection-timeout manager flag so
@@ -1468,6 +1472,9 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&infrastructurev1beta1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine),
 		).
+		WithOptions(controller.Options{
+			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
+		}).
 		Complete(r)
 }
 
