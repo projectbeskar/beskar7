@@ -141,6 +141,14 @@ End-to-end runtime is typically 90–180 seconds, dominated by the initial contr
 
 The chart bug that shipped in `v0.4.0-alpha.1` — pod `securityContext` missing `fsGroup` and `runAsGroup`, causing the controller to crashloop on `permission denied` when reading its TLS cert — would have been caught at layer 1 (pod never reaches Running). `make smoke` is now a release-gating signal: if it doesn't pass against a freshly installed chart on `kind`, the release isn't shippable.
 
+Layer 7 catches the **D-014 P2 regression**: a shared `Beskar7MachineTemplate`
+handing every replica the *same* `ProviderID`. It drives a real `MachineDeployment`
+(`replicas: 2`) over two mock BMCs and asserts the two cloned `Beskar7Machine`s claim
+different hosts, receive **distinct** `ProviderID`s, and that each one names *its own*
+claimed host rather than merely being a well-formed `b7://` value. This is the property
+a single hand-authored Machine cannot demonstrate, and it is what blocks
+`MachineDeployment` pools and multi-replica control planes when it breaks.
+
 Layer 3 catches RBAC misconfiguration (controller can't read the BMC `Secret`), CRD-vs-controller drift (controller doesn't know about a field the CRD requires), and TLS / connection regressions (controller can't talk to the BMC at all). Layer 4 catches finalizer leaks, owner-ref mistakes, and claim-path regressions. Layer 5 catches CAPI conformance regressions (the v1beta2 status contract on `Beskar7Cluster`/`Beskar7Machine`), bootstrap token mint/store path regressions, and the controller's re-acquire-after-claim path that the v0.4.0-alpha.3 → alpha.4 work uncovered.
 
 ## What this does not catch
