@@ -229,6 +229,29 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.reconcileDelete(ctx, log, b7machine)
 	}
 
+	// A terminal failure must actually be terminal. markTerminalFailure already
+	// documents that FailureReason is never cleared and means "needs operator
+	// intervention", but nothing stopped a later reconcile from running the
+	// normal state machine anyway: if the PhysicalHost subsequently recovered,
+	// handleReadyHost would set Ready/Provisioned on a machine still carrying
+	// FailureReason. That was observed on real hardware — a Beskar7Machine ended
+	// up Ready=true, Phase=Provisioned AND FailureReason=InspectionTimedOut.
+	//
+	// The contradiction is not cosmetic. CAPI lifts FailureReason/FailureMessage
+	// onto the owning Machine and treats them as unrecoverable, so the pair
+	// "provisioned and permanently failed" both misleads an operator reading
+	// status and invites MachineHealthCheck to remediate a node that is actually
+	// serving traffic.
+	//
+	// Deletion is handled above, so a failed machine can still be deleted and
+	// release its PhysicalHost. Under a MachineDeployment that is precisely how
+	// CAPI self-heals: the failed replica is deleted and replaced.
+	if b7machine.Status.FailureReason != nil {
+		log.Info("Beskar7Machine is in a terminal failure state; skipping reconciliation",
+			"failureReason", *b7machine.Status.FailureReason)
+		return ctrl.Result{}, nil
+	}
+
 	// Handle normal reconciliation
 	return r.reconcileNormal(ctx, log, b7machine, machine)
 }
