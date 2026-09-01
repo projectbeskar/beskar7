@@ -62,6 +62,9 @@ type PhysicalHostReconciler struct {
 	Scheme               *runtime.Scheme
 	Recorder             record.EventRecorder
 	RedfishClientFactory internalredfish.RedfishClientFactory
+	// MaxConcurrentReconciles is the worker count for this controller. Zero
+	// means DefaultMaxConcurrentReconciles (1).
+	MaxConcurrentReconciles int
 }
 
 // NewPhysicalHostReconciler creates a new PhysicalHostReconciler
@@ -769,6 +772,7 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.SecretToPhysicalHosts),
 		).
 		WithOptions(controller.Options{
+			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
 			// Exponential backoff for transient Redfish failures. The previous
 			// fixed RequeueAfter: 1*time.Minute on every error path meant a
 			// persistently-misconfigured BMC was pinged every 60s forever; now
