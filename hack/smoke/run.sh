@@ -19,6 +19,7 @@
 #   hack/smoke/run.sh --keep                     # leave fixtures in place for inspection
 #   hack/smoke/run.sh --teardown                 # only tear down, do not run
 #   hack/smoke/run.sh --with-isolation           # also run layer 6 (watch-namespaces isolation)
+#   hack/smoke/run.sh --skip-layer-7             # skip layer 7 (templated pool ProviderID gate)
 #   SMOKE_NS_ISOLATION=1 hack/smoke/run.sh       # same, via env
 #   MOCK_IMAGE=... hack/smoke/run.sh             # override mock-redfish image
 #   MOCK_INSPECTOR_IMAGE=... hack/smoke/run.sh   # override mock-inspector image
@@ -60,6 +61,9 @@ RUN_LAYER_5=1
 # operator is installed with --watch-namespaces. Enable via --with-isolation
 # or SMOKE_NS_ISOLATION=1. It self-skips if the operator watches all namespaces.
 RUN_LAYER_6="${SMOKE_NS_ISOLATION:-0}"
+# Layer 7 (templated pool / per-host ProviderID) is on by default: it guards
+# D-014 P2, which is core provisioning behaviour rather than an optional topology.
+RUN_LAYER_7=1
 
 for arg in "$@"; do
   case "$arg" in
@@ -69,6 +73,7 @@ for arg in "$@"; do
     --skip-layer-3)    RUN_LAYER_3=0 ;;
     --skip-layer-4)    RUN_LAYER_4=0 ;;
     --skip-layer-5)    RUN_LAYER_5=0 ;;
+    --skip-layer-7)    RUN_LAYER_7=0 ;;
     --with-isolation)  RUN_LAYER_6=1 ;;
     -h|--help)
       sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -551,6 +556,139 @@ EOF
   pass "[layer 6] out-of-scope PhysicalHost left untouched (no finalizer, no state)"
 }
 
+
+# ---------------------------------------------------------------------------
+# Layer 7: templated multi-replica pool (D-014 P2)
+#
+# Proves the property a single hand-authored Machine cannot: that a SHARED
+# Beskar7MachineTemplate yields a DISTINCT per-host ProviderID per replica.
+# Before P2 this was the documented gap that blocked MachineDeployment pools
+# and multi-replica control planes, so it is worth a standing CI gate rather
+# than a one-off lab result.
+#
+# Asserts, for a replicas=2 MachineDeployment over two mock BMCs:
+#   1. two Beskar7Machines are cloned from the one template
+#   2. they claim two DIFFERENT PhysicalHosts
+#   3. their ProviderIDs are DISTINCT   <- the regression P2 exists to prevent
+#   4. each ProviderID is b7://<ns>/<its OWN claimed host>, not merely "some b7:// value"
+# ---------------------------------------------------------------------------
+layer_7_pool() {
+  info "[layer 7] templated multi-replica pool: distinct per-host ProviderIDs"
+
+  kubectl apply -f "${MANIFEST_DIR}/60-pool.yaml" >/dev/null
+
+  # Match the mock image to the installed controller image, same derivation as layer 3.
+  local mock_image=""
+  if controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
+        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"; then
+    if [[ "${controller_img}" =~ ^(.*)/beskar7:(.*)$ ]]; then
+      mock_image="${BASH_REMATCH[1]}/mock-redfish:${BASH_REMATCH[2]}"
+      kubectl -n "${SMOKE_NS}" set image deploy/mock-redfish-b "mock-redfish=${mock_image}" >/dev/null || true
+    fi
+  fi
+
+  if ! kubectl -n "${SMOKE_NS}" rollout status deploy/mock-redfish-b --timeout=120s >/dev/null; then
+    fail "[layer 7] second mock BMC failed to become ready"
+    return 1
+  fi
+
+  # Wait for the MachineSet to clone the template into two Beskar7Machines.
+  local -i waited=0 count=0
+  while (( waited < 120 )); do
+    count="$(kubectl -n "${SMOKE_NS}" get beskar7machines \
+      -l cluster.x-k8s.io/cluster-name=smoke-cluster,pool=smoke \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null | grep -c . || true)"
+    (( count >= 2 )) && break
+    sleep 5; waited=$((waited+5))
+  done
+  if (( count < 2 )); then
+    fail "[layer 7] MachineSet did not clone 2 Beskar7Machines from the template (saw ${count})"
+    kubectl -n "${SMOKE_NS}" get machinedeployment,machineset,machine,beskar7machine 2>&1 | sed 's/^/    /'
+    return 1
+  fi
+  pass "[layer 7] MachineSet cloned ${count} Beskar7Machines from one template"
+
+  # Drive each host's inspection to completion, one mock-inspector Job per host.
+  # The mock-inspector Role is namespace-scoped, so the existing ServiceAccount
+  # covers both hosts without additional RBAC.
+  local inspector_image=""
+  if [[ -n "${controller_img:-}" && "${controller_img}" =~ ^(.*)/beskar7:(.*)$ ]]; then
+    inspector_image="${BASH_REMATCH[1]}/mock-inspector:${BASH_REMATCH[2]}"
+  fi
+  # Explicit per-host Jobs (61-pool-inspectors.yaml) reusing the ServiceAccount
+  # and namespace-scoped Role created by 50-mock-inspector-job.yaml in layer 5.
+  # Only the image is substituted — no document surgery.
+  local rendered
+  if [[ -n "${inspector_image}" ]]; then
+    rendered="$(sed "s|image: ghcr.io/projectbeskar/beskar7/mock-inspector:.*|image: ${inspector_image}|" \
+      "${MANIFEST_DIR}/61-pool-inspectors.yaml")"
+  else
+    rendered="$(cat "${MANIFEST_DIR}/61-pool-inspectors.yaml")"
+  fi
+  printf '%s\n' "${rendered}" | kubectl apply -f - >/dev/null
+
+  local host
+
+  for host in pool-host-a pool-host-b; do
+    if ! kubectl -n "${SMOKE_NS}" wait --for=condition=complete \
+         "job/mock-inspector-${host}" --timeout=300s >/dev/null 2>&1; then
+      fail "[layer 7] mock-inspector Job for ${host} did not complete"
+      kubectl -n "${SMOKE_NS}" logs "job/mock-inspector-${host}" --tail=40 2>&1 | sed 's/^/    /'
+      return 1
+    fi
+  done
+  pass "[layer 7] both hosts completed inspection"
+
+  # Wait for both Beskar7Machines to carry a ProviderID.
+  waited=0
+  local ids=""
+  while (( waited < 180 )); do
+    ids="$(kubectl -n "${SMOKE_NS}" get beskar7machines \
+      -l cluster.x-k8s.io/cluster-name=smoke-cluster,pool=smoke \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.spec.providerID}{"\n"}{end}' 2>/dev/null || true)"
+    if [[ "$(printf '%s\n' "${ids}" | grep -c 'b7://' || true)" -ge 2 ]]; then break; fi
+    sleep 5; waited=$((waited+5))
+  done
+
+  local -i with_id
+  with_id="$(printf '%s\n' "${ids}" | grep -c 'b7://' || true)"
+  if (( with_id < 2 )); then
+    fail "[layer 7] fewer than 2 Beskar7Machines received a ProviderID"
+    printf '%s\n' "${ids}" | sed 's/^/    /'
+    return 1
+  fi
+
+  # (3) distinctness — the regression P2 exists to prevent.
+  local -i uniq_ids
+  uniq_ids="$(printf '%s\n' "${ids}" | grep 'b7://' | sed 's/.*=//' | sort -u | grep -c . || true)"
+  if (( uniq_ids < 2 )); then
+    fail "[layer 7] replicas share a ProviderID — the P2 regression"
+    printf '%s\n' "${ids}" | sed 's/^/    /'
+    return 1
+  fi
+  pass "[layer 7] ${uniq_ids} distinct ProviderIDs across the pool"
+
+  # (4) each ProviderID must name the host that machine actually claimed.
+  local line b7m id claimed_host
+  while IFS= read -r line; do
+    [[ "${line}" == *b7://* ]] || continue
+    b7m="${line%%=*}"; id="${line#*=}"
+    claimed_host="$(kubectl -n "${SMOKE_NS}" get physicalhosts \
+      -o jsonpath="{range .items[?(@.spec.consumerRef.name==\"${b7m}\")]}{.metadata.name}{end}" 2>/dev/null || true)"
+    if [[ -z "${claimed_host}" ]]; then
+      fail "[layer 7] ${b7m} has ProviderID ${id} but claims no PhysicalHost"
+      return 1
+    fi
+    if [[ "${id}" != "b7://${SMOKE_NS}/${claimed_host}" ]]; then
+      fail "[layer 7] ${b7m} ProviderID ${id} does not match its own claimed host (expected b7://${SMOKE_NS}/${claimed_host})"
+      return 1
+    fi
+    pass "[layer 7]   ${b7m} -> ${id} (claims ${claimed_host})"
+  done <<< "${ids}"
+
+  pass "[layer 7] templated pool yields correct per-host ProviderIDs"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -563,6 +701,7 @@ layer_1_static          || FAILED=1
 [[ "${RUN_LAYER_4}" -eq 1 ]] && { layer_4_claim      || FAILED=1; }
 [[ "${RUN_LAYER_5}" -eq 1 ]] && { layer_5_inspection || FAILED=1; }
 [[ "${RUN_LAYER_6}" -eq 1 ]] && { layer_6_isolation  || FAILED=1; }
+[[ "${RUN_LAYER_7}" -eq 1 ]] && { layer_7_pool       || FAILED=1; }
 
 if [[ "${FAILED}" -eq 0 ]]; then
   pass "smoke test PASSED on context ${CONTEXT}"

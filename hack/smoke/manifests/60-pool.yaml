@@ -1,0 +1,181 @@
+---
+# Layer 7 fixture: the templated multi-replica path (D-014 P2).
+#
+# P2's claim is that a SHARED Beskar7MachineTemplate produces a DISTINCT
+# per-host ProviderID for every replica. That is exactly what a hand-authored
+# single Machine cannot prove, so this fixture drives a real MachineDeployment:
+# the MachineSet controller clones one template into N Beskar7Machines, each of
+# which must claim a different PhysicalHost and end up with its own
+# b7://<ns>/<its-own-host> ProviderID.
+#
+# Two mock BMCs are required — one per host — because a PhysicalHost is a 1:1
+# record of a BMC endpoint.
+
+# Second mock BMC. Identical to 10-mock-redfish.yaml but a distinct
+# Deployment/Service so the two PhysicalHosts address different endpoints.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-redfish-b
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-redfish-b
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-redfish-b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-redfish-b
+        app.kubernetes.io/part-of: beskar7
+        app.kubernetes.io/component: smoke-test
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mock-redfish
+        image: ghcr.io/projectbeskar/beskar7/mock-redfish:smoke-dev
+        args:
+        - --listen-addr=:8443
+        - --vendor=Generic
+        - --tls=true
+        - --cert-san=mock-redfish-b.beskar7-smoke.svc
+        ports:
+        - name: https
+          containerPort: 8443
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-redfish-b
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-redfish-b
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  selector:
+    app.kubernetes.io/name: mock-redfish-b
+  ports:
+  - name: https
+    port: 8443
+    targetPort: https
+---
+# Host A -> the layer-3 mock BMC. Host B -> the second one above.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: pool-host-a
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  redfishConnection:
+    address: https://mock-redfish.beskar7-smoke.svc:8443
+    credentialsSecretRef: bmc-credentials
+    insecureSkipVerify: true
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: pool-host-b
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  redfishConnection:
+    address: https://mock-redfish-b.beskar7-smoke.svc:8443
+    credentialsSecretRef: bmc-credentials
+    insecureSkipVerify: true
+---
+# One bootstrap Secret shared by every replica — the realistic templated shape.
+# Contents are never consumed here (no real host boots); it exists so the CAPI
+# Machine controller flips bootstrapReady immediately, exactly as in layer 5.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pool-bootstrap-data
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+type: cluster.x-k8s.io/secret
+stringData:
+  value: |
+    #cloud-config
+    # smoke-test placeholder bootstrap data; not consumed
+---
+# THE ARTEFACT UNDER TEST: one template, no per-host fields — by construction it
+# cannot carry a per-host ProviderID. Every replica is cloned from this spec.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7MachineTemplate
+metadata:
+  name: pool-template
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/v1beta1: v1_beta1
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  template:
+    spec:
+      inspectionImageURL: http://boot.example.invalid/inspector
+      targetImageURL: http://boot.example.invalid/images/placeholder.raw
+      targetImageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+---
+# replicas: 2 -> MachineSet clones the template twice. Each resulting
+# Beskar7Machine claims whichever PhysicalHost is Available; the test does not
+# care which replica gets which host, only that they differ and that each
+# ProviderID matches its own claimed host.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineDeployment
+metadata:
+  name: pool
+  namespace: beskar7-smoke
+  labels:
+    cluster.x-k8s.io/cluster-name: smoke-cluster
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  clusterName: smoke-cluster
+  replicas: 2
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: smoke-cluster
+      pool: smoke
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: smoke-cluster
+        pool: smoke
+    spec:
+      clusterName: smoke-cluster
+      version: v1.31.0
+      bootstrap:
+        dataSecretName: pool-bootstrap-data
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: Beskar7MachineTemplate
+        name: pool-template
