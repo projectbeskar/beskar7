@@ -583,7 +583,47 @@ initConfiguration:    # (use joinConfiguration for worker/secondary nodes)
 
 For other distros (k0s, plain kubelet), set the kubelet's `--provider-id` flag to the same value by your distro's mechanism. See [docs/beskar7machine.md → ProviderID & Node association](beskar7machine.md#providerid--node-association) for the full contract.
 
-> **Scaled deployments:** this works when you author the per-machine bootstrap config and know which PhysicalHost the Machine will use (e.g. a single node, or hosts pinned to specific machines). A templated `MachineDeployment` that claims hosts from a pool can't yet pin the per-host ProviderID in a shared template — automatic provision-time delivery is planned (see the D-014 design).
+> **Scaled deployments (`MachineDeployment` pools, multi-replica control planes).** A shared
+> template cannot hard-code a per-host ProviderID, so since **contract v4.2** the inspector writes
+> the correct value for each host to **`/oem/beskar7/provider-id`** (mode `0600`, root-owned, no
+> trailing newline) during provisioning. Your bootstrap template reads that file instead of naming
+> a host, so one template serves every replica:
+>
+> ```yaml
+> stages:
+>   boot:
+>     - name: beskar7-provider-id
+>       commands:
+>         - |
+>           PID=$(cat /oem/beskar7/provider-id 2>/dev/null || true)
+>           [ -n "$PID" ] || exit 0
+>           mkdir -p /etc/rancher/k3s/config.yaml.d
+>           printf 'kubelet-arg:\n  - "provider-id=%s"\n' "$PID" \
+>             > /etc/rancher/k3s/config.yaml.d/10-beskar7-provider-id.yaml
+> ```
+>
+> Requires a controller **and** inspector both at v4.2 or later — a v4.1 inspector ignores the new
+> cmdline parameter and never writes the file, so the stage above is a no-op and the Machine stays
+> at `Provisioned`. Check with `cat /oem/beskar7/provider-id` on the host.
+>
+> The file itself is verified on real hardware; the boot-time stage that consumes it is
+> **operator-side config and is not yet validated end to end** — treat the snippet as a starting
+> point and confirm the kubelet actually received the flag (`ps aux | grep provider-id`).
+
+### If the ProviderID matches and the Node still never appears
+
+A mismatch is the common cause, but if `Node.spec.providerID` is correct and the Machine still
+never reaches `Running`, the Node is not registering at all — the OS booted but the distro never
+started, or it cannot reach the control plane.
+
+Beskar7 cannot detect this: observing the workload Node requires the workload kubeconfig, which an
+infrastructure provider does not hold (see `docs/inspector-contract.md` §13). CAPI models it with
+`MachineHealthCheck.spec.nodeStartupTimeout` — **recommended `15m`** — which remediates a machine
+that never produced a Node. See [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml).
+
+Note that remediation is **destructive**: CAPI deletes the Machine and beskar7 re-provisions the
+host with a whole-disk overwrite. Keep `maxUnhealthy` set so a fleet-wide fault (a bad image digest,
+an unreachable boot server) cannot put the whole pool into a reprovision loop.
 
 ## Getting Help
 

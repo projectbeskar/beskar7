@@ -845,7 +845,91 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   will time out at the controller and be re-driven (re-PXE, fresh nonce/token, §7).
   An image that writes and injects cleanly but never boots into a joining Kubernetes
   node is still a timeout at the CAPI level (the `Machine` stays `Pending` until
-  the node registers with `ProviderID=b7://...`). The exact retry policy and
-  node-join timeout are not specified in v4.1 and must be defined before GA.
+  the node registers with `ProviderID=b7://...`). **Resolved in v4.2:** the retry
+  policy is specified in [§12](#12-retry-policy) and the node-join timeout in
+  [§13](#13-node-join-timeout). Neither is a wire change.
   **The `POST /api/v1/provision-failed` fast-fail path is now implemented (v4.1,
   §4.5)** — a deploy failure is reported promptly instead of timing out.
+
+---
+
+## 12. Retry policy
+
+**There is no in-controller provisioning-retry loop. Provisioning failures are terminal
+on the `Beskar7Machine`; remediation is CAPI's job.**
+
+A bare-metal reprovision is *destructive* — it overwrites the whole disk. That must be an
+explicit remediation decision, never an automatic controller loop. A second retry authority
+inside beskar7 would also fight CAPI's own remediation, so the controller deliberately does
+not own one.
+
+1. **Terminal on failure.** `InspectionTimedOut`, `DeploymentTimedOut` and `DeploymentFailed`
+   route through `markTerminalFailure` and stop requeueing. Once `FailureReason` is set the
+   controller does not continue reconciling the machine (it can still be deleted, which is how
+   CAPI replaces it).
+2. **Re-drive means fresh capability, never reuse.** A re-driven Machine — CAPI recreates it, or
+   a released host is re-claimed — runs `triggerInspection`, which mints a **fresh single-use
+   boot nonce** (`BootNonceLifetime` = 10 min) and a **fresh bearer token** (`TokenLifetime` =
+   60 min). There is no un-consume path (§7): a consumed nonce is spent, and a nonce that expires
+   unconsumed (the host never PXE-booted) is re-minted on a later reconcile.
+3. **Attempt limits belong to CAPI, not beskar7.** Capping attempts across delete-recreate cycles
+   is `MachineHealthCheck` (`maxUnhealthy` / `unhealthyRange`) and the `MachineDeployment` / control
+   plane `remediationStrategy`. Duplicating a counter here would diverge from CAPI's fleet-wide view.
+   See [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml).
+4. **Relationship to `--deployment-timeout`** (default 20 min). It bounds a single `Deploying`
+   phase and is deliberately larger than a worst-case whole-disk write; the v4.1
+   `POST /provision-failed` fast-fail short-circuits it whenever the inspector can still report.
+   Size it as:
+
+   ```
+   --deployment-timeout  ≥  (image bytes ÷ slowest provisioning-LAN throughput)
+                            + COS_OEM inject + reboot margin
+   ```
+
+   A 3.5 GB image over a saturated 100 Mbit segment is ~5 min of transfer alone, so the 20 min
+   default is not generous on slow networks — raise it rather than discover it as a spurious
+   `DeploymentTimedOut`.
+
+## 13. Node-join timeout
+
+**Delegated to CAPI's `MachineHealthCheck.spec.nodeStartupTimeout`. Recommended: 15 minutes.
+beskar7 runs no workload-cluster watch.**
+
+A workload Node registering with `ProviderID=b7://<ns>/<host>` is observable *only* with the
+workload kubeconfig, which an **infrastructure** provider does not and must not hold. CAPI core's
+Machine controller already performs the Node↔Machine association, and `nodeStartupTimeout` already
+models "infrastructure provisioned, but no Node appeared in time". A beskar7-side watch would cross
+the infra/core boundary and re-implement CAPI.
+
+- **Recommended value: `nodeStartupTimeout: 15m`**, measured by CAPI from infrastructure-provisioned.
+  On the dome e2e a Kairos host reboots via firmware, auto-installs on first boot (recovery → reset →
+  reboot → active), then the distro starts and the kubelet registers — roughly 2–3 minutes. 15 minutes
+  leaves margin for slow POST, large-disk expansion, and a control plane that is slow to admit.
+- **Timeout envelope.** Inspection (10 min) and deploy (20 min) are beskar7-owned and in-band;
+  node-join (15 min) is CAPI-owned and happens *after* the inspector is gone, so no token is needed.
+  Worst-case provisioning envelope is ≈45 min, and the 60 min `TokenLifetime` covers the in-band
+  30 min with margin.
+- **If a Machine sits at `Provisioned` and never reaches `Running`,** the cause is almost always a
+  ProviderID mismatch rather than a timeout — see the troubleshooting entry
+  *"CAPI Machine stuck at `Provisioned`, never reaches `Running`"*.
+
+## 14. Backward-compatibility policy
+
+How a controller at `v4.x` tolerates an inspector at `v4.y`, and what is not permitted inside the
+frozen line. This generalises the v4.1 pattern where a v4 controller 404s `/provision-failed` and
+the v4.1 inspector treats that 404 as "unavailable, fall back to the timeout" (§4.5).
+
+- **Within the `v4.x` line, changes MUST be additive and backward-compatible:**
+  - a new endpoint → the peer 404-tolerates it;
+  - a new **optional** cmdline parameter → the peer ignores unknown `/proc/cmdline` keys;
+  - a new **optional** report field → production lenient-decode ignores it. (The strict golden
+    test is a deliberate forward-drift *catch*, not a runtime break.)
+- **A controller at `v4.x` tolerates an inspector at `v4.y` for all additive deltas.** This is
+  exactly what lets P2 (v4.2) coexist with v4.1 in the field: a v4.1 inspector ignores the extra
+  `beskar7.provider-id` cmdline parameter and simply never writes `/oem/beskar7/provider-id`. An
+  operator opts into P2 by upgrading controller **and** inspector **and** their bootstrap template
+  together.
+- **Breaking changes require a major bump (v5) and a deprecation window, and are not permitted
+  inside the GA v0.4.x line.** Breaking means: removing or retyping a field, changing an endpoint's
+  semantics, changing the **ProviderID format** (`b7://<ns>/<host>`), or changing the **digest
+  algorithm** (`sha256:`).
