@@ -132,6 +132,7 @@ physical vendor BMC has been validated yet**, so pilot before committing a fleet
 - [Architecture](docs/architecture.md) - Technical architecture details
 - [API Reference](docs/api-reference.md) - Complete API documentation
 - [Examples](examples/) - Working configuration examples
+- [Upgrading](docs/upgrading.md) - Version upgrade paths and breaking changes
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 - [Hardware Compatibility](docs/hardware-compatibility.md) - Supported BMCs
 
@@ -148,11 +149,12 @@ See [docs/ci-cd-and-testing.md](docs/ci-cd-and-testing.md) for complete developm
 
 ## Contributing
 
-Contributions are welcome! Please:
-1. Open an issue to discuss major changes
-2. Follow existing code style
-3. Add tests for new features
-4. Update documentation
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the
+checks to run before opening a PR, and the parts of the codebase that carry
+non-obvious constraints (the versioned inspector contract, RBAC's three
+hand-maintained copies, and CAPI failure semantics).
+
+Found a security issue? Please report it privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 
