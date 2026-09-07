@@ -31,13 +31,13 @@ these instead:
 
 ```bash
 # Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.2 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.3 \
   --reset-then-reuse-values
 ```
 
 ```bash
 # Any Helm version — keep your settings in a file and pass it every time.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.2 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.3 \
   -f my-beskar7-values.yaml
 ```
 
@@ -55,6 +55,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.4.3` | `v4.2` **frozen** |
 | `v0.4.2` | `v4.2` **frozen** |
 | `v0.4.1` | `v4.2` **frozen** |
 | `v0.4.0` (GA) | `v4.2` **frozen** |
@@ -85,6 +86,38 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.4.2` → `v0.4.3` — hosts can be provisioned more than once
+
+No API, CRD or contract change, and no manual step. Upgrade normally:
+
+```bash
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.3 \
+  --reset-then-reuse-values
+```
+
+**Why upgrade:** before `v0.4.3` a `PhysicalHost` could only ever be provisioned
+once. `Status.InspectionTimestamp` and `Status.DeployingTimestamp` were set on
+the first run and never cleared, and the `Beskar7Machine` controller measures its
+timeouts against them — so the next machine to claim a released host was marked
+terminally failed within seconds:
+
+```
+reason:  InspectionTimedOut
+message: Inspection did not complete within 10m0s
+```
+
+That affected every path that reuses hardware: a `MachineDeployment` replacing a
+replica, rebuilding a cluster on the same hosts, and `MachineHealthCheck`
+remediation.
+
+**If you have hosts stuck in this state**, no manual repair is needed. The
+controller clears the leftover state on any reconcile of a host with no
+`consumerRef`, so an affected host recovers on its own once the new controller
+is running. A `Beskar7Machine` already marked `InspectionTimedOut` is terminal by
+design and must still be deleted and recreated — the host underneath it is now
+reusable.
 
 ## `v0.4.1` → `v0.4.2` — one-time manual step for `kubectl apply` installs
 
