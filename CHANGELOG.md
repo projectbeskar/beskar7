@@ -6,6 +6,32 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.3] - 2026-09-07
+
+Fixes host reuse. No API, CRD or contract (`v4.2`) change; no manual upgrade step.
+
+### Fixed
+
+- **A `PhysicalHost` could only ever be provisioned once.**
+  `Status.InspectionTimestamp` and `Status.DeployingTimestamp` were set on the
+  first run (each guarded by `== nil`) and never cleared. The `Beskar7Machine`
+  controller measures its inspection and deployment timeouts as `time.Since()`
+  against them, so a host released after a successful provision kept that run's
+  clock and the next machine to claim it was marked terminally failed almost
+  immediately with `InspectionTimedOut` — before the host had even powered on.
+
+  This broke every path that reuses hardware: a `MachineDeployment` replacing a
+  replica, rebuilding a cluster on the same hosts, and `MachineHealthCheck`
+  remediation.
+
+  The run-scoped status is now cleared when a host has no `consumerRef`, which
+  also heals a host released uncleanly (a manager restart mid-release, or a
+  `consumerRef` cleared by hand). `InspectionPhase` is reset and `HostInspected`
+  flipped to False with a new `HostReleased` reason, since both describe the run
+  that ended rather than the hardware. Verified on bare metal: a host carrying a
+  stale timestamp was released, cleared, re-claimed, and provisioned again to
+  `Ready` with the node coming up as `b7://<namespace>/<host>`. (#154)
+
 ## [v0.4.2] - 2026-09-07
 
 Fixes the kustomize install path. No API, CRD or contract (`v4.2`) change.
@@ -967,7 +993,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...HEAD
+[v0.4.3]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...v0.4.3
 [v0.4.2]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...v0.4.2
 [v0.4.1]: https://github.com/projectbeskar/beskar7/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.9...v0.4.0
