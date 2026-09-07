@@ -87,9 +87,9 @@ inspector one minor version behind — it simply does not get the newer capabili
 
 ## `v0.4.0` → `v0.4.1` — chart fix only, no API or contract change
 
-`v0.4.1` changes nothing in the controller, the CRDs, or the wire contract. The
-container image is rebuilt from identical code so that the chart's `appVersion`
-points at a real tag. The only change is in the Helm chart.
+`v0.4.1` leaves the CRDs and the wire contract untouched, so there is nothing to
+re-apply and no bootstrap-template migration. It carries one chart fix and one
+controller change, both opt-in or invisible by default.
 
 **Why upgrade:** the `v0.4.0` chart cannot be upgraded with `--reuse-values` —
 it aborts before rendering with `nil pointer evaluating interface {}.service`
@@ -106,6 +106,15 @@ helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
 CRDs are unchanged, so there is nothing to re-apply. If you are already on
 `v0.4.0` and previously worked around the bug by re-passing your values with
 `-f`, that keeps working — no action needed beyond the version bump.
+
+**Worth checking while you are here:** `/boot` is rate-limited per source
+address, and a LoadBalancer or NodePort Service with the default
+`externalTrafficPolicy: Cluster` SNATs every host to a node IP — so your whole
+fleet shares one 1 r/s bucket and a mass power-on boots slowly. `v0.4.1` adds
+two ways out: `callback.service.externalTrafficPolicy: Local` to preserve the
+client IP, or `callback.trustedProxies` to declare the hops allowed to set
+`X-Forwarded-For`. Both default to off, so nothing changes until you set them.
+See [ipxe-setup.md](ipxe-setup.md) for which to pick.
 
 ## `v0.4.0-alpha.9` → `v0.4.0` — no API changes
 

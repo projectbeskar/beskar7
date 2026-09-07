@@ -215,10 +215,40 @@ callback:
     nodePort: ""
     # Extra annotations on the callback Service (e.g. cloud load-balancer hints).
     annotations: {}
+    # externalTrafficPolicy for the callback Service (NodePort/LoadBalancer only).
+    #
+    # Kubernetes defaults this to Cluster, which SNATs the client address to a
+    # node IP. The /boot rate limiter keys on the source address, so under
+    # Cluster every booting host shares ONE bucket and a fleet powering on
+    # together starves on it. "Local" preserves the real client IP and gives
+    # each host its own bucket — at the cost that only nodes running the
+    # controller Pod accept traffic, so the load balancer must health-check
+    # accordingly.
+    #
+    # If you cannot use Local (or you front :8082 with an L4 proxy), set
+    # callback.trustedProxies below instead. Empty leaves the field unset.
+    externalTrafficPolicy: ""
   # External DNS name(s) the serving-cert SAN must cover. Include the host portion
   # of bootstrap.urlBase here when it is a name. Added to both the cert-manager
   # Certificate dnsNames and the self-signed cert SAN list.
   externalNames: []
+  # Networks whose X-Forwarded-For header the /boot rate limiter may believe,
+  # as CIDRs or bare IPs (a bare IP means that single host). Rendered into
+  # --trusted-proxies.
+  #
+  # Empty (the default) ignores the header entirely and limits on the peer
+  # address. That is the safe default: /boot has no bearer gate, so trusting a
+  # client-settable header would let one caller mint unlimited rate-limit
+  # buckets and neutralise the limiter. Only list hops you actually control.
+  #
+  # Set this when something between your hosts and the callback server rewrites
+  # the source address and you cannot use
+  # callback.service.externalTrafficPolicy: Local — e.g. an ingress or L4 proxy
+  # in front of :8082. Without it every booting host shares one bucket.
+  #
+  #   trustedProxies:
+  #     - 10.0.0.0/8
+  trustedProxies: []
   # External IP(s) the serving-cert SAN must cover. Use when bootstrap.urlBase is
   # an IP (e.g. a fixed LoadBalancer IP). Added as IP SANs in both cert paths.
   #

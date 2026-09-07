@@ -84,6 +84,7 @@ func main() {
 	var watchNamespacesRaw string
 	var inspectionTimeout time.Duration
 	var deploymentTimeout time.Duration
+	var trustedProxies string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -135,6 +136,15 @@ func main() {
 			"large enough that a single unreachable BMC's 30s Redfish timeout stalls reconciles "+
 			"for healthy hosts; controller-runtime never reconciles the same object "+
 			"concurrently, so distinct workers always act on distinct BMCs.")
+	flag.StringVar(&trustedProxies, "trusted-proxies", "",
+		"Comma-separated CIDRs (or bare IPs) whose X-Forwarded-For header the /boot rate "+
+			"limiter will believe when identifying the client. Empty (the default) ignores "+
+			"the header and rate-limits on the peer address, which is the only safe "+
+			"behaviour on this ungated route. Set it when the callback server sits behind "+
+			"something that rewrites the source address — a LoadBalancer or NodePort "+
+			"Service with the default externalTrafficPolicy: Cluster, or an L4 proxy "+
+			"without PROXY protocol — otherwise every booting host shares one bucket and a "+
+			"fleet powering on together starves on it.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -268,7 +278,20 @@ func main() {
 	// Certificate via cert-manager).
 	// bootstrapURLBase is passed so the /boot handler can render beskar7.api=
 	// into the iPXE cmdline (§5). It must be externally reachable from bare metal.
-	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir, bootstrapURLBase); err != nil {
+	// Parsed here rather than inside the handler so a typo is a startup failure
+	// instead of a silently ignored setting that only shows up as unexplained
+	// 429s during a fleet boot.
+	parsedTrustedProxies, err := controllers.ParseTrustedProxies(trustedProxies)
+	if err != nil {
+		setupLog.Error(err, "invalid --trusted-proxies")
+		os.Exit(1)
+	}
+	if len(parsedTrustedProxies) > 0 {
+		setupLog.Info("Trusting X-Forwarded-For from configured proxies for /boot rate limiting",
+			"networks", len(parsedTrustedProxies))
+	}
+
+	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir, bootstrapURLBase, parsedTrustedProxies); err != nil {
 		setupLog.Error(err, "unable to setup callback server")
 		os.Exit(1)
 	}

@@ -33,6 +33,9 @@ spec:
   {{- if and (eq ($callbackSvc.type | default "ClusterIP") "LoadBalancer") $callbackSvc.loadBalancerIP }}
   loadBalancerIP: {{ $callbackSvc.loadBalancerIP | quote }}
   {{- end }}
+  {{- if and (ne ($callbackSvc.type | default "ClusterIP") "ClusterIP") $callbackSvc.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ $callbackSvc.externalTrafficPolicy }}
+  {{- end }}
   ports:
   - name: callback
     port: 8082

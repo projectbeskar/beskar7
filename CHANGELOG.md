@@ -8,9 +8,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [v0.4.1] - 2026-09-07
 
-Chart-only patch. The controller, the CRDs and the wire contract (`v4.2`) are
-unchanged; the image is rebuilt from identical code so the chart's `appVersion`
-resolves to a real tag.
+Patch release. The CRDs and the wire contract (`v4.2`) are unchanged, so there
+is nothing to re-apply and no bootstrap-template migration.
+
+### Added
+
+- **`--trusted-proxies`** — comma-separated CIDRs (or bare IPs) whose
+  `X-Forwarded-For` the `/boot` rate limiter will believe when identifying the
+  client, surfaced in the chart as `callback.trustedProxies`. Also
+  `callback.service.externalTrafficPolicy`, so a LoadBalancer or NodePort
+  Service can be switched to `Local`. (#152)
 
 ### Fixed
 
@@ -30,6 +37,26 @@ resolves to a real tag.
 - **`callback.service.type` with no value broke the LoadBalancer branch.**
   `eq .Values.callback.service.type "LoadBalancer"` had no default, so an unset
   `type` failed the comparison outright instead of falling back to `ClusterIP`. (#151)
+
+- **A fleet booting through one address starved the `/boot` rate limiter.** The
+  limiter keys on the peer address, and every documented exposure option can
+  collapse a whole fleet onto one of them: a LoadBalancer or NodePort Service
+  with the default `externalTrafficPolicy: Cluster` SNATs to a node IP, and an
+  L4 proxy without PROXY protocol presents its own. All hosts then shared a
+  single 1 r/s bucket, so a fleet powering on together — after a DC power event,
+  say — booted a few hosts per second while the rest retried. Operators can now
+  either preserve the client IP (`externalTrafficPolicy: Local`) or declare
+  their hops (`--trusted-proxies`).
+
+  `X-Forwarded-For` remains **ignored by default**. `/boot` has no bearer gate,
+  so trusting a client-settable header unconditionally would let a single caller
+  mint unlimited rate-limit buckets and neutralise the limiter; the header is
+  read only when the peer is itself a declared proxy, and then the right-most
+  entry that is not a trusted proxy wins, so values a client prepends can never
+  be selected. (#152)
+- **IPv6 peers produced a bracketed rate-limit key.** `remoteAddrToIP` scanned
+  for the last colon, so `[2001:db8::1]:443` keyed as `[2001:db8::1]`. It now
+  uses `net.SplitHostPort`. Cosmetic — the key was stable either way. (#152)
 
 ### Changed
 
