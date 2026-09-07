@@ -299,6 +299,17 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// Connection successful - mark as ready
 	conditions.MarkTrue(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition)
 
+	// Drop anything left over from a previous provisioning run before the
+	// annotation handlers below, so a host that is claimed again starts clean.
+	//
+	// Deliberately BEFORE the handlers, not after: they legitimately write
+	// inspection state onto an unclaimed host (the Beskar7Machine controller
+	// signals through annotations, and consumption is not gated on ConsumerRef).
+	// Clearing afterwards would erase what they just wrote.
+	if physicalHost.Spec.ConsumerRef == nil {
+		r.clearProvisioningRunState(logger, physicalHost)
+	}
+
 	// Act on inspection-request annotation set by Beskar7Machine controller.
 	// The Beskar7Machine controller writes only to PhysicalHost.Spec.Annotations (a spec
 	// write via MergeFrom patch); we read it here and drive the Status transition ourselves,
@@ -354,7 +365,6 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 			r.updateStatus(physicalHost, infrastructurev1beta1.StateInUse, true, "")
 		}
 	} else {
-		// Host is available
 		if physicalHost.Status.State != infrastructurev1beta1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")
 			r.updateStatus(physicalHost, infrastructurev1beta1.StateAvailable, true, "")
@@ -364,6 +374,49 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 
 	logger.Info("Reconciliation complete", "state", physicalHost.Status.State, "ready", physicalHost.Status.Ready)
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+// clearProvisioningRunState drops the status that belongs to one provisioning
+// run, so the host can be claimed again.
+//
+// Without this a PhysicalHost could only ever be provisioned once. The timeouts
+// are measured as time.Since(InspectionTimestamp) and
+// time.Since(DeployingTimestamp) by the Beskar7Machine controller, and both were
+// only ever set (guarded by `== nil`) and never cleared. A host released after a
+// successful provision therefore kept the timestamps of that run, and the next
+// Beskar7Machine to claim it was marked terminally failed with
+// InspectionTimedOut within seconds — before its host had even powered on.
+//
+// That broke every reuse path a bare-metal provider depends on: a
+// MachineDeployment replacing a replica, rebuilding a cluster on the same
+// hardware, and MachineHealthCheck remediation.
+//
+// Status.Bootstrap is deliberately NOT cleared here. It is not run-scoped in the
+// way the timestamps are: the bootstrap-url and bootstrap-token annotations are
+// consumed into it while the host is still unclaimed, so wiping it on every
+// unclaimed reconcile destroys state the Beskar7Machine controller just wrote.
+// Token hygiene across consumers is a separate concern and needs its own change.
+//
+// Idempotent: safe to call on every reconcile of an unclaimed host.
+func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+	if physicalHost.Status.InspectionTimestamp == nil &&
+		physicalHost.Status.DeployingTimestamp == nil &&
+		physicalHost.Status.InspectionPhase == "" {
+		return
+	}
+
+	logger.Info("Clearing previous provisioning-run state from released host",
+		"host", physicalHost.Name)
+
+	physicalHost.Status.InspectionTimestamp = nil
+	physicalHost.Status.DeployingTimestamp = nil
+	physicalHost.Status.InspectionPhase = ""
+
+	// HostInspected describes the run that just ended, not the host. Leaving it
+	// True would tell the next consumer the box had already been inspected.
+	conditions.MarkFalse(physicalHost, infrastructurev1beta1.HostInspectedCondition,
+		infrastructurev1beta1.HostReleasedReason, clusterv1.ConditionSeverityInfo,
+		"Host released; previous inspection no longer applies")
 }
 
 // applyInspectionRequest reads the InspectionRequestAnnotation and, when present, drives

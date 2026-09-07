@@ -283,6 +283,120 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}, Timeout, Interval).Should(Succeed())
 		})
 
+		// A PhysicalHost must be reusable. Before this, InspectionTimestamp and
+		// DeployingTimestamp were only ever set (guarded by `== nil`) and never
+		// cleared, so a released host kept the previous run's clock. The next
+		// Beskar7Machine to claim it computed time.Since(InspectionTimestamp)
+		// against that stale value and was marked terminally failed with
+		// InspectionTimedOut within seconds — breaking MachineDeployment replica
+		// replacement, cluster rebuild on the same hardware, and MHC remediation.
+		It("Should clear the previous run's state when released, so the host can be reused", func() {
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Driving a full provisioning run: claim -> Inspecting -> Deploying")
+			ph := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			phPatch := ph.DeepCopy()
+			if phPatch.Annotations == nil {
+				phPatch.Annotations = map[string]string{}
+			}
+			phPatch.Annotations[InspectionRequestAnnotation] = "inspect"
+			phPatch.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "first-consumer",
+				Namespace:  ph.Namespace,
+			}
+			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
+			ph2Patch := ph2.DeepCopy()
+			if ph2Patch.Annotations == nil {
+				ph2Patch.Annotations = map[string]string{}
+			}
+			ph2Patch.Annotations[InspectionRequestAnnotation] = "inspect-complete"
+			Expect(k8sClient.Patch(ctx, ph2Patch, client.MergeFrom(ph2))).To(Succeed())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("Confirming the run really did leave state behind")
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateDeploying))
+				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
+				g.Expect(got.Status.DeployingTimestamp).NotTo(BeNil())
+			}, Timeout, Interval).Should(Succeed())
+
+			By("Releasing the host, as Beskar7Machine does on delete: ConsumerRef = nil")
+			released := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, released)).To(Succeed())
+			relPatch := released.DeepCopy()
+			relPatch.Spec.ConsumerRef = nil
+			Expect(k8sClient.Patch(ctx, relPatch, client.MergeFrom(released))).To(Succeed())
+
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("The released host must carry NOTHING from the previous run")
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+
+				// The regression: these two drive the inspection and deployment
+				// timeouts in the Beskar7Machine controller. A stale value fails the
+				// next consumer instantly.
+				g.Expect(got.Status.InspectionTimestamp).To(BeNil(),
+					"InspectionTimestamp must not survive release — the next consumer's inspection timeout is measured from it")
+				g.Expect(got.Status.DeployingTimestamp).To(BeNil(),
+					"DeployingTimestamp must not survive release — the next consumer's deployment timeout is measured from it")
+
+				g.Expect(got.Status.InspectionPhase).To(BeEmpty(),
+					"InspectionPhase describes the finished run")
+				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeFalse(),
+					"HostInspected describes the finished run, not the hardware")
+			}, Timeout, Interval).Should(Succeed())
+
+			By("A second consumer can claim it and start a fresh inspection")
+			reclaim := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, reclaim)).To(Succeed())
+			reclaimPatch := reclaim.DeepCopy()
+			if reclaimPatch.Annotations == nil {
+				reclaimPatch.Annotations = map[string]string{}
+			}
+			reclaimPatch.Annotations[InspectionRequestAnnotation] = "inspect"
+			reclaimPatch.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "second-consumer",
+				Namespace:  reclaim.Namespace,
+			}
+			Expect(k8sClient.Patch(ctx, reclaimPatch, client.MergeFrom(reclaim))).To(Succeed())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrastructurev1beta1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
+				// The whole point: the second consumer's clock starts now, not when
+				// the first consumer's run began.
+				g.Expect(got.Status.InspectionTimestamp.Time).To(BeTemporally("~", time.Now(), 2*time.Minute),
+					"the reclaimed host's inspection clock must start at the new claim")
+			}, Timeout, Interval).Should(Succeed())
+		})
+
 		It("Should handle deletion gracefully", func() {
 			By("Creating the PhysicalHost resource")
 			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
