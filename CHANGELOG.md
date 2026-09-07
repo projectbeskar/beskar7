@@ -6,6 +6,37 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.1] - 2026-09-07
+
+Chart-only patch. The controller, the CRDs and the wire contract (`v4.2`) are
+unchanged; the image is rebuilt from identical code so the chart's `appVersion`
+resolves to a real tag.
+
+### Fixed
+
+- **`helm upgrade --reuse-values` aborted against the `v0.4.0` chart.** Upgrading
+  an existing release failed before rendering anything:
+
+  ```
+  ... at <.Values.callback.externalNames>: nil pointer evaluating interface {}.externalNames
+  ```
+
+  Helm's `reuseValues()` sets `chart.Values = {}` — it discards the incoming
+  chart's `values.yaml` entirely and renders against the previous release's value
+  set alone, so every key added since the installed release is absent. `callback`
+  (added in alpha.7) and `bootstrap` were dereferenced bare in five templates.
+  They now go through a defaulted local and fall back to the documented defaults.
+  Found upgrading a real alpha.6 deployment to the published v0.4.0 chart. (#151)
+- **`callback.service.type` with no value broke the LoadBalancer branch.**
+  `eq .Values.callback.service.type "LoadBalancer"` had no default, so an unset
+  `type` failed the comparison outright instead of falling back to `ClusterIP`. (#151)
+
+### Changed
+
+- **`--reuse-values` is documented as unsupported.** `docs/upgrading.md` and the
+  chart README now direct operators to `--reset-then-reuse-values` (Helm 3.14+)
+  or an explicit `-f values.yaml`, and explain why. (#151)
+
 ## [v0.4.0] - 2026-09-07
 
 **First GA release.** `v1beta1` is stable and frozen, the controller↔inspector
@@ -878,7 +909,12 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.6...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...HEAD
+[v0.4.1]: https://github.com/projectbeskar/beskar7/compare/v0.4.0...v0.4.1
+[v0.4.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.9...v0.4.0
+[v0.4.0-alpha.9]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.8...v0.4.0-alpha.9
+[v0.4.0-alpha.8]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.7...v0.4.0-alpha.8
+[v0.4.0-alpha.7]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.6...v0.4.0-alpha.7
 [v0.4.0-alpha.6]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
 [v0.4.0-alpha.5]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...v0.4.0-alpha.5
 [v0.4.0-alpha.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...v0.4.0-alpha.4

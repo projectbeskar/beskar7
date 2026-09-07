@@ -31,13 +31,13 @@ these instead:
 
 ```bash
 # Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
   --reset-then-reuse-values
 ```
 
 ```bash
 # Any Helm version — keep your settings in a file and pass it every time.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
   -f my-beskar7-values.yaml
 ```
 
@@ -55,6 +55,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.4.1` | `v4.2` **frozen** |
 | `v0.4.0` (GA) | `v4.2` **frozen** |
 | `v0.4.0-alpha.9` | `v4.2` |
 | `v0.4.0-alpha.8` | `v4.1` |
@@ -83,6 +84,28 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.4.0` → `v0.4.1` — chart fix only, no API or contract change
+
+`v0.4.1` changes nothing in the controller, the CRDs, or the wire contract. The
+container image is rebuilt from identical code so that the chart's `appVersion`
+points at a real tag. The only change is in the Helm chart.
+
+**Why upgrade:** the `v0.4.0` chart cannot be upgraded with `--reuse-values` —
+it aborts before rendering with `nil pointer evaluating interface {}.service`
+(or `.externalNames`). That flag discards the incoming chart's defaults, so
+`callback` and `bootstrap`, both added after alpha.6, are missing. `v0.4.1`
+tolerates the missing maps and falls back to the documented defaults.
+
+```bash
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
+  --reset-then-reuse-values
+```
+
+CRDs are unchanged, so there is nothing to re-apply. If you are already on
+`v0.4.0` and previously worked around the bug by re-passing your values with
+`-f`, that keeps working — no action needed beyond the version bump.
 
 ## `v0.4.0-alpha.9` → `v0.4.0` — no API changes
 

@@ -37,7 +37,8 @@ is stable as of `v0.4.0`, so upgrades within the `v0.4.x` line are additive.
 
 | Version | Supported |
 |---|---|
-| `v0.4.0` (latest) | ✅ |
+| `v0.4.1` (latest) | ✅ |
+| `v0.4.0` | ⚠️ upgrade — `helm upgrade --reuse-values` is broken against it ([CHANGELOG](CHANGELOG.md)) |
 | earlier `v0.4.0-alpha.*` | ❌ upgrade first |
 | `v0.3.x` | ❌ end of life — not compatible with v0.4 ([CHANGELOG](CHANGELOG.md)) |
 
