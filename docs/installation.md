@@ -32,16 +32,15 @@ kubectl get pods -n cert-manager
 ```bash
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
-helm install --devel beskar7 beskar7/beskar7 \
+helm install beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace
 ```
 
-The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.*`). Drop it once a non-prerelease tag is published.
 
 **Release name and bootstrap URL.** The chart's default `bootstrap.urlBase` is `https://beskar7-controller-manager.beskar7-system.svc:8082`, which matches the Service name when the Helm release is named `beskar7`. If you install with a different release name, pass the matching URL:
 
 ```bash
-helm install --devel my-release beskar7/beskar7 \
+helm install my-release beskar7/beskar7 \
   --namespace beskar7-system --create-namespace \
   --set bootstrap.urlBase=https://my-release-controller-manager.beskar7-system.svc:8082
 ```
@@ -58,7 +57,7 @@ For a real deployment, two things must line up:
 2. **Cover the external address in the serving-cert SAN.** List the external DNS name(s) and/or IP(s) in `callback.externalNames` / `callback.externalIPs`. The host portion of `bootstrap.urlBase` **must** be one of these — the inspector verifies the callback certificate against the CA it is handed on the kernel cmdline and has no insecure-skip path, so a SAN mismatch is a hard failure.
 
 ```bash
-helm install --devel beskar7 beskar7/beskar7 \
+helm install beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace \
   --set callback.service.type=LoadBalancer \
   --set bootstrap.urlBase=https://beskar7.example.com:8082 \
@@ -70,7 +69,7 @@ The external SAN is added to both certificate paths: the cert-manager `Certifica
 ## Install via release manifests
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.9/beskar7-manifests-v0.4.0-alpha.9.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
 ```
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `beskar7-system` namespace and the default `bootstrap.urlBase`.
@@ -81,9 +80,9 @@ Container images are signed with [cosign](https://docs.sigstore.dev/) using keyl
 (OIDC) signing bound to the release workflow's identity — there is no long-lived
 signing key. The controller image also carries a signed SPDX SBOM attestation.
 
-> **Applies from `v0.4.0-alpha.9` onward.** Signing was enabled after
-> `v0.4.0-alpha.8` was published, so that and earlier alpha images carry no
-> signature and will not verify — this is expected, not a tampering signal.
+> **Applies from `v0.4.0-alpha.9` onward** (including `v0.4.0`). Signing was
+> enabled after `v0.4.0-alpha.8` was published, so that and earlier alpha images
+> carry no signature and will not verify — expected, not a tampering signal.
 
 Verify an image before deploying it:
 

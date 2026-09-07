@@ -26,9 +26,10 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.0-alpha.9  
-**Status:** Alpha (pre-GA). The `v1beta1` API is **frozen** — no further breaking changes; the schema evolves **additive-only** until a future `v1beta2` (introduced with a conversion webhook) is needed.  
-**Breaking Changes:** v0.4.0 is NOT compatible with v0.3.x ([see CHANGELOG](CHANGELOG.md))
+**Version:** v0.4.0 — **first GA release**  
+**API:** `v1beta1` is **stable and frozen**. The schema evolves **additive-only**; a breaking change requires a future `v1beta2` introduced with a conversion webhook.  
+**Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
+**Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
 
 ## Installation
 
@@ -47,16 +48,15 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 ```bash
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
-helm install --devel beskar7 beskar7/beskar7 \
+helm install beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace
 ```
 
-The `--devel` flag is required while the chart version is a SemVer pre-release (`0.4.0-alpha.9`); drop it once a non-prerelease tag is cut.
 
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.9/beskar7-manifests-v0.4.0-alpha.9.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

@@ -32,18 +32,18 @@ unless you ask us not to, and coordinate disclosure timing with you.
 
 ## Supported versions
 
-Beskar7 is **pre-GA**. Only the latest release receives fixes; there is no
-backport branch.
+Only the latest release receives fixes; there is no backport branch. `v1beta1`
+is stable as of `v0.4.0`, so upgrades within the `v0.4.x` line are additive.
 
 | Version | Supported |
 |---|---|
-| latest `v0.4.0-alpha.*` | ✅ |
+| `v0.4.0` (latest) | ✅ |
 | earlier `v0.4.0-alpha.*` | ❌ upgrade first |
 | `v0.3.x` | ❌ end of life — not compatible with v0.4 ([CHANGELOG](CHANGELOG.md)) |
 
 ## Verifying what you run
 
-Container images published from `v0.4.0-alpha.9` onward are signed with
+Container images published from `v0.4.0` onward are signed with
 [cosign](https://docs.sigstore.dev/) keyless signing, and the controller image
 carries a signed SPDX SBOM attestation. Verification commands are in
 [docs/installation.md](docs/installation.md#verify-release-artifacts-supply-chain).

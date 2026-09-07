@@ -6,6 +6,38 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-09-07
+
+**First GA release.** `v1beta1` is stable and frozen, the controller↔inspector
+wire contract is frozen at **v4.2**, release images are signed, and the
+`beskar7-inspector` is distributed as versioned, checksummed, signed artifacts.
+
+Highlights since `v0.4.0-alpha.8`:
+
+- **Per-host `ProviderID` for templated pools (contract v4.2)** — a shared
+  `Beskar7MachineTemplate` cannot pin a per-host `ProviderID`, which blocked
+  `MachineDeployment` pools and multi-replica control planes. The controller now
+  renders `beskar7.provider-id` on `/boot`, the inspector writes it to
+  `/oem/beskar7/provider-id`, and an image-side stage turns it into the kubelet
+  flag. **Verified end-to-end on hardware**: `Node.spec.providerID` came up as
+  `b7://<ns>/<host>` and CAPI advanced the Machine past `Provisioned`.
+- **The distributable inspector** — `beskar7-inspector` now publishes releases
+  with `vmlinuz`, `initrd.img`, checksums, a cosign bundle, and an image tagged
+  by contract version. Adopters no longer clone a second repo and build it.
+- **Signed releases** — images signed with cosign (keyless), controller image
+  carries a signed SPDX SBOM attestation.
+- **`v1beta1` frozen**; **contract v4.2 frozen** with an explicit
+  backward-compatibility policy (contract §14).
+
+**Upgrading:** not compatible with `v0.3.x`; the alpha series contains breaking
+API changes. See [docs/upgrading.md](docs/upgrading.md). Pair the controller with a
+`contract-v4.2` inspector release.
+
+**Known limitation:** releasing a `PhysicalHost` does not sanitize its disk — the
+previous tenant's OS and injected bootstrap config (which may carry a cluster join
+secret) survive until re-provisioning. Wipe hosts before moving them between trust
+boundaries. See [SECURITY.md](SECURITY.md).
+
 ### Fixed
 - **The documented §2.4 ProviderID glue did not work, and now does.** `docs/troubleshooting.md` and `examples/kairos-k3s-node.yaml` presented the per-host ProviderID stage as a `stages:` block inside the `#cloud-config` bootstrap Secret. Kairos honors such a file's top-level keys (`hostname`, `users`, `k3s`) but **silently ignores its `stages:` block** — it is processed as `'<file>.0'` with `commands: 0` and nothing resembling an error is logged. Every `stages:` block shipped in beskar7's docs and examples was therefore inert, including the `enable-sshd` step (and, for the same reason, the Kairos image's own `90_custom.yaml` user setup, which is why SSH password auth failed on provisioned hosts).
 
