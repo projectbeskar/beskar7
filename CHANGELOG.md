@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+- **The documented §2.4 ProviderID glue did not work, and now does.** `docs/troubleshooting.md` and `examples/kairos-k3s-node.yaml` presented the per-host ProviderID stage as a `stages:` block inside the `#cloud-config` bootstrap Secret. Kairos honors such a file's top-level keys (`hostname`, `users`, `k3s`) but **silently ignores its `stages:` block** — it is processed as `'<file>.0'` with `commands: 0` and nothing resembling an error is logged. Every `stages:` block shipped in beskar7's docs and examples was therefore inert, including the `enable-sshd` step (and, for the same reason, the Kairos image's own `90_custom.yaml` user setup, which is why SSH password auth failed on provisioned hosts).
+
+### Added
+- **`examples/kairos-providerid-stage.yaml`** — the working form, verified end-to-end on Kairos v4.1.2 (hadron) + k3s v1.34.8: `Node.spec.providerID` came up as `b7://<namespace>/<host>` and CAPI advanced the Machine past `Provisioned`. It is a **yip config** (top-level `name:` + `stages:`) baked into the target image's `COS_OEM` as `/oem/10_beskar7_providerid.yaml`. Because it reads whatever per-host value the inspector injected, it is host-independent: **one image and one `Beskar7MachineTemplate` serve every replica of a pool**, which is what D-014 P2 exists to enable.
+- Documented the second, equally silent constraint: the stage **must run before the distro first starts**. `Node.spec.providerID` is immutable once a node registers, so a node that joins without the flag keeps the distro default (`k3s://<hostname>`) and must be re-provisioned rather than corrected in place.
+- `docs/beskar7machine.md` gains a **Templated pools** section; `docs/inspector-contract.md` §9.1 gains a "who consumes this" note making clear that beskar7 only *writes* the artifact and the kubelet wiring is operator-side; `examples/README.md` indexes the new example.
+
+
 ### Documentation
 - **Contract §12 (retry policy), §13 (node-join timeout), §14 (backward-compatibility policy)** — resolves the `docs/inspector-contract.md` open item that read *"the exact retry policy and node-join timeout are not specified in v4.1 and must be defined before GA"* (GA freeze-checklist items 1 and 3). No wire change: §12 formalises that provisioning failures are terminal and remediation belongs to CAPI (with a `--deployment-timeout` sizing rule), §13 delegates node-join detection to `MachineHealthCheck.spec.nodeStartupTimeout` (recommended `15m`) and explains why an infrastructure provider must not watch the workload cluster, and §14 states what may change inside the frozen `v4.x` line versus what requires a `v5` bump.
 - **`examples/machinehealthcheck.yaml`** — recommended `MachineHealthCheck` for a Beskar7 pool, covering both "provisioned but never joined" (`nodeStartupTimeout: 15m`) and post-join unhealthiness, with `maxUnhealthy` guidance since remediation triggers a destructive whole-disk reprovision.

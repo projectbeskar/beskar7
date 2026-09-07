@@ -586,29 +586,27 @@ For other distros (k0s, plain kubelet), set the kubelet's `--provider-id` flag t
 > **Scaled deployments (`MachineDeployment` pools, multi-replica control planes).** A shared
 > template cannot hard-code a per-host ProviderID, so since **contract v4.2** the inspector writes
 > the correct value for each host to **`/oem/beskar7/provider-id`** (mode `0600`, root-owned, no
-> trailing newline) during provisioning. Your bootstrap template reads that file instead of naming
-> a host, so one template serves every replica:
+> trailing newline) during provisioning. A small stage in the **target image** reads that file, so
+> one image and one template serve every replica — see
+> [`examples/kairos-providerid-stage.yaml`](../examples/kairos-providerid-stage.yaml), verified
+> end to end on Kairos v4.1.2 + k3s v1.34.8 (`Node.spec.providerID = b7://<ns>/<host>`).
 >
-> ```yaml
-> stages:
->   boot:
->     - name: beskar7-provider-id
->       commands:
->         - |
->           PID=$(cat /oem/beskar7/provider-id 2>/dev/null || true)
->           [ -n "$PID" ] || exit 0
->           mkdir -p /etc/rancher/k3s/config.yaml.d
->           printf 'kubelet-arg:\n  - "provider-id=%s"\n' "$PID" \
->             > /etc/rancher/k3s/config.yaml.d/10-beskar7-provider-id.yaml
-> ```
+> Two requirements are easy to get wrong, and both fail **silently**:
+>
+> 1. **The stage belongs in the image, in yip format — not in the bootstrap Secret as
+>    `#cloud-config`.** A file beginning with `#cloud-config` has its top-level keys honored
+>    (`hostname`, `users`, `k3s`) but its `stages:` block **ignored**; Kairos processes it as
+>    `'<file>.0'` with `commands: 0` and logs nothing that looks like an error. A yip config
+>    (top-level `name:` plus `stages:`) executes normally.
+> 2. **It must run before k3s first starts.** `Node.spec.providerID` is immutable once a node
+>    registers. A node that joins without the flag keeps the distro default (`k3s://<hostname>`)
+>    and **cannot be corrected in place** — it has to be re-provisioned. Baking the stage into the
+>    image guarantees the ordering; adding it after the fact does not.
 >
 > Requires a controller **and** inspector both at v4.2 or later — a v4.1 inspector ignores the new
-> cmdline parameter and never writes the file, so the stage above is a no-op and the Machine stays
-> at `Provisioned`. Check with `cat /oem/beskar7/provider-id` on the host.
->
-> The file itself is verified on real hardware; the boot-time stage that consumes it is
-> **operator-side config and is not yet validated end to end** — treat the snippet as a starting
-> point and confirm the kubelet actually received the flag (`ps aux | grep provider-id`).
+> cmdline parameter and never writes the file, so the stage is a no-op and the Machine stays at
+> `Provisioned`. Check with `cat /oem/beskar7/provider-id` on the host; when the stage has run it
+> also leaves `/oem/.beskar7-providerid-applied`.
 
 ### If the ProviderID matches and the Node still never appears
 

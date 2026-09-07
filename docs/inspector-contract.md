@@ -684,6 +684,12 @@ The inspector MUST:
    provisioned callback, or rebooting (for CI without real firmware or a real
    target disk).
 
+      > **Who consumes this.** beskar7 only *writes* the artifact; turning it into a kubelet
+      > `--provider-id` is operator-side. The verified pattern is a **yip-format** stage baked into
+      > the target image (`examples/kairos-providerid-stage.yaml`), not a `#cloud-config` `stages:`
+      > block in the bootstrap Secret — Kairos silently ignores the latter. It must also run before
+      > the distro first starts, because `Node.spec.providerID` is immutable after registration.
+
 ### 9.2 Phase 1 → Phase 2 transition (bootstrap readiness)
 
 The bootstrap user-data is produced asynchronously by the CAPI bootstrap provider
