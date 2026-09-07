@@ -129,8 +129,9 @@ install/upgrade path hits the cluster and is stable.
       callback names/IPs so the SAME cert validates for bare-metal hosts hitting
       :8082. genSignedCert signature is (CN, ipAddresses, dnsNames, days, ca).
     */ -}}
-    {{- $dnsNames := concat (list $cn) (.Values.callback.externalNames | default (list)) -}}
-    {{- $ipAddrs := .Values.callback.externalIPs | default (list) -}}
+    {{- $callback := .Values.callback | default dict -}}
+    {{- $dnsNames := concat (list $cn) ($callback.externalNames | default (list)) -}}
+    {{- $ipAddrs := $callback.externalIPs | default (list) -}}
     {{- $cert := genSignedCert $cn $ipAddrs $dnsNames 3650 $caCert -}}
     {{- $certs = dict "crt" (b64enc $cert.Cert) "key" (b64enc $cert.Key) "ca" (b64enc $caCert.Cert) -}}
   {{- end -}}
