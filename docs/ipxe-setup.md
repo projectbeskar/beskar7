@@ -175,6 +175,41 @@ Common exposure options:
   controller speaks TLS natively; SNI passthrough is simpler than termination +
   re-encryption.
 
+#### Preserve the client address, or the rate limiter will bite
+
+`/boot` is rate-limited per source address (1 r/s, burst 5). Every option above
+can hide the real client behind a single address, and then **all** your hosts
+share one bucket — a fleet powering on together, after a DC power event say,
+then serves a handful of hosts per second while the rest retry. It degrades
+rather than fails, because iPXE retries, but boots crawl.
+
+Two ways to avoid it, in order of preference:
+
+1. **Preserve the source IP.** For a LoadBalancer or NodePort Service, set
+   `callback.service.externalTrafficPolicy: Local`. Kubernetes defaults to
+   `Cluster`, which SNATs the client to a node address. With `Local` the real
+   host IP survives and each host gets its own bucket. The trade-off is that
+   only nodes running the controller Pod accept traffic, so the load balancer
+   must health-check accordingly.
+
+2. **Declare your proxies.** If you cannot use `Local` — an ingress or an L4
+   proxy without PROXY protocol — list the hops in `callback.trustedProxies`
+   (rendered into `--trusted-proxies`), as CIDRs or bare IPs:
+
+   ```yaml
+   callback:
+     trustedProxies:
+       - 10.0.0.0/8
+   ```
+
+   The handler then reads the client address from `X-Forwarded-For`, taking the
+   right-most entry that is not itself a trusted proxy.
+
+`X-Forwarded-For` is **ignored by default**, and that is deliberate: `/boot` has
+no bearer gate, so believing a client-settable header would let one caller mint
+unlimited rate-limit buckets and neutralise the limiter. Only list hops you
+control — anything you trust can attribute a request to any address it likes.
+
 ### HTTPS everywhere on the boot path
 
 | Hop | Required | Reason |

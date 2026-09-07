@@ -31,13 +31,13 @@ these instead:
 
 ```bash
 # Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
   --reset-then-reuse-values
 ```
 
 ```bash
 # Any Helm version — keep your settings in a file and pass it every time.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
   -f my-beskar7-values.yaml
 ```
 
@@ -55,6 +55,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.4.1` | `v4.2` **frozen** |
 | `v0.4.0` (GA) | `v4.2` **frozen** |
 | `v0.4.0-alpha.9` | `v4.2` |
 | `v0.4.0-alpha.8` | `v4.1` |
@@ -83,6 +84,37 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.4.0` → `v0.4.1` — chart fix only, no API or contract change
+
+`v0.4.1` leaves the CRDs and the wire contract untouched, so there is nothing to
+re-apply and no bootstrap-template migration. It carries one chart fix and one
+controller change, both opt-in or invisible by default.
+
+**Why upgrade:** the `v0.4.0` chart cannot be upgraded with `--reuse-values` —
+it aborts before rendering with `nil pointer evaluating interface {}.service`
+(or `.externalNames`). That flag discards the incoming chart's defaults, so
+`callback` and `bootstrap`, both added after alpha.6, are missing. `v0.4.1`
+tolerates the missing maps and falls back to the documented defaults.
+
+```bash
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
+  --reset-then-reuse-values
+```
+
+CRDs are unchanged, so there is nothing to re-apply. If you are already on
+`v0.4.0` and previously worked around the bug by re-passing your values with
+`-f`, that keeps working — no action needed beyond the version bump.
+
+**Worth checking while you are here:** `/boot` is rate-limited per source
+address, and a LoadBalancer or NodePort Service with the default
+`externalTrafficPolicy: Cluster` SNATs every host to a node IP — so your whole
+fleet shares one 1 r/s bucket and a mass power-on boots slowly. `v0.4.1` adds
+two ways out: `callback.service.externalTrafficPolicy: Local` to preserve the
+client IP, or `callback.trustedProxies` to declare the hops allowed to set
+`X-Forwarded-For`. Both default to off, so nothing changes until you set them.
+See [ipxe-setup.md](ipxe-setup.md) for which to pick.
 
 ## `v0.4.0-alpha.9` → `v0.4.0` — no API changes
 

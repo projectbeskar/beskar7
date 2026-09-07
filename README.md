@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.0 — **first GA release**  
+**Version:** v0.4.1 — patch release on the GA line (`v0.4.0` was the first GA)  
 **API:** `v1beta1` is **stable and frozen**. The schema evolves **additive-only**; a breaking change requires a future `v1beta2` introduced with a conversion webhook.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -56,7 +56,7 @@ helm install beskar7 beskar7/beskar7 \
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.1/beskar7-manifests-v0.4.1.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

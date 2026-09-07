@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -997,6 +998,132 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		By("different IP is unaffected by ip1's exhausted bucket")
 		Expect(handler.allowIP(ip2)).To(BeTrue(),
 			"ip2 has an independent bucket and must not be limited")
+	})
+
+	It("client IP: X-Forwarded-For is ignored when no proxies are trusted", func() {
+		// The default. /boot has no bearer gate, so an attacker who could steer
+		// attribution with a header could mint unlimited buckets and neutralise
+		// the limiter entirely.
+		handler := &BootHandler{Client: k8sClient, Log: ctrl.Log.WithName("xff-untrusted"), Config: bootTestConfig()}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		req.RemoteAddr = "10.0.0.1:5555"
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+		Expect(handler.clientIP(req)).To(Equal("10.0.0.1"),
+			"header must be ignored entirely when TrustedProxies is empty")
+	})
+
+	It("client IP: X-Forwarded-For is honoured only from a trusted peer", func() {
+		nets, err := ParseTrustedProxies("10.0.0.0/8")
+		Expect(err).NotTo(HaveOccurred())
+		cfg := bootTestConfig()
+		cfg.TrustedProxies = nets
+		handler := &BootHandler{Client: k8sClient, Log: ctrl.Log.WithName("xff-trusted"), Config: cfg}
+
+		By("a trusted peer's header is believed")
+		trusted := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		trusted.RemoteAddr = "10.0.0.1:5555"
+		trusted.Header.Set("X-Forwarded-For", "203.0.113.9")
+		Expect(handler.clientIP(trusted)).To(Equal("203.0.113.9"))
+
+		By("an untrusted peer's header is not")
+		untrusted := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		untrusted.RemoteAddr = "198.51.100.7:5555"
+		untrusted.Header.Set("X-Forwarded-For", "203.0.113.9")
+		Expect(handler.clientIP(untrusted)).To(Equal("198.51.100.7"),
+			"a direct caller must not be able to attribute itself elsewhere")
+	})
+
+	It("client IP: a client-prepended X-Forwarded-For entry cannot win", func() {
+		// The spoofing case. A client sends its own XFF; the real proxy appends
+		// the true peer to the right. Taking the right-most untrusted entry
+		// means the forged value is never selected.
+		nets, err := ParseTrustedProxies("10.0.0.0/8")
+		Expect(err).NotTo(HaveOccurred())
+		cfg := bootTestConfig()
+		cfg.TrustedProxies = nets
+		handler := &BootHandler{Client: k8sClient, Log: ctrl.Log.WithName("xff-spoof"), Config: cfg}
+
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		req.RemoteAddr = "10.0.0.1:5555"
+		req.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
+
+		Expect(handler.clientIP(req)).To(Equal("203.0.113.9"),
+			"the forged left-most entry must lose to the value the proxy appended")
+	})
+
+	It("client IP: falls back to the peer when every hop is trusted or malformed", func() {
+		nets, err := ParseTrustedProxies("10.0.0.0/8")
+		Expect(err).NotTo(HaveOccurred())
+		cfg := bootTestConfig()
+		cfg.TrustedProxies = nets
+		handler := &BootHandler{Client: k8sClient, Log: ctrl.Log.WithName("xff-fallback"), Config: cfg}
+
+		allTrusted := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		allTrusted.RemoteAddr = "10.0.0.1:5555"
+		allTrusted.Header.Set("X-Forwarded-For", "10.0.0.8, 10.0.0.9")
+		Expect(handler.clientIP(allTrusted)).To(Equal("10.0.0.1"))
+
+		garbage := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+		garbage.RemoteAddr = "10.0.0.1:5555"
+		garbage.Header.Set("X-Forwarded-For", "not-an-ip")
+		Expect(handler.clientIP(garbage)).To(Equal("10.0.0.1"),
+			"malformed input must not become a rate-limit key")
+	})
+
+	It("client IP: hosts behind one trusted proxy get independent buckets", func() {
+		// The bug this fixes. Without XFF parsing every host arrives as the
+		// proxy address and shares a single burst=5 bucket, so a fleet powering
+		// on together starves.
+		nets, err := ParseTrustedProxies("10.0.0.1")
+		Expect(err).NotTo(HaveOccurred())
+		cfg := bootTestConfig()
+		cfg.TrustedProxies = nets
+		handler := &BootHandler{Client: k8sClient, Log: ctrl.Log.WithName("xff-fleet"), Config: cfg}
+
+		newReq := func(host string) *http.Request {
+			r := httptest.NewRequest(http.MethodGet, "/api/v1/boot/ns/host/nonce", nil)
+			r.RemoteAddr = "10.0.0.1:5555"
+			r.Header.Set("X-Forwarded-For", host)
+			return r
+		}
+
+		By("exhausting one host's bucket")
+		first := handler.clientIP(newReq("203.0.113.10"))
+		for i := 0; i < bootIPRateLimitBurst; i++ {
+			Expect(handler.allowIP(first)).To(BeTrue())
+		}
+		Expect(handler.allowIP(first)).To(BeFalse())
+
+		By("a different host behind the same proxy is unaffected")
+		second := handler.clientIP(newReq("203.0.113.11"))
+		Expect(second).NotTo(Equal(first))
+		Expect(handler.allowIP(second)).To(BeTrue(),
+			"a second host must not inherit the first host's exhausted bucket")
+	})
+
+	It("ParseTrustedProxies accepts CIDRs and bare IPs, and rejects junk", func() {
+		nets, err := ParseTrustedProxies(" 10.0.0.0/8 , 192.168.1.5 ,, 2001:db8::/32 ")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nets).To(HaveLen(3), "blank entries are skipped, the rest parse")
+
+		Expect(nets[1].Contains(net.ParseIP("192.168.1.5"))).To(BeTrue(),
+			"a bare IP must become a single-host network")
+		Expect(nets[1].Contains(net.ParseIP("192.168.1.6"))).To(BeFalse())
+		Expect(nets[2].Contains(net.ParseIP("2001:db8::1"))).To(BeTrue())
+
+		Expect(ParseTrustedProxies("")).To(BeEmpty(),
+			"empty input disables the feature rather than erroring")
+
+		_, err = ParseTrustedProxies("10.0.0.0/8,nonsense")
+		Expect(err).To(HaveOccurred(),
+			"a typo must fail loudly at startup, not silently collapse every host into one bucket")
+	})
+
+	It("remoteAddrToIP handles IPv6 peers", func() {
+		Expect(remoteAddrToIP("[2001:db8::1]:443")).To(Equal("2001:db8::1"))
+		Expect(remoteAddrToIP("10.0.0.1:5555")).To(Equal("10.0.0.1"))
 	})
 
 	// ── 9. No secret leakage ───────────────────────────────────────────────

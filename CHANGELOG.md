@@ -6,6 +6,64 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.1] - 2026-09-07
+
+Patch release. The CRDs and the wire contract (`v4.2`) are unchanged, so there
+is nothing to re-apply and no bootstrap-template migration.
+
+### Added
+
+- **`--trusted-proxies`** — comma-separated CIDRs (or bare IPs) whose
+  `X-Forwarded-For` the `/boot` rate limiter will believe when identifying the
+  client, surfaced in the chart as `callback.trustedProxies`. Also
+  `callback.service.externalTrafficPolicy`, so a LoadBalancer or NodePort
+  Service can be switched to `Local`. (#152)
+
+### Fixed
+
+- **`helm upgrade --reuse-values` aborted against the `v0.4.0` chart.** Upgrading
+  an existing release failed before rendering anything:
+
+  ```
+  ... at <.Values.callback.externalNames>: nil pointer evaluating interface {}.externalNames
+  ```
+
+  Helm's `reuseValues()` sets `chart.Values = {}` — it discards the incoming
+  chart's `values.yaml` entirely and renders against the previous release's value
+  set alone, so every key added since the installed release is absent. `callback`
+  (added in alpha.7) and `bootstrap` were dereferenced bare in five templates.
+  They now go through a defaulted local and fall back to the documented defaults.
+  Found upgrading a real alpha.6 deployment to the published v0.4.0 chart. (#151)
+- **`callback.service.type` with no value broke the LoadBalancer branch.**
+  `eq .Values.callback.service.type "LoadBalancer"` had no default, so an unset
+  `type` failed the comparison outright instead of falling back to `ClusterIP`. (#151)
+
+- **A fleet booting through one address starved the `/boot` rate limiter.** The
+  limiter keys on the peer address, and every documented exposure option can
+  collapse a whole fleet onto one of them: a LoadBalancer or NodePort Service
+  with the default `externalTrafficPolicy: Cluster` SNATs to a node IP, and an
+  L4 proxy without PROXY protocol presents its own. All hosts then shared a
+  single 1 r/s bucket, so a fleet powering on together — after a DC power event,
+  say — booted a few hosts per second while the rest retried. Operators can now
+  either preserve the client IP (`externalTrafficPolicy: Local`) or declare
+  their hops (`--trusted-proxies`).
+
+  `X-Forwarded-For` remains **ignored by default**. `/boot` has no bearer gate,
+  so trusting a client-settable header unconditionally would let a single caller
+  mint unlimited rate-limit buckets and neutralise the limiter; the header is
+  read only when the peer is itself a declared proxy, and then the right-most
+  entry that is not a trusted proxy wins, so values a client prepends can never
+  be selected. (#152)
+- **IPv6 peers produced a bracketed rate-limit key.** `remoteAddrToIP` scanned
+  for the last colon, so `[2001:db8::1]:443` keyed as `[2001:db8::1]`. It now
+  uses `net.SplitHostPort`. Cosmetic — the key was stable either way. (#152)
+
+### Changed
+
+- **`--reuse-values` is documented as unsupported.** `docs/upgrading.md` and the
+  chart README now direct operators to `--reset-then-reuse-values` (Helm 3.14+)
+  or an explicit `-f values.yaml`, and explain why. (#151)
+
 ## [v0.4.0] - 2026-09-07
 
 **First GA release.** `v1beta1` is stable and frozen, the controller↔inspector
@@ -878,7 +936,12 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.6...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...HEAD
+[v0.4.1]: https://github.com/projectbeskar/beskar7/compare/v0.4.0...v0.4.1
+[v0.4.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.9...v0.4.0
+[v0.4.0-alpha.9]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.8...v0.4.0-alpha.9
+[v0.4.0-alpha.8]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.7...v0.4.0-alpha.8
+[v0.4.0-alpha.7]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.6...v0.4.0-alpha.7
 [v0.4.0-alpha.6]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.5...v0.4.0-alpha.6
 [v0.4.0-alpha.5]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.4...v0.4.0-alpha.5
 [v0.4.0-alpha.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha...v0.4.0-alpha.4

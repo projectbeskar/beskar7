@@ -69,7 +69,7 @@ The external SAN is added to both certificate paths: the cert-manager `Certifica
 ## Install via release manifests
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.1/beskar7-manifests-v0.4.1.yaml
 ```
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `beskar7-system` namespace and the default `bootstrap.urlBase`.

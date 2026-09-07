@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -91,6 +92,19 @@ type BootHandlerConfig struct {
 	// callback TLS certificate. Base64-encoded into beskar7.ca=. Sourced from
 	// the callback cert dir (ca.crt if present, else tls.crt).
 	CABytes []byte
+
+	// TrustedProxies are the networks whose X-Forwarded-For header this handler
+	// will believe when attributing a request to a client IP for rate limiting.
+	// Empty (the default) means the header is ignored entirely and the peer
+	// address is used, which is the only safe default on an ungated route.
+	//
+	// Set this when the callback server sits behind something that rewrites the
+	// source address, otherwise every booting host shares one rate-limit bucket:
+	// a LoadBalancer or NodePort Service with the default
+	// externalTrafficPolicy: Cluster SNATs to a node IP, and an L4 proxy without
+	// PROXY protocol presents its own address. A fleet PXE-booting together —
+	// after a power event, say — then starves on a single bucket.
+	TrustedProxies []*net.IPNet
 }
 
 // ipEntry pairs a rate limiter with the time it was last seen. Used by
@@ -143,10 +157,15 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// CA bytes, or rendered script.
 	log := h.Log.WithValues("namespace", namespace, "host", hostName, "remote", r.RemoteAddr)
 
-	// Rate-limit per source IP before touching the API server. The /boot route is
-	// ungated (no bearer token), so rate limiting is the first line of defence
-	// against credential-stuffing on the nonce space.
-	clientIP := remoteAddrToIP(r.RemoteAddr)
+	// Rate-limit per client address before touching the API server. The /boot
+	// route is ungated (no bearer token), so this bounds the API-server load a
+	// flood can generate and slows scanning of the nonce space. The nonce itself
+	// is 256 bits from crypto/rand and single-use, so guessing is infeasible
+	// regardless; the limiter is defence in depth, not the primary control.
+	//
+	// "Client address" is the peer, or the X-Forwarded-For entry when the peer is
+	// a configured trusted proxy — see clientIP.
+	clientIP := h.clientIP(r)
 	if !h.allowIP(clientIP) {
 		log.V(1).Info("boot GET: rate-limited", "ip", clientIP)
 		// 429 so operators can distinguish rate-limit events from opaque 404s.
@@ -700,12 +719,96 @@ func (h *BootHandler) allowIP(ip string) bool {
 
 // remoteAddrToIP extracts the IP portion from an "ip:port" RemoteAddr.
 // Falls back to the full string on parse failure so rate limiting still
-// operates (the key is stable per connection either way).
+// operates (the key is stable per connection either way). SplitHostPort is
+// used rather than a manual scan for the last colon so that IPv6 peers
+// ("[2001:db8::1]:443") yield a bare address instead of a bracketed one.
 func remoteAddrToIP(remoteAddr string) string {
-	for i := len(remoteAddr) - 1; i >= 0; i-- {
-		if remoteAddr[i] == ':' {
-			return remoteAddr[:i]
-		}
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
 	}
 	return remoteAddr
+}
+
+// clientIP returns the address this request should be rate-limited under.
+//
+// The peer address is used unless the peer is itself one of the operator's
+// configured trusted proxies. X-Forwarded-For is attacker-controlled on a route
+// with no bearer gate: believing it unconditionally would let a single caller
+// mint unlimited distinct buckets and neutralise the limiter entirely, so the
+// header is ignored until an operator states which hops may set it.
+//
+// When the peer is trusted, the right-most entry that is not itself a trusted
+// proxy wins. Proxies append on the right, so any entries a client prepends sit
+// to the left of the ones our own hops added and can never be selected. If the
+// header is absent, malformed, or lists only trusted hops, the peer address is
+// used — the safe direction, since it can only over-attribute to one bucket.
+func (h *BootHandler) clientIP(r *http.Request) string {
+	peer := remoteAddrToIP(r.RemoteAddr)
+	if len(h.Config.TrustedProxies) == 0 {
+		return peer
+	}
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || !ipInAny(peerIP, h.Config.TrustedProxies) {
+		return peer
+	}
+
+	var hops []string
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, part := range strings.Split(header, ",") {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				hops = append(hops, trimmed)
+			}
+		}
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		ip := net.ParseIP(hops[i])
+		if ip == nil || ipInAny(ip, h.Config.TrustedProxies) {
+			continue
+		}
+		return ip.String()
+	}
+	return peer
+}
+
+// ParseTrustedProxies turns a comma-separated list of CIDRs into networks for
+// BootHandlerConfig.TrustedProxies. A bare address is accepted and treated as a
+// single-host network ("10.0.0.7" == "10.0.0.7/32"), because that is what an
+// operator naturally writes for one load balancer.
+//
+// An empty string yields no networks, which disables X-Forwarded-For parsing.
+// Malformed input is an error rather than a skipped entry: silently dropping a
+// CIDR would leave the limiter quietly mis-attributing every request to one
+// bucket, which is exactly the failure this setting exists to prevent.
+func ParseTrustedProxies(list string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for _, raw := range strings.Split(list, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if _, network, err := net.ParseCIDR(entry); err == nil {
+			nets = append(nets, network)
+			continue
+		}
+		ip := net.ParseIP(entry)
+		if ip == nil {
+			return nil, fmt.Errorf("trusted proxy %q is neither a CIDR nor an IP address", entry)
+		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	return nets, nil
+}
+
+// ipInAny reports whether ip falls inside any of the given networks.
+func ipInAny(ip net.IP, nets []*net.IPNet) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

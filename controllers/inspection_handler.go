@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -440,7 +441,10 @@ func readCallbackCA(certDir string) ([]byte, error) {
 // bootstrapURLBase is the externally-reachable HTTPS base URL of this server
 // (e.g. "https://beskar7.example.com:8082"). It is rendered into the
 // beskar7.api= kernel cmdline parameter by the /boot handler. Must be non-empty.
-func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapURLBase string) error {
+//
+// trustedProxies are the networks whose X-Forwarded-For the /boot rate limiter
+// will believe. Empty means the header is ignored and the peer address is used.
+func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapURLBase string, trustedProxies []*net.IPNet) error {
 	if certDir == "" {
 		return fmt.Errorf("callback server cert dir is empty; set --inspection-cert-dir")
 	}
@@ -509,8 +513,9 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Client: mgr.GetClient(),
 		Log:    bootLog,
 		Config: BootHandlerConfig{
-			APIBase: bootstrapURLBase,
-			CABytes: caBytes,
+			APIBase:        bootstrapURLBase,
+			CABytes:        caBytes,
+			TrustedProxies: trustedProxies,
 		},
 	}
 
