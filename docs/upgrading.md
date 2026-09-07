@@ -31,13 +31,13 @@ these instead:
 
 ```bash
 # Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.2 \
   --reset-then-reuse-values
 ```
 
 ```bash
 # Any Helm version — keep your settings in a file and pass it every time.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.1 \
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.2 \
   -f my-beskar7-values.yaml
 ```
 
@@ -55,6 +55,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.4.2` | `v4.2` **frozen** |
 | `v0.4.1` | `v4.2` **frozen** |
 | `v0.4.0` (GA) | `v4.2` **frozen** |
 | `v0.4.0-alpha.9` | `v4.2` |
@@ -84,6 +85,58 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.4.1` → `v0.4.2` — one-time manual step for `kubectl apply` installs
+
+No API, CRD or contract change. **Helm users: nothing special, upgrade normally.**
+
+```bash
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.2 \
+  --reset-then-reuse-values
+```
+
+### If you installed with `kubectl apply -f beskar7-manifests-*.yaml`, read this
+
+Releases up to and including `v0.4.1` baked `app.kubernetes.io/version` into
+`Deployment.spec.selector`. That field is **immutable**, and the label changes
+every release, so upgrading by re-applying the manifest has never worked:
+
+```
+The Deployment "controller-manager" is invalid: spec.selector:
+Invalid value: {...}: field is immutable
+```
+
+The same label was in the webhook Service selector, so after a partial upgrade
+that Service could stop matching the controller Pod and sit with no endpoints —
+and because the webhook is `failurePolicy: Fail`, every `Beskar7Cluster` create,
+update and **delete** was then rejected, which shows up as a cluster that will
+not finish deleting.
+
+`v0.4.2` takes the version label out of both selectors, so from here on
+`kubectl apply` upgrades work normally. Getting to `v0.4.2` needs one manual
+step, because changing a selector is exactly what the old objects forbid:
+
+```bash
+# 1. Delete the two objects whose selectors changed. CRDs, CRs and your hosts
+#    are untouched — this only removes the controller Pod for a moment.
+kubectl -n beskar7-system delete deployment beskar7-controller-manager
+kubectl -n beskar7-system delete service beskar7-webhook-service
+
+# 2. Apply the new manifest.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.2/beskar7-manifests-v0.4.2.yaml
+
+# 3. Confirm the webhook Service actually has an endpoint — an empty list here
+#    is what blocks Beskar7Cluster admission.
+kubectl -n beskar7-system get endpoints beskar7-webhook-service
+```
+
+Provisioning is not interrupted by the controller being down briefly: state
+lives in the CRs and a host mid-inspection is picked up on the next reconcile.
+
+**If a `Beskar7Cluster` is already stuck deleting** because the webhook has no
+endpoints, completing the steps above unblocks it — the finalizer clears as soon
+as admission works again. Do not remove the finalizer by hand.
 
 ## `v0.4.0` → `v0.4.1` — chart fix only, no API or contract change
 

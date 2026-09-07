@@ -6,6 +6,37 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.2] - 2026-09-07
+
+Fixes the kustomize install path. No API, CRD or contract (`v4.2`) change.
+**Helm users are unaffected and can upgrade normally**; `kubectl apply` users
+need one manual step, described in [docs/upgrading.md](docs/upgrading.md).
+
+### Fixed
+
+- **`kubectl apply` upgrades were impossible.** `config/default/kustomization.yaml`
+  set `includeSelectors: true` on a label group containing
+  `app.kubernetes.io/version`, so the version landed in
+  `Deployment.spec.selector` — an **immutable** field — and in the webhook
+  Service selector. `make release-manifests` rewrites that label every release,
+  so re-applying the published manifest, which is the first install method in the
+  README and the procedure in `docs/upgrading.md`, failed outright:
+
+  ```
+  The Deployment "controller-manager" is invalid: spec.selector:
+  Invalid value: {...}: field is immutable
+  ```
+
+  Reproduced v0.4.0 → v0.4.1 and verified fixed. The version label is now applied
+  to metadata only; selectors carry stable identity labels. The same split was
+  applied to the `large` and `extra-large` overlays. (#153)
+- **Webhook Service could lose its endpoints, blocking all `Beskar7Cluster`
+  admission.** Same root cause: the version label was in that Service's selector,
+  so after a version skew it matched no pods. With `failurePolicy: Fail`, every
+  `Beskar7Cluster` create/update/**delete** was then rejected — observed in the
+  field as a cluster stuck in `Deleting`, because the controller could not patch
+  the finalizer off. (#153)
+
 ## [v0.4.1] - 2026-09-07
 
 Patch release. The CRDs and the wire contract (`v4.2`) are unchanged, so there
@@ -936,7 +967,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...HEAD
+[v0.4.2]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...v0.4.2
 [v0.4.1]: https://github.com/projectbeskar/beskar7/compare/v0.4.0...v0.4.1
 [v0.4.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.9...v0.4.0
 [v0.4.0-alpha.9]: https://github.com/projectbeskar/beskar7/compare/v0.4.0-alpha.8...v0.4.0-alpha.9

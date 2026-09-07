@@ -15,12 +15,17 @@ namePrefix: extra-large-
 # deployment-size is already covered by the labels block below (which also
 # carries includeSelectors: true), so the old commonLabels entry was redundant
 # and was dropped during the v1→v2 migration.
+# The version label is deliberately NOT in a selector group — it is rewritten on
+# every release, and Deployment.spec.selector is immutable (see
+# config/default/kustomization.yaml).
 labels:
 - includeSelectors: true
   pairs:
     app.kubernetes.io/name: beskar7
-    app.kubernetes.io/version: v0.3.4-alpha
     deployment-size: extra-large
+- includeSelectors: false
+  pairs:
+    app.kubernetes.io/version: v0.3.4-alpha
 
 images:
 - name: controller
