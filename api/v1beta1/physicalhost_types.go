@@ -399,6 +399,10 @@ const (
 	SetBootPXEFailedReason        string = "SetBootPXEFailed"
 	InspectionFailedReason        string = "InspectionFailed"
 	InspectionTimeoutReason       string = "InspectionTimeout"
+	// HostReleasedReason marks HostInspected=False when a host goes back to
+	// Available. The inspection described the run that just ended, not the
+	// hardware, so it must not carry into the next consumer's claim.
+	HostReleasedReason string = "HostReleased"
 	// InsecureCABundleConflictReason is set when InsecureSkipVerify=true is
 	// combined with CABundleSecretRef != "" — the two are mutually exclusive
 	// (a CA bundle and "skip verification" together is incoherent). The
