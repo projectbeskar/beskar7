@@ -21,6 +21,30 @@ and a host mid-inspection is picked up again on the next reconcile. Avoid
 upgrading while a host is in `Deploying` if you can — the inspector is writing a
 disk and reporting to the callback endpoint during that window.
 
+### Preserving your values across the upgrade
+
+Do **not** use `helm upgrade --reuse-values`. It discards the incoming chart's
+`values.yaml` entirely and renders against the previous release's value set, so
+any value key introduced since the release you installed is simply absent. The
+upgrade then fails to render, or worse, silently drops a setting. Use one of
+these instead:
+
+```bash
+# Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+  --reset-then-reuse-values
+```
+
+```bash
+# Any Helm version — keep your settings in a file and pass it every time.
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0 \
+  -f my-beskar7-values.yaml
+```
+
+Keeping a values file under version control is the recommended practice: it makes
+the upgrade reproducible and reviewable. Confirm the result before and after with
+`helm get values beskar7 -n beskar7-system`.
+
 ## Matching the inspector to the controller
 
 The controller and inspector share a **versioned wire contract**. A controller

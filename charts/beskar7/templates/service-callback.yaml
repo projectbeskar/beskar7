@@ -7,6 +7,14 @@
 # the Helm release name is "beskar7" (release → "beskar7-controller-manager").
 # Operators using a different release name MUST override bootstrap.urlBase so
 # that hosts booting via iPXE can reach the manager at the correct address.
+#
+# `callback` is dereferenced through a defaulted local because `helm upgrade
+# --reuse-values` DISCARDS the incoming chart's values.yaml entirely (Helm's
+# reuseValues() sets chart.Values = {}) and renders against the previous
+# release's value set alone. Any key added since the installed release is then
+# absent, so a bare .Values.callback.service.* aborts the whole upgrade with a
+# nil-pointer error. See docs/upgrading.md.
+{{- $callbackSvc := ((.Values.callback | default dict).service) | default dict }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,22 +24,22 @@ metadata:
     {{- include "beskar7.labels" . | nindent 4 }}
     app.kubernetes.io/component: callback-server
     cluster.x-k8s.io/provider: beskar7
-  {{- with .Values.callback.service.annotations }}
+  {{- with $callbackSvc.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.callback.service.type | default "ClusterIP" }}
-  {{- if and (eq .Values.callback.service.type "LoadBalancer") .Values.callback.service.loadBalancerIP }}
-  loadBalancerIP: {{ .Values.callback.service.loadBalancerIP | quote }}
+  type: {{ $callbackSvc.type | default "ClusterIP" }}
+  {{- if and (eq ($callbackSvc.type | default "ClusterIP") "LoadBalancer") $callbackSvc.loadBalancerIP }}
+  loadBalancerIP: {{ $callbackSvc.loadBalancerIP | quote }}
   {{- end }}
   ports:
   - name: callback
     port: 8082
     targetPort: 8082
     protocol: TCP
-    {{- if and (ne (.Values.callback.service.type | default "ClusterIP") "ClusterIP") .Values.callback.service.nodePort }}
-    nodePort: {{ .Values.callback.service.nodePort | int }}
+    {{- if and (ne ($callbackSvc.type | default "ClusterIP") "ClusterIP") $callbackSvc.nodePort }}
+    nodePort: {{ $callbackSvc.nodePort | int }}
     {{- end }}
   selector:
     {{- include "beskar7.selectorLabels" . | nindent 4 }}

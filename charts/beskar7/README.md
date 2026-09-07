@@ -140,8 +140,14 @@ kubectl apply -f charts/beskar7/crds/
 Then upgrade the chart:
 
 ```bash
-helm upgrade beskar7 beskar7/beskar7
+helm upgrade beskar7 beskar7/beskar7 --reset-then-reuse-values
 ```
+
+**Do not use `--reuse-values`.** It reconstructs values from the *old* chart's
+defaults, so value keys added since the release you installed are missing and the
+upgrade fails to render. `--reset-then-reuse-values` (Helm 3.14+) replays your
+overrides on top of the new chart's defaults; on older Helm, pass your own
+`-f values.yaml` every time. See [docs/upgrading.md](../../docs/upgrading.md).
 
 ## Uninstall
 
