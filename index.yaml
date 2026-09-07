@@ -4,8 +4,33 @@ entries:
   - annotations:
       category: Infrastructure
     apiVersion: v2
+    appVersion: v0.4.0
+    created: "2026-09-07T13:46:43.75460728Z"
+    description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
+      Immutable Bare Metal
+    digest: 4e3fc5ae24b599aecad1bec906a5cb5b8ffdb5da0bc88856d542956023d6cb22
+    home: https://github.com/projectbeskar/beskar7
+    keywords:
+    - cluster-api
+    - infrastructure
+    - bare-metal
+    - redfish
+    - kubernetes
+    maintainers:
+    - name: projectbeskar
+      url: https://github.com/projectbeskar
+    name: beskar7
+    sources:
+    - https://github.com/projectbeskar/beskar7
+    type: application
+    urls:
+    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0.tgz
+    version: 0.4.0
+  - annotations:
+      category: Infrastructure
+    apiVersion: v2
     appVersion: v0.4.0-alpha.9
-    created: "2026-09-01T07:27:21.445209447Z"
+    created: "2026-09-07T13:46:43.753659901Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: a7935476a689b345251d766a829361ed4f4a2642409da865a7e322104a92d298
@@ -30,7 +55,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.8
-    created: "2026-09-01T07:27:21.444621223Z"
+    created: "2026-09-07T13:46:43.751461231Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 877f924b2253da620845c2cb9978fda92b2718bf0c0e4c8334e8524f2d16b87b
@@ -55,7 +80,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.7
-    created: "2026-09-01T07:27:21.443996608Z"
+    created: "2026-09-07T13:46:43.750443519Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 86f6dbc630c5fed2dc0a63ef5d7b9b9ed2c0606a672a48b28ed0b2f6d4012a00
@@ -80,7 +105,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.6
-    created: "2026-09-01T07:27:21.443320545Z"
+    created: "2026-09-07T13:46:43.749518674Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 210856cf1933adacae425770658c3ba55a90f255fba7d16928fb3f4a9e3e26aa
@@ -105,7 +130,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.5
-    created: "2026-09-01T07:27:21.442184364Z"
+    created: "2026-09-07T13:46:43.748691934Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 0e5d225d08ebc5c85053331f7b7e5018dd5c75f1c5d6cd4503b8a8aaaafed0fa
@@ -130,7 +155,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.4
-    created: "2026-09-01T07:27:21.441648856Z"
+    created: "2026-09-07T13:46:43.747892904Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 9dcc1534c2ae5a73f42223bccbd1f0878726418b0ddfb92ccd4b642c5f952e67
@@ -155,7 +180,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.3
-    created: "2026-09-01T07:27:21.441186859Z"
+    created: "2026-09-07T13:46:43.747184499Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: fab74b489dcfad5e09ab1c72293c8ea90c6c15841048423df1b1fc4e12373835
@@ -180,7 +205,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.2
-    created: "2026-09-01T07:27:21.440733543Z"
+    created: "2026-09-07T13:46:43.746503403Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 3a91a3b5dad99b74fd3a39431f9afda42407d4af7124e7b513933bb98015c4ff
@@ -205,7 +230,7 @@ entries:
       category: Infrastructure
     apiVersion: v2
     appVersion: v0.4.0-alpha.1
-    created: "2026-09-01T07:27:21.440265822Z"
+    created: "2026-09-07T13:46:43.745724263Z"
     description: A Helm chart for Beskar7 - Cluster API Infrastructure Provider for
       Immutable Bare Metal
     digest: 7029a582c6840fd0f19b28505b6cc5f3df7a058fe8dd3cff54c119cac738f02a
@@ -226,4 +251,4 @@ entries:
     urls:
     - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.1.tgz
     version: 0.4.0-alpha.1
-generated: "2026-09-01T07:27:21.439678158Z"
+generated: "2026-09-07T13:46:43.744042887Z"
