@@ -6,14 +6,28 @@ namespace: beskar7-system
 # "controller-manager" becomes "my-deployment-controller-manager".
 # namePrefix: my-deployment-
 
-# Labels to add to all resources and selectors. includeSelectors: true
-# preserves the v1 commonLabels behavior (the labels are injected into
-# Deployment/Service selectors too, not just metadata).
+# Two groups on purpose — the split is load-bearing, do not merge them.
+#
+# Identity labels go into selectors. They must be STABLE for the lifetime of a
+# deployment, because Deployment.spec.selector is immutable and a Service
+# selector silently stops matching its pods when it drifts.
+#
+# The version label must NOT go into selectors. `make release-manifests` rewrites
+# it on every release, so with includeSelectors: true the Deployment selector
+# changed every version and `kubectl apply -f beskar7-manifests-<new>.yaml` — the
+# documented upgrade path — failed outright with:
+#
+#   spec.selector: Invalid value: {...}: field is immutable
+#
+# and the webhook Service selector stopped matching the pods, leaving it with no
+# endpoints so failurePolicy: Fail blocked all Beskar7Cluster admission.
 labels:
 - pairs:
     app.kubernetes.io/name: beskar7
-    app.kubernetes.io/version: v0.2.7
   includeSelectors: true
+- pairs:
+    app.kubernetes.io/version: v0.2.7
+  includeSelectors: false
 
 resources:
 - ../crd
