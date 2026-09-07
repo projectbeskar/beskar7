@@ -1,6 +1,14 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v4.2`**
+**Contract version: `v4.2` — FROZEN for v0.4.0 GA**
+
+> The wire contract is **frozen** as of `v0.4.0`. Within the `v4.x` line, changes
+> MUST be additive and backward-compatible, as specified in
+> [§14 Backward-compatibility policy](#14-backward-compatibility-policy).
+> Breaking changes — removing or retyping a field, changing an endpoint's
+> semantics, changing the **ProviderID format** (`b7://<ns>/<host>`) or the
+> **digest algorithm** (`sha256:`) — require a major bump (`v5`) with a
+> deprecation window, and are not permitted inside the GA `v0.4.x` line.
 
 This document is the single source of truth for the wire contract between the
 Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection

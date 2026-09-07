@@ -2,9 +2,9 @@
 
 > **Audience:** Operators
 
-Beskar7 is **pre-GA**: the `v1beta1` API is frozen and evolves additive-only, but
-alpha releases before that freeze contain breaking changes. Read the section for
-your starting version before upgrading.
+`v0.4.0` is the first GA release. `v1beta1` is stable and evolves additive-only
+from here, but the **alpha series leading up to it contains breaking changes** —
+read the section for your starting version before upgrading.
 
 ## Before you start
 
@@ -31,6 +31,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.4.0` (GA) | `v4.2` **frozen** |
 | `v0.4.0-alpha.9` | `v4.2` |
 | `v0.4.0-alpha.8` | `v4.1` |
 | `v0.4.0-alpha.7` | `v4` |
@@ -39,7 +40,7 @@ From a source checkout of the matching tag:
 
 ```bash
 # alpha.9 and later carry a machine-readable marker:
-git show v0.4.0-alpha.9:test/contract/VERSION      # -> v4.2
+git show v0.4.0:test/contract/VERSION      # -> v4.2
 
 # earlier tags predate that file — read the contract doc header instead:
 git show v0.4.0-alpha.8:docs/inspector-contract.md | head -5
@@ -59,7 +60,29 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.4.0-alpha.8` → `v0.4.0-alpha.9` — **breaking**
+## `v0.4.0-alpha.9` → `v0.4.0` — no API changes
+
+`v0.4.0` is `alpha.9` plus documentation, examples and the contract freeze. There
+are **no API or wire-contract changes**, so this is a straight image + chart
+upgrade:
+
+```bash
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
+helm repo update && helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0
+```
+
+The `--devel` flag is no longer needed: `0.4.0` is not a SemVer pre-release.
+
+**One thing worth acting on even though nothing forces you to.** If you run
+templated `MachineDeployment` pools, the per-host ProviderID stage documented
+before `v0.4.0` **never executed** — Kairos silently ignores a `stages:` block in
+a `#cloud-config` file. The working form is a yip config baked into the target
+image: [`examples/kairos-providerid-stage.yaml`](../examples/kairos-providerid-stage.yaml).
+Existing nodes that joined without it kept their distro-default ProviderID
+(`k3s://<hostname>`), and because `Node.spec.providerID` is immutable they must be
+**re-provisioned** to pick up `b7://<ns>/<host>` — it cannot be fixed in place.
+
+## `v0.4.0-alpha.8` → `v0.4.0` — **breaking**
 
 Two API changes require editing existing CRs **before** the new CRDs are applied,
 or the objects will fail validation.
@@ -104,11 +127,11 @@ unaffected — this only matters if you generate manifests programmatically.
 
 ### Contract moves to v4.2
 
-alpha.9 speaks **contract v4.2**, which adds per-host `ProviderID` delivery for
-templated pools. Upgrade the inspector to a `contract-v4.2` build. A v4.1
-inspector keeps working (it ignores the new cmdline parameter) but will not write
-`/oem/beskar7/provider-id`, so `MachineDeployment` pools stay on the P1
-hand-authored pattern.
+`v0.4.0` speaks **contract v4.2** (frozen), which adds per-host `ProviderID`
+delivery for templated pools. Upgrade the inspector to a `contract-v4.2` build. A
+v4.1 inspector keeps working — it ignores the new cmdline parameter — but will not
+write `/oem/beskar7/provider-id`, so `MachineDeployment` pools stay on the
+hand-authored per-host pattern.
 
 ### Procedure
 
@@ -116,11 +139,11 @@ hand-authored pattern.
 # 1. Fix existing CRs FIRST (see above) — validation is applied on CRD upgrade.
 
 # 2. CRDs
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0-alpha.9/beskar7-manifests-v0.4.0-alpha.9.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.0/beskar7-manifests-v0.4.0.yaml
 
 # 3. Controller
 helm repo update
-helm upgrade --devel beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0-alpha.9
+helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0
 
 # 4. Inspector artifacts on your boot server
 REL=https://github.com/projectbeskar/beskar7-inspector/releases/latest/download

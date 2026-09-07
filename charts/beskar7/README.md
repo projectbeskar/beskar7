@@ -31,7 +31,7 @@ serving certificate. Two modes:
   Use this on clusters where you don't run cert-manager:
 
   ```bash
-  helm install --devel beskar7 beskar7/beskar7 \
+  helm install beskar7 beskar7/beskar7 \
     --namespace beskar7-system --create-namespace \
     --set certManager.enabled=false
   ```
@@ -41,16 +41,15 @@ serving certificate. Two modes:
 ```bash
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
-helm install --devel beskar7 beskar7/beskar7 \
+helm install beskar7 beskar7/beskar7 \
   --namespace beskar7-system --create-namespace
 ```
 
-The `--devel` flag is required while the chart version is a SemVer pre-release. Drop it once a non-prerelease version is published.
 
 **Bootstrap URL.** The default `bootstrap.urlBase` is `https://beskar7-controller-manager.beskar7-system.svc:8082`. This matches the Service name when the release is named `beskar7`. If you use a different release name, pass the matching URL:
 
 ```bash
-helm install --devel my-release beskar7/beskar7 \
+helm install my-release beskar7/beskar7 \
   --namespace beskar7-system --create-namespace \
   --set bootstrap.urlBase=https://my-release-controller-manager.beskar7-system.svc:8082
 ```
@@ -141,7 +140,7 @@ kubectl apply -f charts/beskar7/crds/
 Then upgrade the chart:
 
 ```bash
-helm upgrade --devel beskar7 beskar7/beskar7
+helm upgrade beskar7 beskar7/beskar7
 ```
 
 ## Uninstall
