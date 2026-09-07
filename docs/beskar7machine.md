@@ -98,7 +98,7 @@ A freshly provisioned node's kubelet, left to its defaults, registers a Provider
 b7://<namespace>/<physicalhost-name>
 ```
 
-You set this in the **per-machine bootstrap config** (the `#cloud-config` / `KubeadmConfig` referenced by `Machine.Spec.Bootstrap.DataSecretName`), because the value is only known once you know which PhysicalHost the Machine uses.
+For a hand-authored Machine you set this in the **per-machine bootstrap config** (the `#cloud-config` / `KubeadmConfig` referenced by `Machine.Spec.Bootstrap.DataSecretName`), because the value is only known once you know which PhysicalHost the Machine uses. For **templated pools**, where you cannot know it in advance, see [Templated pools](#templated-pools-the-per-host-value-from-a-shared-template) below.
 
 **k3s** (proven path — see [`examples/kairos-k3s-node.yaml`](../examples/kairos-k3s-node.yaml)):
 
@@ -117,6 +117,28 @@ initConfiguration:    # use joinConfiguration for worker / secondary control-pla
     kubeletExtraArgs:
       provider-id: "b7://<namespace>/<host-name>"
 ```
+
+### Templated pools: the per-host value from a shared template
+
+Both snippets above hard-code one host, which is fine for a hand-authored Machine but impossible
+from a shared `Beskar7MachineTemplate` — the template has no idea which `PhysicalHost` a replica
+will claim. Since **contract v4.2** the inspector writes the correct per-host value to
+**`/oem/beskar7/provider-id`** during provisioning, and a small **image-side** stage turns it into
+the kubelet flag. The stage is host-independent, so one image and one template serve every replica:
+[`examples/kairos-providerid-stage.yaml`](../examples/kairos-providerid-stage.yaml).
+
+Two constraints, both of which fail silently if ignored:
+
+- **The stage must be a yip config in the image's `/oem`, not a `#cloud-config` `stages:` block in
+  the bootstrap Secret.** Kairos honors a `#cloud-config` file's top-level keys but ignores its
+  `stages:`, processing it as `'<file>.0'` with `commands: 0` and logging nothing that reads as an
+  error. A yip config (top-level `name:` plus `stages:`) executes.
+- **It must run before the distro first starts.** `Node.spec.providerID` is immutable after the
+  node registers; a node that joins without the flag keeps the distro default and must be
+  re-provisioned rather than fixed in place.
+
+Verified end to end on Kairos v4.1.2 (hadron) with k3s v1.34.8: `Node.spec.providerID` came up as
+`b7://<namespace>/<host>`, and CAPI advanced the Machine past `Provisioned`.
 
 **Other distros** (k0s, plain kubelet): set the kubelet `--provider-id` flag to the same value via your distro's kubelet-args mechanism.
 

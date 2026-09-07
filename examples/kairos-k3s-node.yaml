@@ -85,18 +85,17 @@ stringData:
         passwd: kairos
         groups:
           - admin
-    stages:
-      initramfs:
-        - name: sshd-passwordauth
-          files:
-            - path: /etc/ssh/sshd_config.d/99-lab.conf
-              permissions: "0644"
-              content: |
-                PasswordAuthentication yes
-      boot:
-        - name: enable-sshd
-          commands:
-            - systemctl enable --now sshd || systemctl enable --now ssh || true
+    # NOTE: a `stages:` block placed in THIS file does not run.
+    #
+    # Kairos honors the top-level keys of a `#cloud-config` file (hostname, users,
+    # k3s) but SILENTLY IGNORES its `stages:` block — it is processed as
+    # '<file>.0' with "commands: 0" and nothing resembling an error is logged.
+    # Verified on Kairos v4.1.2 (hadron). Stages must be a yip config (top-level
+    # `name:` + `stages:`) placed in the IMAGE's /oem, not here — see
+    # examples/kairos-providerid-stage.yaml.
+    #
+    # Anything you need at boot (sshd tweaks, per-host wiring) therefore belongs
+    # either in k3s.args below or in an image-side yip config.
     k3s:
       enabled: true
       args:
@@ -104,6 +103,12 @@ stringData:
         - "--node-ip=<node-ip>"
         # Required so CAPI associates the Node with this Machine (Machine -> Running).
         # <host-name> is the PhysicalHost name defined below; <namespace> matches it.
+        #
+        # This hard-codes ONE host, which is fine for a hand-authored Machine but
+        # cannot work from a shared Beskar7MachineTemplate. For MachineDeployment
+        # pools use the image-side stage instead, which reads the per-host value
+        # beskar7 injects at /oem/beskar7/provider-id — see
+        # examples/kairos-providerid-stage.yaml. Do not set both.
         - "--kubelet-arg=provider-id=b7://<namespace>/<host-name>"
 
 ---

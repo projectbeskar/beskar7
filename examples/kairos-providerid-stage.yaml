@@ -1,0 +1,34 @@
+# beskar7 per-host ProviderID glue (contract v4.2 / D-014 P2)
+# Bake into the target image's COS_OEM partition as /oem/10_beskar7_providerid.yaml
+#
+# VERIFIED end-to-end on Kairos v4.1.2 (hadron) + k3s v1.34.8:
+#   Node.spec.providerID = b7://<namespace>/<host>
+#
+# TWO NON-OBVIOUS REQUIREMENTS:
+#
+# 1. YIP FORMAT, NOT #cloud-config. A file beginning with `#cloud-config` has its
+#    top-level keys honored (hostname, users, k3s) but its `stages:` block is
+#    SILENTLY IGNORED — Kairos logs it as '<file>.0' with "commands: 0". A yip
+#    config (top-level `name:` + `stages:`) executes. This is why the same stage
+#    placed in the per-host bootstrap Secret never fires.
+#
+# 2. IT MUST RUN BEFORE k3s FIRST STARTS. Node.spec.providerID is immutable once
+#    the node registers; a node that joins without it keeps k3s's default
+#    (k3s://<hostname>) and cannot be corrected in place — it must be
+#    re-provisioned. Baking this into the image guarantees the ordering.
+#
+# HOST-INDEPENDENT BY DESIGN: it reads whatever per-host value beskar7's inspector
+# injected, so ONE image serves every replica of a MachineDeployment pool. Nothing
+# here is per-host, which is exactly what makes a shared Beskar7MachineTemplate work.
+name: beskar7 per-host ProviderID
+stages:
+  boot:
+    - name: beskar7-provider-id
+      commands:
+        - |
+          PID="$(cat /oem/beskar7/provider-id 2>/dev/null || true)"
+          [ -n "$PID" ] || exit 0
+          mkdir -p /etc/rancher/k3s/config.yaml.d
+          printf 'kubelet-arg:\n  - "provider-id=%s"\n' "$PID" \
+            > /etc/rancher/k3s/config.yaml.d/10-beskar7-provider-id.yaml
+          echo "beskar7: set kubelet provider-id=$PID" > /oem/.beskar7-providerid-applied
