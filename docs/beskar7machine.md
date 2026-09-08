@@ -125,7 +125,9 @@ from a shared `Beskar7MachineTemplate` — the template has no idea which `Physi
 will claim. Since **contract v4.2** the inspector writes the correct per-host value to
 **`/oem/beskar7/provider-id`** during provisioning, and a small **image-side** stage turns it into
 the kubelet flag. The stage is host-independent, so one image and one template serve every replica:
-[`examples/kairos-providerid-stage.yaml`](../examples/kairos-providerid-stage.yaml).
+[`examples/kairos-providerid-stage.yaml`](../examples/kairos-providerid-stage.yaml) for k3s,
+[`examples/kairos-k0s-providerid-stage.yaml`](../examples/kairos-k0s-providerid-stage.yaml) for k0s.
+[Building a target image](building-images.md) shows how to bake them into `COS_OEM`.
 
 Two constraints, both of which fail silently if ignored:
 
@@ -140,11 +142,23 @@ Two constraints, both of which fail silently if ignored:
 Verified end to end on Kairos v4.1.2 (hadron) with k3s v1.34.8: `Node.spec.providerID` came up as
 `b7://<namespace>/<host>`, and CAPI advanced the Machine past `Provisioned`.
 
-**Other distros** (k0s, plain kubelet): set the kubelet `--provider-id` flag to the same value via your distro's kubelet-args mechanism.
+**k0s** (proven path — [`examples/kairos-k0s-providerid-stage.yaml`](../examples/kairos-k0s-providerid-stage.yaml)):
+there is no working kubelet-flag route on k0s. The Kairos k0s provider drops `--kubelet-extra-args`
+when it turns `k0s.args` into the systemd override, so the k0s stage patches `Node.spec.providerID`
+from `/oem/beskar7/provider-id` right after the node registers — permitted, because immutability
+only guards a non-empty value. A k0s image also needs
+[`examples/kairos-k0s-start-gate.yaml`](../examples/kairos-k0s-start-gate.yaml): not for the
+ProviderID, but because without it a k0s control plane does not form on beskar7 at all
+([Building a target image → k0s: the start gate](building-images.md#k0s-the-start-gate)). Verified
+on Kairos v4.1.2 + k0s v1.34.8+k0s.0 with cluster-api-provider-kairos: all four nodes registered
+`b7://<namespace>/<host>` and their Machines reached `Running`.
+
+**Plain kubelet / other distros:** set the kubelet `--provider-id` flag to the same value via your
+distro's kubelet-args mechanism, before the kubelet first registers.
 
 If you skip this, the node still comes up and is `Ready`, but the CAPI `Machine` stays at `Provisioned` and never reaches `Running` (the Node is never bound). See [Troubleshooting → CAPI Machine stuck at Provisioned](troubleshooting.md#12-capi-machine-stuck-at-provisioned-never-reaches-running-node-not-associated).
 
-> **Scaled deployments:** this manual wiring works when you author the per-machine bootstrap config and therefore know which PhysicalHost the Machine will use (a single node, or hosts pinned to specific machines). A templated `MachineDeployment` that claims hosts from a pool cannot pin a per-host ProviderID in one shared template; automatic provision-time delivery is planned future work.
+> **Scaled deployments:** hand-authoring the value works when you author the per-machine bootstrap config and therefore know which PhysicalHost the Machine will use (a single node, or hosts pinned to specific machines). A templated `MachineDeployment` or a multi-replica control plane cannot pin a per-host ProviderID in one shared template — that is what the image-side stages above are for.
 
 ## Example
 

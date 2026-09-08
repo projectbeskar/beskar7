@@ -129,6 +129,7 @@ physical vendor BMC has been validated yet**, so pilot before committing a fleet
 - [Installation](docs/installation.md) - Prerequisites and install steps
 - [Quick Start](docs/quick-start.md) - First provisioning flow
 - [iPXE Setup Guide](docs/ipxe-setup.md) - Infrastructure setup
+- [Building a target image](docs/building-images.md) - Raw Kairos image build and beskar7's image-side stages
 - [Architecture](docs/architecture.md) - Technical architecture details
 - [API Reference](docs/api-reference.md) - Complete API documentation
 - [Examples](examples/) - Working configuration examples

@@ -6,6 +6,31 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+Docs and examples only. No controller, CRD or contract (`v4.2`) change.
+
+### Added
+
+- **k0s image-side stages.** `examples/kairos-k0s-start-gate.yaml` gates
+  `k0scontroller`/`k0sworker` on `!/run/cos/recovery_mode`, `!/run/cos/live_mode`
+  and `/etc/k0s/.capi-args-ready`. Without it a k0s control plane does not form
+  on beskar7: the whole-disk image's recovery-partition install boot applies the
+  CAPI cloud-config and starts k0s, so a joiner registers as a voting etcd member
+  and is then rebooted by the installer, which loses quorum for good. The marker
+  is written by cluster-api-provider-kairos from commit `3698d55`
+  (`fix/generic-infrastructure-provider`); the gate is a two-sided contract with
+  it. `examples/kairos-k0s-providerid-stage.yaml` is the k0s counterpart of the
+  ProviderID glue — it patches `Node.spec.providerID` after registration, because
+  the Kairos k0s provider drops `--kubelet-extra-args`. Both verified on Kairos
+  v4.1.2 + k0s v1.34.8+k0s.0 (three-replica control plane, 3/3, `EtcdHealthy=True`).
+- **`docs/building-images.md`.** The verified raw-image build with AuroraBoot
+  (v0.27.0, `disk.raw=true`) or osbuilder (`raw-images.sh`), the `COS_OEM`
+  injection step for the image-side stages, and the digest pin. Includes the
+  warning that AuroraBoot's default `90_custom.yaml` creates a `kairos`/`kairos`
+  user when no `--cloud-config` is passed.
+- Troubleshooting §13 (k0s joins hang / joiner became its own cluster) and the
+  k0s ProviderID path in `docs/beskar7machine.md`, replacing the "set the kubelet
+  flag by your distro's mechanism" advice, which does not work on k0s.
+
 ## [v0.4.3] - 2026-09-07
 
 Fixes host reuse. No API, CRD or contract (`v4.2`) change; no manual upgrade step.
