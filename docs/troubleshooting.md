@@ -581,7 +581,7 @@ initConfiguration:    # (use joinConfiguration for worker/secondary nodes)
       provider-id: "b7://<namespace>/<host-name>"
 ```
 
-For other distros (k0s, plain kubelet), set the kubelet's `--provider-id` flag to the same value by your distro's mechanism. See [docs/beskar7machine.md → ProviderID & Node association](beskar7machine.md#providerid--node-association) for the full contract.
+For k0s there is no working kubelet-flag route — the Kairos k0s provider drops `--kubelet-extra-args` — so use the image-side stage [`examples/kairos-k0s-providerid-stage.yaml`](../examples/kairos-k0s-providerid-stage.yaml), which patches the Node right after it registers. For a plain kubelet, set `--provider-id` to the same value by your distro's mechanism. See [docs/beskar7machine.md → ProviderID & Node association](beskar7machine.md#providerid--node-association) for the full contract.
 
 > **Scaled deployments (`MachineDeployment` pools, multi-replica control planes).** A shared
 > template cannot hard-code a per-host ProviderID, so since **contract v4.2** the inspector writes
@@ -622,6 +622,36 @@ that never produced a Node. See [`examples/machinehealthcheck.yaml`](../examples
 Note that remediation is **destructive**: CAPI deletes the Machine and beskar7 re-provisions the
 host with a whole-disk overwrite. Keep `maxUnhealthy` set so a fleet-wide fault (a bad image digest,
 an unreachable boot server) cannot put the whole pool into a reprovision loop.
+
+### 13. k0s control plane never forms: joins hang, or a joiner became its own cluster
+
+**Symptoms:** a `KairosControlPlane` with `distribution: k0s` stays at one ready replica. On the
+init node `k0s etcd member-list` shows a second member, and etcd logs `ReadIndex response took too
+long`; every later joiner's `k0scontroller` retries its join forever. In the other form, a joiner
+is `Ready` but `k0s kubectl get nodes` run on it lists only itself, and its CA differs from the init
+node's.
+
+**Cause:** the image has no start gate. Beskar7's whole-disk image installs itself from the
+recovery partition on its first boot, and Kairos applies the CAPI cloud-config on that boot too, so
+a joiner registers as a voting etcd member from the installer and is then rebooted by it — a
+two-member etcd with one dead voter never regains quorum. Separately, the Kairos k0s provider
+starts k0s a few seconds before it writes k0s's arguments; a bare `k0s controller` initialises a
+cluster of its own and k0s never attempts a join once a CA exists. Neither is reachable on k3s.
+
+**Solution:** bake [`examples/kairos-k0s-start-gate.yaml`](../examples/kairos-k0s-start-gate.yaml)
+into the image as `/oem/05_beskar7_k0s_gate.yaml` ([Building a target image → k0s: the start
+gate](building-images.md#k0s-the-start-gate)) and run a cluster-api-provider-kairos that writes
+`/etc/k0s/.capi-args-ready` (commit `3698d55` on `fix/generic-infrastructure-provider`). Then
+re-provision: delete the affected Machines (or let a `MachineHealthCheck` remediate). There is no
+in-place fix — a node that has initialised its own CA will not join, and a dead etcd voter has to
+be removed from the init node with `k0s etcd leave --peer-address <addr>` before it will accept
+new members.
+
+**Verify on a provisioned host:** `/etc/k0s/.capi-args-ready` exists; `systemctl show k0scontroller
+-p ConditionResult -p NRestarts` prints `yes` and `0`; and the install boot's journal — the machine-id
+directory under `/var/log/journal/` that is not the current one — has no k0s output:
+`sudo journalctl -D /var/log/journal/<other-id> -o cat | grep -c 'k0s\['` is `0`. Before the gate,
+that journal is where the premature join showed up.
 
 ## Getting Help
 

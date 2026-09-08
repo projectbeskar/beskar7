@@ -697,6 +697,9 @@ The inspector MUST:
       > the target image (`examples/kairos-providerid-stage.yaml`), not a `#cloud-config` `stages:`
       > block in the bootstrap Secret — Kairos silently ignores the latter. It must also run before
       > the distro first starts, because `Node.spec.providerID` is immutable after registration.
+      > On k0s the same artifact is consumed by `examples/kairos-k0s-providerid-stage.yaml`, which
+      > patches the Node right after it registers instead — the Kairos k0s provider drops the
+      > kubelet flag, and setting a still-empty `providerID` is allowed.
 
 ### 9.2 Phase 1 → Phase 2 transition (bootstrap readiness)
 

@@ -22,6 +22,7 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 - [State Management](state-management.md) — PhysicalHost lifecycle, transition rules, recovery.
 - [Deployment Best Practices](deployment-best-practices.md) — production deployment guidance.
 - [iPXE Setup](ipxe-setup.md) — DHCP, HTTP boot server, kernel cmdline variables consumed by inspection and bootstrap.
+- [Building a target image](building-images.md) — raw Kairos image build with AuroraBoot or osbuilder, and baking beskar7's image-side stages (ProviderID glue, k0s start gate) into `COS_OEM`.
 - [Advanced Usage](advanced-usage.md) — bootstrap-data flow, hardware requirements.
 - [Troubleshooting](troubleshooting.md) — diagnostic procedures for common failures.
 - [Resource Planning](resource-planning.md) — sizing the controller and the inspection footprint.

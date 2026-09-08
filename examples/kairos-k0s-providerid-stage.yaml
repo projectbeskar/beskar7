@@ -1,0 +1,124 @@
+# beskar7 per-host ProviderID glue — k0s variant (contract v4.2 / D-014 P2)
+# Bake into the target image's COS_OEM partition as /oem/10_beskar7_providerid.yaml,
+# in place of the k3s stage of the same name (an image is one distro or the other).
+#
+# VERIFIED end-to-end on Kairos v4.1.2 (hadron) + k0s v1.34.8+k0s.0 with
+# cluster-api-provider-kairos: Node.spec.providerID = b7://<namespace>/<host> on
+# all three control-plane nodes and the worker; the CAPI Machines reached Running.
+#
+# WHY THIS DIFFERS FROM THE k3s GLUE
+#
+# The k3s glue writes a kubelet-arg file into /etc/rancher/k3s/config.yaml.d,
+# which k3s reads on EVERY start regardless of what the bootstrap provider
+# rendered. That makes it race-free: whenever the inspector's per-host value
+# lands, the next k3s start picks it up.
+#
+# k0s has no such unconditional path. Its kubelet only reads
+# /etc/kubernetes/kubelet.conf.d when k0s.args carry
+# --kubelet-extra-args=--config-dir=..., and the Kairos k0s provider DROPS
+# --kubelet-extra-args when it turns k0s.args into the systemd override
+# (measured on Kairos v4.1.2: --config and --enable-worker were applied,
+# --kubelet-extra-args was not). So a k0s Node registers with no providerID and
+# has to be patched afterwards.
+#
+# Setting a previously EMPTY Node.spec.providerID is permitted — immutability
+# only guards a non-empty value — so the post-registration patch is legitimate,
+# and it is the same mechanism cluster-api-provider-kairos uses on its own k0s
+# path. If anything already set a providerID, this leaves it alone.
+#
+# HOST-INDEPENDENT BY DESIGN, like the k3s glue: it reads whatever value the
+# inspector injected at /oem/beskar7/provider-id, so one image serves every
+# replica of a shared Beskar7MachineTemplate. yip format on purpose — a
+# #cloud-config file's stages: block is silently ignored.
+name: beskar7 per-host ProviderID (k0s)
+stages:
+  boot:
+    - name: beskar7-provider-id-k0s
+      files:
+        - path: /usr/local/bin/beskar7-k0s-providerid.sh
+          permissions: 0755
+          owner: 0
+          group: 0
+          content: |
+            #!/bin/bash
+            set -u
+
+            PID="$(cat /oem/beskar7/provider-id 2>/dev/null || true)"
+            if [ -z "${PID}" ]; then
+              echo "beskar7: no provider-id injected; nothing to do"
+              exit 0
+            fi
+
+            # The value is written by the inspector, but it lands in a JSON patch
+            # below, so validate the shape here rather than trusting the file.
+            case "${PID}" in
+              b7://*) ;;
+              *) echo "beskar7: provider-id is not a b7:// URI; refusing to patch"; exit 0 ;;
+            esac
+            if printf '%s' "${PID}" | grep -q '[^a-zA-Z0-9:/._-]'; then
+              echo "beskar7: provider-id contains illegal characters; refusing to patch"
+              exit 0
+            fi
+
+            NODE="$(hostname)"
+
+            # k0s kubectl resolves the local admin kubeconfig; the Hadron k0s image
+            # ships no standalone kubectl binary.
+            registered=false
+            for i in $(seq 1 60); do
+              if k0s kubectl get node "${NODE}" >/dev/null 2>&1; then
+                registered=true
+                break
+              fi
+              sleep 5
+            done
+            if [ "${registered}" != "true" ]; then
+              echo "beskar7: node ${NODE} never registered within 300s; leaving providerID unset"
+              exit 0
+            fi
+
+            cur="$(k0s kubectl get node "${NODE}" -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
+            if [ -n "${cur}" ]; then
+              echo "beskar7: providerID already set to ${cur}; leaving it alone"
+              exit 0
+            fi
+
+            for i in $(seq 1 30); do
+              if k0s kubectl patch node "${NODE}" --type=merge \
+                   -p "{\"spec\":{\"providerID\":\"${PID}\"}}" >/dev/null 2>&1; then
+                echo "beskar7: set providerID=${PID} on node ${NODE}"
+                exit 0
+              fi
+              echo "beskar7: attempt ${i}/30 to set providerID failed, retrying in 5s"
+              sleep 5
+            done
+            # Fail open: a stranded providerID must not wedge the rest of boot.
+            echo "beskar7: failed to set providerID=${PID} after 30 attempts"
+            exit 0
+        - path: /etc/systemd/system/beskar7-k0s-providerid.service
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            [Unit]
+            Description=beskar7 per-host ProviderID (k0s)
+            After=k0scontroller.service
+            Wants=k0scontroller.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/usr/local/bin/beskar7-k0s-providerid.sh
+
+            [Install]
+            WantedBy=multi-user.target
+      commands:
+        # NEVER use `--now` here. The unit is a Type=oneshot that waits for the
+        # Node to register, so starting it synchronously blocks the Kairos boot
+        # stage for as long as that wait — measured at 5 minutes, which pushed
+        # the CAPI cloud-config's write_files (and everything it delivers,
+        # including the k0s args drop-in) past k0s's own start. Enable it, kick
+        # it without blocking, and let boot continue.
+        - systemctl daemon-reload
+        - systemctl enable beskar7-k0s-providerid.service || true
+        - systemctl start --no-block beskar7-k0s-providerid.service || true

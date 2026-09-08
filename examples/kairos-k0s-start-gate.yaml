@@ -1,0 +1,119 @@
+# beskar7 k0s start gate — image-side, k0s images only
+# Bake into the target image's COS_OEM partition as /oem/05_beskar7_k0s_gate.yaml
+# (see docs/building-images.md for the injection step).
+#
+# VERIFIED end-to-end on Kairos v4.1.2 (hadron) + k0s v1.34.8+k0s.0 with
+# cluster-api-provider-kairos: a three-replica KairosControlPlane formed unaided —
+# one k0s start per node, one join attempt, zero restarts, KCP
+# ControlPlaneJoined=True / EtcdHealthy=True 3/3. Without this file the same
+# cluster never formed.
+#
+# WHY A k0s IMAGE NEEDS THIS AND A k3s IMAGE DOES NOT
+#
+# 1. Kairos applies the cloud-config in /oem on EVERY boot that has it — including
+#    the recovery-partition boot a beskar7 whole-disk image goes through to
+#    install itself before its first real boot. On that boot the Kairos k0s
+#    provider starts k0scontroller with the CAPI join token, so a joining
+#    control-plane node registers as a VOTING etcd member ~20 s before it has a
+#    kernel of its own; the installer then reboots it. Two members with one dead
+#    is permanent quorum loss: the init node stalls ("ReadIndex response took
+#    too long") and every later join hangs. cluster-api-provider-kairos guards
+#    its units on the `cdroot` kernel argument, which an installer booted from
+#    the recovery partition does not carry. k3s survives the same boot because
+#    it joins as an etcd LEARNER.
+#
+# 2. The Kairos k0s provider starts k0s at the top of the boot-stage step that
+#    delivers its arguments and writes them a few seconds later, so the FIRST
+#    start races the arguments (measured: the arguments won 3 boots of 5). A
+#    bare `k0s controller` self-initialises a cluster of its own, and k0s never
+#    attempts a join once a CA exists — a lost race cannot be corrected in place.
+#
+# Both are closed by conditions on the k0s units, written at the `initramfs`
+# stage so they are on disk BEFORE systemd loads any unit:
+#
+#   !/run/cos/recovery_mode    never start k0s from a recovery/install boot
+#   !/run/cos/live_mode        nor from a live boot
+#   /etc/k0s/.capi-args-ready  only once the CAPI cloud-config has fully landed;
+#                              cluster-api-provider-kairos writes this marker as
+#                              the LAST of its write_files
+#
+# A failed condition makes systemd SKIP the start — it is not a failure and
+# Restart= does not apply. The provider's own restart, issued after its files
+# are written, then starts k0s with the right arguments. The `boot` stage
+# rewrites the same files and reloads systemd as belt-and-braces.
+#
+# TWO-SIDED CONTRACT. The gate only opens when the bootstrap provider writes the
+# marker. cluster-api-provider-kairos does so from commit 3698d55 on its
+# fix/generic-infrastructure-provider branch; no released version does at the
+# time of writing. On a gated image with an older provider k0s never starts, so
+# do not bake this file into an image for a provider that does not write
+# /etc/k0s/.capi-args-ready.
+#
+# HOST-INDEPENDENT BY DESIGN: nothing here is per host, so one image serves every
+# replica of a shared Beskar7MachineTemplate. yip format on purpose — a
+# #cloud-config file's stages: block is silently ignored (see
+# kairos-providerid-stage.yaml for the details).
+name: beskar7 k0s start gate
+stages:
+  initramfs:
+    - name: beskar7-k0s-gate
+      directories:
+        - path: /etc/systemd/system/k0scontroller.service.d
+          permissions: 0755
+          owner: 0
+          group: 0
+        - path: /etc/systemd/system/k0sworker.service.d
+          permissions: 0755
+          owner: 0
+          group: 0
+      files:
+        - path: /etc/systemd/system/k0scontroller.service.d/00-beskar7-gate.conf
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            [Unit]
+            ConditionPathExists=!/run/cos/recovery_mode
+            ConditionPathExists=!/run/cos/live_mode
+            ConditionPathExists=/etc/k0s/.capi-args-ready
+        - path: /etc/systemd/system/k0sworker.service.d/00-beskar7-gate.conf
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            [Unit]
+            ConditionPathExists=!/run/cos/recovery_mode
+            ConditionPathExists=!/run/cos/live_mode
+            ConditionPathExists=/etc/k0s/.capi-args-ready
+  boot:
+    - name: beskar7-k0s-gate-reload
+      directories:
+        - path: /etc/systemd/system/k0scontroller.service.d
+          permissions: 0755
+          owner: 0
+          group: 0
+        - path: /etc/systemd/system/k0sworker.service.d
+          permissions: 0755
+          owner: 0
+          group: 0
+      files:
+        - path: /etc/systemd/system/k0scontroller.service.d/00-beskar7-gate.conf
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            [Unit]
+            ConditionPathExists=!/run/cos/recovery_mode
+            ConditionPathExists=!/run/cos/live_mode
+            ConditionPathExists=/etc/k0s/.capi-args-ready
+        - path: /etc/systemd/system/k0sworker.service.d/00-beskar7-gate.conf
+          permissions: 0644
+          owner: 0
+          group: 0
+          content: |
+            [Unit]
+            ConditionPathExists=!/run/cos/recovery_mode
+            ConditionPathExists=!/run/cos/live_mode
+            ConditionPathExists=/etc/k0s/.capi-args-ready
+      commands:
+        - systemctl daemon-reload
