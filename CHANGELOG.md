@@ -16,8 +16,8 @@ Docs and examples only. No controller, CRD or contract (`v4.2`) change.
   on beskar7: the whole-disk image's recovery-partition install boot applies the
   CAPI cloud-config and starts k0s, so a joiner registers as a voting etcd member
   and is then rebooted by the installer, which loses quorum for good. The marker
-  is written by cluster-api-provider-kairos from commit `3698d55`
-  (`fix/generic-infrastructure-provider`); the gate is a two-sided contract with
+  is written by cluster-api-provider-kairos from
+  kairos-io/cluster-api-provider-kairos#99; the gate is a two-sided contract with
   it. `examples/kairos-k0s-providerid-stage.yaml` is the k0s counterpart of the
   ProviderID glue — it patches `Node.spec.providerID` after registration, because
   the Kairos k0s provider drops `--kubelet-extra-args`. Both verified on Kairos

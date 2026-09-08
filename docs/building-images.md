@@ -152,8 +152,8 @@ things go wrong without it, both observed directly and both closed by the gate:
 The gate is three `ConditionPathExists=` lines on `k0scontroller.service` and `k0sworker.service`,
 written at the `initramfs` stage so they exist before systemd loads a unit: never in a recovery
 or live boot, and never before `/etc/k0s/.capi-args-ready` exists. That marker is written by
-**cluster-api-provider-kairos** as the last of its `write_files` — from commit `3698d55` on its
-`fix/generic-infrastructure-provider` branch; no released version writes it yet. The contract is
+**cluster-api-provider-kairos** as the last of its `write_files` — from
+[kairos-io/cluster-api-provider-kairos#99](https://github.com/kairos-io/cluster-api-provider-kairos/pull/99); no released version writes it yet. The contract is
 two-sided: a gated image with a provider that does not write the marker never starts k0s at all.
 
 With the gate in place the run that validated it showed, per node: no k0s output at all in the

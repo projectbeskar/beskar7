@@ -641,7 +641,7 @@ cluster of its own and k0s never attempts a join once a CA exists. Neither is re
 **Solution:** bake [`examples/kairos-k0s-start-gate.yaml`](../examples/kairos-k0s-start-gate.yaml)
 into the image as `/oem/05_beskar7_k0s_gate.yaml` ([Building a target image → k0s: the start
 gate](building-images.md#k0s-the-start-gate)) and run a cluster-api-provider-kairos that writes
-`/etc/k0s/.capi-args-ready` (commit `3698d55` on `fix/generic-infrastructure-provider`). Then
+`/etc/k0s/.capi-args-ready` ([kairos-io/cluster-api-provider-kairos#99](https://github.com/kairos-io/cluster-api-provider-kairos/pull/99)). Then
 re-provision: delete the affected Machines (or let a `MachineHealthCheck` remediate). There is no
 in-place fix — a node that has initialised its own CA will not join, and a dead etcd voter has to
 be removed from the init node with `k0s etcd leave --peer-address <addr>` before it will accept

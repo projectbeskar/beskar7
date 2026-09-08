@@ -43,8 +43,8 @@
 # rewrites the same files and reloads systemd as belt-and-braces.
 #
 # TWO-SIDED CONTRACT. The gate only opens when the bootstrap provider writes the
-# marker. cluster-api-provider-kairos does so from commit 3698d55 on its
-# fix/generic-infrastructure-provider branch; no released version does at the
+# marker. cluster-api-provider-kairos does so from
+# kairos-io/cluster-api-provider-kairos#99; no released version does at the
 # time of writing. On a gated image with an older provider k0s never starts, so
 # do not bake this file into an image for a provider that does not write
 # /etc/k0s/.capi-args-ready.
