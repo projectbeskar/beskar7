@@ -61,10 +61,10 @@ install-golangci-lint:
 lint: install-golangci-lint
 	$(GOLANGCI_LINT) run --timeout=5m
 
-# Generate manifests e.g. CRDs, RBAC, and DeepCopy objects
+# Generate manifests e.g. CRDs, RBAC, webhook configurations, and DeepCopy objects
 manifests: install-controller-gen
 	$(CONTROLLER_GEN) object:headerFile="./hack/boilerplate.go.txt" paths="./..."
-	$(MAKE) rbac crd
+	$(MAKE) rbac crd webhook
 
 # Generate RBAC manifests
 rbac:
@@ -73,6 +73,15 @@ rbac:
 # Generate CRD manifests
 crd:
 	$(CONTROLLER_GEN) crd:generateEmbeddedObjectMeta=true,maxDescLen=0,crdVersions=v1 paths="./api/..." output:crd:artifacts:config=config/crd/bases
+
+# Generate the webhook configurations (config/webhook/manifests.yaml) from the
+# +kubebuilder:webhook and +kubebuilder:webhookconfiguration markers in
+# api/*/webhooks. Generated, not hand-edited: a path declared there that no Go
+# handler serves is a failurePolicy=Fail webhook answering 404, which blocks
+# every create/update of that kind. test/contract pins the Helm chart's
+# hand-maintained copy to the same markers.
+webhook:
+	$(CONTROLLER_GEN) webhook paths="./..." output:webhook:dir=config/webhook
 
 # Sync chart-bundled CRDs from the generated source of truth.
 # Run this after `make manifests` (or use `make manifests-and-sync`) so that
@@ -184,4 +193,4 @@ release-manifests:
 	git checkout config/overlays/ 2>/dev/null || true
 	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
 
-.PHONY: build build-mock-redfish build-mock-inspector generate manifests test lint docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install-golangci-lint install uninstall undeploy rbac crd release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown
+.PHONY: build build-mock-redfish build-mock-inspector generate manifests test lint docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install-golangci-lint install uninstall undeploy rbac crd webhook release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown

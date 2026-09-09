@@ -25,8 +25,22 @@ func (webhook *Beskar7ClusterWebhook) SetupWebhookWithManager(mgr ctrl.Manager) 
 		Complete()
 }
 
-// +kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=validation.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
-// +kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
+// The markers below are the single source of truth for config/webhook/manifests.yaml:
+// `make manifests` regenerates it with controller-gen's webhook generator, so a
+// webhook exists in the kustomize overlay only if a handler with a marker exists
+// here. A declared path with no handler behind it is a failurePolicy=Fail webhook
+// that answers 404 and blocks every create/update of that kind — which is what
+// the hand-written Beskar7Machine/Beskar7MachineTemplate entries did before v0.4.5.
+// The overlay uses explicit `beskar7-` names instead of a kustomize namePrefix, so
+// the configuration names and the Service reference are set here; keep them in
+// step with config/webhook/service.yaml and config/webhook/patches/. The Helm
+// chart's webhook template is still hand-maintained — test/contract pins both
+// files to these markers.
+//
+// +kubebuilder:webhookconfiguration:mutating=true,name=beskar7-mutating-webhook-configuration
+// +kubebuilder:webhookconfiguration:mutating=false,name=beskar7-validating-webhook-configuration
+// +kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=validation.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=beskar7-system
+// +kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=beskar7-system
 
 var _ admission.Validator[*infrav1beta1.Beskar7Cluster] = &Beskar7ClusterWebhook{}
 var _ admission.Defaulter[*infrav1beta1.Beskar7Cluster] = &Beskar7ClusterWebhook{}
