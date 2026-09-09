@@ -18,13 +18,14 @@ package controllers
 
 import (
 	"context"
+	"k8s.io/utils/ptr"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -91,6 +92,8 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 		// must exist for the reconcile to reach the terminal-failure guard.
 		cluster := &clusterv1.Cluster{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: testNs.Name},
+			// The v1beta2 Cluster CRD requires a non-empty spec.
+			Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 		}
 		Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 
@@ -108,8 +111,9 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 				Labels:    map[string]string{clusterv1.ClusterNameLabel: "test-cluster"},
 			},
 			Spec: clusterv1.MachineSpec{
-				ClusterName: "test-cluster",
-				Bootstrap:   clusterv1.Bootstrap{DataSecretName: &bootstrapName},
+				ClusterName:       "test-cluster",
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				Bootstrap:         clusterv1.Bootstrap{DataSecretName: &bootstrapName},
 			},
 		}
 		Expect(k8sClient.Create(ctx, machine)).To(Succeed())

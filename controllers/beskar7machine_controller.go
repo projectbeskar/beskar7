@@ -38,9 +38,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	"sigs.k8s.io/cluster-api/util/conditions"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -265,7 +265,7 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	// Add finalizer
 	if controllerutil.AddFinalizer(b7machine, Beskar7MachineFinalizer) {
 		logger.Info("Adding finalizer")
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueShortly}, nil
 	}
 
 	// Find or get associated host. The spec's hostSelector and the failure
@@ -966,7 +966,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: requeueShortly}, nil
 }
 
 // handleReadyHost handles a host that's ready after inspection.
@@ -1055,8 +1055,8 @@ func hostPlacementSelector(b7machine *infrastructurev1beta1.Beskar7Machine, mach
 			sel = s
 		}
 	}
-	if machine != nil && machine.Spec.FailureDomain != nil && *machine.Spec.FailureDomain != "" {
-		fd := *machine.Spec.FailureDomain
+	if machine != nil && machine.Spec.FailureDomain != "" {
+		fd := machine.Spec.FailureDomain
 		req, err := labels.NewRequirement(zoneLabelKey, selection.Equals, []string{fd})
 		if err != nil {
 			return nil, fmt.Errorf("failure domain %q is not a valid %s label value: %w", fd, zoneLabelKey, err)
@@ -1170,7 +1170,7 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 					logger.V(1).Info("Conflict claiming host, will retry", "host", host.Name)
 					internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeConflict, internalmetrics.ConflictReasonOptimisticLock)
 					internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeConflict, time.Since(claimStart))
-					return nil, ctrl.Result{Requeue: true}, nil
+					return nil, ctrl.Result{RequeueAfter: requeueShortly}, nil
 				}
 				logger.Error(err, "Failed to claim host")
 				internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
@@ -1225,7 +1225,7 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 		host.Spec.ConsumerRef = nil
 		if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			if apierrors.IsConflict(err) {
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: requeueShortly}, nil
 			}
 			logger.Error(err, "Failed to release host")
 			return ctrl.Result{}, err

@@ -13,8 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	conditions "sigs.k8s.io/cluster-api/util/conditions"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -456,7 +456,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			// SetupWithManager). An explicit RequeueAfter here would override the
 			// rate-limiter and pin a misconfigured BMC to a fixed 60s ping forever.
 			Expect(result.RequeueAfter).To(BeZero(), "Redfish-connection-failure path must not set RequeueAfter; the workqueue rate-limiter governs the retry cadence")
-			Expect(result.Requeue).To(BeFalse(), "Redfish-connection-failure path must not set Requeue=true; the error return already triggers a rate-limited requeue")
+			Expect(result.RequeueAfter).To(BeZero(), "Redfish-connection-failure path must not set Requeue=true; the error return already triggers a rate-limited requeue")
 
 			By("Checking error conditions")
 			Eventually(func(g Gomega) {
@@ -901,7 +901,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Reconciling resumed host")
 			result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: phLookupKey})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue())
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			Eventually(func(g Gomega) {
 				resumedPh := &infrastructurev1beta1.PhysicalHost{}

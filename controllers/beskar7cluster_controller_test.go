@@ -26,8 +26,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	conditions "sigs.k8s.io/cluster-api/util/conditions"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -59,11 +59,10 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			},
 			Spec: clusterv1.ClusterSpec{
 				// InfrastructureRef is needed for GetOwnerCluster
-				InfrastructureRef: &corev1.ObjectReference{
-					APIVersion: infrastructurev1beta1.GroupVersion.String(),
-					Kind:       "Beskar7Cluster",
-					Name:       "test-b7cluster",
-					Namespace:  testNs.Name,
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+					APIGroup: infrastructurev1beta1.GroupVersion.Group,
+					Kind:     "Beskar7Cluster",
+					Name:     "test-b7cluster",
 				},
 			},
 		}
@@ -107,7 +106,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			// First reconcile adds finalizer
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue(), "Should requeue after adding finalizer")
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue after adding finalizer")
 
 			// Check finalizer is added
 			Eventually(func(g Gomega) {
@@ -185,8 +184,9 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 					},
 				},
 				Spec: clusterv1.MachineSpec{
-					ClusterName: capiCluster.Name,
-					Bootstrap:   clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
+					ClusterName:       capiCluster.Name,
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+					Bootstrap:         clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
@@ -224,7 +224,12 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 						"cluster.x-k8s.io/control-plane": "", // Mark as control plane
 					},
 				},
-				Spec: clusterv1.MachineSpec{ClusterName: capiCluster.Name},
+				Spec: clusterv1.MachineSpec{
+					ClusterName: capiCluster.Name,
+					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef.
+					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				},
 				// Status will be updated below
 			}
 			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
@@ -238,7 +243,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 					return err
 				}
 				// Set the desired status fields
-				machineToUpdate.Status.InfrastructureReady = true
+				machineToUpdate.Status.Initialization.InfrastructureProvisioned = ptr.To(true)
 				machineToUpdate.Status.Addresses = []clusterv1.MachineAddress{
 					{Type: clusterv1.MachineExternalIP, Address: "1.1.1.1"},
 					{Type: clusterv1.MachineInternalIP, Address: "192.168.1.10"},
@@ -267,7 +272,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			// Second reconcile should find the machine and set the endpoint
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse(), "Should not requeue once endpoint is derived")
+			Expect(result.RequeueAfter).To(BeZero(), "Should not requeue once endpoint is derived")
 			Expect(result.RequeueAfter).To(BeZero())
 
 			// Check condition and status
@@ -295,13 +300,17 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				},
 				Spec: clusterv1.MachineSpec{
 					ClusterName: b7cluster.Name,
+					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef; nothing
+					// in envtest acts on them.
+					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
 				},
 				Status: clusterv1.MachineStatus{
 					Phase: string(clusterv1.MachinePhaseRunning),
-					Conditions: clusterv1.Conditions{
+					Conditions: []metav1.Condition{
 						{
-							Type:   clusterv1.InfrastructureReadyCondition,
-							Status: corev1.ConditionTrue,
+							Type:   string(clusterv1.InfrastructureReadyCondition),
+							Status: metav1.ConditionTrue, Reason: "Ready",
 						},
 					},
 					// No addresses provided
@@ -316,7 +325,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			// First reconcile - should add finalizer
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeTrue(), "Should requeue after adding finalizer")
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue after adding finalizer")
 
 			// Second reconcile - should check for control plane endpoint (but not find one)
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -352,8 +361,9 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 					},
 				},
 				Spec: clusterv1.MachineSpec{
-					ClusterName: capiCluster.Name,
-					Bootstrap:   clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
+					ClusterName:       capiCluster.Name,
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+					Bootstrap:         clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
 				},
 			}
 			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
@@ -391,13 +401,17 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				},
 				Spec: clusterv1.MachineSpec{
 					ClusterName: b7cluster.Name,
+					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef; nothing
+					// in envtest acts on them.
+					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
 				},
 				Status: clusterv1.MachineStatus{
 					Phase: string(clusterv1.MachinePhaseProvisioning),
-					Conditions: clusterv1.Conditions{
+					Conditions: []metav1.Condition{
 						{
-							Type:   clusterv1.InfrastructureReadyCondition,
-							Status: corev1.ConditionFalse,
+							Type:   string(clusterv1.InfrastructureReadyCondition),
+							Status: metav1.ConditionFalse,
 							Reason: "ProvisioningInProgress",
 						},
 					},
@@ -465,10 +479,10 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			Eventually(func(g Gomega) {
 				Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				g.Expect(b7cluster.Status.FailureDomains).To(HaveLen(2), "Should discover 2 unique zones")
-				g.Expect(b7cluster.Status.FailureDomains).To(HaveKey("zone-a"))
-				g.Expect(b7cluster.Status.FailureDomains["zone-a"]).To(Equal(clusterv1.FailureDomainSpec{ControlPlane: true}))
-				g.Expect(b7cluster.Status.FailureDomains).To(HaveKey("zone-b"))
-				g.Expect(b7cluster.Status.FailureDomains["zone-b"]).To(Equal(clusterv1.FailureDomainSpec{ControlPlane: true}))
+				g.Expect(b7cluster.Status.FailureDomains).To(ContainElement(HaveField("Name", "zone-a")))
+				g.Expect(b7cluster.Status.FailureDomains).To(ContainElement(SatisfyAll(HaveField("Name", "zone-a"), HaveField("ControlPlane", HaveValue(BeTrue())))))
+				g.Expect(b7cluster.Status.FailureDomains).To(ContainElement(HaveField("Name", "zone-b")))
+				g.Expect(b7cluster.Status.FailureDomains).To(ContainElement(SatisfyAll(HaveField("Name", "zone-b"), HaveField("ControlPlane", HaveValue(BeTrue())))))
 			}, "5s", "100ms").Should(Succeed(), "FailureDomains should be discovered correctly")
 		})
 
@@ -495,7 +509,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			Eventually(func(g Gomega) {
 				Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				g.Expect(b7cluster.Status.FailureDomains).To(HaveLen(1))
-				g.Expect(b7cluster.Status.FailureDomains).To(HaveKey("zone-a"))
+				g.Expect(b7cluster.Status.FailureDomains).To(ContainElement(HaveField("Name", "zone-a")))
 			}, "5s", "100ms").Should(Succeed())
 
 			// Store the resource version to check if it changes
@@ -510,7 +524,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			// (indicating no unnecessary status update occurred)
 			Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 			Expect(b7cluster.Status.FailureDomains).To(HaveLen(1))
-			Expect(b7cluster.Status.FailureDomains).To(HaveKey("zone-a"))
+			Expect(b7cluster.Status.FailureDomains).To(ContainElement(HaveField("Name", "zone-a")))
 			// Note: In a real test environment, resource version should remain the same
 			// but since we're using a test environment, we just verify the optimization doesn't break functionality
 			Expect(b7cluster.ResourceVersion).NotTo(BeEmpty(), "Resource version should exist, initial was: %s", initialResourceVersion)
@@ -533,7 +547,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			}
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.Requeue).To(BeFalse(), "Should not requeue after finalizer removal")
+			Expect(result.RequeueAfter).To(BeZero(), "Should not requeue after finalizer removal")
 
 			By("Checking if Beskar7Cluster is deleted")
 			Eventually(func() bool {
@@ -547,24 +561,14 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 	Context("Utility Functions", func() {
 		Describe("failureDomainsEqual", func() {
 			It("should return true for identical failure domains", func() {
-				fd1 := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: true},
-					"zone-b": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
-				fd2 := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: true},
-					"zone-b": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
+				fd1 := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(true)}, {Name: "zone-b", ControlPlane: ptr.To(true)}}
+				fd2 := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(true)}, {Name: "zone-b", ControlPlane: ptr.To(true)}}
 				Expect(failureDomainsEqual(fd1, fd2)).To(BeTrue())
 			})
 
 			It("should return false for different failure domains", func() {
-				fd1 := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
-				fd2 := clusterv1.FailureDomains{
-					"zone-b": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
+				fd1 := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(true)}}
+				fd2 := []clusterv1.FailureDomain{{Name: "zone-b", ControlPlane: ptr.To(true)}}
 				Expect(failureDomainsEqual(fd1, fd2)).To(BeFalse())
 			})
 
@@ -573,26 +577,20 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			})
 
 			It("should return true for nil and empty failure domains", func() {
-				fd := clusterv1.FailureDomains{}
+				fd := []clusterv1.FailureDomain{}
 				Expect(failureDomainsEqual(nil, fd)).To(BeTrue())
 				Expect(failureDomainsEqual(fd, nil)).To(BeTrue())
 			})
 
 			It("should return false when one is nil and other has content", func() {
-				fd := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
+				fd := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(true)}}
 				Expect(failureDomainsEqual(nil, fd)).To(BeFalse())
 				Expect(failureDomainsEqual(fd, nil)).To(BeFalse())
 			})
 
 			It("should return false for different ControlPlane values", func() {
-				fd1 := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: true},
-				}
-				fd2 := clusterv1.FailureDomains{
-					"zone-a": clusterv1.FailureDomainSpec{ControlPlane: false},
-				}
+				fd1 := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(true)}}
+				fd2 := []clusterv1.FailureDomain{{Name: "zone-a", ControlPlane: ptr.To(false)}}
 				Expect(failureDomainsEqual(fd1, fd2)).To(BeFalse())
 			})
 		})

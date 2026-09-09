@@ -29,7 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -160,8 +160,11 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 				Namespace: testNs.Name,
 			},
 			Spec: clusterv1.MachineSpec{
-				ClusterName: "fake-cluster",
-				Bootstrap:   clusterv1.Bootstrap{},
+				ClusterName:       "fake-cluster",
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				// The v1beta2 Machine CRD rejects an empty bootstrap; the ConfigRef is
+				// inert in envtest and DataSecretName is still set per spec.
+				Bootstrap: clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ownerMachine)).To(Succeed())
@@ -351,8 +354,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		owner := &clusterv1.Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "n", UID: "owner-uid"},
 			Spec: clusterv1.MachineSpec{
-				ClusterName: "c",
-				Bootstrap:   clusterv1.Bootstrap{DataSecretName: &dataSecretName},
+				ClusterName:       "c",
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				Bootstrap:         clusterv1.Bootstrap{DataSecretName: &dataSecretName},
 			},
 		}
 		secret := &corev1.Secret{

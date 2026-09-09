@@ -2,7 +2,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // Beskar7Cluster specific conditions
@@ -22,7 +22,9 @@ type Beskar7ClusterSpec struct {
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
 	// +kubebuilder:validation:Optional
 	// +optional
-	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint"`
+	// omitzero: an endpoint is legitimately absent until the control plane has
+	// an address, and the v1beta2 APIEndpoint schema rejects an empty object.
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 }
 
 // Beskar7ClusterInitializationStatus carries CAPI v1beta2 contract fields
@@ -57,11 +59,11 @@ type Beskar7ClusterStatus struct {
 
 	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
 	// +optional
-	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 
 	// FailureDomains is a list of failure domain objects synced from the infrastructure provider.
 	// +optional
-	FailureDomains clusterv1.FailureDomains `json:"failureDomains,omitempty"`
+	FailureDomains []clusterv1.FailureDomain `json:"failureDomains,omitempty"`
 
 	// Conditions defines current service state of the Beskar7Cluster.
 	// +optional
@@ -116,10 +118,8 @@ func (in *Beskar7ClusterStatus) DeepCopyInto(out *Beskar7ClusterStatus) {
 	out.ControlPlaneEndpoint = in.ControlPlaneEndpoint
 	if in.FailureDomains != nil {
 		in, out := &in.FailureDomains, &out.FailureDomains
-		*out = make(clusterv1.FailureDomains, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
+		*out = make([]clusterv1.FailureDomain, len(*in))
+		copy(*out, *in)
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
@@ -133,3 +133,10 @@ func (in *Beskar7ClusterSpec) DeepCopyInto(out *Beskar7ClusterSpec) {
 	*out = *in
 	out.ControlPlaneEndpoint = in.ControlPlaneEndpoint
 }
+
+// GetV1Beta1Conditions is the accessor the CAPI v1beta2 deprecated-conditions
+// helpers require; the v1beta1-shaped conditions stay in Status.Conditions.
+func (in *Beskar7Cluster) GetV1Beta1Conditions() clusterv1.Conditions { return in.Status.Conditions }
+
+// SetV1Beta1Conditions is the matching setter.
+func (in *Beskar7Cluster) SetV1Beta1Conditions(c clusterv1.Conditions) { in.Status.Conditions = c }

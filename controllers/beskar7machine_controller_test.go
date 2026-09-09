@@ -16,8 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	conditions "sigs.k8s.io/cluster-api/util/conditions"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -298,7 +298,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, beskar7Machine, physicalHost)
 			Expect(err).NotTo(HaveOccurred(), "passing hardware checks must not error")
-			Expect(result.Requeue).To(BeTrue(), "post-inspection should requeue once to observe the new state")
+			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "post-inspection should requeue once to observe the new state")
 
 			// FailureReason must NOT be set on a passing report.
 			Expect(beskar7Machine.Status.FailureReason).To(BeNil(),
@@ -803,7 +803,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
 				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("inspect-complete"))
 				// result carries Requeue=true from the success path (not zero from a terminal failure).
-				Expect(result.Requeue).To(BeTrue())
+				Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 			})
 		})
 
@@ -970,7 +970,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
 	})
 
-	It("Should allow exactly one machine to claim the host; the other gets Requeue=true", func() {
+	It("Should allow exactly one machine to claim the host; the other retries or sees no host", func() {
 		By("Creating one available PhysicalHost with no ConsumerRef")
 		host := &infrastructurev1beta1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1059,19 +1059,23 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		// hosts available for it. In a truly concurrent execution (e.g. multiple
 		// goroutines), the loser gets a Conflict 409 and returns Requeue=true.
 		// Either outcome is correct. The invariant under test is: the host ends up
-		// claimed by exactly one machine, and the second caller either gets
-		// Requeue=true (Conflict path) or nil/nil (no available hosts path).
+		// claimed by exactly one machine, and the second caller either gets the
+		// short conflict retry (RequeueAfter == requeueShortly) or nil/nil (no
+		// available hosts path).
 		aWon := claimedByA != nil
 		bWon := claimedByB != nil
 		Expect(aWon || bWon).To(BeTrue(), "at least one machine must have claimed the host")
 		Expect(aWon && bWon).To(BeFalse(), "both machines must not claim the host simultaneously")
 
-		// The winner's result must not include Requeue (it already has the host).
-		if aWon {
-			Expect(resultA.Requeue).To(BeFalse(), "winning machine-a must not be told to requeue")
-		} else {
-			Expect(resultB.Requeue).To(BeFalse(), "winning machine-b must not be told to requeue")
+		// The winner gets the fresh-claim requeue (5s, so the next pass re-finds
+		// the host via ConsumerRef), never the conflict retry; the loser gets the
+		// conflict retry or nothing.
+		winner, loser := resultA, resultB
+		if bWon {
+			winner, loser = resultB, resultA
 		}
+		Expect(winner.RequeueAfter).To(Equal(5*time.Second), "the winner must get the fresh-claim requeue, not the conflict retry")
+		Expect(loser.RequeueAfter).To(Or(Equal(requeueShortly), BeZero()), "the loser retries shortly (conflict) or sees no host")
 
 		By("Asserting host ConsumerRef points at exactly one machine")
 		Eventually(func(g Gomega) {
@@ -1209,8 +1213,9 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 				Namespace: testNs.Name,
 			},
 			Spec: clusterv1.MachineSpec{
-				ClusterName: "fake-cluster",
-				Bootstrap:   clusterv1.Bootstrap{},
+				ClusterName:       "fake-cluster",
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				Bootstrap:         clusterv1.Bootstrap{},
 			},
 		}
 
@@ -2067,20 +2072,19 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(BeNil(), "no failure domain: no constraint")
 
-		empty := ""
-		m.Spec.FailureDomain = &empty
+		m.Spec.FailureDomain = ""
 		sel, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(BeNil(), "an empty failure domain is no constraint")
 
 		fd := "rack-1"
-		m.Spec.FailureDomain = &fd
+		m.Spec.FailureDomain = fd
 		sel, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel.String()).To(Equal(zoneLabelKey + "=rack-1"))
 
 		bad := "not a label value!"
-		m.Spec.FailureDomain = &bad
+		m.Spec.FailureDomain = bad
 		_, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).To(HaveOccurred(), "a failure domain that cannot be a label value must be reported, not silently match nothing")
 		Expect(errors.Is(err, errInvalidHostSelector)).To(BeFalse(), "a bad failure domain is not the spec's fault; it must not be terminal")
@@ -2108,7 +2112,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(sel.Matches(labels.Set{"node-role": "worker"})).To(BeFalse())
 
 		By("a hostSelector AND a failure domain: both must hold")
-		m.Spec.FailureDomain = &fd
+		m.Spec.FailureDomain = fd
 		sel, err = hostPlacementSelector(b7m, m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel.Matches(labels.Set{"node-role": "control-plane", zoneLabelKey: "rack-1"})).To(BeTrue())
@@ -2135,7 +2139,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 	placementOf := func(b7m *infrastructurev1beta1.Beskar7Machine, fd string) labels.Selector {
 		var m *clusterv1.Machine
 		if fd != "" {
-			m = &clusterv1.Machine{Spec: clusterv1.MachineSpec{FailureDomain: &fd}}
+			m = &clusterv1.Machine{Spec: clusterv1.MachineSpec{FailureDomain: fd}}
 		}
 		sel, err := hostPlacementSelector(b7m, m)
 		Expect(err).NotTo(HaveOccurred())
@@ -2229,7 +2233,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		fd := "rack-1"
 		machine := &clusterv1.Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "fd-owner", Namespace: "default"},
-			Spec:       clusterv1.MachineSpec{ClusterName: "fake-cluster", FailureDomain: &fd},
+			Spec:       clusterv1.MachineSpec{ClusterName: "fake-cluster", FailureDomain: fd},
 		}
 
 		result, err := r.reconcileNormal(context.Background(), r.Log, b7m, machine)

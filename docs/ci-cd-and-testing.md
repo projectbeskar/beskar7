@@ -125,6 +125,14 @@ failureConfig := FailureConfig{
 }
 ```
 
+### envtest and the Cluster API CRDs
+
+The controller and integration suites run against envtest with beskar7's CRDs from
+`config/crd/bases/` and the **real Cluster API CRDs** (`Cluster`, `Machine`) copied from the
+`sigs.k8s.io/cluster-api` module into `config/test-external-crds/` by `make test-external-crds`.
+Re-run that target and commit the result whenever the cluster-api dependency is bumped: the suites
+decode those objects with the module's Go types, so the two must match.
+
 ### Integration Testing
 
 Run hardware emulation tests:

@@ -13,6 +13,11 @@ linters:
   default: standard
   exclusions:
     generated: lax
+    rules:
+      # The v1beta1-shaped condition types are kept on purpose until the
+      # beskar7 v1beta2 API (D-023) replaces them with metav1.Condition.
+      - linters: [staticcheck]
+        text: "is deprecated and is going to be removed when support for v1beta1"
     paths:
       - vendor
       - third_party$

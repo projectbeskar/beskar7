@@ -87,6 +87,14 @@ sync-chart-crds:
 manifests-and-sync: manifests sync-chart-crds
 
 # Run tests
+# The envtest suites need the real CAPI CRDs (Cluster, Machine) at the version
+# we compile against; hand-maintained stubs drift. Copied from the module cache.
+CAPI_MODULE_DIR = $(shell $(GO) list -m -f '{{.Dir}}' sigs.k8s.io/cluster-api)
+test-external-crds:
+	cp $(CAPI_MODULE_DIR)/config/crd/bases/cluster.x-k8s.io_clusters.yaml config/test-external-crds/
+	cp $(CAPI_MODULE_DIR)/config/crd/bases/cluster.x-k8s.io_machines.yaml config/test-external-crds/
+	chmod u+w config/test-external-crds/*.yaml
+
 test:
 	$(GO) test ./... -coverprofile cover.out
 

@@ -20,7 +20,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	"k8s.io/utils/ptr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 )
@@ -91,6 +92,8 @@ var _ = Describe("Utils", func() {
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
+				// The v1beta2 Cluster CRD requires a non-empty spec.
+				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 			}
 			Expect(isClusterPaused(cluster)).To(BeFalse())
 		})
@@ -104,6 +107,8 @@ var _ = Describe("Utils", func() {
 						clusterv1.PausedAnnotation: "false",
 					},
 				},
+				// The v1beta2 Cluster CRD requires a non-empty spec.
+				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 			}
 			Expect(isClusterPaused(cluster)).To(BeTrue())
 		})
@@ -117,6 +122,8 @@ var _ = Describe("Utils", func() {
 						clusterv1.PausedAnnotation: "true",
 					},
 				},
+				// The v1beta2 Cluster CRD requires a non-empty spec.
+				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 			}
 			Expect(isClusterPaused(cluster)).To(BeTrue())
 		})
@@ -130,6 +137,8 @@ var _ = Describe("Utils", func() {
 						clusterv1.PausedAnnotation: "invalid",
 					},
 				},
+				// The v1beta2 Cluster CRD requires a non-empty spec.
+				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 			}
 			Expect(isClusterPaused(cluster)).To(BeTrue())
 		})

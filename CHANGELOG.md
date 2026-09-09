@@ -6,6 +6,25 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Changed
+
+- **Built against Cluster API v1.13 and its `api/core/v1beta2` Go API** (was
+  v1.10.1 / `api/v1beta1`, which no longer exists in v1.13). This is the
+  mechanical half of D-023: no behaviour change and no beskar7 API change. The
+  v1beta1-shaped conditions stay for now through CAPI's deprecated helpers
+  (accessors `GetV1Beta1Conditions`/`SetV1Beta1Conditions` on all three types —
+  required, or `patch.Helper` silently drops conditions); `Machine.spec.failureDomain`
+  is a plain string; `Beskar7Cluster.status.failureDomains` is built as a sorted
+  list (CAPI v1beta2 shape) but still serialised under the v1beta1 API.
+  controller-runtime 0.23: the webhook builder is generic and
+  `ctrl.Result{Requeue: true}` is deprecated — replaced by a one-second
+  `RequeueAfter` at the six sites (finalizer add, optimistic-lock conflict,
+  post-inspection re-observe). `controlPlaneEndpoint` gains `omitzero` so an
+  endpoint-less `Beskar7Cluster` (legitimate until the control plane has an
+  address) is not rejected by v1beta2's `APIEndpoint` schema. envtest now uses
+  the real CAPI v1beta2 CRDs copied from the module (`make test-external-crds`)
+  instead of hand-written v1beta1 stubs.
+
 ## [v0.4.4] - 2026-09-09
 
 Patch release on the GA line: the CAPI contract-label fix below, plus everything merged

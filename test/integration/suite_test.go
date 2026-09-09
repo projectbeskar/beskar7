@@ -36,6 +36,7 @@ package integration
 
 import (
 	"context"
+	"k8s.io/utils/ptr"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +51,7 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/config"
@@ -281,7 +282,8 @@ func createCluster(ctx context.Context, ns, clusterName string) *clusterv1.Clust
 			Name:      clusterName,
 			Namespace: ns,
 		},
-		Spec: clusterv1.ClusterSpec{},
+		// The v1beta2 Cluster CRD requires a non-empty spec.
+		Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
 	}
 	Expect(k8sClient.Create(ctx, cluster)).To(Succeed())
 	return cluster
@@ -305,10 +307,12 @@ func createMachine(ctx context.Context, ns, machineName, clusterName, bootstrapS
 			Bootstrap: clusterv1.Bootstrap{
 				DataSecretName: &bootstrapSecretName,
 			},
-			InfrastructureRef: corev1.ObjectReference{
-				APIVersion: "infrastructure.cluster.x-k8s.io/v1beta1",
-				Kind:       "Beskar7Machine",
-				Namespace:  ns,
+			// v1beta2 references carry group/kind/name only; nothing in envtest
+			// resolves this one (the controllers walk OwnerReferences).
+			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+				APIGroup: infrastructurev1beta1.GroupVersion.Group,
+				Kind:     "Beskar7Machine",
+				Name:     "fixture",
 			},
 		},
 	}

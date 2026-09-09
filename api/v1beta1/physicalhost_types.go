@@ -3,7 +3,7 @@ package v1beta1
 import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // PhysicalHost states - simplified for iPXE + inspection workflow
@@ -536,3 +536,10 @@ func (in *InspectionReport) DeepCopy() *InspectionReport {
 func init() {
 	SchemeBuilder.Register(&PhysicalHost{}, &PhysicalHostList{})
 }
+
+// GetV1Beta1Conditions is the accessor the CAPI v1beta2 deprecated-conditions
+// helpers require; the v1beta1-shaped conditions stay in Status.Conditions.
+func (h *PhysicalHost) GetV1Beta1Conditions() clusterv1.Conditions { return h.Status.Conditions }
+
+// SetV1Beta1Conditions is the matching setter.
+func (h *PhysicalHost) SetV1Beta1Conditions(c clusterv1.Conditions) { h.Status.Conditions = c }

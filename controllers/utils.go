@@ -18,8 +18,9 @@ package controllers
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/annotations"
+	"time"
 )
 
 // isPaused checks if a resource has the pause annotation present.
@@ -56,3 +57,8 @@ func maxConcurrentOrDefault(n int) int {
 	}
 	return n
 }
+
+// requeueShortly replaces the deprecated ctrl.Result{Requeue: true}: used after
+// a metadata write the deferred patch persists (the update event re-triggers
+// the reconcile anyway) and after an optimistic-lock conflict.
+const requeueShortly = 1 * time.Second

@@ -18,16 +18,17 @@ package controllers
 
 import (
 	"context"
-	"reflect"
+	"sort"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	"k8s.io/utils/ptr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	"sigs.k8s.io/cluster-api/util/conditions"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -173,7 +174,7 @@ func (r *Beskar7ClusterReconciler) reconcileNormal(ctx context.Context, logger l
 	// If the Beskar7Cluster doesn't have our finalizer, add it.
 	if controllerutil.AddFinalizer(b7cluster, Beskar7ClusterFinalizer) {
 		logger.Info("Adding finalizer")
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueShortly}, nil
 	}
 
 	// --- Reconcile Failure Domains ---
@@ -220,16 +221,19 @@ func (r *Beskar7ClusterReconciler) reconcileFailureDomains(ctx context.Context, 
 	}
 
 	// More efficient failure domain discovery
-	newFailureDomains := make(clusterv1.FailureDomains)
-
-	// Look for zone labels on PhysicalHosts
-	zoneLabel := zoneLabelKey
+	zones := map[string]struct{}{}
 	for _, ph := range phList.Items {
-		if zone, exists := ph.Labels[zoneLabel]; exists && zone != "" {
-			newFailureDomains[zone] = clusterv1.FailureDomainSpec{
-				ControlPlane: true, // Assume control plane can be placed in any discovered zone
-			}
+		if zone, exists := ph.Labels[zoneLabelKey]; exists && zone != "" {
+			zones[zone] = struct{}{}
 		}
+	}
+	// v1beta2 models failure domains as a list; keep it sorted so status is stable.
+	newFailureDomains := make([]clusterv1.FailureDomain, 0, len(zones))
+	for _, zone := range sortedKeys(zones) {
+		newFailureDomains = append(newFailureDomains, clusterv1.FailureDomain{
+			Name:         zone,
+			ControlPlane: ptr.To(true), // Assume control plane can be placed in any discovered zone
+		})
 	}
 
 	// Check if failure domains actually changed before updating
@@ -256,32 +260,34 @@ func (r *Beskar7ClusterReconciler) reconcileFailureDomains(ctx context.Context, 
 }
 
 // getFailureDomainKeys extracts the keys from FailureDomains for logging
-func getFailureDomainKeys(domains clusterv1.FailureDomains) []string {
-	if domains == nil {
-		return nil
-	}
+func getFailureDomainKeys(domains []clusterv1.FailureDomain) []string {
 	keys := make([]string, 0, len(domains))
-	for key := range domains {
-		keys = append(keys, key)
+	for _, d := range domains {
+		keys = append(keys, d.Name)
 	}
 	return keys
 }
 
+func sortedKeys(m map[string]struct{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // failureDomainsEqual compares two FailureDomains maps for equality
-func failureDomainsEqual(a, b clusterv1.FailureDomains) bool {
-	// Handle nil cases
-	if a == nil && b == nil {
-		return true
-	}
-	if (a == nil && len(b) == 0) || (b == nil && len(a) == 0) {
-		return true
-	}
-	if a == nil || b == nil {
+func failureDomainsEqual(a, b []clusterv1.FailureDomain) bool {
+	if len(a) != len(b) {
 		return false
 	}
-
-	// Use reflect.DeepEqual for comprehensive comparison
-	return reflect.DeepEqual(a, b)
+	for i := range a {
+		if a[i].Name != b[i].Name || ptr.Deref(a[i].ControlPlane, false) != ptr.Deref(b[i].ControlPlane, false) {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultAPIServerPort is the canonical Kubernetes API server port. Used as

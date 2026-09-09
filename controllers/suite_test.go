@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	//+kubebuilder:scaffold:imports
 	"k8s.io/client-go/util/flowcontrol"
