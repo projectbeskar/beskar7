@@ -87,6 +87,26 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
+## Unreleased — CAPI contract label
+
+The CRDs no longer claim the `cluster.x-k8s.io/v1beta2` contract (see the CHANGELOG entry: on CAPI
+v1.11+ that claim made CAPI read `status.failureDomains` as a list and fail). Apply the new CRDs as
+usual, and then **remove the label by hand on Helm-installed CRDs** — `helm upgrade` never touches
+CRDs, and `kubectl apply` does not strip a label that no earlier `kubectl apply` recorded:
+
+```bash
+kubectl label crd beskar7clusters.infrastructure.cluster.x-k8s.io \
+  beskar7machines.infrastructure.cluster.x-k8s.io \
+  beskar7machinetemplates.infrastructure.cluster.x-k8s.io \
+  physicalhosts.infrastructure.cluster.x-k8s.io \
+  cluster.x-k8s.io/v1beta2-
+```
+
+Verify with `kubectl get crd beskar7clusters.infrastructure.cluster.x-k8s.io -o jsonpath='{.metadata.labels}'`:
+only `cluster.x-k8s.io/v1beta1: v1beta1` must remain. No controller behaviour changes; on CAPI v1.11+
+failure-domain placement starts working, and the CAPI cluster controller stops logging
+`failed to retrieve status.failureDomains` for zone-labelled hosts.
+
 ## `v0.4.2` → `v0.4.3` — hosts can be provisioned more than once
 
 No API, CRD or contract change, and no manual step. Upgrade normally:

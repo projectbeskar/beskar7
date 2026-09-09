@@ -6,6 +6,27 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+
+- **CAPI ≥ v1.11 could not read `Beskar7Cluster.status.failureDomains`, and a
+  zone-labelled host stalled the Cluster.** The four CRDs carried both
+  `cluster.x-k8s.io/v1beta1=v1beta1` and `cluster.x-k8s.io/v1beta2=v1beta1`
+  contract labels. CAPI resolves the newest labelled contract, so on
+  v1.11+ it read our status through the **v1beta2** contract — which models
+  `failureDomains` as a list — while beskar7 still publishes the v1beta1 map.
+  The read fails hard (`failed to retrieve status.failureDomains from
+  infrastructure provider`), and `reconcileInfrastructure` aborts before
+  `Cluster.status.initialization.infrastructureProvisioned` is set: any
+  PhysicalHost carrying `topology.kubernetes.io/zone` stalled a new Cluster
+  and errored an existing one on every reconcile (reproduced on CAPI v1.12.2).
+  The `v1beta2` label is removed; beskar7 speaks the v1beta1 contract, which
+  CAPI supports until v1beta1's removal (tentatively April 2027), and CAPI
+  converts the map into its own list. Failure-domain placement now works on
+  CAPI v1.11+. The label returns with the real v1beta2 API (list-shaped
+  `failureDomains`, `metav1.Condition`) — see the migration plan in
+  `PROJECT_CONTEXT.md` D-023. **Helm-installed CRDs need a manual step**, see
+  `docs/upgrading.md`.
+
 ### Added
 
 - **`hostSelector` on `Beskar7Machine` and `Beskar7MachineTemplate`.** A standard
