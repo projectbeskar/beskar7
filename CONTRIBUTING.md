@@ -35,8 +35,8 @@ golangci-lint run --timeout=5m
 
 If you changed anything under `api/v1beta1/` or any `+kubebuilder:` marker you
 **must** run `make manifests` and commit the regenerated
-`config/crd/bases/*.yaml`, `config/rbac/role.yaml` and
-`api/v1beta1/zz_generated.deepcopy.go`. Then run `make sync-chart-crds` so the
+`config/crd/bases/*.yaml`, `config/rbac/role.yaml`, `config/webhook/manifests.yaml`
+and `api/v1beta1/zz_generated.deepcopy.go`. Then run `make sync-chart-crds` so the
 chart-bundled CRDs stay byte-identical — CI fails if they drift.
 
 ## PR expectations
@@ -69,6 +69,13 @@ first.
 **RBAC.** `config/rbac/role.yaml` is generated from `+kubebuilder:rbac:` markers,
 but the Helm chart and the `config/rbac/namespace-scoped/` overlay are
 hand-maintained copies. `test/rbac` fails CI if they diverge — update all three.
+
+**Webhooks.** `config/webhook/manifests.yaml` is generated from the
+`+kubebuilder:webhook` markers in `api/*/webhooks/`; the Helm chart's
+`webhook-configuration.yaml` is a hand-maintained copy. A webhook declared with
+no handler behind it is `failurePolicy: Fail` and blocks every create/update of
+that kind with a 404, so `test/contract` fails CI if either file declares a path
+with no marker — or leaves a marker undeclared.
 
 **Failure semantics.** `FailureReason`/`FailureMessage` are lifted by CAPI onto the
 owning `Machine` and treated as **unrecoverable**. Setting one means "an operator

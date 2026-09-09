@@ -38,6 +38,25 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   the real CAPI v1beta2 CRDs copied from the module (`make test-external-crds`)
   instead of hand-written v1beta1 stubs.
 
+### Fixed
+
+- **kustomize and single-file-manifest installs could not create a
+  `Beskar7Machine` or `Beskar7MachineTemplate`.** `config/webhook/manifests.yaml`
+  still declared mutating and validating webhooks for both kinds
+  (`failurePolicy: Fail`) although the manager only ever served the
+  `Beskar7Cluster` pair, so every create/update was rejected with a 404 from
+  the webhook server (d0d418f removed the same kind of dead entry for
+  `PhysicalHost` but left these four). The Helm chart was never affected — it
+  only declares the `Beskar7Cluster` webhooks, which is why the Helm-based E2E
+  never caught it. The file is now generated: `make manifests` runs
+  controller-gen's `webhook` generator from the `+kubebuilder:webhook` markers
+  (new `+kubebuilder:webhookconfiguration` markers carry the `beskar7-` names
+  and the Service reference the overlay uses instead of a `namePrefix`), the
+  redundant `certmanager_in_webhooks.yaml` patch is gone (it targeted the
+  removed webhook names and would have re-added them as incomplete entries),
+  and `test/contract` fails if either the overlay or the chart declares a path
+  with no marker behind it — or leaves a marker undeclared.
+
 ## [v0.4.4] - 2026-09-09
 
 Patch release on the GA line: the CAPI contract-label fix below, plus everything merged
