@@ -421,8 +421,6 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Creation timestamp"
 // +kubebuilder:storageversion
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
-// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta1
-
 // PhysicalHost is the Schema for the physicalhosts API
 type PhysicalHost struct {
 	metav1.TypeMeta   `json:",inline"`

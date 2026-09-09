@@ -37,8 +37,6 @@ type Beskar7MachineTemplateResource struct {
 // +kubebuilder:resource:path=beskar7machinetemplates,scope=Namespaced,categories=cluster-api,shortName=b7mt
 // +kubebuilder:storageversion
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
-// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta1
-
 // Beskar7MachineTemplate is the Schema for the beskar7machinetemplates API.
 //
 // The `cluster-api` category is required for `clusterctl move`: CAPI walks
