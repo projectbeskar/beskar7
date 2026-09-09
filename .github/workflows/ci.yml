@@ -334,7 +334,10 @@ jobs:
         # Latest stable clusterctl. Installs cluster-api core + kubeadm
         # bootstrap + kubeadm control-plane providers. Required for smoke
         # layer 4 (CAPI Cluster/Machine reconcile against beskar7 infra).
-        CLUSTERCTL_VERSION=v1.10.1
+        # Must serve cluster.x-k8s.io/v1beta2: the manager is built against
+        # cluster-api v1.13 and watches v1beta2 Machines/Clusters. Keep in step
+        # with the sigs.k8s.io/cluster-api version in go.mod.
+        CLUSTERCTL_VERSION=v1.13.4
         curl -L -o /tmp/clusterctl "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CLUSTERCTL_VERSION}/clusterctl-linux-amd64"
         chmod +x /tmp/clusterctl
         sudo mv /tmp/clusterctl /usr/local/bin/clusterctl

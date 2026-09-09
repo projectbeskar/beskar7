@@ -7,7 +7,7 @@ mkdir -p config/test-crds
 
 # Download CAPI CRDs
 echo "Downloading Cluster API CRDs..."
-curl -L https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.10.1/cluster-api-components.yaml -o config/test-crds/cluster-api-crds.yaml
+curl -L https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.4/cluster-api-components.yaml -o config/test-crds/cluster-api-crds.yaml
 
 # Download any other required CRDs here
 # Example:
