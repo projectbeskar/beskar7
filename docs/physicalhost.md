@@ -98,7 +98,7 @@ metadata:
   name: server-01
   namespace: default
   labels:
-    topology.kubernetes.io/zone: rack-1   # consumed by Beskar7Cluster failure domains
+    topology.kubernetes.io/zone: rack-1   # published by Beskar7Cluster as a failure domain; honoured by Beskar7Machine when claiming
 spec:
   redfishConnection:
     address: "https://192.168.1.100"

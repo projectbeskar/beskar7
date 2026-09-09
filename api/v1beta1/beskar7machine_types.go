@@ -25,6 +25,12 @@ const (
 	// WaitingForPhysicalHostReason (Severity=Info) indicates that the Beskar7Machine
 	// is waiting for an available PhysicalHost to be claimed.
 	WaitingForPhysicalHostReason string = "WaitingForPhysicalHost"
+
+	// NoMatchingPhysicalHostReason (Severity=Info) documents that the machine is
+	// waiting because no Available PhysicalHost satisfies its placement
+	// constraint — the failure domain CAPI assigned to the owning Machine — as
+	// opposed to WaitingForPhysicalHost, where the inventory itself is empty.
+	NoMatchingPhysicalHostReason string = "NoMatchingPhysicalHost"
 	// WaitingForHostReason (Severity=Info) indicates waiting for a host (alias for compatibility)
 	WaitingForHostReason string = "WaitingForHost"
 	// PhysicalHostNotReadyReason (Severity=Info) indicates that the associated PhysicalHost

@@ -46,7 +46,7 @@ metadata:
     topology.kubernetes.io/zone: rack-1
 ```
 
-CAPI uses these for placement.
+CAPI uses these for placement: a `KubeadmControlPlane` or equivalent spreads its Machines across the published domains by setting `Machine.spec.failureDomain`, and the `Beskar7Machine` controller then claims only a `PhysicalHost` carrying that zone label (see [Beskar7Machine → Reconcile flow](beskar7machine.md#reconcile-flow), step 3). A Machine with no failure domain may claim any host. A host with no zone label is never a candidate for a Machine that has one, so label every host in a zoned inventory.
 
 ## Conditions
 

@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+
+- **The host claim now honours `Machine.spec.failureDomain` (CAPI conformance).**
+  `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone`
+  label on PhysicalHosts and CAPI places Machines into them, but the
+  `Beskar7Machine` controller ignored the placement and claimed whichever
+  `Available` host listed first — a Machine placed in `rack-1` could land in
+  `rack-2`. A fresh claim is now filtered by that zone label (server-side,
+  alongside the existing `status.state` index). When hosts are `Available` but
+  none is in the Machine's domain, `PhysicalHostAssociated=False` carries the
+  new reason `NoMatchingPhysicalHost` and the machine requeues. Machines with
+  no failure domain, and hosts a machine already holds, are unaffected.
+
 Docs and examples only. No controller, CRD or contract (`v4.2`) change.
 
 ### Added

@@ -34,6 +34,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -266,8 +267,17 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Find or get associated host
-	physicalHost, result, err := r.findAndClaimOrGetAssociatedHost(ctx, logger, b7machine)
+	// Find or get associated host. CAPI may have placed the owning Machine into
+	// a failure domain; a fresh claim has to honour that.
+	placement, err := hostPlacementSelector(machine)
+	if err != nil {
+		logger.Error(err, "Invalid host placement constraint")
+		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
+			infrastructurev1beta1.PhysicalHostAssociationFailedReason, clusterv1.ConditionSeverityWarning,
+			"Invalid host placement constraint: %v", err)
+		return ctrl.Result{}, err
+	}
+	physicalHost, result, err := r.findAndClaimOrGetAssociatedHost(ctx, logger, b7machine, placement)
 	if err != nil {
 		logger.Error(err, "Failed to find, claim, or get associated PhysicalHost")
 		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
@@ -280,6 +290,15 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	if physicalHost != nil {
 		logger.Info("Successfully associated with PhysicalHost", "physicalhost", physicalHost.Name)
 		conditions.MarkTrue(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+	} else if placement != nil {
+		// Distinct from an empty inventory: hosts may well be Available, just
+		// not where CAPI placed this Machine. Requeue, never terminal — a host in
+		// that domain can free up, or the operator can label one.
+		logger.Info("No available PhysicalHost satisfies the placement constraint, requeuing", "placement", placement.String())
+		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
+			infrastructurev1beta1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo,
+			"No available PhysicalHost matches the placement constraint %s", placement.String())
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	} else {
 		logger.Info("No available or associated PhysicalHost found, requeuing")
 		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
@@ -1000,6 +1019,25 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	return ctrl.Result{}, nil
 }
 
+// hostPlacementSelector returns the label selector a PhysicalHost must satisfy
+// before this machine may claim it, or nil when the machine is unconstrained.
+//
+// CAPI assigns Machine.spec.failureDomain from the domains Beskar7Cluster
+// publishes, and those are derived from the topology.kubernetes.io/zone label
+// on PhysicalHosts (reconcileFailureDomains). Honouring the assignment at claim
+// time is what gives the published domains any meaning: without it a Machine
+// placed in rack-1 claims whichever host happens to list first.
+func hostPlacementSelector(machine *clusterv1.Machine) (labels.Selector, error) {
+	if machine == nil || machine.Spec.FailureDomain == nil || *machine.Spec.FailureDomain == "" {
+		return nil, nil
+	}
+	sel, err := labels.ValidatedSelectorFromSet(labels.Set{zoneLabelKey: *machine.Spec.FailureDomain})
+	if err != nil {
+		return nil, fmt.Errorf("failure domain %q is not a valid %s label value: %w", *machine.Spec.FailureDomain, zoneLabelKey, err)
+	}
+	return sel, nil
+}
+
 // findAndClaimOrGetAssociatedHost finds an available host or returns the associated one.
 //
 // Lookup order:
@@ -1012,9 +1050,11 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 //     available host" forever and the inspection flow would never trigger.
 //     ConsumerRef is on Spec (not indexed); we list namespace-scoped and filter
 //     in-loop. Namespace scope keeps the list bounded.
-//  3. Find any StateAvailable host with no ConsumerRef and claim it. Returned
-//     with RequeueAfter so the next reconcile picks the host up via path (2).
-func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine) (*infrastructurev1beta1.PhysicalHost, ctrl.Result, error) {
+//  3. Find a StateAvailable host with no ConsumerRef that satisfies placement
+//     (nil = any host) and claim it. Returned with RequeueAfter so the next
+//     reconcile picks the host up via path (2). Paths (1) and (2) never apply
+//     placement: a host this machine already holds stays its host.
+func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrastructurev1beta1.Beskar7Machine, placement labels.Selector) (*infrastructurev1beta1.PhysicalHost, ctrl.Result, error) {
 	claimStart := time.Now()
 
 	// (1) ProviderID lookup.
@@ -1053,10 +1093,18 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	// The field index filters server-side to StateAvailable so the result set
 	// is bounded by the count of free hosts.
 	hostList := &infrastructurev1beta1.PhysicalHostList{}
-	if err := r.List(ctx, hostList,
+	listOpts := []client.ListOption{
 		client.InNamespace(b7machine.Namespace),
 		client.MatchingFields{PhysicalHostStateIndex: string(infrastructurev1beta1.StateAvailable)},
-	); err != nil {
+	}
+	if placement != nil && !placement.Empty() {
+		// Applied together with the field index: the cache resolves the index
+		// first and filters labels in memory, so this stays bounded by the
+		// number of free hosts.
+		listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: placement})
+		logger.V(1).Info("Restricting the host claim to a placement constraint", "placement", placement.String())
+	}
+	if err := r.List(ctx, hostList, listOpts...); err != nil {
 		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
 		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
