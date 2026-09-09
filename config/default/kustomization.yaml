@@ -28,6 +28,17 @@ labels:
 - pairs:
     app.kubernetes.io/version: v0.2.7
   includeSelectors: false
+# clusterctl's component labels, applied to every object the way `clusterctl
+# init` would (addCommonLabels in cluster-api's
+# cmd/clusterctl/client/repository/components.go). `clusterctl move` discovers
+# only CRDs carrying clusterctl.cluster.x-k8s.io, and the provider contract asks
+# for cluster.x-k8s.io/provider on every component. The CRDs already carry both
+# from their controller-gen markers; this group keeps the rest of the release
+# manifest consistent. Metadata only — never in selectors, see above.
+- pairs:
+    clusterctl.cluster.x-k8s.io: ""
+    cluster.x-k8s.io/provider: infrastructure-beskar7
+  includeSelectors: false
 
 resources:
 - ../crd

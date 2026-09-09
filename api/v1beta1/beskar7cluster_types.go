@@ -80,7 +80,17 @@ type Beskar7ClusterStatus struct {
 // +kubebuilder:object:generate=true
 // +kubebuilder:storageversion
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/provider=infrastructure-beskar7
 // Beskar7Cluster is the Schema for the beskar7clusters API.
+//
+// clusterctl.cluster.x-k8s.io is clusterctl's discovery label: `clusterctl move`
+// builds its object graph only from CRDs that carry it (getCRDList in
+// cluster-api's cmd/clusterctl/client/cluster/objectgraph.go). `clusterctl init`
+// adds it to everything it installs, but a Helm or release-manifest install
+// never goes through clusterctl, so the generated CRD carries it itself.
+// cluster.x-k8s.io/provider is the provider contract's component label, with the
+// value clusterctl derives for an infrastructure provider (infrastructure-<name>).
 type Beskar7Cluster struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

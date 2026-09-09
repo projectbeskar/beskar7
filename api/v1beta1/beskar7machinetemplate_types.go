@@ -37,12 +37,15 @@ type Beskar7MachineTemplateResource struct {
 // +kubebuilder:resource:path=beskar7machinetemplates,scope=Namespaced,categories=cluster-api,shortName=b7mt
 // +kubebuilder:storageversion
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/provider=infrastructure-beskar7
 // Beskar7MachineTemplate is the Schema for the beskar7machinetemplates API.
 //
-// The `cluster-api` category is required for `clusterctl move`: CAPI walks
-// resources in the `cluster-api` category when migrating a workload cluster
-// between management clusters. Without it, Beskar7MachineTemplate objects
-// would be left behind during a move (BUG-9 / Phase 8).
+// clusterctl.cluster.x-k8s.io and cluster.x-k8s.io/provider: see Beskar7Cluster.
+// The `cluster-api` category only makes `kubectl get cluster-api` list templates;
+// it plays no part in `clusterctl move`. A discovered template is moved through
+// the owner reference to its Cluster, which CAPI sets on every template a
+// KubeadmControlPlane or MachineSet references.
 type Beskar7MachineTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

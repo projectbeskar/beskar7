@@ -22,6 +22,24 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   host is without its credential; a failed status patch no longer loses the mint
   either. The CI failure diagnostics keep 2000 manager log lines instead of 500 —
   the first mint had scrolled out of the dump.
+- **`clusterctl move` now discovers beskar7 objects on Helm- and manifest-installed
+  management clusters.** clusterctl builds its move graph only from CRDs that
+  carry the `clusterctl.cluster.x-k8s.io` label; `clusterctl init` adds it and
+  nothing else did, so every `Beskar7Cluster`, `Beskar7Machine`,
+  `Beskar7MachineTemplate` and `PhysicalHost` was silently left behind. The four
+  CRDs now carry that label from their controller-gen markers, so
+  `config/crd/bases` and the chart's `crds/` stay byte-identical, plus
+  `cluster.x-k8s.io/provider: infrastructure-beskar7` — the provider-contract
+  component label with the value `clusterctl init` would derive. `PhysicalHost`
+  also carries `clusterctl.cluster.x-k8s.io/move-hierarchy`: nothing owns a
+  host, so without it a move would discover hosts and leave them all behind. The
+  chart and the kustomize overlay label every other component the same way
+  (`cluster.x-k8s.io/provider` was `beskar7`; metadata only, never in a
+  selector) and the overlay's meaningless `cluster.x-k8s.io/contract` CRD label
+  is gone. Existing installs must re-apply or re-label their CRDs — see
+  `docs/upgrading.md`; `docs/installation.md` lists what a move still needs from
+  the operator. A `test/contract` test pins the labels and the byte identity of
+  the two CRD directories.
 - **A `PhysicalHost` turning `Available` now wakes the `Beskar7Machine`s still
   waiting for a host.** A machine that reconciled moments before its host
   finished enrolling (or before another machine released it) parked on the

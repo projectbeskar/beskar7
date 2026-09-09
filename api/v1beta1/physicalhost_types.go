@@ -421,7 +421,21 @@ const (
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Creation timestamp"
 // +kubebuilder:storageversion
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/provider=infrastructure-beskar7
+// +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io/move-hierarchy="
 // PhysicalHost is the Schema for the physicalhosts API
+//
+// clusterctl.cluster.x-k8s.io and cluster.x-k8s.io/provider: see Beskar7Cluster.
+// clusterctl.cluster.x-k8s.io/move-hierarchy is needed on top because nothing
+// owns a PhysicalHost — it is standalone inventory with no owner-reference chain
+// to a Cluster, and `clusterctl move` only moves discovered objects that reach a
+// Cluster through owner references or are force-moved by this label. Without it
+// a move would discover every host and leave all of them behind. With it, every
+// host in the namespace being moved goes along, together with the objects it
+// owns (its bootstrap-token Secret and inspection-result ConfigMap). The BMC
+// credentials Secret is user-owned and is not reached this way; the operator
+// labels it clusterctl.cluster.x-k8s.io/move or creates it on the target.
 type PhysicalHost struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

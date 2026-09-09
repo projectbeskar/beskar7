@@ -12,7 +12,8 @@ For the full field reference, see [API Reference: PhysicalHost](api-reference.md
 - **Kind:** `PhysicalHost`
 - **Short name:** `ph`
 - **Scope:** Namespaced
-- **Categories:** `cluster-api` (so `clusterctl move` walks it)
+- **Categories:** `cluster-api` (`kubectl get cluster-api` lists hosts)
+- **clusterctl:** the CRD carries `clusterctl.cluster.x-k8s.io`, so `clusterctl move` discovers hosts, and `clusterctl.cluster.x-k8s.io/move-hierarchy`, so every host in the namespace is moved together with the Secret and ConfigMap it owns — nothing owns a host, so without it a move would leave all hosts behind. The BMC credentials Secret is yours, not the host's: label it `clusterctl.cluster.x-k8s.io/move=""` or create it on the target first (see [Installation](installation.md#clusterctl-move)).
 
 ## Spec at a glance
 

@@ -12,6 +12,7 @@ For the full field reference, see [API Reference: Beskar7Machine](api-reference.
 - **Kind:** `Beskar7Machine`
 - **Scope:** Namespaced
 - **Categories:** `cluster-api`
+- **clusterctl:** the CRD carries `clusterctl.cluster.x-k8s.io`, so `clusterctl move` discovers machines; a machine is moved through its owner reference to the CAPI `Machine` (see [Installation](installation.md#clusterctl-move)).
 
 ## Spec at a glance
 

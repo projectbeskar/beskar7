@@ -12,7 +12,8 @@ There is **no** Beskar7MachineTemplate controller, **no** validating or defaulti
 - **Kind:** `Beskar7MachineTemplate`
 - **Short name:** `b7mt`
 - **Scope:** Namespaced
-- **Categories:** `cluster-api` (so `clusterctl move` walks it during workload-cluster migration)
+- **Categories:** `cluster-api` (`kubectl get cluster-api` lists templates)
+- **clusterctl:** the CRD carries `clusterctl.cluster.x-k8s.io`, so `clusterctl move` discovers templates; a template is moved through the owner reference to the `Cluster` that CAPI sets when a `KubeadmControlPlane` or `MachineSet` references it (see [Installation](installation.md#clusterctl-move)).
 
 ## Spec
 
