@@ -181,6 +181,13 @@ bootstrap:
   # callback.externalNames / callback.externalIPs. The inspector verifies the
   # callback cert against the CA delivered on its cmdline and has no
   # insecure-skip path, so a SAN mismatch is a hard failure.
+  #
+  # If the management cluster has no interface on the provisioning network at
+  # all, run a second copy of the manager binary on that network with
+  # --controllers=none (callback-only: no reconciler, no webhook, no leader
+  # election) and set urlBase to ITS address; start it with the same
+  # --bootstrap-url-base. The chart does not deploy that instance — see the
+  # chart README and docs/ipxe-setup.md.
   urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
 
 # Callback server (inspection POST + bootstrap GET + per-host /boot) exposure.

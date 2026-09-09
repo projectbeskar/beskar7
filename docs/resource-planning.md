@@ -188,6 +188,10 @@ args:
 # Optional: reconcile workers per controller. Default 1. Raise for larger fleets
 # or to stop one unreachable BMC's 30s timeout blocking healthy hosts.
 - --max-concurrent-reconciles=4
+# Optional: which reconcilers this instance runs. Default all. 'none' is a
+# callback-only instance for a second copy on the provisioning network — no
+# reconciler, no webhook, leader election off. See docs/ipxe-setup.md.
+- --controllers=all
 ```
 
 `--max-concurrent-reconciles` sets the worker count for **all three** controllers

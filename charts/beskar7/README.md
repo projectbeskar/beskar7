@@ -56,6 +56,14 @@ helm install my-release beskar7/beskar7 \
 
 Bare-metal hosts must be able to reach the `bootstrap.urlBase` during PXE boot. It is rendered into `PhysicalHost.Status.Bootstrap.URL` for each provisioned host.
 
+**Callback-only instance.** When the management cluster has no interface on the provisioning network, nothing the chart can expose is reachable from a PXE-booting host. The supported answer is a second copy of the manager binary on a machine that is on that network, started with `--controllers=none`: it serves the callback endpoints and registers no reconciler or webhook, so it does not compete with this release's controllers. The chart does not deploy that instance (it needs a kubeconfig for this cluster, which the in-cluster Deployment does not use), but three values of this release must line up with it:
+
+- `bootstrap.urlBase` — the callback-only instance's external address, e.g. `https://192.0.2.10:8082`. The in-cluster controller writes it into `PhysicalHost.Status.Bootstrap.URL`; start the callback-only instance with the same `--bootstrap-url-base`.
+- `callback.externalIPs` / `callback.externalNames` — include that address so the serving cert in `certManager.certificate.secretName` covers it; the callback-only instance can then use a copy of that Secret as its `--inspection-cert-dir`.
+- `watchNamespaces` — give the callback-only instance the same list (or, if empty here, cluster-wide read access).
+
+Give it a kubeconfig whose identity holds the manager's RBAC; a token for the chart's ServiceAccount is the simplest. `callback.service.type` can stay `ClusterIP`, since hosts never talk to the in-cluster instance in this topology. Walk-through: [docs/ipxe-setup.md](../../docs/ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance).
+
 ## Configuration
 
 All configurable values with their defaults:

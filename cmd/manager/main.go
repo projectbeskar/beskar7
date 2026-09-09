@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -48,9 +49,8 @@ import (
 )
 
 var (
-	scheme                  = runtime.NewScheme()
-	setupLog                = ctrl.Log.WithName("setup")
-	maxConcurrentReconciles int
+	scheme   = runtime.NewScheme()
+	setupLog = ctrl.Log.WithName("setup")
 )
 
 func init() {
@@ -84,7 +84,9 @@ func main() {
 	var watchNamespacesRaw string
 	var inspectionTimeout time.Duration
 	var deploymentTimeout time.Duration
+	var maxConcurrentReconciles int
 	var trustedProxies string
+	var controllersRaw string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -93,7 +95,8 @@ func main() {
 			"Used to compute per-machine bootstrap URLs.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
+			"Enabling this will ensure there is only one active controller manager. "+
+			"Always off with --controllers=none; passing --leader-elect=true there is rejected.")
 	flag.DurationVar(&leaderElectionLeaseDuration, "leader-elect-lease-duration", 15*time.Second,
 		"The duration that non-leader candidates will wait to force acquire leadership.")
 	flag.DurationVar(&leaderElectionRenewDeadline, "leader-elect-renew-deadline", 10*time.Second,
@@ -101,7 +104,7 @@ func main() {
 	flag.DurationVar(&leaderElectionRetryPeriod, "leader-elect-retry-period", 2*time.Second,
 		"The duration the clients should wait between attempting acquisition and renewal of a leadership.")
 	flag.BoolVar(&enableWebhook, "enable-webhook", false,
-		"Enable webhook server for admission control and defaulting.")
+		"Enable webhook server for admission control and defaulting. Rejected with --controllers=none.")
 	flag.IntVar(&webhookPort, "webhook-port", 9443,
 		"Webhook server port.")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
@@ -145,6 +148,16 @@ func main() {
 			"Service with the default externalTrafficPolicy: Cluster, or an L4 proxy "+
 			"without PROXY protocol — otherwise every booting host shares one bucket and a "+
 			"fleet powering on together starves on it.")
+	flag.StringVar(&controllersRaw, "controllers", string(controllersAll),
+		"Which reconcilers this instance runs. 'all' (the default) registers the "+
+			"Beskar7Machine, Beskar7Cluster and PhysicalHost controllers. 'none' is "+
+			"callback-only: the instance serves the host-callback HTTPS endpoints (/boot, "+
+			"/api/v1/inspection, /api/v1/bootstrap, /api/v1/provisioned, "+
+			"/api/v1/provision-failed) and the health probes but registers no reconciler "+
+			"or webhook. Use 'none' for a second instance placed on the provisioning "+
+			"network when PXE-booting hosts cannot reach the management cluster; a second "+
+			"full manager would fight the first over host claims and the bootstrap-url "+
+			"annotation. 'none' turns leader election off and rejects --enable-webhook=true.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -159,6 +172,60 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	controllersMode, err := parseControllersMode(controllersRaw)
+	if err != nil {
+		setupLog.Error(err, "invalid --controllers")
+		os.Exit(1)
+	}
+
+	// Parsed here rather than inside the /boot handler so a typo is a startup
+	// failure instead of a silently ignored setting that only shows up as
+	// unexplained 429s during a fleet boot.
+	parsedTrustedProxies, err := controllers.ParseTrustedProxies(trustedProxies)
+	if err != nil {
+		setupLog.Error(err, "invalid --trusted-proxies")
+		os.Exit(1)
+	}
+	if len(parsedTrustedProxies) > 0 {
+		setupLog.Info("Trusting X-Forwarded-For from configured proxies for /boot rate limiting",
+			"networks", len(parsedTrustedProxies))
+	}
+
+	if maxConcurrentReconciles < 1 {
+		setupLog.Info("--max-concurrent-reconciles below 1; using the default",
+			"requested", maxConcurrentReconciles, "effective", controllers.DefaultMaxConcurrentReconciles)
+		maxConcurrentReconciles = controllers.DefaultMaxConcurrentReconciles
+	}
+
+	cfg := managerConfig{
+		controllers:             controllersMode,
+		enableLeaderElection:    enableLeaderElection,
+		enableWebhook:           enableWebhook,
+		bootstrapURLBase:        bootstrapURLBase,
+		inspectionPort:          inspectionPort,
+		inspectionCertDir:       inspectionCertDir,
+		trustedProxies:          parsedTrustedProxies,
+		inspectionTimeout:       inspectionTimeout,
+		deploymentTimeout:       deploymentTimeout,
+		maxConcurrentReconciles: maxConcurrentReconciles,
+	}
+	// flag.Visit only sees flags that were actually given, which is how
+	// validate tells the --leader-elect default apart from an explicit request.
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "leader-elect" {
+			cfg.leaderElectSet = true
+		}
+	})
+	if err := cfg.validate(); err != nil {
+		setupLog.Error(err, "contradictory flags")
+		os.Exit(1)
+	}
+	if cfg.controllers == controllersNone {
+		setupLog.Info("Callback-only mode: serving the host-callback endpoints and health probes only; "+
+			"no reconciler or webhook will be registered and leader election is off",
+			"controllers", string(cfg.controllers))
+	}
 
 	// H-1: Warn if --bootstrap-url-base is a cluster-internal .svc address.
 	// Bare-metal hosts boot outside the cluster and cannot resolve cluster DNS;
@@ -200,7 +267,7 @@ func main() {
 		Metrics:                metricsOptions,
 		WebhookServer:          webhook.NewServer(webhookServerOptions),
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
+		LeaderElection:         cfg.leaderElection(),
 		LeaderElectionID:       "beskar7.infrastructure.cluster.x-k8s.io",
 		LeaseDuration:          &leaderElectionLeaseDuration,
 		RenewDeadline:          &leaderElectionRenewDeadline,
@@ -226,48 +293,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	if maxConcurrentReconciles < 1 {
-		setupLog.Info("--max-concurrent-reconciles below 1; using the default",
-			"requested", maxConcurrentReconciles, "effective", controllers.DefaultMaxConcurrentReconciles)
-		maxConcurrentReconciles = controllers.DefaultMaxConcurrentReconciles
-	}
-	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", maxConcurrentReconciles)
-
-	// Setup controllers
-	// RedfishClientFactory is intentionally omitted; SetupWithManager defaults it to
-	// internalredfish.NewClient and returns an error if it remains nil after defaulting.
-	if err = (&controllers.Beskar7MachineReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Log:               ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
-		BootstrapURLBase:  bootstrapURLBase,
-		InspectionTimeout: inspectionTimeout,
-		DeploymentTimeout: deploymentTimeout,
-
-		MaxConcurrentReconciles: maxConcurrentReconciles,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Machine")
+	if err := setupManager(mgr, cfg); err != nil {
+		setupLog.Error(err, "unable to set up manager")
 		os.Exit(1)
 	}
 
-	if err = (&controllers.Beskar7ClusterReconciler{
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		MaxConcurrentReconciles: maxConcurrentReconciles,
-	}).SetupWithManager(context.Background(), mgr, controller.Options{}); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Beskar7Cluster")
+	setupLog.Info("starting manager")
+	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
 
-	if err = (&controllers.PhysicalHostReconciler{
-		Client:                  mgr.GetClient(),
-		Scheme:                  mgr.GetScheme(),
-		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
-		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"), //nolint:staticcheck // legacy recorder: moving to events.EventRecorder changes every Eventf call site; follow-up to D-023
-		MaxConcurrentReconciles: maxConcurrentReconciles,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PhysicalHost")
-		os.Exit(1)
+// setupManager registers what the manager runs on top of its cache: the
+// reconcilers, the host-callback HTTPS server, the Beskar7Cluster webhook and
+// the health probes. cfg.controllers gates the reconcilers and, through
+// validate, the webhook:
+//
+//   - controllersAll: the normal manager — everything above.
+//   - controllersNone: callback-only. No reconciler and no webhook is
+//     registered; the callback server and the probes still are, on the same
+//     cached client the handlers always use (the bearer verifier reads
+//     PhysicalHost status through it; the /boot and bootstrap handlers read
+//     Beskar7Machine, PhysicalHost, the owning Machine and Secrets).
+//
+// It is split out of main so a test can wire a manager against envtest and
+// check what each mode registers. cfg is validated again here so the function
+// is safe to call with a hand-built config.
+func setupManager(mgr ctrl.Manager, cfg managerConfig) error {
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+
+	if cfg.controllers == controllersAll {
+		if err := setupControllers(mgr, cfg); err != nil {
+			return err
+		}
 	}
 
 	// Setup the host-callback HTTPS server. Hosts the inspection POST, bootstrap
@@ -278,46 +339,65 @@ func main() {
 	// Certificate via cert-manager).
 	// bootstrapURLBase is passed so the /boot handler can render beskar7.api=
 	// into the iPXE cmdline (§5). It must be externally reachable from bare metal.
-	// Parsed here rather than inside the handler so a typo is a startup failure
-	// instead of a silently ignored setting that only shows up as unexplained
-	// 429s during a fleet boot.
-	parsedTrustedProxies, err := controllers.ParseTrustedProxies(trustedProxies)
-	if err != nil {
-		setupLog.Error(err, "invalid --trusted-proxies")
-		os.Exit(1)
-	}
-	if len(parsedTrustedProxies) > 0 {
-		setupLog.Info("Trusting X-Forwarded-For from configured proxies for /boot rate limiting",
-			"networks", len(parsedTrustedProxies))
+	if err := controllers.SetupCallbackServer(mgr, cfg.inspectionPort, cfg.inspectionCertDir, cfg.bootstrapURLBase, cfg.trustedProxies); err != nil {
+		return fmt.Errorf("unable to setup callback server: %w", err)
 	}
 
-	if err := controllers.SetupCallbackServer(mgr, inspectionPort, inspectionCertDir, bootstrapURLBase, parsedTrustedProxies); err != nil {
-		setupLog.Error(err, "unable to setup callback server")
-		os.Exit(1)
-	}
-
-	// Setup webhooks if enabled
-	if enableWebhook {
+	// Setup webhooks if enabled. validate has already refused this in
+	// callback-only mode.
+	if cfg.enableWebhook {
 		setupLog.Info("Setting up webhooks")
-		if err = (&webhooks.Beskar7ClusterWebhook{}).SetupWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to setup webhook", "webhook", "Beskar7Cluster")
-			os.Exit(1)
+		if err := (&webhooks.Beskar7ClusterWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to setup webhook %s: %w", "Beskar7Cluster", err)
 		}
 	}
 	//+kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up health check: %w", err)
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up ready check: %w", err)
+	}
+	return nil
+}
+
+// setupControllers registers the three reconcilers. RedfishClientFactory is
+// intentionally omitted; SetupWithManager defaults it to
+// internalredfish.NewClient and returns an error if it remains nil after
+// defaulting.
+func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
+	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", cfg.maxConcurrentReconciles)
+
+	if err := (&controllers.Beskar7MachineReconciler{
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Log:               ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
+		BootstrapURLBase:  cfg.bootstrapURLBase,
+		InspectionTimeout: cfg.inspectionTimeout,
+		DeploymentTimeout: cfg.deploymentTimeout,
+
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
 	}
 
-	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "problem running manager")
-		os.Exit(1)
+	if err := (&controllers.Beskar7ClusterReconciler{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(context.Background(), mgr, controller.Options{}); err != nil {
+		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Cluster", err)
 	}
+
+	if err := (&controllers.PhysicalHostReconciler{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
+		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"), //nolint:staticcheck // legacy recorder: moving to events.EventRecorder changes every Eventf call site; follow-up to D-023
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller %s: %w", "PhysicalHost", err)
+	}
+	return nil
 }

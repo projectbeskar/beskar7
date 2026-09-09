@@ -33,6 +33,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -469,19 +470,37 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		return fmt.Errorf("read callback CA for /boot handler: %w", err)
 	}
 
-	// Pre-warm the ConfigMap informer. The inspection handler writes a
-	// transient per-host inspection-result ConfigMap on every POST (D-005);
+	// Pre-warm the informers the handlers read through the cached client.
+	//
+	// The ConfigMap one matters in every mode: the inspection handler writes
+	// a transient per-host inspection-result ConfigMap on every POST (D-005);
 	// without pre-warming, the first POST after manager startup blocks for
 	// up to the cache's sync timeout waiting for the lazily-created
 	// informer to populate, which under a kind-fresh cluster regularly
 	// exceeds the kube-apiserver's request budget and surfaces as
 	// "Timeout: failed waiting for *v1.ConfigMap Informer to sync" — the
 	// inspector POST then 5xx's and the smoke-test inspector simulator
-	// cannot drive the host to Ready. Calling GetInformer here registers
-	// the informer with the cache; mgr.Start() will boot it alongside the
-	// other watches before the first reconcile fires.
-	if _, err := mgr.GetCache().GetInformer(context.Background(), &corev1.ConfigMap{}); err != nil {
-		return fmt.Errorf("pre-warm ConfigMap informer for inspection handler: %w", err)
+	// cannot drive the host to Ready.
+	//
+	// The others matter in callback-only mode (--controllers=none). In the
+	// full manager the reconcilers' watches create the PhysicalHost,
+	// Beskar7Machine and Secret informers at start and the first reconcile
+	// creates the Machine one; with no reconciler registered nothing does,
+	// and every first callback of a kind would pay the same lazy-sync cost.
+	// Calling GetInformer here registers the informers with the cache;
+	// mgr.Start() boots them alongside the other watches. The cache keys
+	// informers by type, so in the full manager these are the ones the
+	// controllers use anyway and nothing extra is created.
+	for _, obj := range []client.Object{
+		&corev1.ConfigMap{},
+		&corev1.Secret{},
+		&infrastructurev1beta1.PhysicalHost{},
+		&infrastructurev1beta1.Beskar7Machine{},
+		&clusterv1.Machine{},
+	} {
+		if _, err := mgr.GetCache().GetInformer(context.Background(), obj); err != nil {
+			return fmt.Errorf("pre-warm %T informer for the callback handlers: %w", obj, err)
+		}
 	}
 
 	inspectionLog := ctrl.Log.WithName("inspection-handler")
