@@ -33,8 +33,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
-	conditions "sigs.k8s.io/cluster-api/util/conditions"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -166,7 +166,7 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// Add finalizer if not present; the deferred patch persists it.
 	if controllerutil.AddFinalizer(physicalHost, PhysicalHostFinalizer) {
 		logger.Info("Adding finalizer")
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: requeueShortly}, nil
 	}
 
 	// Reconcile normal operation

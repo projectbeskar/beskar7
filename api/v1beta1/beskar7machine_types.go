@@ -2,7 +2,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 const (
@@ -348,3 +348,10 @@ func (in *Beskar7MachineStatus) DeepCopyInto(out *Beskar7MachineStatus) {
 func init() {
 	SchemeBuilder.Register(&Beskar7Machine{}, &Beskar7MachineList{})
 }
+
+// GetV1Beta1Conditions is the accessor the CAPI v1beta2 deprecated-conditions
+// helpers require; the v1beta1-shaped conditions stay in Status.Conditions.
+func (in *Beskar7Machine) GetV1Beta1Conditions() clusterv1.Conditions { return in.Status.Conditions }
+
+// SetV1Beta1Conditions is the matching setter.
+func (in *Beskar7Machine) SetV1Beta1Conditions(c clusterv1.Conditions) { in.Status.Conditions = c }

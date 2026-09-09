@@ -48,16 +48,17 @@ spec:
           spec:
             properties:
               controlPlaneEndpoint:
+                minProperties: 1
                 properties:
                   host:
                     maxLength: 512
+                    minLength: 1
                     type: string
                   port:
                     format: int32
+                    maximum: 65535
+                    minimum: 1
                     type: integer
-                required:
-                - host
-                - port
                 type: object
             type: object
           status:
@@ -92,19 +93,20 @@ spec:
                   type: object
                 type: array
               controlPlaneEndpoint:
+                minProperties: 1
                 properties:
                   host:
                     maxLength: 512
+                    minLength: 1
                     type: string
                   port:
                     format: int32
+                    maximum: 65535
+                    minimum: 1
                     type: integer
-                required:
-                - host
-                - port
                 type: object
               failureDomains:
-                additionalProperties:
+                items:
                   properties:
                     attributes:
                       additionalProperties:
@@ -112,8 +114,14 @@ spec:
                       type: object
                     controlPlane:
                       type: boolean
+                    name:
+                      maxLength: 256
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
                   type: object
-                type: object
+                type: array
               initialization:
                 properties:
                   provisioned:

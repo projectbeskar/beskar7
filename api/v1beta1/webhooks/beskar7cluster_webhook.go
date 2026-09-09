@@ -5,12 +5,10 @@ import (
 	"net"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	infrav1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
@@ -21,8 +19,7 @@ type Beskar7ClusterWebhook struct{}
 
 // SetupWebhookWithManager sets up the webhook with the manager.
 func (webhook *Beskar7ClusterWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(&infrav1beta1.Beskar7Cluster{}).
+	return ctrl.NewWebhookManagedBy(mgr, &infrav1beta1.Beskar7Cluster{}).
 		WithValidator(webhook).
 		WithDefaulter(webhook).
 		Complete()
@@ -31,12 +28,12 @@ func (webhook *Beskar7ClusterWebhook) SetupWebhookWithManager(mgr ctrl.Manager) 
 // +kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=validation.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
 // +kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta1,name=defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1
 
-var _ webhook.CustomValidator = &Beskar7ClusterWebhook{}
-var _ webhook.CustomDefaulter = &Beskar7ClusterWebhook{}
+var _ admission.Validator[*infrav1beta1.Beskar7Cluster] = &Beskar7ClusterWebhook{}
+var _ admission.Defaulter[*infrav1beta1.Beskar7Cluster] = &Beskar7ClusterWebhook{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type.
-func (webhook *Beskar7ClusterWebhook) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	cluster := obj.(*infrav1beta1.Beskar7Cluster)
+func (webhook *Beskar7ClusterWebhook) ValidateCreate(ctx context.Context, obj *infrav1beta1.Beskar7Cluster) (admission.Warnings, error) {
+	cluster := obj
 	warnings, err := webhook.validateBeskar7Cluster(cluster)
 	if err != nil {
 		return warnings, err
@@ -46,8 +43,8 @@ func (webhook *Beskar7ClusterWebhook) ValidateCreate(ctx context.Context, obj ru
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type.
-func (webhook *Beskar7ClusterWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	newCluster := newObj.(*infrav1beta1.Beskar7Cluster)
+func (webhook *Beskar7ClusterWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *infrav1beta1.Beskar7Cluster) (admission.Warnings, error) {
+	newCluster := newObj
 
 	warnings, err := webhook.validateBeskar7Cluster(newCluster)
 	if err != nil {
@@ -58,14 +55,14 @@ func (webhook *Beskar7ClusterWebhook) ValidateUpdate(ctx context.Context, oldObj
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type.
-func (webhook *Beskar7ClusterWebhook) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+func (webhook *Beskar7ClusterWebhook) ValidateDelete(ctx context.Context, obj *infrav1beta1.Beskar7Cluster) (admission.Warnings, error) {
 	// No specific validations needed for deletion
 	return nil, nil
 }
 
 // Default implements webhook.CustomDefaulter so a webhook will be registered for the type.
-func (webhook *Beskar7ClusterWebhook) Default(ctx context.Context, obj runtime.Object) error {
-	cluster := obj.(*infrav1beta1.Beskar7Cluster)
+func (webhook *Beskar7ClusterWebhook) Default(ctx context.Context, obj *infrav1beta1.Beskar7Cluster) error {
+	cluster := obj
 	return webhook.defaultBeskar7Cluster(cluster)
 }
 
