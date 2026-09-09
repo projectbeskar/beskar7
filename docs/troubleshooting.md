@@ -652,6 +652,29 @@ directory under `/var/log/journal/` that is not the current one — has no k0s o
 `sudo journalctl -D /var/log/journal/<other-id> -o cat | grep -c 'k0s\['` is `0`. Before the gate,
 that journal is where the premature join showed up.
 
+### 14. Reconcile errors storm with `the object has been modified`: two full managers share a namespace
+
+**Symptom:** the manager logs hundreds of lines a minute like
+`Operation cannot be fulfilled on physicalhosts.infrastructure.cluster.x-k8s.io "<host>": the object has been modified; please apply your changes to the latest version and try again`,
+the `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation on a PhysicalHost appears, disappears
+and reappears with a different value, or a host is claimed by a Beskar7Machine, released and claimed
+again by another.
+
+**Cause:** two manager instances are running every controller against the same namespaces. The usual
+way to get there is a second copy started on the boot server so that PXE-booting hosts can reach the
+callback endpoints ([iPXE setup → callback-only instance](ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance)),
+but started as a full manager. Two Beskar7Machine controllers then race for hosts, and if their
+`--bootstrap-url-base` values differ each rewrites `PhysicalHost.Status.Bootstrap.URL` to its own
+value through the annotation, forever. Leader election does not protect against this: the
+out-of-cluster copy runs with `--leader-elect=false` because it has no in-cluster namespace to hold
+the lease in.
+
+**Solution:** restart the second copy with `--controllers=none`. It keeps serving `/boot`,
+`/api/v1/inspection`, `/api/v1/bootstrap` and `/api/v1/provisioned` and registers no reconciler, so
+the conflicts stop as soon as it comes back. Give both instances the same `--bootstrap-url-base`: the
+in-cluster controller writes that value into `PhysicalHost.Status.Bootstrap.URL` and the callback-only
+instance renders it into the iPXE cmdline.
+
 ## Getting Help
 
 If you can't resolve your issue:

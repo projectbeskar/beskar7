@@ -175,6 +175,56 @@ Common exposure options:
   controller speaks TLS natively; SNI passthrough is simpler than termination +
   re-encryption.
 
+#### Management cluster off the provisioning network: a callback-only instance
+
+Sometimes none of those options exist: the management cluster has no interface
+on the provisioning network, so nothing it can expose — Service, NodePort or
+Ingress — is reachable while a host PXE-boots. The answer is a second copy of
+the manager on a machine that *is* on that network (the boot server is the
+natural place), started with `--controllers=none`. It serves the callback
+endpoints and the health probes and registers **no reconciler and no webhook**;
+the in-cluster manager keeps doing all the reconciling.
+
+```bash
+beskar7 \
+  --controllers=none \
+  --kubeconfig=/etc/beskar7/kubeconfig \
+  --watch-namespaces=b7e2e \
+  --bootstrap-url-base=https://192.0.2.10:8082 \
+  --inspection-cert-dir=/etc/beskar7/serving-certs \
+  --metrics-bind-address=0
+```
+
+What the instance needs:
+
+- **A kubeconfig whose identity holds the manager's RBAC.** The handlers read
+  PhysicalHosts, Beskar7Machines, Machines and Secrets and write the
+  inspection-result ConfigMap and the PhysicalHost annotations, through the same
+  cached client the full manager uses. A token for the chart's ServiceAccount is
+  the simplest identity. `--kubeconfig` (or `KUBECONFIG`) points at it.
+- **`tls.crt`, `tls.key` and `ca.crt` in `--inspection-cert-dir`** with a SAN
+  covering the address in `--bootstrap-url-base`. Hosts only ever talk to this
+  instance, so only this certificate matters to the inspector. If you add the
+  address to `callback.externalIPs` / `callback.externalNames` in the chart, the
+  serving-cert Secret it issues covers it and can be copied out as-is.
+- **The same `--bootstrap-url-base` on both instances.** The in-cluster
+  controller writes it into `PhysicalHost.Status.Bootstrap.URL` and the
+  callback-only instance renders it into `beskar7.api=` on the `/boot` response;
+  set `bootstrap.urlBase` in the chart to the callback-only instance's address.
+- **The same `--watch-namespaces`**, or none with cluster-wide read access, so
+  its cache covers every namespace hosts live in.
+
+Leader election is off in this mode without being asked (there is nothing to
+lead, and a callback-only instance holding the lease would idle the real
+controller); passing `--leader-elect=true` or `--enable-webhook=true` alongside
+`--controllers=none` is rejected at startup.
+
+Do **not** run the second copy with every controller. Two full managers race for
+host claims, and when their `--bootstrap-url-base` values differ each keeps
+rewriting the `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation to its
+own value — the symptom is a storm of `the object has been modified` reconcile
+errors ([Troubleshooting §14](troubleshooting.md#14-reconcile-errors-storm-with-the-object-has-been-modified-two-full-managers-share-a-namespace)).
+
 #### Preserve the client address, or the rate limiter will bite
 
 `/boot` is rate-limited per source address (1 r/s, burst 5). Every option above

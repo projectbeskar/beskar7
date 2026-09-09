@@ -18,6 +18,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,113 @@ func TestParseWatchNamespaces(t *testing.T) {
 			got := parseWatchNamespaces(tc.in)
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("parseWatchNamespaces(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseControllersMode(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    controllersMode
+		wantErr bool
+	}{
+		{name: "all", in: "all", want: controllersAll},
+		{name: "none", in: "none", want: controllersNone},
+		{name: "case and whitespace are ignored", in: "  NONE ", want: controllersNone},
+		{name: "empty is rejected", in: "", wantErr: true},
+		{name: "typo is rejected", in: "nonee", wantErr: true},
+		{name: "a controller list is not supported", in: "physicalhost,beskar7machine", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseControllersMode(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("parseControllersMode(%q) = %q, want an error", tc.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseControllersMode(%q): unexpected error: %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Errorf("parseControllersMode(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManagerConfigValidate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     managerConfig
+		wantErr string // substring of the expected error; empty means valid
+	}{
+		{
+			name: "all mode accepts the defaults",
+			cfg:  managerConfig{controllers: controllersAll, enableLeaderElection: true},
+		},
+		{
+			name: "all mode accepts the webhook",
+			cfg:  managerConfig{controllers: controllersAll, enableLeaderElection: true, enableWebhook: true},
+		},
+		{
+			name: "callback-only with the leader-elect default is fine",
+			cfg:  managerConfig{controllers: controllersNone, enableLeaderElection: true},
+		},
+		{
+			name: "callback-only with an explicit --leader-elect=false is fine",
+			cfg:  managerConfig{controllers: controllersNone, enableLeaderElection: false, leaderElectSet: true},
+		},
+		{
+			name:    "callback-only rejects an explicit --leader-elect=true",
+			cfg:     managerConfig{controllers: controllersNone, enableLeaderElection: true, leaderElectSet: true},
+			wantErr: "--leader-elect=true contradicts --controllers=none",
+		},
+		{
+			name:    "callback-only rejects the webhook",
+			cfg:     managerConfig{controllers: controllersNone, enableWebhook: true},
+			wantErr: "--enable-webhook=true contradicts --controllers=none",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("validate() = nil, want an error containing %q", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("validate() = %q, want it to contain %q", err.Error(), tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestManagerConfigLeaderElection(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  managerConfig
+		want bool
+	}{
+		{name: "all mode keeps the flag on", cfg: managerConfig{controllers: controllersAll, enableLeaderElection: true}, want: true},
+		{name: "all mode keeps the flag off", cfg: managerConfig{controllers: controllersAll, enableLeaderElection: false}, want: false},
+		{name: "callback-only forces it off even at the default", cfg: managerConfig{controllers: controllersNone, enableLeaderElection: true}, want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.leaderElection(); got != tc.want {
+				t.Errorf("leaderElection() = %v, want %v", got, tc.want)
 			}
 		})
 	}

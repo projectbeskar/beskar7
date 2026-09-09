@@ -78,6 +78,23 @@ step (CRD label) and the CRD re-apply.
   cannot be parsed is terminal (`InvalidHostSelector`); no matching host is
   `PhysicalHostAssociated=False/NoMatchingPhysicalHost` and a requeue. CRD
   schema change (additive); chart CRDs regenerated. `examples/host-pools.yaml`.
+- **`--controllers=none`: a callback-only manager.** Bare-metal hosts must reach
+  the callback endpoints (`/boot`, `/api/v1/inspection`, `/api/v1/bootstrap`,
+  `/api/v1/provisioned`) from the provisioning network during PXE boot, which is
+  often not a network the management cluster is on. A second copy of the manager
+  placed on that network used to run every controller as well, and two full
+  managers fight: they race for host claims, and when their `--bootstrap-url-base`
+  values differ they rewrite the `bootstrap-url` annotation against each other,
+  hundreds of `the object has been modified` reconcile errors a minute. With
+  `--controllers=none` an instance serves the callback endpoints and the health
+  probes on the usual cached client and registers no reconciler or webhook.
+  Leader election is off in that mode; `--leader-elect=true` and
+  `--enable-webhook=true` alongside it are rejected at startup. The callback
+  server now pre-warms the PhysicalHost, Beskar7Machine, Machine and Secret
+  informers its handlers read, so the first callback of each kind no longer
+  waits on a lazy cache sync (a no-op in the full manager, where the controllers
+  create the same informers). Documented in `docs/ipxe-setup.md` and the chart
+  README; troubleshooting §14 covers the two-manager symptom.
 
 ### Fixed
 
