@@ -23,7 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -2254,5 +2256,99 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(Equal(time.Minute))
 		Expect(conditions.Get(b7m2, infrastructurev1beta1.PhysicalHostAssociatedCondition).Reason).To(Equal(infrastructurev1beta1.WaitingForPhysicalHostReason))
+	})
+})
+
+var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Available", func() {
+	// A machine that reconciles moments before its host finishes enrolling
+	// parks on the one-minute no-host requeue. The host's own transition to
+	// Available is the only event that can end that wait early, so the
+	// predicate must pass exactly that transition and the map must pick
+	// exactly the machines that are still looking for a host.
+
+	hostIn := func(state string) *infrastructurev1beta1.PhysicalHost {
+		return &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "wake-host", Namespace: "default"},
+			Status:     infrastructurev1beta1.PhysicalHostStatus{State: state},
+		}
+	}
+	claimedIn := func(state string) *infrastructurev1beta1.PhysicalHost {
+		h := hostIn(state)
+		h.Spec.ConsumerRef = &corev1.ObjectReference{Kind: "Beskar7Machine", Name: "someone", Namespace: "default"}
+		return h
+	}
+	machine := func(ns, name string, mutate func(*infrastructurev1beta1.Beskar7Machine)) *infrastructurev1beta1.Beskar7Machine {
+		m := &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Finalizers: []string{Beskar7MachineFinalizer}},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot/inspect.ipxe",
+				TargetImageURL:     "http://boot/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+		if mutate != nil {
+			mutate(m)
+		}
+		return m
+	}
+
+	It("admits only the events on which an unclaimed host enters Available", func() {
+		p := hostBecameAvailable()
+
+		Expect(p.Create(event.CreateEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "created already free")
+		Expect(p.Create(event.CreateEvent{Object: hostIn(infrastructurev1beta1.StateEnrolling)})).To(BeFalse(), "created enrolling")
+		Expect(p.Create(event.CreateEvent{Object: claimedIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "created with a consumer")
+
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(""), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "enrolment finished")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: claimedIn(infrastructurev1beta1.StateInUse), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "released")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrastructurev1beta1.StateAvailable), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "status churn on a free host")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrastructurev1beta1.StateAvailable), ObjectNew: claimedIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "claimed")
+
+		Expect(p.Delete(event.DeleteEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse())
+		Expect(p.Generic(event.GenericEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse())
+	})
+
+	It("enqueues the machines still waiting for a host in the host's namespace and nothing else", func() {
+		never := machine("default", "never-reconciled", nil)
+		waiting := machine("default", "waiting", func(m *infrastructurev1beta1.Beskar7Machine) {
+			conditions.MarkFalse(m, infrastructurev1beta1.PhysicalHostAssociatedCondition,
+				infrastructurev1beta1.WaitingForPhysicalHostReason, clusterv1.ConditionSeverityInfo, "No available PhysicalHost found")
+		})
+		placed := machine("default", "no-match", func(m *infrastructurev1beta1.Beskar7Machine) {
+			conditions.MarkFalse(m, infrastructurev1beta1.PhysicalHostAssociatedCondition,
+				infrastructurev1beta1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo, "no host in rack-1")
+		})
+		associated := machine("default", "associated", func(m *infrastructurev1beta1.Beskar7Machine) {
+			conditions.MarkTrue(m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		})
+		failed := machine("default", "failed", func(m *infrastructurev1beta1.Beskar7Machine) {
+			reason := infrastructurev1beta1.InvalidHostSelectorReason
+			m.Status.FailureReason = &reason
+		})
+		now := metav1.Now()
+		deleting := machine("default", "deleting", func(m *infrastructurev1beta1.Beskar7Machine) {
+			m.DeletionTimestamp = &now
+		})
+		elsewhere := machine("other-ns", "waiting-elsewhere", nil)
+
+		c := fake.NewClientBuilder().WithScheme(scheme.Scheme).
+			WithObjects(never, waiting, placed, associated, failed, deleting, elsewhere).Build()
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("wake-test")}
+
+		names := func(reqs []reconcile.Request) []string {
+			out := make([]string, 0, len(reqs))
+			for _, req := range reqs {
+				Expect(req.Namespace).To(Equal("default"))
+				out = append(out, req.Name)
+			}
+			return out
+		}
+
+		Expect(names(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrastructurev1beta1.StateAvailable)))).
+			To(ConsistOf("never-reconciled", "waiting", "no-match"))
+
+		By("mapping nothing for a host that is not claimable")
+		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrastructurev1beta1.StateAvailable))).To(BeEmpty())
+		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrastructurev1beta1.StateInUse))).To(BeEmpty())
 	})
 })
