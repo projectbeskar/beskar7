@@ -522,7 +522,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// Same verifier flavour for the bearer-gated endpoints: the bearer token
 	// authorises requests for a specific PhysicalHost, regardless of which
 	// host-scoped endpoint is being called. We construct one verifier per route
-	// so the V(1) log handle reflects the route.
+	// so the log handle reflects the route.
 	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
 	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
 	provisionedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionedLog)
@@ -587,10 +587,15 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 //  4. Reject if ExpiresAt is set and in the past.
 //  5. Reject unless auth.Verify(presented, storedHash) returns true.
 //
-// Returned errors are descriptive for V(1) logging only — never echoed to the
-// client.
+// Returned errors are descriptive for logging only — never echoed to the
+// client. Every rejection is logged here at Info with the host coordinates and
+// the remote address (never the token): a rejected bearer is the only
+// server-side trace of a host booting with a credential that cannot
+// authenticate — a Secret/Status split, a stale cmdline, an expired token —
+// and at default verbosity the machine would otherwise just time out in
+// Inspecting with nothing in the manager log to say why.
 func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
-	return func(token string, r *http.Request) error {
+	verify := func(token string, r *http.Request) error {
 		namespace := r.PathValue("namespace")
 		hostName := r.PathValue("hostName")
 		if namespace == "" || hostName == "" {
@@ -599,7 +604,7 @@ func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 		ph := &infrastructurev1beta1.PhysicalHost{}
 		if err := c.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
 			// Both NotFound and Forbidden produce the same 401 to the client; the
-			// distinction lives in V(1) logs.
+			// distinction lives in the logs.
 			return fmt.Errorf("get PhysicalHost: %w", err)
 		}
 		if ph.Status.Bootstrap == nil || ph.Status.Bootstrap.TokenHash == "" {
@@ -611,8 +616,21 @@ func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 		if !auth.Verify(token, ph.Status.Bootstrap.TokenHash) {
 			return fmt.Errorf("bootstrap token mismatch for host %s/%s", namespace, hostName)
 		}
-		_ = log // log handle reserved for future per-verification debug; do not log token material.
 		return nil
+	}
+	return func(token string, r *http.Request) error {
+		err := verify(token, r)
+		if err != nil {
+			// Host and remote only. The reason strings above carry no token
+			// material by construction; the presented token and the
+			// Authorization header are never logged.
+			log.Info("auth: rejected bearer token",
+				"namespace", r.PathValue("namespace"),
+				"host", r.PathValue("hostName"),
+				"remote", r.RemoteAddr,
+				"reason", err.Error())
+		}
+		return err
 	}
 }
 

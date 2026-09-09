@@ -81,6 +81,23 @@ step (CRD label) and the CRD re-apply.
 
 ### Fixed
 
+- **A bootstrap token or boot nonce is reused only while the per-host Secret still
+  holds its plaintext.** `triggerInspection` reused a credential whenever
+  `PhysicalHost.status.bootstrap` carried an unexpired hash, without looking at
+  the `<host>-bootstrap-token` Secret the host actually boots with. When the two
+  disagreed — seen on a lab where two active managers minted for the same host
+  within a second and their writes interleaved — every inspector callback was
+  rejected with `401`, the machine timed out in `Inspecting`, and because a
+  re-claim inherits the host's status the mismatch survived every replacement
+  Machine until the `PhysicalHost` was recreated. The reuse check now reads the
+  Secret and verifies `sha256(plaintext)` against the advertised hash (a pending
+  `bootstrap-token` / `boot-nonce` annotation first, then status); a missing
+  Secret, a missing key or a mismatch mints a fresh credential and logs why at
+  Info with the host name, never the token. A consistent pair is still reused,
+  so in-flight kernel cmdlines stay valid. Rejected bearer tokens on the `:8082`
+  callback routes are now logged at Info with host and remote address (never
+  the token), so a `401` is visible at default verbosity instead of only at
+  V(1). No CRD or contract change.
 - **The host claim now honours `Machine.spec.failureDomain` (CAPI conformance).**
   `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone`
   label on PhysicalHosts and CAPI places Machines into them, but the

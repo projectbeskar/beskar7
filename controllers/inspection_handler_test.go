@@ -36,6 +36,12 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
+// infoOnlySink is a logCaptureSink that drops everything above V(0), so a spec
+// can prove a line is emitted at Info rather than only at V(1).
+type infoOnlySink struct{ logCaptureSink }
+
+func (s *infoOnlySink) Enabled(level int) bool { return level == 0 }
+
 // buildInspectionMux wires the inspection handler exactly as SetupCallbackServer
 // does, but bound to an httptest.Server we can drive directly. We avoid calling
 // SetupCallbackServer here because it requires a real cert dir; the handler
@@ -179,6 +185,50 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		defer func() { _ = resp.Body.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+	})
+
+	// A rejected bearer is the only server-side trace of a host booting with a
+	// credential that cannot authenticate (a Secret/status split, a stale
+	// cmdline, an expired token); at default verbosity the machine otherwise
+	// just times out in Inspecting. So the line must be at Info — not V(1) —
+	// and must carry the host and the remote address but never the token.
+	It("logs a rejected bearer at Info with host and remote, never the token", func() {
+		_, hash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(hash, 30*time.Minute)
+
+		sink := &infoOnlySink{}
+		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
+		req := httptest.NewRequest(http.MethodPost,
+			fmt.Sprintf("/api/v1/inspection/%s/%s", physicalHost.Namespace, physicalHost.Name), nil)
+		req.SetPathValue("namespace", physicalHost.Namespace)
+		req.SetPathValue("hostName", physicalHost.Name)
+		req.RemoteAddr = "10.0.0.7:41234"
+		const presented = "not-the-token-but-still-secret-material"
+
+		Expect(verifier(presented, req)).To(HaveOccurred())
+
+		joined := strings.Join(sink.entries, "\n")
+		Expect(joined).To(ContainSubstring("rejected bearer token"))
+		Expect(joined).To(ContainSubstring(physicalHost.Name))
+		Expect(joined).To(ContainSubstring("10.0.0.7:41234"))
+		Expect(joined).NotTo(ContainSubstring(presented), "the presented token must never be logged")
+	})
+
+	It("logs nothing at Info for an accepted bearer", func() {
+		plaintext, hash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(hash, 30*time.Minute)
+
+		sink := &infoOnlySink{}
+		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
+		req := httptest.NewRequest(http.MethodPost,
+			fmt.Sprintf("/api/v1/inspection/%s/%s", physicalHost.Namespace, physicalHost.Name), nil)
+		req.SetPathValue("namespace", physicalHost.Namespace)
+		req.SetPathValue("hostName", physicalHost.Name)
+
+		Expect(verifier(plaintext, req)).To(Succeed())
+		Expect(sink.entries).To(BeEmpty())
 	})
 
 	It("accepts a valid token, creates a result ConfigMap, and sets the inspection-result annotation (202)", func() {

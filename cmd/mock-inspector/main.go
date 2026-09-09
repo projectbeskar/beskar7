@@ -312,8 +312,10 @@ func buildRestConfig(kubeconfig string) (*rest.Config, error) {
 // The 6-attempt hash cross-check loop (2 s apart) papers over the window where
 // the Secret plaintext can lead Status.Bootstrap.TokenHash by a few seconds
 // (BootstrapToken annotation in flight from Beskar7Machine to PhysicalHost
-// reconciler). The controller-side fix (bootstrapTokenStillValid) closes the
-// main race; this loop makes the runner robust against the first observation.
+// reconciler). The controller-side fix (unexpiredBootstrapTokenHash honouring
+// the pending annotation, and bootstrapTokenReusable checking the Secret
+// against it) closes the main race; this loop makes the runner robust against
+// the first observation.
 func waitAndVerifyToken(
 	ctx context.Context,
 	dynClient dynamic.Interface,

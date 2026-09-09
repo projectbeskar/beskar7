@@ -555,7 +555,7 @@ func (h *BootHandler) renderBootScript(
 	if err := h.Client.Get(ctx, secretKey, secret); err != nil {
 		return "", fmt.Errorf("get bootstrap-token Secret %s: %w", secretKey.Name, err)
 	}
-	tokenBytes, ok := secret.Data["plaintext-token"]
+	tokenBytes, ok := secret.Data[bootstrapTokenSecretKey]
 	if !ok || len(tokenBytes) == 0 {
 		return "", fmt.Errorf("bootstrap-token Secret %s has no plaintext-token key", secretKey.Name)
 	}
