@@ -6,6 +6,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.4.4] - 2026-09-09
+
+Patch release on the GA line: the CAPI contract-label fix below, plus everything merged
+since `v0.4.3` — `hostSelector` (#158), the claim honouring `Machine.spec.failureDomain`
+(#157), and the k0s image-side start gate and image-build guide (#156). The only schema
+change is the additive `hostSelector` field; see `docs/upgrading.md` for the one manual
+step (CRD label) and the CRD re-apply.
+
 ### Fixed
 
 - **CAPI ≥ v1.11 could not read `Beskar7Cluster.status.failureDomains`, and a
@@ -1064,7 +1072,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...HEAD
+[v0.4.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...v0.4.3
 [v0.4.2]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...v0.4.2
 [v0.4.1]: https://github.com/projectbeskar/beskar7/compare/v0.4.0...v0.4.1

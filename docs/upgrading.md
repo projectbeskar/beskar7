@@ -87,7 +87,13 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## Unreleased — CAPI contract label
+## `v0.4.3` → `v0.4.4` — contract label fix, `hostSelector`, failure-domain placement
+
+Apply the new CRDs first (they add the additive `spec.hostSelector` to `Beskar7Machine` and
+`Beskar7MachineTemplate`), then the controller. No bootstrap-template or inspector change (contract
+stays `v4.2`).
+
+### The CRD contract label
 
 The CRDs no longer claim the `cluster.x-k8s.io/v1beta2` contract (see the CHANGELOG entry: on CAPI
 v1.11+ that claim made CAPI read `status.failureDomains` as a list and fail). Apply the new CRDs as
