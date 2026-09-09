@@ -24,10 +24,41 @@ spec:
     minCPUCores: 4
     minMemoryGB: 8
     minDiskGB:   50
+  hostSelector:                                                         # optional; see "Steering the claim"
+    matchLabels:
+      node-role: control-plane
   # providerID is set by the controller on claim — do not set manually
 ```
 
 `inspectionImageURL` and `targetImageURL` must match `^https?://[^\s]+$`; `targetImageDigest` is required and must match `^sha256:[a-f0-9]{64}$` — the inspector refuses to mount, inject user-data, or reboot on a digest mismatch (`docs/inspector-contract.md` §8.1). There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, `configURL` (removed v0.3 fields), or `configurationURL` (a dead, never-wired v0.4 field removed before GA).
+
+## Steering the claim: `hostSelector` and failure domains
+
+By default a Beskar7Machine claims the first `Available` PhysicalHost in its namespace, in list order. Two things narrow that, and they are ANDed:
+
+- **`spec.hostSelector`** — a standard label selector over the hosts' `metadata.labels`. Label the inventory by role, rack or hardware class and give each template a selector. A control plane and a worker `MachineDeployment` provisioning at the same time then draw from disjoint pools instead of racing for the same boxes:
+
+  ```yaml
+  # on the PhysicalHosts
+  metadata:
+    labels:
+      node-role: control-plane          # or: worker
+  ---
+  # in the Beskar7MachineTemplate the control plane uses
+  spec:
+    template:
+      spec:
+        hostSelector:
+          matchLabels:
+            node-role: control-plane
+  ```
+
+  `matchExpressions` work too (`In`, `NotIn`, `Exists`, `DoesNotExist`). An absent or empty selector means any host, so existing deployments are unaffected. See [`examples/host-pools.yaml`](../examples/host-pools.yaml).
+- **`Machine.spec.failureDomain`** — CAPI's placement. `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone` label on hosts; when CAPI assigns a Machine to one, the claim only considers hosts carrying that zone label.
+
+Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place.
+
+When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (an empty inventory reports `WaitingForPhysicalHost`) and the machine requeues every minute. A selector that cannot be parsed (an unknown operator, for example) is terminal: `InvalidHostSelector`.
 
 ## Reconcile flow
 
@@ -38,7 +69,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 3. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
     1. If `Spec.ProviderID` is set (only after inspection completes), `Get` the host directly by the encoded `<ns>/<name>` and return it.
     2. List PhysicalHosts in the namespace and return the one whose `Spec.ConsumerRef.Name` matches this Beskar7Machine — covers the window between claim and `ProviderID` assignment. Without this branch the controller would forget its own claim after the first reconcile (the host has transitioned to `InUse` so the next branch's `Available` filter skips it).
-    3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available` — and, when CAPI has placed the owning `Machine` into a failure domain (`Machine.spec.failureDomain`), also by the label `topology.kubernetes.io/zone=<domain>`, the same label `Beskar7Cluster` derives its failure domains from. The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. If hosts are `Available` but none is in the Machine's failure domain, the condition `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (as opposed to `WaitingForPhysicalHost` for an empty inventory) and the machine requeues; it never claims a host outside its domain. Placement applies only to a fresh claim — lookups 1 and 2 return the host the machine already holds.
+    3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available` — and by the machine's placement constraint: `spec.hostSelector` when set, ANDed with the label `topology.kubernetes.io/zone=<domain>` when CAPI has placed the owning `Machine` into a failure domain (`Machine.spec.failureDomain`; the same label `Beskar7Cluster` derives its failure domains from). The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. If hosts are `Available` but none is in the Machine's failure domain, the condition `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (as opposed to `WaitingForPhysicalHost` for an empty inventory) and the machine requeues; it never claims a host outside its domain. Placement applies only to a fresh claim — lookups 1 and 2 return the host the machine already holds.
 
     See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
 4. **Signal the bootstrap URL.** Compute the URL deterministically as `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and patch `infrastructure.cluster.x-k8s.io/bootstrap-url` onto the host's annotations. The host reconciler persists it to `Status.Bootstrap.URL`.
@@ -69,6 +100,7 @@ These set `Status.FailureReason` and `Status.FailureMessage`. Once set, the cont
 |---|---|
 | `BootstrapDataUnavailable` | The Secret named by `Machine.Spec.Bootstrap.DataSecretName` does not exist. |
 | `HardwareRequirementsNotMet` | Inspection report falls below `hardwareRequirements`. |
+| `InvalidHostSelector` | `spec.hostSelector` cannot be parsed (for example an unknown `matchExpressions` operator). It can never match; fix the template and roll the machine. |
 | `InspectionTimedOut` | No inspection report received within the inspection timeout (default 10 min; `--inspection-timeout` flag). |
 
 To recover, delete the Beskar7Machine (and its owner `Machine`); the host returns to `Available` and a fresh attempt can be made.

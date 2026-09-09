@@ -36,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	"sigs.k8s.io/cluster-api/util"
@@ -267,10 +268,19 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	// Find or get associated host. CAPI may have placed the owning Machine into
-	// a failure domain; a fresh claim has to honour that.
-	placement, err := hostPlacementSelector(machine)
+	// Find or get associated host. The spec's hostSelector and the failure
+	// domain CAPI placed the owning Machine into both constrain a fresh claim.
+	placement, err := hostPlacementSelector(b7machine, machine)
 	if err != nil {
+		if errors.Is(err, errInvalidHostSelector) {
+			// It can never match; the spec has to change. Terminal, so it shows
+			// in `kubectl describe machine` instead of requeueing forever.
+			logger.Error(err, "Beskar7Machine hostSelector is invalid")
+			conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
+				infrastructurev1beta1.InvalidHostSelectorReason, clusterv1.ConditionSeverityError, "%v", err)
+			r.markTerminalFailure(b7machine, infrastructurev1beta1.InvalidHostSelectorReason, err.Error())
+			return ctrl.Result{}, nil
+		}
 		logger.Error(err, "Invalid host placement constraint")
 		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
 			infrastructurev1beta1.PhysicalHostAssociationFailedReason, clusterv1.ConditionSeverityWarning,
@@ -1019,21 +1029,42 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	return ctrl.Result{}, nil
 }
 
+// errInvalidHostSelector marks a hostSelector that cannot be parsed. That is a
+// property of the spec, not of the cluster, so the caller treats it as terminal.
+var errInvalidHostSelector = errors.New("invalid hostSelector")
+
 // hostPlacementSelector returns the label selector a PhysicalHost must satisfy
 // before this machine may claim it, or nil when the machine is unconstrained.
 //
-// CAPI assigns Machine.spec.failureDomain from the domains Beskar7Cluster
-// publishes, and those are derived from the topology.kubernetes.io/zone label
-// on PhysicalHosts (reconcileFailureDomains). Honouring the assignment at claim
-// time is what gives the published domains any meaning: without it a Machine
-// placed in rack-1 claims whichever host happens to list first.
-func hostPlacementSelector(machine *clusterv1.Machine) (labels.Selector, error) {
-	if machine == nil || machine.Spec.FailureDomain == nil || *machine.Spec.FailureDomain == "" {
-		return nil, nil
+// Two sources, ANDed:
+//   - Beskar7Machine.spec.hostSelector: the operator's intent (which boxes are
+//     the control plane, which rack). An empty selector is no constraint.
+//   - Machine.spec.failureDomain: CAPI's placement. Beskar7Cluster publishes
+//     the domains from the topology.kubernetes.io/zone label on PhysicalHosts
+//     (reconcileFailureDomains); honouring the assignment at claim time is what
+//     gives them any meaning — without it a Machine placed in rack-1 claims
+//     whichever host happens to list first.
+func hostPlacementSelector(b7machine *infrastructurev1beta1.Beskar7Machine, machine *clusterv1.Machine) (labels.Selector, error) {
+	var sel labels.Selector
+	if hs := b7machine.Spec.HostSelector; hs != nil {
+		s, err := metav1.LabelSelectorAsSelector(hs)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", errInvalidHostSelector, err)
+		}
+		if !s.Empty() {
+			sel = s
+		}
 	}
-	sel, err := labels.ValidatedSelectorFromSet(labels.Set{zoneLabelKey: *machine.Spec.FailureDomain})
-	if err != nil {
-		return nil, fmt.Errorf("failure domain %q is not a valid %s label value: %w", *machine.Spec.FailureDomain, zoneLabelKey, err)
+	if machine != nil && machine.Spec.FailureDomain != nil && *machine.Spec.FailureDomain != "" {
+		fd := *machine.Spec.FailureDomain
+		req, err := labels.NewRequirement(zoneLabelKey, selection.Equals, []string{fd})
+		if err != nil {
+			return nil, fmt.Errorf("failure domain %q is not a valid %s label value: %w", fd, zoneLabelKey, err)
+		}
+		if sel == nil {
+			sel = labels.NewSelector()
+		}
+		sel = sel.Add(*req)
 	}
 	return sel, nil
 }

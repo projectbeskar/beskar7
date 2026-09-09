@@ -28,8 +28,9 @@ const (
 
 	// NoMatchingPhysicalHostReason (Severity=Info) documents that the machine is
 	// waiting because no Available PhysicalHost satisfies its placement
-	// constraint — the failure domain CAPI assigned to the owning Machine — as
-	// opposed to WaitingForPhysicalHost, where the inventory itself is empty.
+	// constraint — its HostSelector, the failure domain CAPI assigned to the
+	// owning Machine, or both — as opposed to WaitingForPhysicalHost, where the
+	// inventory itself is empty.
 	NoMatchingPhysicalHostReason string = "NoMatchingPhysicalHost"
 	// WaitingForHostReason (Severity=Info) indicates waiting for a host (alias for compatibility)
 	WaitingForHostReason string = "WaitingForHost"
@@ -54,6 +55,11 @@ const (
 	// runtime, so this is terminal — the operator must lower the requirements,
 	// allocate to a different host, or replace the hardware.
 	HardwareRequirementsNotMetReason string = "HardwareRequirementsNotMet"
+	// InvalidHostSelectorReason (Severity=Error, terminal) indicates that the
+	// Beskar7Machine's HostSelector cannot be parsed (for example an unknown
+	// matchExpressions operator). Such a selector can never match, so the spec
+	// has to change: fix the template and roll the machine.
+	InvalidHostSelectorReason string = "InvalidHostSelector"
 	// InspectionTimedOutReason (Severity=Error, terminal) indicates that the inspection
 	// image did not POST a report within DefaultInspectionTimeout. Likely causes:
 	// misconfigured iPXE, host couldn't reach the manager's callback endpoint, or an
@@ -153,6 +159,18 @@ type Beskar7MachineSpec struct {
 	// The inspection phase will validate against these requirements.
 	// +optional
 	HardwareRequirements *HardwareRequirements `json:"hardwareRequirements,omitempty"`
+
+	// HostSelector restricts which PhysicalHosts this machine may claim, by the
+	// hosts' labels. Standard label-selector semantics: matchLabels ANDed with
+	// matchExpressions. An absent or empty selector allows any Available host,
+	// which is the behaviour before this field existed. It is ANDed with the
+	// failure domain CAPI assigns to the owning Machine, when there is one.
+	// Use it to give a control plane and a worker pool disjoint inventories,
+	// or to pin a pool to a rack. A selector that cannot be parsed is a
+	// terminal failure (InvalidHostSelector): it can never match, so the spec
+	// has to change.
+	// +optional
+	HostSelector *metav1.LabelSelector `json:"hostSelector,omitempty"`
 }
 
 // HardwareRequirements specifies hardware requirements for a machine.
@@ -276,6 +294,11 @@ func (in *Beskar7MachineSpec) DeepCopyInto(out *Beskar7MachineSpec) {
 		in, out := &in.HardwareRequirements, &out.HardwareRequirements
 		*out = new(HardwareRequirements)
 		**out = **in
+	}
+	if in.HostSelector != nil {
+		in, out := &in.HostSelector, &out.HostSelector
+		*out = new(metav1.LabelSelector)
+		(*in).DeepCopyInto(*out)
 	}
 }
 
