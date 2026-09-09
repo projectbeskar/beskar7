@@ -1,0 +1,85 @@
+# Host pools: keep a control plane and a worker pool on disjoint inventory.
+#
+# Without a hostSelector every Beskar7Machine claims the first Available
+# PhysicalHost in the namespace, in list order. On a lab with five identical
+# boxes that only looks odd (a control-plane replica on the host named "wk0");
+# on real inventory it puts the control plane on the wrong class of machine,
+# and a control plane and a MachineDeployment provisioning at the same time
+# race for the same boxes. hardwareRequirements does not help: it is checked
+# AFTER the claim, against the inspection report, and a mismatch is terminal.
+#
+# The fix is two labels and two selectors. Label the hosts by role (any label
+# key works; node-role is only a convention), and give each template a
+# selector. Selectors are ANDed with the failure domain CAPI assigns to a
+# Machine (the topology.kubernetes.io/zone label), so a zoned inventory keeps
+# working. An absent or empty selector keeps the old behaviour.
+#
+# Replace every <...> placeholder; combine with the Cluster, control plane and
+# MachineDeployment objects from examples/kairos-k3s-node.yaml or your own.
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: cp-01
+  namespace: <namespace>
+  labels:
+    node-role: control-plane
+    topology.kubernetes.io/zone: rack-1       # optional: becomes a Beskar7Cluster failure domain
+spec:
+  redfishConnection:
+    address: "https://<bmc-of-cp-01>"
+    credentialsSecretRef: "bmc-credentials"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: PhysicalHost
+metadata:
+  name: worker-01
+  namespace: <namespace>
+  labels:
+    node-role: worker
+    topology.kubernetes.io/zone: rack-1
+spec:
+  redfishConnection:
+    address: "https://<bmc-of-worker-01>"
+    credentialsSecretRef: "bmc-credentials"
+---
+# Used by the control plane (KubeadmControlPlane / KairosControlPlane
+# machineTemplate.infrastructureRef).
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7MachineTemplate
+metadata:
+  name: control-plane-template
+  namespace: <namespace>
+  labels:
+    cluster.x-k8s.io/v1beta1: v1_beta1
+spec:
+  template:
+    spec:
+      inspectionImageURL: "https://<boot-server>/inspector"
+      targetImageURL: "http://<image-server>/kairos-<distro>-<version>.raw"
+      targetImageDigest: "sha256:<sha256-of-the-image>"
+      hostSelector:
+        matchLabels:
+          node-role: control-plane
+---
+# Used by the worker MachineDeployment (template.spec.infrastructureRef).
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: Beskar7MachineTemplate
+metadata:
+  name: worker-template
+  namespace: <namespace>
+  labels:
+    cluster.x-k8s.io/v1beta1: v1_beta1
+spec:
+  template:
+    spec:
+      inspectionImageURL: "https://<boot-server>/inspector"
+      targetImageURL: "http://<image-server>/kairos-<distro>-<version>.raw"
+      targetImageDigest: "sha256:<sha256-of-the-image>"
+      hostSelector:
+        # matchExpressions work as well; this keeps the pool off anything
+        # that is not explicitly a worker.
+        matchExpressions:
+          - key: node-role
+            operator: In
+            values: ["worker"]

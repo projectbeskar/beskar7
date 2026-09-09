@@ -221,3 +221,9 @@ spec:
     minCPUCores: 2
     minMemoryGB: 4
     minDiskGB: 20
+  # Optional. Without a selector the machine claims the first Available host in
+  # the namespace; with one it claims only hosts carrying these labels. See
+  # examples/host-pools.yaml for a control-plane / worker split.
+  # hostSelector:
+  #   matchLabels:
+  #     node-role: control-plane

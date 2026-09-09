@@ -186,7 +186,8 @@ kind: Beskar7Machine
 | `targetImageDigest` | string | yes | Expected SHA-256 digest of the bytes at `targetImageURL`, formatted `sha256:<64-lowercase-hex>`. Validated against `^sha256:[a-f0-9]{64}$`. The inspector refuses to mount, inject user-data, or reboot on a mismatch — this is the sole integrity/authenticity anchor for the OS image. |
 | `targetDisk` | string | no | Pins the disk the inspector writes the OS image to (a stable `/dev/disk/by-id/...`/`/dev/disk/by-path/...` path, or a kernel name like `/dev/nvme0n1`). Validated against `^[A-Za-z0-9._:/+-]+$`. When set, the inspector uses exactly that device and aborts (no fallback) if it's ineligible. When empty, the inspector auto-selects the smallest eligible disk. |
 | `staticIP` | `*string` | no | Pins a static IPv4 address on the provisioning NIC instead of DHCP, using the kernel `ip=` subset `<ip>::<gw>:<mask>[:<dns>]` (e.g. `192.168.150.10::192.168.150.1:255.255.255.0`). Validated against a pattern anchored on that shape (see `api/v1beta1/beskar7machine_types.go:144`). Rendered onto the inspector's kernel cmdline as `beskar7.ip=<value>`; when unset, DHCP is used. |
-| `hardwareRequirements` | `*HardwareRequirements` | no | Minimum hardware. The inspection report is validated against these; failures are terminal. |
+| `hardwareRequirements` | `*HardwareRequirements` | no | Minimum hardware. The inspection report is validated against these; failures are terminal. It does not steer the claim — use `hostSelector` for that. |
+| `hostSelector` | `*metav1.LabelSelector` | no | Restricts a fresh claim to PhysicalHosts whose labels match (`matchLabels` ANDed with `matchExpressions`), ANDed with the owning Machine's failure domain when CAPI set one. Absent or empty selects any host. A selector that cannot be parsed is terminal (`InvalidHostSelector`); no match is `PhysicalHostAssociated=False/NoMatchingPhysicalHost` and a requeue. |
 
 #### `HardwareRequirements`
 
@@ -205,7 +206,7 @@ If the inspection report does not meet any of these, the controller sets `Status
 | `ready` | bool | True after the host is `Ready` and the bootstrap data has been signalled. Set in lockstep with `initialization.provisioned`. |
 | `initialization` | `*Beskar7MachineInitializationStatus` | CAPI v1beta2 contract. `initialization.provisioned: bool` is what CAPI core lifts into `Machine.status.initialization.infrastructureProvisioned`. Without this field set, CAPI v1.10+ never advances the parent `Machine` past `Pending` and the cluster never reaches `Available`. The controller writes it in lockstep with `status.ready=true`. |
 | `phase` | `*string` | One of the five strings the controller writes: `Pending`, `Inspecting`, `Provisioning` (set while the host is in `StateDeploying`, i.e. the inspector is writing the OS image, D-015), `Provisioned`, `Failed`. Do not filter against other values. |
-| `failureReason` | `*string` | Set on terminal failures: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut` (OS deployment exceeded `--deployment-timeout`), `DeploymentFailed` (inspector explicitly reported a deploy failure via `POST /provision-failed`, contract v4.1), `PhysicalHostError` (the claimed host entered `StateError` for a Redfish/BMC-level reason), `BootstrapDataUnavailable`. Once set, the controller stops requeueing — operator must intervene. |
+| `failureReason` | `*string` | Set on terminal failures: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut` (OS deployment exceeded `--deployment-timeout`), `DeploymentFailed` (inspector explicitly reported a deploy failure via `POST /provision-failed`, contract v4.1), `PhysicalHostError` (the claimed host entered `StateError` for a Redfish/BMC-level reason), `BootstrapDataUnavailable`, `InvalidHostSelector` (`spec.hostSelector` cannot be parsed). Once set, the controller stops requeueing — operator must intervene. |
 | `failureMessage` | `*string` | Human-readable failure detail. Surfaced via `kubectl describe machine`. |
 | `addresses` | `[]MachineAddress` | Copied from the claimed `PhysicalHost.Status.Addresses`. |
 | `conditions` | `clusterv1.Conditions` | See below. |
@@ -221,7 +222,7 @@ If the inspection report does not meet any of these, the controller sets `Status
 | Type | Set by | Meaning |
 |---|---|---|
 | `InfrastructureReady` | `Beskar7Machine` | Standard CAPI infra-ready condition. Summary across the others; True once the host reaches `Ready` and `providerID` is set. |
-| `PhysicalHostAssociated` | `Beskar7Machine` | True after a host is claimed. False reasons: `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost`. |
+| `PhysicalHostAssociated` | `Beskar7Machine` | True after a host is claimed. False reasons: `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | True after `Machine.Spec.Bootstrap.DataSecretName` is set and the bootstrap URL has been signalled to the host. False reasons: `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
 
 There is no `MachineProvisionedCondition` — the dead constant (declared but never set by any reconciler) has been removed from `api/v1beta1/beskar7machine_types.go`. `InfrastructureReady`, backed by `Status.Ready` and `Status.Initialization.Provisioned`, is the provisioned signal.
@@ -247,6 +248,9 @@ spec:
     minCPUCores: 4
     minMemoryGB: 16
     minDiskGB:   100
+  # hostSelector:                                                # optional: only claim hosts with these labels
+  #   matchLabels:
+  #     node-role: control-plane
 ```
 
 ---
@@ -284,6 +288,9 @@ spec:
         minCPUCores: 4
         minMemoryGB: 8
         minDiskGB:   50
+      hostSelector:                                              # keep the worker pool off the control-plane hosts
+        matchLabels:
+          node-role: worker
 ```
 
 The template carries the `cluster-api` category so `clusterctl move` walks it during workload-cluster migration.

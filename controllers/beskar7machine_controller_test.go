@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1960,7 +1961,7 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 	})
 })
 
-var _ = Describe("Host claim honours the Machine's failure domain", func() {
+var _ = Describe("Host claim honours placement: failure domain and hostSelector", func() {
 	// CAPI places a Machine into one of the failure domains Beskar7Cluster
 	// publishes, which it derives from the topology.kubernetes.io/zone label on
 	// PhysicalHosts. The fresh-claim path must respect that placement: an
@@ -2056,32 +2057,169 @@ var _ = Describe("Host claim honours the Machine's failure domain", func() {
 		Expect(got.Name).To(Equal("a-other-zone"))
 	})
 
-	It("derives the placement from Machine.spec.failureDomain and nothing else", func() {
-		sel, err := hostPlacementSelector(nil)
+	It("derives the placement from hostSelector and Machine.spec.failureDomain, ANDed", func() {
+		sel, err := hostPlacementSelector(newMachine(), nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(sel).To(BeNil())
+		Expect(sel).To(BeNil(), "no selector, no owner: no constraint")
 
 		m := &clusterv1.Machine{}
-		sel, err = hostPlacementSelector(m)
+		sel, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(BeNil(), "no failure domain: no constraint")
 
 		empty := ""
 		m.Spec.FailureDomain = &empty
-		sel, err = hostPlacementSelector(m)
+		sel, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel).To(BeNil(), "an empty failure domain is no constraint")
 
 		fd := "rack-1"
 		m.Spec.FailureDomain = &fd
-		sel, err = hostPlacementSelector(m)
+		sel, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel.String()).To(Equal(zoneLabelKey + "=rack-1"))
 
 		bad := "not a label value!"
 		m.Spec.FailureDomain = &bad
-		_, err = hostPlacementSelector(m)
+		_, err = hostPlacementSelector(newMachine(), m)
 		Expect(err).To(HaveOccurred(), "a failure domain that cannot be a label value must be reported, not silently match nothing")
+		Expect(errors.Is(err, errInvalidHostSelector)).To(BeFalse(), "a bad failure domain is not the spec's fault; it must not be terminal")
+
+		By("an empty hostSelector is no constraint")
+		b7m := newMachine()
+		b7m.Spec.HostSelector = &metav1.LabelSelector{}
+		sel, err = hostPlacementSelector(b7m, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel).To(BeNil())
+
+		By("a hostSelector alone")
+		b7m.Spec.HostSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"node-role": "control-plane"}}
+		// Beskar7MachineSpec.DeepCopyInto is hand-written, so a new pointer field
+		// is easy to leave shallow. The cache hands the controller copies; a copy
+		// must carry the selector and must not alias the original.
+		cp := b7m.DeepCopy()
+		Expect(cp.Spec.HostSelector).To(Equal(b7m.Spec.HostSelector), "DeepCopy must carry the selector")
+		cp.Spec.HostSelector.MatchLabels["node-role"] = "mutated-copy"
+		Expect(b7m.Spec.HostSelector.MatchLabels["node-role"]).To(Equal("control-plane"),
+			"DeepCopy must not alias the selector: mutating the copy changed the original")
+		sel, err = hostPlacementSelector(b7m, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.Matches(labels.Set{"node-role": "control-plane"})).To(BeTrue())
+		Expect(sel.Matches(labels.Set{"node-role": "worker"})).To(BeFalse())
+
+		By("a hostSelector AND a failure domain: both must hold")
+		m.Spec.FailureDomain = &fd
+		sel, err = hostPlacementSelector(b7m, m)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.Matches(labels.Set{"node-role": "control-plane", zoneLabelKey: "rack-1"})).To(BeTrue())
+		Expect(sel.Matches(labels.Set{"node-role": "control-plane", zoneLabelKey: "rack-2"})).To(BeFalse(), "right role, wrong zone")
+		Expect(sel.Matches(labels.Set{"node-role": "worker", zoneLabelKey: "rack-1"})).To(BeFalse(), "right zone, wrong role")
+
+		By("an unparsable hostSelector is reported as the spec's fault")
+		b7m.Spec.HostSelector = &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "rack", Operator: "Bogus"}}}
+		_, err = hostPlacementSelector(b7m, nil)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.Is(err, errInvalidHostSelector)).To(BeTrue())
+	})
+
+	labelledHost := func(name string, lbls map[string]string) *infrastructurev1beta1.PhysicalHost {
+		h := availableHost(name, "")
+		h.Labels = lbls
+		return h
+	}
+	withSelector := func(sel *metav1.LabelSelector) *infrastructurev1beta1.Beskar7Machine {
+		m := newMachine()
+		m.Spec.HostSelector = sel
+		return m
+	}
+	placementOf := func(b7m *infrastructurev1beta1.Beskar7Machine, fd string) labels.Selector {
+		var m *clusterv1.Machine
+		if fd != "" {
+			m = &clusterv1.Machine{Spec: clusterv1.MachineSpec{FailureDomain: &fd}}
+		}
+		sel, err := hostPlacementSelector(b7m, m)
+		Expect(err).NotTo(HaveOccurred())
+		return sel
+	}
+
+	It("hostSelector: claims only a host matching the selector, even when others list first", func() {
+		c := newClientWith(
+			labelledHost("a-worker", map[string]string{"node-role": "worker"}),
+			availableHost("b-unlabelled", ""),
+			labelledHost("c-control-plane", map[string]string{"node-role": "control-plane"}),
+		)
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("hs-test")}
+		b7m := withSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"node-role": "control-plane"}})
+
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, b7m, placementOf(b7m, ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil())
+		Expect(got.Name).To(Equal("c-control-plane"))
+		Expect(result.RequeueAfter).To(Equal(5 * time.Second))
+		Expect(consumerOf(c, "a-worker")).To(BeNil(), "a host with a different role label must not be touched")
+		Expect(consumerOf(c, "b-unlabelled")).To(BeNil(), "an unlabelled host must not be touched")
+	})
+
+	It("hostSelector: claims nothing when no Available host matches", func() {
+		c := newClientWith(labelledHost("a-worker", map[string]string{"node-role": "worker"}), availableHost("b-unlabelled", ""))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("hs-test")}
+		b7m := withSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"node-role": "control-plane"}})
+
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, b7m, placementOf(b7m, ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeNil(), "a non-matching host must not be claimed")
+		Expect(result.IsZero()).To(BeTrue())
+		Expect(consumerOf(c, "a-worker")).To(BeNil())
+		Expect(consumerOf(c, "b-unlabelled")).To(BeNil())
+	})
+
+	It("hostSelector: matchExpressions are honoured", func() {
+		c := newClientWith(labelledHost("a-rack-3", map[string]string{"rack": "r3"}), labelledHost("b-rack-2", map[string]string{"rack": "r2"}))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("hs-test")}
+		b7m := withSelector(&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+			{Key: "rack", Operator: metav1.LabelSelectorOpIn, Values: []string{"r1", "r2"}},
+		}})
+
+		got, _, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, b7m, placementOf(b7m, ""))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil())
+		Expect(got.Name).To(Equal("b-rack-2"))
+		Expect(consumerOf(c, "a-rack-3")).To(BeNil())
+	})
+
+	It("hostSelector AND failure domain: a host must satisfy both", func() {
+		c := newClientWith(
+			labelledHost("a-cp-rack-2", map[string]string{"node-role": "control-plane", zoneLabelKey: "rack-2"}),
+			labelledHost("b-worker-rack-1", map[string]string{"node-role": "worker", zoneLabelKey: "rack-1"}),
+			labelledHost("c-cp-rack-1", map[string]string{"node-role": "control-plane", zoneLabelKey: "rack-1"}),
+		)
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("hs-test")}
+		b7m := withSelector(&metav1.LabelSelector{MatchLabels: map[string]string{"node-role": "control-plane"}})
+
+		got, _, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, b7m, placementOf(b7m, "rack-1"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil())
+		Expect(got.Name).To(Equal("c-cp-rack-1"))
+		Expect(consumerOf(c, "a-cp-rack-2")).To(BeNil(), "right role, wrong zone")
+		Expect(consumerOf(c, "b-worker-rack-1")).To(BeNil(), "right zone, wrong role")
+	})
+
+	It("hostSelector: an unparsable selector is a terminal failure and claims nothing", func() {
+		c := newClientWith(availableHost("a-free", ""))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("hs-test")}
+		b7m := withSelector(&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "rack", Operator: "Bogus"}}})
+
+		result, err := r.reconcileNormal(context.Background(), r.Log, b7m, &clusterv1.Machine{Spec: clusterv1.MachineSpec{ClusterName: "fake-cluster"}})
+		Expect(err).NotTo(HaveOccurred(), "terminal failures return nil so CAPI surfaces FailureReason/FailureMessage")
+		Expect(result.IsZero()).To(BeTrue(), "a terminal failure must not requeue")
+		Expect(b7m.Status.FailureReason).NotTo(BeNil())
+		Expect(*b7m.Status.FailureReason).To(Equal(infrastructurev1beta1.InvalidHostSelectorReason))
+		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
+		Expect(*b7m.Status.FailureMessage).To(ContainSubstring("Bogus"))
+		cond := conditions.Get(b7m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Reason).To(Equal(infrastructurev1beta1.InvalidHostSelectorReason))
+		Expect(consumerOf(c, "a-free")).To(BeNil(), "nothing may be claimed on the way to a terminal failure")
 	})
 
 	It("reports NoMatchingPhysicalHost rather than WaitingForPhysicalHost when hosts exist outside the domain", func() {

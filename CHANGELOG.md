@@ -6,6 +6,18 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **`hostSelector` on `Beskar7Machine` and `Beskar7MachineTemplate`.** A standard
+  label selector over `PhysicalHost` labels that a fresh claim must satisfy,
+  ANDed with the owning Machine's failure domain. Label hosts by role, rack or
+  hardware class and give each template a selector, and a control plane and a
+  worker pool stop racing for the same inventory. Absent or empty keeps the
+  previous behaviour, so existing deployments are unaffected. A selector that
+  cannot be parsed is terminal (`InvalidHostSelector`); no matching host is
+  `PhysicalHostAssociated=False/NoMatchingPhysicalHost` and a requeue. CRD
+  schema change (additive); chart CRDs regenerated. `examples/host-pools.yaml`.
+
 ### Fixed
 
 - **The host claim now honours `Machine.spec.failureDomain` (CAPI conformance).**

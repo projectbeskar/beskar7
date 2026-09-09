@@ -30,9 +30,12 @@ spec:
         minCPUCores: ...
         minMemoryGB: ...
         minDiskGB: ...
+      hostSelector:            # optional: only claim PhysicalHosts with these labels
+        matchLabels:
+          node-role: ...
 ```
 
-For the field reference, see [API Reference: Beskar7Machine](api-reference.md#beskar7machine).
+For the field reference, see [API Reference: Beskar7Machine](api-reference.md#beskar7machine). `hostSelector` is what keeps a control plane and a worker pool from racing for the same hosts — see [Beskar7Machine → Steering the claim](beskar7machine.md#steering-the-claim-hostselector-and-failure-domains).
 
 ## CAPI integration
 
@@ -70,6 +73,9 @@ spec:
         minCPUCores: 4
         minMemoryGB: 16
         minDiskGB:   100
+      hostSelector:
+        matchLabels:
+          node-role: control-plane     # only the hosts labelled for the control plane
 ```
 
 ### MachineDeployment
@@ -120,6 +126,9 @@ spec:
         minCPUCores: 4
         minMemoryGB: 8
         minDiskGB:   50
+      hostSelector:
+        matchLabels:
+          node-role: worker            # disjoint from the control plane's pool
 ```
 
 ## Versioning
