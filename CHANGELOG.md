@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `PhysicalHost` turning `Available` now wakes the `Beskar7Machine`s still
+  waiting for a host.** A machine that reconciled moments before its host
+  finished enrolling (or before another machine released it) parked on the
+  one-minute no-host requeue with nothing to end the wait early; with
+  controller-runtime 0.23's priority queue that minute was also no longer
+  shortened by the finalizer-add retry. A second watch on `PhysicalHost`,
+  admitted only on the transition into a claimable state, re-enqueues the
+  namespace's unassociated machines. The one-minute requeue stays as a
+  backstop. This is also what made the integration suite's "Delete and
+  release" specs flake.
+
 ### Changed
 
 - **Built against Cluster API v1.13 and its `api/core/v1beta2` Go API** (was

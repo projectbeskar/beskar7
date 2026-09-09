@@ -58,7 +58,7 @@ By default a Beskar7Machine claims the first `Available` PhysicalHost in its nam
 
 Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place.
 
-When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (an empty inventory reports `WaitingForPhysicalHost`) and the machine requeues every minute. A selector that cannot be parsed (an unknown operator, for example) is terminal: `InvalidHostSelector`.
+When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (an empty inventory reports `WaitingForPhysicalHost`) and the machine requeues every minute — sooner if a `PhysicalHost` in the namespace becomes `Available` in the meantime, which re-enqueues every machine still waiting for a host. A selector that cannot be parsed (an unknown operator, for example) is terminal: `InvalidHostSelector`.
 
 ## Reconcile flow
 

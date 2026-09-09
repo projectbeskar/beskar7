@@ -43,10 +43,13 @@ import (
 	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -303,7 +306,9 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	} else if placement != nil {
 		// Distinct from an empty inventory: hosts may well be Available, just
 		// not where CAPI placed this Machine. Requeue, never terminal — a host in
-		// that domain can free up, or the operator can label one.
+		// that domain can free up, or the operator can label one. The minute is
+		// a backstop: a host entering Available re-enqueues the machine at once
+		// (AvailablePhysicalHostToWaitingBeskar7Machines).
 		logger.Info("No available PhysicalHost satisfies the placement constraint, requeuing", "placement", placement.String())
 		conditions.MarkFalse(b7machine, infrastructurev1beta1.PhysicalHostAssociatedCondition,
 			infrastructurev1beta1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo,
@@ -1574,6 +1579,11 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&infrastructurev1beta1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine),
 		).
+		Watches(
+			&infrastructurev1beta1.PhysicalHost{},
+			handler.EnqueueRequestsFromMapFunc(r.AvailablePhysicalHostToWaitingBeskar7Machines),
+			builder.WithPredicates(hostBecameAvailable()),
+		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
 		}).
@@ -1600,6 +1610,57 @@ func (r *Beskar7MachineReconciler) PhysicalHostToBeskar7Machine(ctx context.Cont
 	return []reconcile.Request{
 		{NamespacedName: types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}},
 	}
+}
+
+// hostBecameAvailable admits exactly the PhysicalHost events on which an
+// unclaimed host enters Available: creation already in that state, and the
+// transition into it (enrolment, release by a deleted machine). Status churn
+// on a host that is already free does not pass, so waiting machines are not
+// re-enqueued on every host resync.
+func hostBecameAvailable() predicate.Funcs {
+	free := func(o client.Object) bool {
+		h, ok := o.(*infrastructurev1beta1.PhysicalHost)
+		return ok && h.Status.State == infrastructurev1beta1.StateAvailable && h.Spec.ConsumerRef == nil
+	}
+	return predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return free(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return free(e.ObjectNew) && !free(e.ObjectOld) },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+// AvailablePhysicalHostToWaitingBeskar7Machines maps a PhysicalHost that has
+// just become claimable to every Beskar7Machine in its namespace that is
+// still waiting for one. The no-host path requeues after a minute as a
+// backstop, and a machine that reconciled moments before its host finished
+// enrolling would otherwise sit out that whole minute: nothing else
+// re-enqueues it, and controller-runtime's priority queue collapses a
+// pending delayed requeue into any earlier event-driven reconcile.
+func (r *Beskar7MachineReconciler) AvailablePhysicalHostToWaitingBeskar7Machines(ctx context.Context, obj client.Object) []reconcile.Request {
+	host, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+	if !ok {
+		r.Log.Error(nil, "Expected a PhysicalHost in AvailablePhysicalHostToWaitingBeskar7Machines map", "object", obj)
+		return nil
+	}
+	if host.Status.State != infrastructurev1beta1.StateAvailable || host.Spec.ConsumerRef != nil {
+		return nil
+	}
+	machines := &infrastructurev1beta1.Beskar7MachineList{}
+	if err := r.List(ctx, machines, client.InNamespace(host.Namespace)); err != nil {
+		r.Log.Error(err, "Failed to list Beskar7Machines waiting for a PhysicalHost", "namespace", host.Namespace)
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range machines.Items {
+		m := &machines.Items[i]
+		if !m.DeletionTimestamp.IsZero() || m.Status.FailureReason != nil ||
+			conditions.IsTrue(m, infrastructurev1beta1.PhysicalHostAssociatedCondition) {
+			continue
+		}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(m)})
+	}
+	return requests
 }
 
 // parseMemoryCapacityGB converts a BMC-reported capacity string to whole decimal gigabytes.
