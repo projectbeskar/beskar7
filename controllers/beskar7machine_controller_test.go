@@ -1563,21 +1563,21 @@ func getSecretPlaintext(ctx context.Context, ns, name string) []byte {
 	return s.Data["plaintext-token"]
 }
 
-// bootstrapTokenStillValid no-re-mint guard tests (PR-5.3). Pure unit tests:
+// unexpiredBootstrapTokenHash no-re-mint guard tests (PR-5.3). Pure unit tests:
 // no envtest needed because the helper does not perform I/O.
-var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
+var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 	now := time.Date(2026, 5, 2, 12, 0, 0, 0, time.UTC)
 
-	It("returns false when host is nil", func() {
-		Expect(bootstrapTokenStillValid(nil, now)).To(BeFalse())
+	It("returns no hash when host is nil", func() {
+		Expect(unexpiredBootstrapTokenHash(nil, now)).To(BeEmpty())
 	})
 
-	It("returns false when Status.Bootstrap is nil", func() {
+	It("returns no hash when Status.Bootstrap is nil", func() {
 		ph := &infrastructurev1beta1.PhysicalHost{}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when TokenHash is empty", func() {
+	It("returns no hash when TokenHash is empty", func() {
 		exp := metav1.NewTime(now.Add(10 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1587,10 +1587,10 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when ExpiresAt is nil", func() {
+	It("returns no hash when ExpiresAt is nil", func() {
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
 				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
@@ -1599,10 +1599,10 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when ExpiresAt is in the past", func() {
+	It("returns no hash when ExpiresAt is in the past", func() {
 		exp := metav1.NewTime(now.Add(-1 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1612,10 +1612,10 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when ExpiresAt equals now (boundary: must re-mint)", func() {
+	It("returns no hash when ExpiresAt equals now (boundary: must re-mint)", func() {
 		exp := metav1.NewTime(now)
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1625,11 +1625,11 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse(),
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty(),
 			"now.Before(ExpiresAt) is false at equality — boundary must re-mint")
 	})
 
-	It("returns true when token is still within the validity window", func() {
+	It("returns the hash when token is still within the validity window", func() {
 		exp := metav1.NewTime(now.Add(10 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1639,7 +1639,7 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue())
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(Equal("deadbeef"))
 	})
 
 	// Regression test for the mint race: when a previous Beskar7Machine
@@ -1649,7 +1649,7 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 	// plaintext whose hash doesn't match the one Status will eventually
 	// carry, and every inspector bearer-auth attempt 401s. See the layer
 	// 5 hardening notes in this PR's body.
-	It("returns true when a pending annotation has a non-expired hash (mint-race guard)", func() {
+	It("returns the hash when a pending annotation has a non-expired hash (mint-race guard)", func() {
 		exp := metav1.NewTime(now.Add(10 * time.Minute))
 		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
 			Hash:      "deadbeef",
@@ -1664,11 +1664,11 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 			// window where the PhysicalHost reconciler has not yet
 			// consumed the annotation.
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeTrue(),
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(Equal("deadbeef"),
 			"pending annotation must count as a valid in-flight token")
 	})
 
-	It("returns false when pending annotation is expired (mint a fresh one)", func() {
+	It("returns no hash when pending annotation is expired (mint a fresh one)", func() {
 		exp := metav1.NewTime(now.Add(-1 * time.Minute))
 		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
 			Hash:      "deadbeef",
@@ -1680,25 +1680,72 @@ var _ = Describe("bootstrapTokenStillValid (no-re-mint guard)", func() {
 				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
 			},
 		}
-		Expect(bootstrapTokenStillValid(ph, now)).To(BeFalse(),
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty(),
 			"expired pending annotation must NOT block a fresh mint")
+	})
+
+	// Both sources present: the pending annotation is the newer mint (the
+	// PhysicalHost reconciler clears it on promotion) and the one whose
+	// plaintext the Secret holds, so it is the hash the Secret is checked
+	// against. Reporting the Status hash here would make triggerInspection
+	// re-mint on every reconcile until promotion.
+	It("prefers a pending annotation over an unexpired Status hash", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "cafef00d",
+			IssuedAt:  metav1.NewTime(now.Add(-30 * time.Second)),
+			ExpiresAt: metav1.NewTime(now.Add(59 * time.Minute)),
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(Equal("cafef00d"))
+	})
+
+	It("falls back to the Status hash when the pending annotation is expired", func() {
+		exp := metav1.NewTime(now.Add(10 * time.Minute))
+		annoBytes, _ := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      "cafef00d",
+			IssuedAt:  metav1.NewTime(now.Add(-61 * time.Minute)),
+			ExpiresAt: metav1.NewTime(now.Add(-1 * time.Minute)),
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					TokenHash: "deadbeef",
+					ExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(unexpiredBootstrapTokenHash(ph, now)).To(Equal("deadbeef"))
 	})
 })
 
-// bootNonceStillValid unit tests (D-009). Table-driven; no envtest needed.
-var _ = Describe("bootNonceStillValid", func() {
+// unexpiredBootNonceHash unit tests (D-009). Table-driven; no envtest needed.
+var _ = Describe("unexpiredBootNonceHash", func() {
 	now := time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC)
 
-	It("returns false when host is nil", func() {
-		Expect(bootNonceStillValid(nil, now)).To(BeFalse())
+	It("returns no hash when host is nil", func() {
+		Expect(unexpiredBootNonceHash(nil, now)).To(BeEmpty())
 	})
 
-	It("returns false when Status.Bootstrap is nil", func() {
+	It("returns no hash when Status.Bootstrap is nil", func() {
 		ph := &infrastructurev1beta1.PhysicalHost{}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when BootNonceHash is empty", func() {
+	It("returns no hash when BootNonceHash is empty", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1708,10 +1755,10 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when BootNonceExpiresAt is nil", func() {
+	It("returns no hash when BootNonceExpiresAt is nil", func() {
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
 				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
@@ -1720,10 +1767,10 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when BootNonceExpiresAt is in the past", func() {
+	It("returns no hash when BootNonceExpiresAt is in the past", func() {
 		exp := metav1.NewTime(now.Add(-1 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1733,10 +1780,10 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse())
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
 	})
 
-	It("returns false when BootNonceExpiresAt equals now (boundary: must re-mint)", func() {
+	It("returns no hash when BootNonceExpiresAt equals now (boundary: must re-mint)", func() {
 		exp := metav1.NewTime(now)
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1746,11 +1793,11 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty(),
 			"now.Before(expiresAt) is false at equality — boundary must re-mint")
 	})
 
-	It("returns false when BootNonceConsumedAt is set (consumed nonce is never valid)", func() {
+	It("returns no hash when BootNonceConsumedAt is set (consumed nonce is never valid)", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		consumed := metav1.NewTime(now.Add(-30 * time.Second))
 		ph := &infrastructurev1beta1.PhysicalHost{
@@ -1762,11 +1809,11 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty(),
 			"consumed nonce (BootNonceConsumedAt != nil) must never be considered valid")
 	})
 
-	It("returns true when nonce is fresh, unexpired, and unconsumed", func() {
+	It("returns the hash when nonce is fresh, unexpired, and unconsumed", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		ph := &infrastructurev1beta1.PhysicalHost{
 			Status: infrastructurev1beta1.PhysicalHostStatus{
@@ -1777,13 +1824,13 @@ var _ = Describe("bootNonceStillValid", func() {
 				},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeTrue())
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("abcdef01"))
 	})
 
 	// Mint-race guard: a pending BootNonceAnnotation not yet promoted to Status
 	// must count as a valid in-flight nonce so a second concurrent Beskar7Machine
 	// reconcile does not clobber the Secret with a fresh nonce.
-	It("returns true when a pending annotation has a non-expired hash (mint-race guard)", func() {
+	It("returns the hash when a pending annotation has a non-expired hash (mint-race guard)", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
 			Hash:      "abcdef01",
@@ -1796,11 +1843,11 @@ var _ = Describe("bootNonceStillValid", func() {
 			// Status.Bootstrap intentionally nil — simulates the window before the
 			// PhysicalHost reconciler has consumed the BootNonceAnnotation.
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeTrue(),
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("abcdef01"),
 			"pending BootNonceAnnotation must count as a valid in-flight nonce")
 	})
 
-	It("returns false when pending annotation is expired (force re-mint)", func() {
+	It("returns no hash when pending annotation is expired (force re-mint)", func() {
 		exp := metav1.NewTime(now.Add(-2 * time.Minute))
 		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
 			Hash:      "abcdef01",
@@ -1811,8 +1858,48 @@ var _ = Describe("bootNonceStillValid", func() {
 				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
 			},
 		}
-		Expect(bootNonceStillValid(ph, now)).To(BeFalse(),
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty(),
 			"expired pending annotation must not block a fresh nonce mint")
+	})
+
+	It("prefers a pending annotation over an unexpired, unconsumed Status hash", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
+			Hash:      "cafef00d",
+			ExpiresAt: metav1.NewTime(now.Add(9 * time.Minute)),
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "abcdef01",
+					BootNonceExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("cafef00d"))
+	})
+
+	It("falls back to the Status hash when the pending annotation is expired", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
+			Hash:      "cafef00d",
+			ExpiresAt: metav1.NewTime(now.Add(-1 * time.Minute)),
+		})
+		ph := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+					BootNonceHash:      "abcdef01",
+					BootNonceExpiresAt: &exp,
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("abcdef01"))
 	})
 })
 
@@ -1951,8 +2038,8 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, physicalHost)).To(Succeed())
 
-		By("Asserting bootNonceStillValid returns false for a consumed nonce")
-		Expect(bootNonceStillValid(physicalHost, time.Now())).To(BeFalse(),
+		By("Asserting unexpiredBootNonceHash returns no hash for a consumed nonce")
+		Expect(unexpiredBootNonceHash(physicalHost, time.Now())).To(BeEmpty(),
 			"a consumed nonce must not block a fresh mint")
 
 		By("Calling mintAndStoreBootNonce — should succeed and produce a new annotation")
@@ -2350,5 +2437,245 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 		By("mapping nothing for a host that is not claimable")
 		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrastructurev1beta1.StateAvailable))).To(BeEmpty())
 		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrastructurev1beta1.StateInUse))).To(BeEmpty())
+	})
+})
+
+// Credential reuse must be backed by the per-host Secret.
+//
+// Dome lab, 2026-09-09: two active managers (leader election off) each minted a
+// bearer token for the same host within a second and their writes interleaved —
+// the per-host Secret ended up holding one manager's plaintext while
+// Status.Bootstrap.TokenHash carried the other's hash. The inspector booted with
+// the Secret's plaintext, the callback server 401'd every request and the
+// machine hit InspectionTimedOut. Because the reuse check looked only at
+// Status.{TokenHash,ExpiresAt}, the mismatch survived every re-claim of the host
+// until the PhysicalHost was deleted and recreated. The double mint is a
+// topology fault; these specs pin the resilience fix: triggerInspection reuses a
+// credential only when the Secret's plaintext hashes to the advertised hash and
+// otherwise mints afresh, so one inconsistency can never strand a host for good.
+var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secret", func() {
+	var (
+		testNs       *corev1.Namespace
+		physicalHost *infrastructurev1beta1.PhysicalHost
+		b7machine    *infrastructurev1beta1.Beskar7Machine
+		r            *Beskar7MachineReconciler
+		hostKey      types.NamespacedName
+		secretKey    types.NamespacedName
+	)
+
+	mustMint := func() (plaintext, hash string) {
+		p, h, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		return p, h
+	}
+	tokenExpiry := func() *metav1.Time {
+		t := metav1.NewTime(time.Now().Add(30 * time.Minute))
+		return &t
+	}
+	nonceExpiry := func() *metav1.Time {
+		t := metav1.NewTime(time.Now().Add(5 * time.Minute))
+		return &t
+	}
+
+	BeforeEach(func() {
+		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "credential-reuse-test-"}}
+		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
+
+		creds := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "bmc-creds", Namespace: testNs.Name},
+			Data:       map[string][]byte{"username": []byte("admin"), "password": []byte("password")},
+		}
+		Expect(k8sClient.Create(ctx, creds)).To(Succeed())
+
+		physicalHost = &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "reuse-host", Namespace: testNs.Name},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Address:              "https://192.168.77.1",
+					CredentialsSecretRef: creds.Name,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+		hostKey = client.ObjectKeyFromObject(physicalHost)
+		secretKey = types.NamespacedName{Namespace: testNs.Name, Name: bootstrapTokenSecretName(physicalHost.Name)}
+
+		// triggerInspection only stamps Status.Phase on the machine; it does not
+		// need to exist in the API server.
+		b7machine = &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "reuse-machine", Namespace: testNs.Name},
+		}
+
+		r = &Beskar7MachineReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("credential-reuse-test"),
+			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
+				return internalredfish.NewMockClient(), nil
+			},
+			BootstrapURLBase: "https://test.svc:8082",
+		}
+	})
+
+	AfterEach(func() {
+		Expect(k8sClient.Delete(ctx, testNs)).To(Succeed())
+	})
+
+	// seedStatus plants what the PhysicalHost reconciler would have promoted
+	// from an earlier mint's annotation, and refreshes the local copy so
+	// triggerInspection sees it.
+	seedStatus := func(bs *infrastructurev1beta1.BootstrapStatus) {
+		Expect(k8sClient.Get(ctx, hostKey, physicalHost)).To(Succeed())
+		physicalHost.Status.Bootstrap = bs
+		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+		Expect(k8sClient.Get(ctx, hostKey, physicalHost)).To(Succeed())
+	}
+	// seedSecret plants the per-host Secret as an earlier mint — or a racing
+	// manager — left it.
+	seedSecret := func(data map[string][]byte) {
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretKey.Name, Namespace: secretKey.Namespace},
+			Data:       data,
+		})).To(Succeed())
+	}
+	getSecret := func() *corev1.Secret {
+		s := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, secretKey, s)).To(Succeed())
+		return s
+	}
+	getHost := func() *infrastructurev1beta1.PhysicalHost {
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, hostKey, ph)).To(Succeed())
+		return ph
+	}
+	tokenAnnotation := func(ph *infrastructurev1beta1.PhysicalHost) BootstrapTokenAnnotationValue {
+		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation), "a fresh token must be advertised through the annotation")
+		var v BootstrapTokenAnnotationValue
+		Expect(json.Unmarshal([]byte(ph.Annotations[BootstrapTokenAnnotation]), &v)).To(Succeed())
+		return v
+	}
+	nonceAnnotation := func(ph *infrastructurev1beta1.PhysicalHost) BootNonceAnnotationValue {
+		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation), "a fresh nonce must be advertised through the annotation")
+		var v BootNonceAnnotationValue
+		Expect(json.Unmarshal([]byte(ph.Annotations[BootNonceAnnotation]), &v)).To(Succeed())
+		return v
+	}
+	trigger := func() {
+		_, err := r.triggerInspection(ctx, r.Log, b7machine, physicalHost)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	Context("bearer token", func() {
+		It("re-mints when Status advertises an unexpired hash but the Secret holds a different plaintext", func() {
+			_, staleHash := mustMint()
+			strayPlaintext, _ := mustMint()
+			seedSecret(map[string][]byte{"plaintext-token": []byte(strayPlaintext)})
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+
+			trigger()
+
+			By("the Secret holds a fresh plaintext and the annotation advertises its hash")
+			plaintext := string(getSecret().Data["plaintext-token"])
+			Expect(plaintext).NotTo(Equal(strayPlaintext), "the stray plaintext must be replaced")
+			ph := getHost()
+			v := tokenAnnotation(ph)
+			Expect(v.Hash).NotTo(Equal(staleHash), "the stale hash must be replaced")
+			Expect(auth.Verify(plaintext, v.Hash)).To(BeTrue(), "Secret plaintext must hash to the advertised hash")
+
+			By("once the PhysicalHost reconciler promotes the annotation, Status agrees with the Secret")
+			(&PhysicalHostReconciler{}).applyBootstrapTokenAnnotation(r.Log, ph)
+			Expect(auth.Verify(plaintext, ph.Status.Bootstrap.TokenHash)).To(BeTrue())
+		})
+
+		It("reuses a token whose Secret plaintext hashes to the Status hash (no re-mint)", func() {
+			plaintext, hash := mustMint()
+			seedSecret(map[string][]byte{"plaintext-token": []byte(plaintext)})
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: hash, ExpiresAt: tokenExpiry()})
+
+			trigger()
+
+			Expect(string(getSecret().Data["plaintext-token"])).To(Equal(plaintext), "a consistent token must not be replaced")
+			Expect(getHost().Annotations).NotTo(HaveKey(BootstrapTokenAnnotation), "a consistent token must not be re-advertised")
+		})
+
+		It("re-mints when Status advertises an unexpired hash but the Secret is missing", func() {
+			_, staleHash := mustMint()
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+
+			trigger()
+
+			plaintext := string(getSecret().Data["plaintext-token"])
+			Expect(plaintext).NotTo(BeEmpty(), "a fresh plaintext must be written")
+			v := tokenAnnotation(getHost())
+			Expect(v.Hash).NotTo(Equal(staleHash), "the stale hash must be replaced")
+			Expect(auth.Verify(plaintext, v.Hash)).To(BeTrue(), "Secret plaintext must hash to the advertised hash")
+		})
+
+		// A pending annotation is always a newer mint than Status — the
+		// PhysicalHost reconciler clears it on promotion — and it is the mint
+		// whose plaintext the Secret holds. The Secret must be checked against
+		// it rather than the older Status hash, or every reconcile until the
+		// PhysicalHost reconciler caught up would re-mint.
+		It("does not re-mint while a pending annotation already advertises the Secret's plaintext", func() {
+			_, staleHash := mustMint()
+			plaintext, hash := mustMint()
+			seedSecret(map[string][]byte{"plaintext-token": []byte(plaintext)})
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+			issuedAt, expiresAt := auth.LifetimeFor(time.Now())
+			Expect(r.setBootstrapTokenAnnotation(ctx, r.Log, physicalHost, hash, issuedAt, expiresAt)).To(Succeed())
+
+			trigger()
+
+			Expect(string(getSecret().Data["plaintext-token"])).To(Equal(plaintext), "the in-flight plaintext must not be replaced")
+			Expect(tokenAnnotation(getHost()).Hash).To(Equal(hash), "the in-flight mint must stay advertised")
+		})
+	})
+
+	Context("boot nonce", func() {
+		It("re-mints when Status advertises an unexpired, unconsumed hash but the Secret holds a different nonce", func() {
+			_, staleHash := mustMint()
+			strayNonce, _ := mustMint()
+			seedSecret(map[string][]byte{"plaintext-boot-nonce": []byte(strayNonce)})
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
+
+			trigger()
+
+			nonce := string(getSecret().Data["plaintext-boot-nonce"])
+			Expect(nonce).NotTo(Equal(strayNonce), "the stray nonce must be replaced")
+			ph := getHost()
+			v := nonceAnnotation(ph)
+			Expect(v.Hash).NotTo(Equal(staleHash), "the stale hash must be replaced")
+			Expect(auth.Verify(nonce, v.Hash)).To(BeTrue(), "Secret nonce must hash to the advertised hash")
+
+			(&PhysicalHostReconciler{}).applyBootNonceAnnotation(r.Log, ph)
+			Expect(auth.Verify(nonce, ph.Status.Bootstrap.BootNonceHash)).To(BeTrue())
+		})
+
+		It("reuses a nonce whose Secret plaintext hashes to the Status hash (no re-mint)", func() {
+			nonce, hash := mustMint()
+			seedSecret(map[string][]byte{"plaintext-boot-nonce": []byte(nonce)})
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: hash, BootNonceExpiresAt: nonceExpiry()})
+
+			trigger()
+
+			Expect(string(getSecret().Data["plaintext-boot-nonce"])).To(Equal(nonce), "a consistent nonce must not be replaced")
+			Expect(getHost().Annotations).NotTo(HaveKey(BootNonceAnnotation), "a consistent nonce must not be re-advertised")
+		})
+
+		// The bearer-token mint earlier in the same triggerInspection call
+		// creates the Secret, so this also covers "Secret present, nonce key
+		// absent".
+		It("re-mints when Status advertises an unexpired hash but the Secret is missing", func() {
+			_, staleHash := mustMint()
+			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
+
+			trigger()
+
+			nonce := string(getSecret().Data["plaintext-boot-nonce"])
+			Expect(nonce).NotTo(BeEmpty(), "a fresh nonce must be written")
+			v := nonceAnnotation(getHost())
+			Expect(v.Hash).NotTo(Equal(staleHash), "the stale hash must be replaced")
+			Expect(auth.Verify(nonce, v.Hash)).To(BeTrue(), "Secret nonce must hash to the advertised hash")
+		})
 	})
 })

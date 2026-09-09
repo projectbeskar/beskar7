@@ -447,39 +447,56 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	// valid. Re-minting on every reconcile would invalidate any in-flight
 	// bearer headers the inspector or target OS already received via the iPXE
 	// kernel cmdline, and would force a re-render of the cmdline before each
-	// boot. The 30-minute validity window (D-004) is comfortably above the
+	// boot. The 60-minute validity window (D-004) is comfortably above the
 	// 10-minute DefaultInspectionTimeout, so reusing a still-valid token
 	// across reconciles is safe.
 	//
-	// Re-mint conditions: no Bootstrap status block, empty TokenHash, missing
-	// ExpiresAt, or ExpiresAt in the past. In any of those cases the existing
-	// token is unusable and we must mint fresh. The plaintext is delivered to
-	// the inspector via a Secret (so it survives manager restart during the
-	// validity window — D-006); only the hash + lifetime are signalled to
-	// PhysicalHost via an annotation. The plaintext is never logged.
-	if bootstrapTokenStillValid(physicalHost, time.Now()) {
-		logger.V(1).Info("Existing bootstrap token still valid; skipping mint")
-	} else {
-		if err := r.mintAndStoreBootstrapToken(ctx, logger, physicalHost); err != nil {
-			logger.Error(err, "Failed to mint and store bootstrap token")
-			return ctrl.Result{}, err
-		}
+	// Re-mint conditions: no unexpired hash is advertised (no Bootstrap status
+	// block, empty TokenHash, missing or past ExpiresAt, and no pending
+	// annotation either), OR the per-host Secret does not hold the plaintext
+	// of the advertised hash. The second condition is what lets a host recover
+	// from a Secret/Status split (two managers minting at once, an operator
+	// deleting the Secret): the credential the host would present could never
+	// verify, so reusing it would strand the host for as long as the hash
+	// stays unexpired — and across re-claims, since a re-claim inherits
+	// Status. The plaintext is delivered to the inspector via the Secret (so
+	// it survives manager restart during the validity window — D-006); only
+	// the hash + lifetime are signalled to PhysicalHost via an annotation. The
+	// plaintext is never logged.
+	now := time.Now()
+	tokenReusable, err := r.bootstrapTokenReusable(ctx, logger, physicalHost, now)
+	if err != nil {
+		logger.Error(err, "Failed to check the existing bootstrap token against its Secret")
+		return ctrl.Result{}, err
+	}
+	if tokenReusable {
+		logger.V(1).Info("Existing bootstrap token still valid and backed by its Secret; skipping mint")
+	} else if err := r.mintAndStoreBootstrapToken(ctx, logger, physicalHost); err != nil {
+		logger.Error(err, "Failed to mint and store bootstrap token")
+		return ctrl.Result{}, err
 	}
 
-	// Mint a fresh boot nonce (D-009) unless the existing one is still valid
-	// and unconsumed. The nonce has a shorter lifetime (10 min) than the bearer
-	// token (30 min) and is single-use: once BootNonceConsumedAt is set by the
-	// /boot handler (D-010) it is never reused — we always mint fresh on the
-	// next triggerInspection. This block is independent of the token block above:
-	// the two credentials have different lifecycles and neither mint affects the
+	// Mint a fresh boot nonce (D-009) unless the existing one is still valid,
+	// unconsumed and backed by the Secret. The nonce has a shorter lifetime
+	// (10 min) than the bearer token (60 min) and is single-use: once
+	// BootNonceConsumedAt is set by the /boot handler (D-010) it is never
+	// reused — we always mint fresh on the next triggerInspection. The Secret
+	// cross-check matters here as much as for the token: the operator's boot
+	// service reads the nonce out of the Secret (docs/ipxe-setup.md), and a
+	// nonce that does not hash to Status.BootNonceHash fails every /boot
+	// fetch. This block is independent of the token block above: the two
+	// credentials have different lifecycles and neither mint affects the
 	// other's state.
-	if bootNonceStillValid(physicalHost, time.Now()) {
-		logger.V(1).Info("Existing boot nonce still valid and unconsumed; skipping mint")
-	} else {
-		if err := r.mintAndStoreBootNonce(ctx, logger, physicalHost); err != nil {
-			logger.Error(err, "Failed to mint and store boot nonce")
-			return ctrl.Result{}, err
-		}
+	nonceReusable, err := r.bootNonceReusable(ctx, logger, physicalHost, now)
+	if err != nil {
+		logger.Error(err, "Failed to check the existing boot nonce against its Secret")
+		return ctrl.Result{}, err
+	}
+	if nonceReusable {
+		logger.V(1).Info("Existing boot nonce still valid, unconsumed and backed by its Secret; skipping mint")
+	} else if err := r.mintAndStoreBootNonce(ctx, logger, physicalHost); err != nil {
+		logger.Error(err, "Failed to mint and store boot nonce")
+		return ctrl.Result{}, err
 	}
 
 	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
@@ -538,9 +555,19 @@ func bootstrapTokenSecretName(hostName string) string {
 	return hostName + "-bootstrap-token"
 }
 
-// bootstrapTokenStillValid reports whether the PhysicalHost's existing
-// Status.Bootstrap holds a usable bearer token at the given moment. A token is
-// reusable when:
+// Data keys of the per-host bootstrap-token Secret. The token key is also read
+// by BootHandler, which renders the plaintext into the kernel cmdline; both
+// keys are read by the operator's boot service (docs/ipxe-setup.md).
+const (
+	bootstrapTokenSecretKey = "plaintext-token"
+	bootNonceSecretKey      = "plaintext-boot-nonce"
+)
+
+// unexpiredBootstrapTokenHash returns the hash of the bearer token the host is
+// currently expected to present, or "" when no unexpired token has been
+// issued. It is the pure half of the reuse decision in triggerInspection; the
+// I/O half — does the per-host Secret actually hold that token's plaintext? —
+// is bootstrapTokenReusable. A token counts as issued and unexpired when:
 //   - Bootstrap status block is non-nil, AND
 //   - TokenHash is non-empty (a token was minted and the hash has been
 //     persisted to status — i.e. the PhysicalHost reconciler has already
@@ -548,15 +575,12 @@ func bootstrapTokenSecretName(hostName string) string {
 //   - ExpiresAt is set and strictly after now (still inside the validity
 //     window).
 //
-// Returning false forces a re-mint on the next call to triggerInspection,
-// which is the desired behaviour for an expired or never-issued token.
+// Returning "" forces a re-mint on the next call to triggerInspection, which
+// is the desired behaviour for an expired or never-issued token.
 //
-// Two sources are inspected, in order:
+// Two sources are inspected, newest first:
 //
-//  1. Status.Bootstrap.{TokenHash,ExpiresAt}. This is the steady state once
-//     the PhysicalHost controller has consumed the bootstrap-token annotation.
-//
-//  2. A pending BootstrapTokenAnnotation that has not yet been promoted to
+//  1. A pending BootstrapTokenAnnotation that has not yet been promoted to
 //     Status. Without this check, two consecutive Beskar7Machine reconciles
 //     that both observe Status.Bootstrap as empty (because the PhysicalHost
 //     controller has not yet processed the annotation from the first
@@ -566,18 +590,21 @@ func bootstrapTokenSecretName(hostName string) string {
 //     because the presented token does not hash to the stored hash. Reading
 //     the annotation back here gives the second reconcile a tiebreaker so
 //     it skips minting when an in-flight token is already on the wire.
-func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) bool {
+//
+//  2. Status.Bootstrap.{TokenHash,ExpiresAt}. This is the steady state once
+//     the PhysicalHost controller has consumed the bootstrap-token annotation.
+//
+// The pending annotation wins when both are present: the PhysicalHost
+// controller clears the annotation on promotion, so a pending one is always a
+// newer mint than Status — and it is the mint whose plaintext the Secret
+// holds. Reporting the older Status hash instead would make
+// bootstrapTokenReusable see a mismatch and re-mint on every reconcile until
+// the PhysicalHost controller caught up.
+func unexpiredBootstrapTokenHash(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) string {
 	if physicalHost == nil {
-		return false
+		return ""
 	}
-	// (1) Steady-state check.
-	if physicalHost.Status.Bootstrap != nil &&
-		physicalHost.Status.Bootstrap.TokenHash != "" &&
-		physicalHost.Status.Bootstrap.ExpiresAt != nil &&
-		now.Before(physicalHost.Status.Bootstrap.ExpiresAt.Time) {
-		return true
-	}
-	// (2) Pending-annotation check: a previous reconcile of this same
+	// (1) Pending-annotation check: a previous reconcile of this same
 	// Beskar7Machine already minted and signaled. The PhysicalHost
 	// reconciler will lift this annotation into Status on its next pass;
 	// until then, the Secret + annotation together are the authoritative
@@ -587,15 +614,46 @@ func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, 
 		if err := json.Unmarshal([]byte(raw), &v); err == nil &&
 			v.Hash != "" &&
 			now.Before(v.ExpiresAt.Time) {
-			return true
+			return v.Hash
 		}
 	}
-	return false
+	// (2) Steady-state check.
+	if bs := physicalHost.Status.Bootstrap; bs != nil &&
+		bs.TokenHash != "" &&
+		bs.ExpiresAt != nil &&
+		now.Before(bs.ExpiresAt.Time) {
+		return bs.TokenHash
+	}
+	return ""
 }
 
-// bootNonceStillValid reports whether the PhysicalHost's existing
-// Status.Bootstrap holds a usable boot nonce at the given moment. A nonce is
-// reusable when ALL of the following hold:
+// bootstrapTokenReusable reports whether triggerInspection may skip minting a
+// bearer token: an unexpired hash is advertised (pending annotation or Status)
+// AND the per-host Secret holds a plaintext that hashes to it. The second
+// condition is what a bare Status check cannot give. The inspector presents
+// whatever the Secret holds (BootHandler renders it into the kernel cmdline)
+// and the callback server verifies against Status.TokenHash, so a Secret that
+// disagrees with the advertised hash can never authenticate, however far
+// ExpiresAt is in the future. A transient read error is returned rather than
+// treated as "not reusable", so a flaky API server retries the reconcile
+// instead of needlessly invalidating a token already on the wire.
+func (r *Beskar7MachineReconciler) bootstrapTokenReusable(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	now time.Time,
+) (bool, error) {
+	hash := unexpiredBootstrapTokenHash(physicalHost, now)
+	if hash == "" {
+		return false, nil
+	}
+	return r.bootstrapSecretBacksHash(ctx, logger, physicalHost, bootstrapTokenSecretKey, hash)
+}
+
+// unexpiredBootNonceHash returns the hash of the boot nonce the host is
+// currently expected to present, or "" when no usable nonce has been issued.
+// It is the pure half of the nonce reuse decision; bootNonceReusable is the
+// I/O half. A nonce counts as usable when ALL of the following hold:
 //   - Bootstrap status block is non-nil, AND
 //   - BootNonceHash is non-empty (a nonce was minted and the PhysicalHost
 //     reconciler has promoted the BootNonceAnnotation into Status), AND
@@ -603,36 +661,96 @@ func bootstrapTokenStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, 
 //   - BootNonceConsumedAt is nil — a consumed nonce is never valid; force a
 //     fresh mint on the next triggerInspection call (re-provision path).
 //
-// Like bootstrapTokenStillValid, a pending BootNonceAnnotation that has not yet
-// been promoted to Status also counts as valid (mint-race guard: two consecutive
-// Beskar7Machine reconciles must not both mint and clobber each other's nonce in
-// the per-host Secret while the PhysicalHost controller is still catching up).
-func bootNonceStillValid(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) bool {
+// Like unexpiredBootstrapTokenHash, a pending BootNonceAnnotation that has not
+// yet been promoted to Status also counts, and wins over Status: mint-race
+// guard (two consecutive Beskar7Machine reconciles must not both mint and
+// clobber each other's nonce in the per-host Secret while the PhysicalHost
+// controller is still catching up), and the pending mint is the one whose
+// plaintext the Secret holds.
+func unexpiredBootNonceHash(physicalHost *infrastructurev1beta1.PhysicalHost, now time.Time) string {
 	if physicalHost == nil {
-		return false
+		return ""
 	}
-	// (1) Steady-state check from Status.Bootstrap.
-	if physicalHost.Status.Bootstrap != nil &&
-		physicalHost.Status.Bootstrap.BootNonceHash != "" &&
-		physicalHost.Status.Bootstrap.BootNonceExpiresAt != nil &&
-		now.Before(physicalHost.Status.Bootstrap.BootNonceExpiresAt.Time) &&
-		physicalHost.Status.Bootstrap.BootNonceConsumedAt == nil {
-		return true
-	}
-	// (2) Pending-annotation check: a previous reconcile already minted and
+	// (1) Pending-annotation check: a previous reconcile already minted and
 	// signalled via BootNonceAnnotation; the PhysicalHost controller has not
 	// yet promoted it to Status. The annotation does not carry ConsumedAt —
-	// once a nonce is consumed the handler writes Status directly (D-010), so
-	// if ConsumedAt is set in Status it was caught by (1) above.
+	// once a nonce is consumed the handler writes Status directly (D-010) —
+	// but the /boot handler verifies against Status, so a nonce can only be
+	// consumed after promotion, by which time the annotation is gone and (2)
+	// below sees ConsumedAt.
 	if raw, ok := physicalHost.Annotations[BootNonceAnnotation]; ok && raw != "" {
 		var v BootNonceAnnotationValue
 		if err := json.Unmarshal([]byte(raw), &v); err == nil &&
 			v.Hash != "" &&
 			now.Before(v.ExpiresAt.Time) {
-			return true
+			return v.Hash
 		}
 	}
-	return false
+	// (2) Steady-state check from Status.Bootstrap.
+	if bs := physicalHost.Status.Bootstrap; bs != nil &&
+		bs.BootNonceHash != "" &&
+		bs.BootNonceExpiresAt != nil &&
+		now.Before(bs.BootNonceExpiresAt.Time) &&
+		bs.BootNonceConsumedAt == nil {
+		return bs.BootNonceHash
+	}
+	return ""
+}
+
+// bootNonceReusable is bootstrapTokenReusable for the boot nonce: an
+// unexpired, unconsumed hash is advertised AND the per-host Secret holds its
+// plaintext. The operator's boot service reads the nonce out of that Secret to
+// build the /boot URL (docs/ipxe-setup.md), so a nonce that does not hash to
+// Status.BootNonceHash fails every fetch for as long as it stays unexpired.
+func (r *Beskar7MachineReconciler) bootNonceReusable(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	now time.Time,
+) (bool, error) {
+	hash := unexpiredBootNonceHash(physicalHost, now)
+	if hash == "" {
+		return false, nil
+	}
+	return r.bootstrapSecretBacksHash(ctx, logger, physicalHost, bootNonceSecretKey, hash)
+}
+
+// bootstrapSecretBacksHash reports whether the per-host bootstrap-token Secret
+// holds, under key, a plaintext that hashes to hash. A missing Secret, a
+// missing or empty key, or a plaintext that hashes to something else all mean
+// the credential the host would present can never verify against what Status
+// advertises: the caller mints afresh, and the Info line here — host, Secret
+// and key only, never the plaintext or the hash — is the operator's record
+// that it did and why. Any other read error is returned so the reconcile
+// retries rather than re-minting over a transient API failure.
+func (r *Beskar7MachineReconciler) bootstrapSecretBacksHash(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrastructurev1beta1.PhysicalHost,
+	key, hash string,
+) (bool, error) {
+	secretName := bootstrapTokenSecretName(physicalHost.Name)
+	secret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: secretName}, secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Info("Per-host bootstrap Secret is missing; minting a fresh credential",
+				"host", physicalHost.Name, "secret", secretName, "key", key)
+			return false, nil
+		}
+		return false, fmt.Errorf("get bootstrap-token Secret %s: %w", secretName, err)
+	}
+	plaintext := secret.Data[key]
+	if len(plaintext) == 0 {
+		logger.Info("Per-host bootstrap Secret has no plaintext for the advertised credential; minting a fresh one",
+			"host", physicalHost.Name, "secret", secretName, "key", key)
+		return false, nil
+	}
+	if !auth.Verify(string(plaintext), hash) {
+		logger.Info("Per-host bootstrap Secret plaintext does not hash to the advertised credential; minting a fresh one",
+			"host", physicalHost.Name, "secret", secretName, "key", key)
+		return false, nil
+	}
+	return true, nil
 }
 
 // upsertBootstrapTokenSecret writes one or both of the plaintext credentials to
@@ -678,10 +796,10 @@ func (r *Beskar7MachineReconciler) upsertBootstrapTokenSecret(
 		}
 		// Write whichever keys were provided; do not clobber keys not supplied.
 		if token != "" {
-			secret.Data["plaintext-token"] = []byte(token)
+			secret.Data[bootstrapTokenSecretKey] = []byte(token)
 		}
 		if nonce != "" {
-			secret.Data["plaintext-boot-nonce"] = []byte(nonce)
+			secret.Data[bootNonceSecretKey] = []byte(nonce)
 		}
 		return nil
 	})

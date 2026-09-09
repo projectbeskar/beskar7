@@ -321,24 +321,23 @@ kubectl describe physicalhost <name>
 
 **Symptom:** The inspector logs `401` from `https://<manager>:8082/api/v1/inspection/<ns>/<host>`, or the host fails to fetch bootstrap data.
 
-The callback endpoint authenticates every request via per-host bearer tokens. Failures collapse to an opaque `401` body — the verifier's specific reason is logged on the manager at V(1).
+The callback endpoint authenticates every request via per-host bearer tokens. Failures collapse to an opaque `401` body — the verifier logs every rejection on the manager at default verbosity as `auth: rejected bearer token`, with `host`, `remote` and a `reason` field (never the token itself).
 
 **Diagnosis:**
 ```bash
-# Tail manager logs for verifier output. Add --zap-devel=true to manager args
-# temporarily to surface V(1) lines.
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep -i bearer
+# Tail manager logs for rejected bearers (Info level; no --zap-devel needed).
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep "rejected bearer token"
 ```
 
 **Common causes:**
 
-| V(1) message | Cause | Fix |
+| `reason` | Cause | Fix |
 |---|---|---|
 | `no bootstrap token issued for host ...` | The Beskar7Machine reconciler has not minted a token yet. | Wait, or check `kubectl describe beskar7machine <name>` for the current phase. |
-| `bootstrap token expired for host ...` | More than 30 minutes elapsed since the token was minted (`auth.TokenLifetime`). | Delete the per-host Secret `<host>-bootstrap-token`; the controller mints a fresh one and re-renders the cmdline on next reconcile. The booted host must re-PXE to pick up the new plaintext. |
-| `bootstrap token mismatch for host ...` | Plaintext on the wire does not hash to `Status.Bootstrap.TokenHash`. | Stale iPXE cmdline. Compare the token in the kernel cmdline against `kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`. Re-PXE if they diverge. |
+| `bootstrap token expired for host ...` | More than 60 minutes elapsed since the token was minted (`auth.TokenLifetime`). | Delete the per-host Secret `<host>-bootstrap-token`; the controller mints a fresh one and re-renders the cmdline on next reconcile. The booted host must re-PXE to pick up the new plaintext. |
+| `bootstrap token mismatch for host ...` | Plaintext on the wire does not hash to `Status.Bootstrap.TokenHash`. | Stale iPXE cmdline, or a Secret that disagrees with the status hash. Compare the token in the kernel cmdline against `kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`; re-PXE if they diverge. If the Secret's own plaintext does not hash to `status.bootstrap.tokenHash` (seen after two managers minted for the same host at once), the Beskar7Machine reconciler notices on its next `triggerInspection` pass, mints a fresh token and logs `Per-host bootstrap Secret plaintext does not hash to the advertised credential; minting a fresh one` for the host; re-PXE once it has. |
 
-Clock skew (> 30 min) between the manager pod and the BMC-managed host can also cause `expired` results — verify NTP on both sides.
+Clock skew (> 60 min) between the manager pod and the BMC-managed host can also cause `expired` results — verify NTP on both sides.
 
 ### 11. PhysicalHost in Error: `InsecureCABundleConflict` or `CABundleFetchFailed`
 

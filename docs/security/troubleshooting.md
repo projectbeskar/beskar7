@@ -69,26 +69,22 @@ If `curl` succeeds, the credentials are correct — the problem is elsewhere (BM
 
 ## Bearer-token failures (`401 Unauthorized` from `:8082`)
 
-The callback endpoint returns an opaque `401` for every authentication failure. The verifier's specific error is logged at V(1) on the manager. To see why a request failed:
+The callback endpoint returns an opaque `401` for every authentication failure. Each rejection is logged on the manager at default verbosity as `auth: rejected bearer token`, with the `host`, the `remote` address and a `reason` — never the token or the `Authorization` header. To see why a request failed:
 
 ```bash
-# Restart the manager with --zap-devel=true (development log encoder, V(1) included)
-kubectl edit deployment beskar7-controller-manager -n beskar7-system
-# Add --zap-devel=true to args, save, wait for rollout
-
 # Tail the logs while the inspector retries:
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep -i bearer
+kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep "rejected bearer token"
 ```
 
 Possible causes:
 
-| Log message | Cause | Fix |
+| `reason` | Cause | Fix |
 |---|---|---|
 | `get PhysicalHost: ... not found` | URL path references a host that does not exist. | Check the iPXE-rendered cmdline matches the actual `<namespace>/<host>`. |
 | `no bootstrap token issued for host ...` | `Status.Bootstrap.TokenHash` is empty. | The Beskar7Machine reconciler has not yet run `triggerInspection` for this host. Wait, or check Beskar7Machine status. |
-| `bootstrap token expired for host ...` | The token's `ExpiresAt` is in the past (30-min lifetime). | Trigger a re-mint — easiest is to delete the per-host Secret (`<host>-bootstrap-token`), the Beskar7Machine reconciler will mint a fresh one. The iPXE cmdline embedding the previous plaintext will be invalid; the host must re-PXE. |
-| `bootstrap token mismatch for host ...` | The plaintext on the wire does not hash to the stored hash. | Likely a stale iPXE cmdline. Rebuild the cmdline from the current Secret (`kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`) and re-PXE the host. Persistent mismatch suggests cmdline truncation or shell-escape damage in your iPXE template. |
-| Clock skew between manager and host > 30m | Host clock far in the future or past. | NTP. |
+| `bootstrap token expired for host ...` | The token's `ExpiresAt` is in the past (60-min lifetime). | Trigger a re-mint — easiest is to delete the per-host Secret (`<host>-bootstrap-token`), the Beskar7Machine reconciler will mint a fresh one. The iPXE cmdline embedding the previous plaintext will be invalid; the host must re-PXE. |
+| `bootstrap token mismatch for host ...` | The plaintext on the wire does not hash to the stored hash. | Likely a stale iPXE cmdline. Rebuild the cmdline from the current Secret (`kubectl get secret <host>-bootstrap-token -o jsonpath='{.data.plaintext-token}' \| base64 -d`) and re-PXE the host. Persistent mismatch suggests cmdline truncation or shell-escape damage in your iPXE template — or a Secret that itself does not hash to `status.bootstrap.tokenHash` (for example after two managers minted for the same host at once). The Beskar7Machine reconciler checks for that on every `triggerInspection` pass and re-mints, logging `Per-host bootstrap Secret plaintext does not hash to the advertised credential; minting a fresh one` for the host; re-PXE once it has. |
+| Clock skew between manager and host > 60m | Host clock far in the future or past. | NTP. |
 
 ## RBAC
 
