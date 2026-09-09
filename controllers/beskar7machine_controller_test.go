@@ -12,6 +12,7 @@ import (
 	"github.com/stmcginnis/gofish/redfish"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -171,7 +172,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			// beskar7Machine.Spec.ProviderID is unset (set later in handleReadyHost),
 			// status.state is InUse so the StateAvailable index won't return it — only
 			// the ConsumerRef branch can.
-			got, result, err := reconciler.findAndClaimOrGetAssociatedHost(ctx, ctrl.Log.WithName("refind-test"), beskar7Machine)
+			got, result, err := reconciler.findAndClaimOrGetAssociatedHost(ctx, ctrl.Log.WithName("refind-test"), beskar7Machine, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result).To(Equal(ctrl.Result{}), "no requeue expected — host is already claimed by us")
 			Expect(got).NotTo(BeNil(), "ConsumerRef lookup must re-find the claimed host")
@@ -1044,8 +1045,8 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		By("Calling findAndClaimOrGetAssociatedHost for machine-a then machine-b in quick succession")
 		log := ctrl.Log.WithName("race-test-direct")
 
-		claimedByA, resultA, errA := r.findAndClaimOrGetAssociatedHost(ctx, log, machineA)
-		claimedByB, resultB, errB := r.findAndClaimOrGetAssociatedHost(ctx, log, machineB)
+		claimedByA, resultA, errA := r.findAndClaimOrGetAssociatedHost(ctx, log, machineA, nil)
+		claimedByB, resultB, errB := r.findAndClaimOrGetAssociatedHost(ctx, log, machineB, nil)
 
 		By("Asserting exactly one machine won and neither call returned a hard error")
 		// Both calls must not return a hard error.
@@ -1141,7 +1142,7 @@ var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func
 			Log:    ctrl.Log.WithName("no-avail-test"),
 		}
 
-		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, machine)
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, machine, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(BeNil(), "no Available host means no host to return")
 		Expect(result).To(Equal(ctrl.Result{}), "the helper does not requeue itself; the caller does")
@@ -1956,5 +1957,160 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		var value BootNonceAnnotationValue
 		Expect(json.Unmarshal([]byte(raw), &value)).To(Succeed())
 		Expect(value.Hash).NotTo(Equal("oldhash"), "fresh nonce must produce a new hash")
+	})
+})
+
+var _ = Describe("Host claim honours the Machine's failure domain", func() {
+	// CAPI places a Machine into one of the failure domains Beskar7Cluster
+	// publishes, which it derives from the topology.kubernetes.io/zone label on
+	// PhysicalHosts. The fresh-claim path must respect that placement: an
+	// Available host in another zone, or with no zone at all, is not a candidate.
+	// A fake client with the same status.state index the manager registers is
+	// enough here — the claim is a List with a field selector plus a label
+	// selector, and both are honoured by the fake.
+
+	hostIndex := func(obj client.Object) []string {
+		h, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+		if !ok {
+			return nil
+		}
+		return []string{string(h.Status.State)}
+	}
+	availableHost := func(name, zone string) *infrastructurev1beta1.PhysicalHost {
+		h := &infrastructurev1beta1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			Spec: infrastructurev1beta1.PhysicalHostSpec{
+				RedfishConnection: infrastructurev1beta1.RedfishConnection{Address: "https://192.0.2.10", CredentialsSecretRef: "irrelevant"},
+			},
+			Status: infrastructurev1beta1.PhysicalHostStatus{State: infrastructurev1beta1.StateAvailable},
+		}
+		if zone != "" {
+			h.Labels = map[string]string{zoneLabelKey: zone}
+		}
+		return h
+	}
+	newClientWith := func(hosts ...*infrastructurev1beta1.PhysicalHost) client.Client {
+		b := fake.NewClientBuilder().WithScheme(scheme.Scheme).
+			WithIndex(&infrastructurev1beta1.PhysicalHost{}, PhysicalHostStateIndex, hostIndex)
+		for _, h := range hosts {
+			b = b.WithStatusSubresource(h)
+		}
+		c := b.Build()
+		for _, h := range hosts {
+			Expect(c.Create(context.Background(), h)).To(Succeed())
+			Expect(c.Status().Update(context.Background(), h)).To(Succeed())
+		}
+		return c
+	}
+	newMachine := func() *infrastructurev1beta1.Beskar7Machine {
+		return &infrastructurev1beta1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "fd-machine", Namespace: "default", Finalizers: []string{Beskar7MachineFinalizer}},
+			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot/inspect.ipxe",
+				TargetImageURL:     "http://boot/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+	}
+	inZone := func(zone string) labels.Selector { return labels.SelectorFromSet(labels.Set{zoneLabelKey: zone}) }
+	consumerOf := func(c client.Client, name string) *corev1.ObjectReference {
+		h := &infrastructurev1beta1.PhysicalHost{}
+		Expect(c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, h)).To(Succeed())
+		return h.Spec.ConsumerRef
+	}
+
+	It("claims only a host in the failure domain, even when others list first", func() {
+		// Names sort so both non-matching hosts come before the match.
+		c := newClientWith(availableHost("a-other-zone", "rack-2"), availableHost("b-no-zone", ""), availableHost("c-in-zone", "rack-1"))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("fd-test")}
+
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, newMachine(), inZone("rack-1"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil(), "an Available host in the failure domain must be claimed")
+		Expect(got.Name).To(Equal("c-in-zone"))
+		Expect(result.RequeueAfter).To(Equal(5*time.Second), "a fresh claim requeues so the next pass re-finds it via ConsumerRef")
+		Expect(consumerOf(c, "c-in-zone")).NotTo(BeNil())
+		Expect(consumerOf(c, "a-other-zone")).To(BeNil(), "a host in another zone must not be touched")
+		Expect(consumerOf(c, "b-no-zone")).To(BeNil(), "a host with no zone label must not be touched")
+	})
+
+	It("claims nothing when no Available host is in the failure domain", func() {
+		c := newClientWith(availableHost("a-other-zone", "rack-2"), availableHost("b-no-zone", ""))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("fd-test")}
+
+		got, result, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, newMachine(), inZone("rack-1"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeNil(), "a host outside the failure domain must not be claimed")
+		Expect(result.IsZero()).To(BeTrue())
+		Expect(consumerOf(c, "a-other-zone")).To(BeNil())
+		Expect(consumerOf(c, "b-no-zone")).To(BeNil())
+	})
+
+	It("claims any Available host when the Machine has no failure domain", func() {
+		c := newClientWith(availableHost("a-other-zone", "rack-2"))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("fd-test")}
+
+		got, _, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, newMachine(), nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).NotTo(BeNil(), "unconstrained machines keep today's behaviour")
+		Expect(got.Name).To(Equal("a-other-zone"))
+	})
+
+	It("derives the placement from Machine.spec.failureDomain and nothing else", func() {
+		sel, err := hostPlacementSelector(nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel).To(BeNil())
+
+		m := &clusterv1.Machine{}
+		sel, err = hostPlacementSelector(m)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel).To(BeNil(), "no failure domain: no constraint")
+
+		empty := ""
+		m.Spec.FailureDomain = &empty
+		sel, err = hostPlacementSelector(m)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel).To(BeNil(), "an empty failure domain is no constraint")
+
+		fd := "rack-1"
+		m.Spec.FailureDomain = &fd
+		sel, err = hostPlacementSelector(m)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(sel.String()).To(Equal(zoneLabelKey + "=rack-1"))
+
+		bad := "not a label value!"
+		m.Spec.FailureDomain = &bad
+		_, err = hostPlacementSelector(m)
+		Expect(err).To(HaveOccurred(), "a failure domain that cannot be a label value must be reported, not silently match nothing")
+	})
+
+	It("reports NoMatchingPhysicalHost rather than WaitingForPhysicalHost when hosts exist outside the domain", func() {
+		c := newClientWith(availableHost("a-other-zone", "rack-2"))
+		r := &Beskar7MachineReconciler{Client: c, Scheme: scheme.Scheme, Log: ctrl.Log.WithName("fd-test")}
+		b7m := newMachine()
+		fd := "rack-1"
+		machine := &clusterv1.Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "fd-owner", Namespace: "default"},
+			Spec:       clusterv1.MachineSpec{ClusterName: "fake-cluster", FailureDomain: &fd},
+		}
+
+		result, err := r.reconcileNormal(context.Background(), r.Log, b7m, machine)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(time.Minute))
+
+		cond := conditions.Get(b7m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(infrastructurev1beta1.NoMatchingPhysicalHostReason))
+		Expect(cond.Message).To(ContainSubstring(zoneLabelKey + "=rack-1"))
+		Expect(consumerOf(c, "a-other-zone")).To(BeNil(), "the out-of-domain host must stay unclaimed")
+
+		By("keeping the unconstrained reason when the Machine has no failure domain and the inventory is empty")
+		r2 := &Beskar7MachineReconciler{Client: newClientWith(), Scheme: scheme.Scheme, Log: ctrl.Log.WithName("fd-test")}
+		b7m2 := newMachine()
+		result, err = r2.reconcileNormal(context.Background(), r2.Log, b7m2, &clusterv1.Machine{Spec: clusterv1.MachineSpec{ClusterName: "fake-cluster"}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(time.Minute))
+		Expect(conditions.Get(b7m2, infrastructurev1beta1.PhysicalHostAssociatedCondition).Reason).To(Equal(infrastructurev1beta1.WaitingForPhysicalHostReason))
 	})
 })
