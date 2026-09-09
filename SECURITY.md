@@ -37,7 +37,8 @@ is stable as of `v0.4.0`, so upgrades within the `v0.4.x` line are additive.
 
 | Version | Supported |
 |---|---|
-| `v0.4.3` (latest) | ✅ |
+| `v0.4.4` (latest) | ✅ |
+| `v0.4.3` | ✅ |
 | `v0.4.2` | ⚠️ upgrade — a released host cannot be provisioned again ([CHANGELOG](CHANGELOG.md)) |
 | `v0.4.1` | ⚠️ upgrade — also makes `kubectl apply` upgrades impossible |
 | `v0.4.0` | ⚠️ upgrade — also breaks `helm upgrade --reuse-values` |
