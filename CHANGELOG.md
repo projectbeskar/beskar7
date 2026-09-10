@@ -41,6 +41,21 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   scheduled run and the release image scan feed the Security tab. The release asset is now
   `osv-scanner-report.txt` (was `trivy-report.txt`).
 
+- **Dependency and toolchain bumps clearing the OSV-Scanner baseline.** All indirect:
+  `google.golang.org/grpc` 1.80.0 → 1.83.2 (GO-2026-6061, GHSA-2v4p-qf9q-27wj,
+  GHSA-qc2q-p7wx-3px3, GHSA-vp52-pcj8-j9qc), `golang.org/x/text` 0.38.0 → 0.41.0 (GO-2026-5970),
+  `github.com/google/cel-go` 0.26.0 → 0.30.0 (GO-2026-6094) and `golang.org/x/mod` 0.36.0 → 0.40.0
+  (GO-2026-6179, GO-2026-6180). The `golang:1.25` builder image is re-pinned to the current digest
+  (go1.25.14), clearing the Go standard-library advisories the image scan reported against the
+  go1.25.9 it previously carried, and `go.mod` gains `toolchain go1.25.14` so a local build cannot
+  silently use an older 1.25.x than the image does.
+  `x/text` is held at 0.41.0 and `x/mod` at 0.40.0 rather than latest because the next release of
+  each requires `go 1.26`, which the `golang:1.25` pin and CI's `go-version: '1.25'` do not
+  provide. `cel-go` is bumped for the image scan's benefit: the source scan already suppressed
+  GO-2026-6094 because its call analysis finds the vulnerable `cel-go/ext` symbol unreachable from
+  this codebase, but image scans match on module version and have no such analysis; that carries
+  `cel-go` ahead of the 0.26.0 `k8s.io/apiserver` v0.35.4 pins.
+  `sigs.k8s.io/cluster-api` v1.13.4 and `sigs.k8s.io/controller-runtime` v0.23.3 are unchanged.
 - **Dependabot keeps dependencies and pinned base images current** (`.github/dependabot.yml`):
   weekly Go module updates with the Kubernetes and Cluster API packages grouped and major bumps
   excluded, the digest-pinned images in all three Dockerfiles, and the workflow actions. Added
