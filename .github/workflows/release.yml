@@ -23,13 +23,13 @@ jobs:
       image-url: ${{ steps.build.outputs.image-url }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
       
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -37,7 +37,7 @@ jobs:
         
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@v6
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -48,7 +48,7 @@ jobs:
           
     - name: Build and push container image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: linux/amd64
@@ -66,13 +66,13 @@ jobs:
         output-file: sbom.spdx.json
         
     - name: Upload SBOM
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: sbom
         path: sbom.spdx.json
 
     - name: Install cosign
-      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
     # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
     #   cosign verify $IMAGE --certificate-identity-regexp \
@@ -113,13 +113,13 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}/mock-redfish
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -127,7 +127,7 @@ jobs:
 
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@v6
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -138,7 +138,7 @@ jobs:
 
     - name: Build and push mock-redfish image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-redfish
@@ -150,7 +150,7 @@ jobs:
         sbom: false
 
     - name: Install cosign
-      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
     # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
     #   cosign verify $IMAGE --certificate-identity-regexp \
@@ -178,13 +178,13 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}/mock-inspector
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v4
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -192,7 +192,7 @@ jobs:
 
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@v6
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -203,7 +203,7 @@ jobs:
 
     - name: Build and push mock-inspector image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-inspector
@@ -215,7 +215,7 @@ jobs:
         sbom: false
 
     - name: Install cosign
-      uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159 # v3.9.2
+      uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
     # Keyless (OIDC) signature bound to this workflow's identity. Verify with:
     #   cosign verify $IMAGE --certificate-identity-regexp \
@@ -289,7 +289,7 @@ jobs:
           --output=osv-scanner-report.txt
 
     - name: Upload vulnerability report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: vulnerability-report
         path: osv-scanner-report.txt
@@ -300,10 +300,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
         
@@ -360,7 +360,7 @@ jobs:
         sha256sum beskar7-manifests-${{ github.ref_name }}.yaml infrastructure-components.yaml metadata.yaml > checksums.txt
         
     - name: Upload release artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: release-artifacts
         path: |
@@ -375,7 +375,7 @@ jobs:
   #   runs-on: ubuntu-latest
   #   steps:
   #   - name: Checkout repository
-  #     uses: actions/checkout@v4
+  #     uses: actions/checkout@v7
   #     
   #   - name: Install Helm
   #     uses: azure/setup-helm@v4
@@ -395,7 +395,7 @@ jobs:
   #       helm package charts/beskar7 --destination ./charts/
   #       
   #   - name: Upload Helm chart
-  #     uses: actions/upload-artifact@v4
+  #     uses: actions/upload-artifact@v7
   #     with:
   #       name: helm-chart
   #       path: charts/*.tgz
@@ -409,10 +409,10 @@ jobs:
       contents: write
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       
     - name: Generate release notes
       id: release-notes
@@ -497,7 +497,7 @@ jobs:
         echo "All release artifacts are signed and include SBOMs for supply chain security." >> release-notes.md
         
     - name: Create Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@v3
       with:
         name: Beskar7 ${{ github.ref_name }}
         body_path: release-notes.md
@@ -520,7 +520,7 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }} # Only for stable releases
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         

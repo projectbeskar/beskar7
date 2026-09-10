@@ -21,10 +21,10 @@ jobs:
     name: Lint and Code Quality
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
         
@@ -94,10 +94,10 @@ jobs:
       matrix:
         go-version: ['1.25']
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Go ${{ matrix.go-version }}
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: ${{ matrix.go-version }}
         
@@ -110,7 +110,7 @@ jobs:
       # against config/rbac/role.yaml. Without helm on PATH those sub-tests
       # would just t.Skip — installing it here is what makes chart-vs-role.yaml
       # drift actually fail this job instead of silently skipping.
-      uses: azure/setup-helm@v4
+      uses: azure/setup-helm@v5
       with:
         version: '3.12.1'
 
@@ -133,7 +133,7 @@ jobs:
           $(go list ./... | grep -v /test/integration)
           
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
+      uses: codecov/codecov-action@v7
       with:
         file: ./coverage.out
         flags: unittests
@@ -144,7 +144,7 @@ jobs:
         go tool cover -html=coverage.out -o coverage.html
         
     - name: Upload coverage report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: coverage-report-${{ matrix.go-version }}
         path: coverage.html
@@ -154,10 +154,10 @@ jobs:
     name: Integration Tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
         
@@ -181,13 +181,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: [lint, test]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
       
     - name: Build container image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: linux/amd64  # Single platform for CI scanning
@@ -234,10 +234,10 @@ jobs:
     name: Generate and Validate Manifests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
         
@@ -276,7 +276,7 @@ jobs:
         make release-manifests
       
     - name: Upload release manifests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: release-manifests
         path: |
@@ -307,7 +307,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [manifests, container]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Create kind cluster
       uses: helm/kind-action@v1
@@ -316,10 +316,10 @@ jobs:
         kubectl_version: v1.31.0
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Build controller image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: linux/amd64
@@ -330,7 +330,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Build mock-redfish image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-redfish
@@ -345,7 +345,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Build mock-inspector image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-inspector
@@ -389,7 +389,7 @@ jobs:
         done
 
     - name: Install Helm
-      uses: azure/setup-helm@v4
+      uses: azure/setup-helm@v5
       with:
         version: '3.12.1'
 
@@ -469,10 +469,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
         
@@ -481,7 +481,7 @@ jobs:
         go test -bench=. -benchmem -run=^$ ./... > benchmark.txt
         
     - name: Upload benchmark results
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: benchmark-results
         path: benchmark.txt
@@ -500,7 +500,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [manifests, container]
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Create kind cluster
       uses: helm/kind-action@v1
@@ -509,7 +509,7 @@ jobs:
         kubectl_version: v1.31.0
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version: '1.25'
 
@@ -519,10 +519,10 @@ jobs:
         make install-controller-gen
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Build controller image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         platforms: linux/amd64
@@ -533,7 +533,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Build mock-redfish image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-redfish
@@ -545,7 +545,7 @@ jobs:
         cache-to: type=gha,mode=max
 
     - name: Build mock-inspector image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: .
         file: Dockerfile.mock-inspector
