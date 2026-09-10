@@ -5,4 +5,4 @@ resources:
 - certificate.yaml
 - issuer.yaml
 
-namespace: beskar7-system 
+namespace: capb7-system 

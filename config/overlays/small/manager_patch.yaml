@@ -1,8 +1,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
-  namespace: beskar7-system
+  name: capb7-controller-manager
+  namespace: capb7-system
 spec:
   replicas: 2  # Small HA deployment
   template:

@@ -90,7 +90,7 @@ func main() {
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
-	flag.StringVar(&bootstrapURLBase, "bootstrap-url-base", "https://beskar7-controller-manager.beskar7-system.svc:8082",
+	flag.StringVar(&bootstrapURLBase, "bootstrap-url-base", "https://capb7-controller-manager.capb7-system.svc:8082",
 		"Base URL operators expose for the bootstrap and inspection callback endpoints. "+
 			"Used to compute per-machine bootstrap URLs.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true,

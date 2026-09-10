@@ -79,7 +79,7 @@ clusterctl init --infrastructure beskar7:v0.5.0 # needs the provider in ~/.clust
 ## Verify
 
 ```bash
-kubectl get pods -n beskar7-system
+kubectl get pods -n capb7-system
 ```
 
 ## See also

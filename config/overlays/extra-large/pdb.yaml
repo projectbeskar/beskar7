@@ -1,8 +1,8 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: controller-manager-pdb
-  namespace: beskar7-system
+  name: capb7-controller-manager-pdb
+  namespace: capb7-system
 spec:
   minAvailable: 2
   selector:

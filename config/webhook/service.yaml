@@ -1,8 +1,8 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: beskar7-webhook-service
-  namespace: beskar7-system
+  name: capb7-webhook-service
+  namespace: capb7-system
 spec:
   ports:
   - port: 443

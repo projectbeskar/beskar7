@@ -1,7 +1,7 @@
 # Leader-election Role + RoleBinding in the operator's own namespace.
 #
 # Even when --watch-namespaces narrows the cache to user-data namespaces,
-# the leader-election lease lives where the operator runs (beskar7-system
+# the leader-election lease lives where the operator runs (capb7-system
 # by default). Operator-side Event creation is in the same namespace for
 # the same reason.
 #
@@ -12,7 +12,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: manager-leaderelection-role
-  namespace: beskar7-system
+  namespace: capb7-system
 rules:
 - apiGroups:
   - coordination.k8s.io
@@ -38,12 +38,12 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: manager-leaderelection-rolebinding
-  namespace: beskar7-system
+  namespace: capb7-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: manager-leaderelection-role
 subjects:
 - kind: ServiceAccount
-  name: controller-manager
-  namespace: beskar7-system
+  name: capb7-manager
+  namespace: capb7-system

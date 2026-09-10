@@ -32,19 +32,19 @@ these instead:
 
 ```bash
 # Helm 3.14+ — replays your overrides on top of the NEW chart's defaults.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.3 \
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.4.3 \
   --reset-then-reuse-values
 ```
 
 ```bash
 # Any Helm version — keep your settings in a file and pass it every time.
-helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.3 \
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.4.3 \
   -f my-beskar7-values.yaml
 ```
 
 Keeping a values file under version control is the recommended practice: it makes
 the upgrade reproducible and reviewable. Confirm the result before and after with
-`helm get values beskar7 -n beskar7-system`.
+`helm get values beskar7 -n capb7-system`.
 
 ## Matching the inspector to the controller
 
@@ -112,11 +112,19 @@ What changes on your side:
   `clusterctl.cluster.x-k8s.io/move-hierarchy` (nothing owns a host, so without it a move would leave
   every host behind). Replacing the CRDs installs them; there is no relabel step. Read
   [Installation](installation.md#clusterctl-move) before moving a namespace.
-- **Release-manifest installs:** the Deployment is now named `beskar7-controller-manager` (it was
-  `controller-manager`; the chart's name), a `beskar7-controller-manager` Service exposes the callback
+- **Every component is named `capb7-…`** (Deployment and callback Service `capb7-controller-manager`,
+  ServiceAccount `capb7-manager`, `capb7-webhook-service`, `capb7-serving-cert`, …), from the
+  kustomize overlay and from the chart alike (its default `fullnameOverride` is `capb7`). Update any
+  automation that names the old `beskar7-…` objects.
+- **The install namespace is `capb7-system`** (the upstream `cap<provider>-system` convention; it was
+  `beskar7-system`). The kustomize overlay, the release manifest, the clusterctl components and the
+  chart's documented install all use it, and the manager's default `--bootstrap-url-base` becomes
+  `https://capb7-controller-manager.capb7-system.svc:8082`. The old install is removed, not
+  upgraded in place — see the procedure.
+- **Release-manifest installs:** the Deployment is now named `capb7-controller-manager` (it was
+  `controller-manager`; the chart's name), a `capb7-controller-manager` Service exposes the callback
   server on `:8082`, and the serving certificate and NetworkPolicy cover it — a manifest install can
-  provision hosts for the first time. After re-applying the manifest, delete the old Deployment or
-  two managers will run: `kubectl -n beskar7-system delete deploy controller-manager`.
+  provision hosts for the first time.
 - **clusterctl:** the release ships `infrastructure-components.yaml` and `metadata.yaml`, so
   `clusterctl init --infrastructure beskar7` is a supported install path from `v0.5.0` on (see
   [Installation](installation.md#install-via-clusterctl)).
@@ -139,7 +147,10 @@ kubectl delete crd beskar7clusters.infrastructure.cluster.x-k8s.io \
   physicalhosts.infrastructure.cluster.x-k8s.io
 # then apply the v0.5.0 CRDs (from the chart's crds/ directory or the release manifest)
 
-# 3. Upgrade the controller: `helm upgrade`, or re-apply the release manifest.
+# 3. Remove the v0.4.x install (it lives in beskar7-system) and install v0.5.0 into capb7-system:
+#    helm uninstall beskar7 -n beskar7-system && kubectl delete namespace beskar7-system
+#    helm install beskar7 beskar7/beskar7 --namespace capb7-system --create-namespace ...
+#    (or `kubectl delete -f` the old manifest, then apply the new one / `clusterctl init`).
 
 # 4. Re-apply your PhysicalHosts and cluster manifests with apiVersion v1beta2.
 ```

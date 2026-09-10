@@ -52,7 +52,7 @@ It generates a self-signed RSA cert in memory at startup (configurable via `--tl
 Flags:
 - `--namespace`, `--host-name` (required): which PhysicalHost to inspect
 - `--wait-for-bootstrap` (default 3m): how long to poll for the Bootstrap status fields
-- `--insecure-skip-verify` (default true): the controller's callback cert covers `beskar7-webhook-service`, not the controller-manager service the bootstrap URL points at
+- `--insecure-skip-verify` (default true): the controller's callback cert covers `capb7-webhook-service`, not the controller-manager service the bootstrap URL points at
 - `--ca-bundle-file`: alternative to insecure-skip-verify, PEM CA(s) to trust
 
 The image is published as `ghcr.io/projectbeskar/beskar7/mock-inspector:<tag>` alongside the controller. Smoke runs it as a one-shot `batch/v1` Job (`hack/smoke/manifests/50-mock-inspector-job.yaml`) with a namespaced Role that only allows reading the PhysicalHost and its bootstrap-token Secret.
@@ -83,7 +83,7 @@ By default the runner tears down everything in the `beskar7-smoke` namespace on 
 
 Prerequisites on the target cluster:
 
-- Beskar7 controller installed (`helm install beskar7 beskar7/beskar7 -n beskar7-system --create-namespace`)
+- Beskar7 controller installed (`helm install beskar7 beskar7/beskar7 -n capb7-system --create-namespace`)
 - cert-manager installed (the chart depends on it for the webhook serving cert)
 - Cluster API core installed (so the CAPI `Machine` controller is present and won't block reconciliation on a missing webhook)
 

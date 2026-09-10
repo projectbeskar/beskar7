@@ -76,7 +76,7 @@ manifests: install-controller-gen
 
 # Generate RBAC manifests
 rbac:
-	$(CONTROLLER_GEN) rbac:roleName=manager-role paths="./..." output:rbac:dir=config/rbac
+	$(CONTROLLER_GEN) rbac:roleName=capb7-manager-role paths="./..." output:rbac:dir=config/rbac
 
 # Generate CRD manifests
 crd:

@@ -1,15 +1,15 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: controller-manager
-  namespace: beskar7-system
+  name: capb7-controller-manager
+  namespace: capb7-system
 spec:
   template:
     spec:
       volumes:
       - name: webhook-server-cert
         secret:
-          secretName: beskar7-webhook-server-cert
+          secretName: capb7-webhook-server-cert
       containers:
       - name: manager
         volumeMounts:

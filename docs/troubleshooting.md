@@ -8,10 +8,10 @@ This guide helps you diagnose and resolve common Beskar7 issues.
 
 ```bash
 # Check controller is running
-kubectl get pods -n beskar7-system
+kubectl get pods -n capb7-system
 
 # Check controller logs
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f
+kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 
 # Check PhysicalHost status
 kubectl get physicalhost
@@ -47,7 +47,7 @@ kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/downloa
 kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.10.0/control-plane-components.yaml
 
 # Restart Beskar7
-kubectl rollout restart deployment/beskar7-controller-manager -n beskar7-system
+kubectl rollout restart deployment/capb7-controller-manager -n capb7-system
 ```
 
 ### 2. Webhook Fails: "connection refused" or "certificate" errors
@@ -71,10 +71,10 @@ kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/
 kubectl wait --for=condition=Available --timeout=300s deployment/cert-manager -n cert-manager
 
 # Verify the chart's Certificate is Ready
-kubectl get certificate -n beskar7-system
+kubectl get certificate -n capb7-system
 
 # Restart Beskar7
-kubectl rollout restart deployment/beskar7-controller-manager -n beskar7-system
+kubectl rollout restart deployment/capb7-controller-manager -n capb7-system
 
 # Verify the only expected webhook is registered
 kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7
@@ -216,7 +216,7 @@ kubectl get beskar7machine <name> -o jsonpath='{.status.phase}'
 # - Script errors
 
 # Check controller logs for inspection reports
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep inspection
+kubectl logs -n capb7-system deployment/capb7-controller-manager | grep inspection
 
 # Check HTTP server logs
 sudo tail -f /var/log/nginx/boot-access.log
@@ -264,7 +264,7 @@ Option 2: Use different hardware that meets requirements
 kubectl get physicalhost <name> -o jsonpath='{.status.observedPowerState}'
 
 # Check controller logs
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep -i power
+kubectl logs -n capb7-system deployment/capb7-controller-manager | grep -i power
 ```
 
 **Common Causes:**
@@ -326,7 +326,7 @@ The callback endpoint authenticates every request via per-host bearer tokens. Fa
 **Diagnosis:**
 ```bash
 # Tail manager logs for rejected bearers (Info level; no --zap-devel needed).
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep "rejected bearer token"
+kubectl logs -n capb7-system deployment/capb7-controller-manager -f | grep "rejected bearer token"
 ```
 
 **Common causes:**
@@ -361,7 +361,7 @@ Populate `data.ca.crt` (base64 PEM) and re-apply.
 
 ```bash
 # Edit controller deployment
-kubectl edit deployment beskar7-controller-manager -n beskar7-system
+kubectl edit deployment capb7-controller-manager -n capb7-system
 
 # Add to container args:
 spec:
@@ -458,14 +458,14 @@ Inspection timed out after 10m0s
 
 ```bash
 # Check controller is running
-kubectl get deployment -n beskar7-system beskar7-controller-manager
+kubectl get deployment -n capb7-system capb7-controller-manager
 # Should show: READY 1/1
 
 # Check controller logs for errors
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager --tail=100 | grep -i error
+kubectl logs -n capb7-system deployment/capb7-controller-manager --tail=100 | grep -i error
 
 # Check webhook is healthy
-kubectl get endpoints -n beskar7-system beskar7-webhook-service
+kubectl get endpoints -n capb7-system capb7-webhook-service
 ```
 
 ### PhysicalHost Health
@@ -531,10 +531,10 @@ above the number of hosts you expect to reconcile in parallel.
 **Solution:**
 ```bash
 # Check resource usage
-kubectl top pod -n beskar7-system
+kubectl top pod -n capb7-system
 
 # Set resource limits
-kubectl edit deployment -n beskar7-system beskar7-controller-manager
+kubectl edit deployment -n capb7-system capb7-controller-manager
 
 # Add resources:
 resources:
@@ -683,7 +683,7 @@ If you can't resolve your issue:
 
 ```bash
 # Controller logs
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager > controller-logs.txt
+kubectl logs -n capb7-system deployment/capb7-controller-manager > controller-logs.txt
 
 # Resource dumps
 kubectl get physicalhost -o yaml > physicalhosts.yaml
@@ -742,7 +742,7 @@ Include:
 watch kubectl get physicalhost,beskar7machine -o wide
 
 # Follow logs continuously
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f
+kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 ```
 
 ## FAQ

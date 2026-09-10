@@ -45,28 +45,28 @@ func TestParseWatchNamespaces(t *testing.T) {
 		},
 		{
 			name: "multiple namespaces",
-			in:   "default,beskar7-system,rack-1",
-			want: []string{"beskar7-system", "default", "rack-1"},
+			in:   "default,capb7-system,rack-1",
+			want: []string{"capb7-system", "default", "rack-1"},
 		},
 		{
 			name: "whitespace around entries is trimmed",
-			in:   " default , beskar7-system , rack-1 ",
-			want: []string{"beskar7-system", "default", "rack-1"},
+			in:   " default , capb7-system , rack-1 ",
+			want: []string{"capb7-system", "default", "rack-1"},
 		},
 		{
 			name: "duplicates collapsed",
-			in:   "default,default,beskar7-system,default",
-			want: []string{"beskar7-system", "default"},
+			in:   "default,default,capb7-system,default",
+			want: []string{"capb7-system", "default"},
 		},
 		{
 			name: "trailing/leading commas ignored",
-			in:   ",default,beskar7-system,",
-			want: []string{"beskar7-system", "default"},
+			in:   ",default,capb7-system,",
+			want: []string{"capb7-system", "default"},
 		},
 		{
 			name: "consecutive commas ignored",
-			in:   "default,,,beskar7-system",
-			want: []string{"beskar7-system", "default"},
+			in:   "default,,,capb7-system",
+			want: []string{"capb7-system", "default"},
 		},
 		{
 			name: "single comma → nil",

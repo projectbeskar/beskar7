@@ -152,7 +152,7 @@ clusterctl init
 
 **Create namespace:**
 ```bash
-kubectl create namespace beskar7-system
+kubectl create namespace capb7-system
 ```
 
 **Configure RBAC (production):**
@@ -161,7 +161,7 @@ kubectl create namespace beskar7-system
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: beskar7-manager-role
+  name: capb7-manager-role
 rules:
 # Physical Host management
 - apiGroups: ["infrastructure.cluster.x-k8s.io"]
@@ -277,12 +277,12 @@ helm repo update
 
 # Install with production values
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system \
+  --namespace capb7-system \
   --create-namespace \
   --values values-production.yaml
 
 # Verify installation
-kubectl get pods -n beskar7-system
+kubectl get pods -n capb7-system
 kubectl get validatingwebhookconfiguration
 kubectl get mutatingwebhookconfiguration
 ```
@@ -308,7 +308,7 @@ images:
   newTag: ${VERSION}
 
 replicas:
-- name: beskar7-controller-manager
+- name: capb7-controller-manager
   count: 3
 
 # Apply production configuration
@@ -324,7 +324,7 @@ kubectl apply -k config/overlays/production/
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: beskar7-system
+  name: capb7-system
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
@@ -338,12 +338,12 @@ metadata:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: beskar7-controller-manager
-  namespace: beskar7-system
+  name: capb7-controller-manager
+  namespace: capb7-system
 spec:
   podSelector:
     matchLabels:
-      control-plane: beskar7-controller-manager
+      control-plane: capb7-controller-manager
   policyTypes:
   - Ingress
   - Egress
@@ -392,16 +392,16 @@ spec:
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: beskar7-serving-cert
-  namespace: beskar7-system
+  name: capb7-serving-cert
+  namespace: capb7-system
 spec:
-  secretName: beskar7-webhook-server-cert
+  secretName: capb7-webhook-server-cert
   issuerRef:
-    name: beskar7-selfsigned-issuer
+    name: capb7-selfsigned-issuer
     kind: Issuer
   dnsNames:
-  - beskar7-webhook-service.beskar7-system.svc
-  - beskar7-webhook-service.beskar7-system.svc.cluster.local
+  - capb7-webhook-service.capb7-system.svc
+  - capb7-webhook-service.capb7-system.svc.cluster.local
   duration: 8760h # 1 year
   renewBefore: 720h # 30 days
 ```
@@ -436,12 +436,12 @@ spec:
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: beskar7-controller-manager
-  namespace: beskar7-system
+  name: capb7-controller-manager
+  namespace: capb7-system
 spec:
   selector:
     matchLabels:
-      control-plane: beskar7-controller-manager
+      control-plane: capb7-controller-manager
   endpoints:
   - port: metrics
     interval: 30s
@@ -477,7 +477,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: fluent-bit-config
-  namespace: beskar7-system
+  namespace: capb7-system
 data:
   fluent-bit.conf: |
     [INPUT]
@@ -521,13 +521,13 @@ apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
   name: beskar7-alerts
-  namespace: beskar7-system
+  namespace: capb7-system
 spec:
   groups:
   - name: beskar7.rules
     rules:
     - alert: Beskar7ControllerDown
-      expr: up{job="beskar7-controller-manager"} == 0
+      expr: up{job="capb7-controller-manager"} == 0
       for: 5m
       labels:
         severity: critical
@@ -569,8 +569,8 @@ spec:
 ```bash
 # Backup CRDs and configurations
 kubectl get crd -o yaml > beskar7-crds-backup.yaml
-kubectl get configmap -n beskar7-system -o yaml > beskar7-config-backup.yaml
-kubectl get secret -n beskar7-system -o yaml > beskar7-secrets-backup.yaml
+kubectl get configmap -n capb7-system -o yaml > beskar7-config-backup.yaml
+kubectl get secret -n capb7-system -o yaml > beskar7-secrets-backup.yaml
 
 # Backup PhysicalHost resources
 kubectl get physicalhost -A -o yaml > physicalhosts-backup.yaml
@@ -583,7 +583,7 @@ kubectl apply -f beskar7-crds-backup.yaml
 
 # Restore controller
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system \
+  --namespace capb7-system \
   --create-namespace \
   --values values-production.yaml
 
@@ -600,21 +600,21 @@ helm repo update
 
 # Upgrade to new version
 helm upgrade beskar7 beskar7/beskar7 \
-  --namespace beskar7-system \
+  --namespace capb7-system \
   --values values-production.yaml \
   --version NEW_VERSION
 
 # Verify upgrade
-kubectl rollout status deployment/beskar7-controller-manager -n beskar7-system
+kubectl rollout status deployment/capb7-controller-manager -n capb7-system
 ```
 
 **Rollback Procedure:**
 ```bash
 # Rollback to previous version
-helm rollback beskar7 --namespace beskar7-system
+helm rollback beskar7 --namespace capb7-system
 
 # Verify rollback
-kubectl get pods -n beskar7-system
+kubectl get pods -n capb7-system
 ```
 
 ### 3. Scaling Operations
@@ -622,13 +622,13 @@ kubectl get pods -n beskar7-system
 **Horizontal Scaling:**
 ```bash
 # Scale controller replicas
-kubectl scale deployment beskar7-controller-manager \
+kubectl scale deployment capb7-controller-manager \
   --replicas=5 \
-  -n beskar7-system
+  -n capb7-system
 
 # Update Helm values for persistence
 helm upgrade beskar7 beskar7/beskar7 \
-  --namespace beskar7-system \
+  --namespace capb7-system \
   --set replicaCount=5 \
   --reuse-values
 ```
@@ -636,8 +636,8 @@ helm upgrade beskar7 beskar7/beskar7 \
 **Resource Scaling:**
 ```bash
 # Update resource limits
-kubectl patch deployment beskar7-controller-manager \
-  -n beskar7-system \
+kubectl patch deployment capb7-controller-manager \
+  -n capb7-system \
   -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","resources":{"requests":{"cpu":"1000m","memory":"1Gi"},"limits":{"cpu":"4000m","memory":"4Gi"}}}]}}}}'
 ```
 
@@ -646,16 +646,16 @@ kubectl patch deployment beskar7-controller-manager \
 **Common Operations:**
 ```bash
 # Check controller status
-kubectl get pods -n beskar7-system
-kubectl logs -n beskar7-system -l control-plane=beskar7-controller-manager
+kubectl get pods -n capb7-system
+kubectl logs -n capb7-system -l control-plane=capb7-controller-manager
 
 # Check webhook status
 kubectl get validatingwebhookconfiguration
 kubectl get mutatingwebhookconfiguration
 
 # Verify certificates
-kubectl get certificate -n beskar7-system
-kubectl get secret -n beskar7-system
+kubectl get certificate -n capb7-system
+kubectl get secret -n capb7-system
 
 # Debug PhysicalHost issues
 kubectl get physicalhost -A
@@ -663,7 +663,7 @@ kubectl describe physicalhost HOSTNAME
 
 # Check metrics (HTTPS on 8443; for plain-HTTP local debugging, restart the
 # manager with --secure-metrics=false). See docs/metrics.md.
-kubectl port-forward -n beskar7-system svc/beskar7-controller-manager-metrics-service 8443:8443
+kubectl port-forward -n capb7-system svc/capb7-controller-manager-metrics-service 8443:8443
 TOKEN=$(kubectl create token -n monitoring prometheus)
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:8443/metrics
 ```

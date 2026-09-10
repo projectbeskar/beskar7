@@ -65,10 +65,19 @@ Create the name of the service account to use
 */}}
 {{- define "beskar7.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "beskar7.fullname" .) .Values.serviceAccount.name }}
+{{- default (printf "%s-manager" (include "beskar7.fullname" .)) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
+{{- end }}
+
+{{/*
+The --bootstrap-url-base the manager runs with: bootstrap.urlBase when set,
+otherwise the callback Service this chart creates, derived from the release
+name and namespace.
+*/}}
+{{- define "beskar7.bootstrapURLBase" -}}
+{{- (.Values.bootstrap | default dict).urlBase | default (printf "https://%s-controller-manager.%s.svc:8082" (include "beskar7.fullname" .) (include "beskar7.namespace" .)) }}
 {{- end }}
 
 {{/*
@@ -76,7 +85,7 @@ Create the namespace name
 */}}
 {{- define "beskar7.namespace" -}}
 {{- if .Values.namespace.create }}
-{{- .Values.namespace.name | default "beskar7-system" }}
+{{- .Values.namespace.name | default "capb7-system" }}
 {{- else }}
 {{- .Release.Namespace }}
 {{- end }}

@@ -4,6 +4,6 @@ metadata:
   name: beskar7-smoke
   labels:
     # Smoke-test fixtures live in their own namespace so they can be torn
-    # down without affecting the operator install in beskar7-system.
+    # down without affecting the operator install in capb7-system.
     app.kubernetes.io/part-of: beskar7
     app.kubernetes.io/component: smoke-test

@@ -3,10 +3,10 @@
 # on port 8082 (HTTPS). This Service is always created — the callback server
 # is core to the provisioning flow and is independent of webhook admission.
 #
-# The default bootstrap.urlBase in values.yaml resolves to this Service when
-# the Helm release name is "beskar7" (release → "beskar7-controller-manager").
-# Operators using a different release name MUST override bootstrap.urlBase so
-# that hosts booting via iPXE can reach the manager at the correct address.
+# When bootstrap.urlBase is unset the manager's --bootstrap-url-base is derived
+# from the release name and namespace (beskar7.bootstrapURLBase helper), so it
+# always resolves to this Service. Operators whose hosts reach the callback
+# server through another address set bootstrap.urlBase explicitly.
 #
 # `callback` is dereferenced through a defaulted local because `helm upgrade
 # --reuse-values` DISCARDS the incoming chart's values.yaml entirely (Helm's

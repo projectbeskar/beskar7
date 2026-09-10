@@ -267,8 +267,8 @@ func loadGeneratedManagerRole(t *testing.T, root string) map[ruleTriple]struct{}
 	if len(crs) != 1 {
 		t.Fatalf("config/rbac/role.yaml: expected exactly 1 ClusterRole, found %d", len(crs))
 	}
-	if crs[0].Name != "manager-role" {
-		t.Fatalf("config/rbac/role.yaml: expected ClusterRole named %q, found %q", "manager-role", crs[0].Name)
+	if crs[0].Name != "capb7-manager-role" {
+		t.Fatalf("config/rbac/role.yaml: expected ClusterRole named %q, found %q", "capb7-manager-role", crs[0].Name)
 	}
 	return triplesFromRules(crs[0].Rules)
 }
@@ -665,7 +665,7 @@ func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
 	root := repoRoot(t)
 
 	t.Run("cluster-wide", func(t *testing.T) {
-		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system")
+		rendered := renderHelmTemplate(t, root, "--namespace", "capb7-system")
 		crs, roles := collectRoles(t, rendered)
 		rbs, crbs := collectBindings(t, rendered)
 		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces empty)")
@@ -673,7 +673,7 @@ func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
 	})
 
 	t.Run("namespaced", func(t *testing.T) {
-		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system", "--set", "watchNamespaces={rbac-driftguard-test-ns}")
+		rendered := renderHelmTemplate(t, root, "--namespace", "capb7-system", "--set", "watchNamespaces={rbac-driftguard-test-ns}")
 		crs, roles := collectRoles(t, rendered)
 		rbs, crbs := collectBindings(t, rendered)
 		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces=[rbac-driftguard-test-ns])")

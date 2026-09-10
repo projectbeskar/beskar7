@@ -37,7 +37,7 @@ spec:
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8443
         - --leader-elect
-        - --bootstrap-url-base={{ (.Values.bootstrap | default dict).urlBase | default "https://beskar7-controller-manager.beskar7-system.svc:8082" }}
+        - --bootstrap-url-base={{ include "beskar7.bootstrapURLBase" . }}
         # The callback server (inspection POST + bootstrap GET) shares the cert
         # mount with the webhook server because both run in the same Pod under
         # the same DNS name. The cert dir is therefore always required; it is

@@ -11,7 +11,7 @@
 #   - minimal-clusterrole.yaml      Cluster-scoped reads only (clusterroles,
 #                                   clusterrolebindings auto-generated from
 #                                   a kubebuilder marker).
-#   - leader-election-role.yaml     Role + RoleBinding in beskar7-system for
+#   - leader-election-role.yaml     Role + RoleBinding in capb7-system for
 #                                   leader-election leases + operator events.
 #   - watch-role.template.yaml      TEMPLATE for the per-namespace Role +
 #                                   RoleBinding. Copy and patch the
@@ -24,7 +24,7 @@
 # To enable, point your own overlay's `resources:` at this dir instead of
 # ../rbac, AND set --watch-namespaces=<csv> on the manager Deployment so
 # the controller-runtime cache matches the RBAC.
-namespace: beskar7-system
+namespace: capb7-system
 
 resources:
 - minimal-clusterrole.yaml

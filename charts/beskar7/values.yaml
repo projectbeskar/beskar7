@@ -3,8 +3,12 @@
 # Declare variables to be passed into your templates.
 
 imagePullSecrets: []
+# Object names follow the upstream cap<provider>- convention (capb7-controller-manager,
+# capb7-webhook-service, …) regardless of the release name, the same names the
+# kustomize overlay and the clusterctl components use. Set fullnameOverride to run
+# more than one release in a cluster.
 nameOverride: ""
-fullnameOverride: ""
+fullnameOverride: "capb7"
 
 # Controller manager configuration
 controllerManager:
@@ -70,7 +74,7 @@ webhook:
   admissionReviewVersions:
     - v1
   service:
-    name: beskar7-webhook-service
+    name: capb7-webhook-service
     # namespace is derived from namespace.name; do not set it here.
     port: 443
     targetPort: 9443
@@ -91,11 +95,11 @@ webhook:
 certManager:
   enabled: true
   issuer:
-    name: beskar7-selfsigned-issuer
+    name: capb7-selfsigned-issuer
     kind: ClusterIssuer
   certificate:
-    name: beskar7-serving-cert
-    secretName: beskar7-webhook-server-cert
+    name: capb7-serving-cert
+    secretName: capb7-webhook-server-cert
     duration: 8760h # 1 year
     renewBefore: 720h # 30 days
 
@@ -105,7 +109,7 @@ certManager:
 # without `--create-namespace` and want the chart to render the Namespace.
 namespace:
   create: false
-  name: beskar7-system
+  name: capb7-system
 
 # RBAC configuration
 rbac:
@@ -188,7 +192,11 @@ bootstrap:
   # election) and set urlBase to ITS address; start it with the same
   # --bootstrap-url-base. The chart does not deploy that instance — see the
   # chart README and docs/ipxe-setup.md.
-  urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+  # Empty: derived from the release name and namespace as
+  # https://<release>-controller-manager.<namespace>.svc:8082 — the callback
+  # Service this chart creates. Set it when hosts reach the callback server
+  # through another address.
+  urlBase: ""
 
 # Callback server (inspection POST + bootstrap GET + per-host /boot) exposure.
 #

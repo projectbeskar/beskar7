@@ -155,7 +155,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: beskar7-controller
-  namespace: beskar7-system
+  namespace: capb7-system
 spec:
   selector:
     matchLabels:

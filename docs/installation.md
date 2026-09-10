@@ -33,17 +33,11 @@ kubectl get pods -n cert-manager
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace
+  --namespace capb7-system --create-namespace
 ```
 
 
-**Release name and bootstrap URL.** The chart's default `bootstrap.urlBase` is `https://beskar7-controller-manager.beskar7-system.svc:8082`, which matches the Service name when the Helm release is named `beskar7`. If you install with a different release name, pass the matching URL:
-
-```bash
-helm install my-release beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace \
-  --set bootstrap.urlBase=https://my-release-controller-manager.beskar7-system.svc:8082
-```
+**Bootstrap URL.** The chart's default `bootstrap.urlBase` follows the release name and namespace: `https://<release>-controller-manager.<namespace>.svc:8082`, the callback Service the chart creates. Override it when hosts must reach the callback server through another address (see below).
 
 The `bootstrap.urlBase` value is rendered into `PhysicalHost.Status.Bootstrap.URL`. Bare-metal hosts must be able to reach it during PXE boot.
 
@@ -58,7 +52,7 @@ For a real deployment, two things must line up:
 
 ```bash
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace \
+  --namespace capb7-system --create-namespace \
   --set callback.service.type=LoadBalancer \
   --set bootstrap.urlBase=https://beskar7.example.com:8082 \
   --set 'callback.externalNames={beskar7.example.com}'
@@ -92,9 +86,9 @@ Variables the components accept (set them in the environment or in the clusterct
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BESKAR7_BOOTSTRAP_URL_BASE` | `https://beskar7-controller-manager.beskar7-system.svc:8082` | Scheme, host and port bare-metal hosts use to reach the callback server (`--bootstrap-url-base`). Rendered into `PhysicalHost.Status.Bootstrap.URL`. |
+| `BESKAR7_BOOTSTRAP_URL_BASE` | `https://capb7-controller-manager.capb7-system.svc:8082` | Scheme, host and port bare-metal hosts use to reach the callback server (`--bootstrap-url-base`). Rendered into `PhysicalHost.Status.Bootstrap.URL`. |
 
-A clusterctl install is the kustomize-based install: the `beskar7-system` namespace, a `ClusterIP` Service `beskar7-controller-manager` for the callback server on `:8082`, and a cert-manager `Certificate` whose SANs cover the webhook and callback Service names. Bare-metal hosts reach the callback server while PXE-booting, so for real hardware either expose that Service (patch it to `LoadBalancer` / `NodePort`, or front it with an Ingress) and set `BESKAR7_BOOTSTRAP_URL_BASE` to the external address before `clusterctl init`, or run a [callback-only manager](ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance) on the provisioning network. The external name must also appear in the serving certificate: edit the `Certificate` `beskar7-serving-cert` in `beskar7-system` (`spec.dnsNames` / `spec.ipAddresses`) after the install, the way the chart's `callback.externalNames` does it.
+A clusterctl install is the kustomize-based install: the `capb7-system` namespace, a `ClusterIP` Service `capb7-controller-manager` for the callback server on `:8082`, and a cert-manager `Certificate` whose SANs cover the webhook and callback Service names. Bare-metal hosts reach the callback server while PXE-booting, so for real hardware either expose that Service (patch it to `LoadBalancer` / `NodePort`, or front it with an Ingress) and set `BESKAR7_BOOTSTRAP_URL_BASE` to the external address before `clusterctl init`, or run a [callback-only manager](ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance) on the provisioning network. The external name must also appear in the serving certificate: edit the `Certificate` `capb7-serving-cert` in `capb7-system` (`spec.dnsNames` / `spec.ipAddresses`) after the install, the way the chart's `callback.externalNames` does it.
 
 To install a build of the current tree instead of a release, publish it into a clusterctl local repository first: `make clusterctl-override VERSION=v0.5.0` writes `~/.cluster-api/overrides/infrastructure-beskar7/v0.5.0/`, and `clusterctl init --infrastructure beskar7:v0.5.0` uses it without touching the network. CI does exactly that on every pull request and runs the smoke suite against the result.
 
@@ -104,7 +98,7 @@ To install a build of the current tree instead of a release, publish it into a c
 kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.4/beskar7-manifests-v0.4.4.yaml
 ```
 
-This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `beskar7-system` namespace and the default `bootstrap.urlBase`. It is the clusterctl components file with the variables above resolved to their defaults; do not `kubectl apply` `infrastructure-components.yaml` itself — it keeps the `${…}` placeholders for `clusterctl init` to fill in.
+This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `capb7-system` namespace and the default `bootstrap.urlBase`. It is the clusterctl components file with the variables above resolved to their defaults; do not `kubectl apply` `infrastructure-components.yaml` itself — it keeps the `${…}` placeholders for `clusterctl init` to fill in.
 
 ## `clusterctl move`
 
@@ -171,14 +165,14 @@ workflow — do not deploy it.
 ## Verify the installation
 
 ```bash
-kubectl get pods -n beskar7-system
+kubectl get pods -n capb7-system
 ```
 
 The controller manager pod should reach `Running` status within a minute. The webhook service and a self-signed certificate are also created:
 
 ```bash
-kubectl get certificate -n beskar7-system
-kubectl get svc -n beskar7-system
+kubectl get certificate -n capb7-system
+kubectl get svc -n capb7-system
 ```
 
 ## Next steps

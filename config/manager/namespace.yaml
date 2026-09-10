@@ -10,4 +10,4 @@ metadata:
     # app.kubernetes.io/created-by: beskar7
     # app.kubernetes.io/part-of: beskar7
     # app.kubernetes.io/managed-by: kustomize
-  name: beskar7-system 
+  name: capb7-system 

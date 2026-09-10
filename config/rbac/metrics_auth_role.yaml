@@ -1,7 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: beskar7-metrics-auth-role
+  name: capb7-metrics-auth-role
 rules:
 - apiGroups:
   - authentication.k8s.io

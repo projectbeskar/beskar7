@@ -1,6 +1,6 @@
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
-  name: beskar7-selfsigned-issuer
+  name: capb7-selfsigned-issuer
 spec:
   selfSigned: {} 
