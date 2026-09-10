@@ -72,6 +72,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   now `61-pool.yaml`; `61-pool-inspectors.yaml` is now `62-pool-inspectors.yaml`) so it can be
   rolled out and probed before the pool fixture creates `pool-host-b`, and it has the same
   readiness probe as the layer-3 mock.
+- **`PhysicalHost`'s `HostAvailable` condition now reads `False` while the host is claimed.** It
+  was set `True` on the transition into `Available` and never flipped back, so a host that was
+  `InUse`, `Inspecting`, `Deploying` or `Ready` still advertised `HostAvailable=True`. The
+  controller now asserts it on every reconcile: `False` with the new reason `HostClaimed` while
+  `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
+  read the condition (it filters on `status.state`), so this changes what `kubectl describe`
+  and `kubectl wait --for=condition=HostAvailable` report, nothing else.
 
 ### Removed
 
@@ -82,16 +89,6 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   v1.11+ never read `failureReason`/`failureMessage` — remediating a beskar7-failed machine now
   requires an explicit `spec.checks.unhealthyMachineConditions` entry keyed on `InfrastructureReady`;
   see the rewritten `examples/machinehealthcheck.yaml` and `docs/upgrading.md`.
-
-### Fixed
-
-- **`PhysicalHost`'s `HostAvailable` condition now reads `False` while the host is claimed.** It
-  was set `True` on the transition into `Available` and never flipped back, so a host that was
-  `InUse`, `Inspecting`, `Deploying` or `Ready` still advertised `HostAvailable=True`. The
-  controller now asserts it on every reconcile: `False` with the new reason `HostClaimed` while
-  `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
-  read the condition (it filters on `status.state`), so this changes what `kubectl describe`
-  and `kubectl wait --for=condition=HostAvailable` report, nothing else.
 
 ## [v0.5.0] - 2026-09-10
 
