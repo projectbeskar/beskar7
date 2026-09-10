@@ -61,6 +61,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   excluded, the digest-pinned images in all three Dockerfiles, and the workflow actions. Added
   after a four-month-stale builder digest carried Go standard-library advisories into a release.
 
+- **Dependabot is scoped to the updates that are safe to take routinely.** Its first run showed
+  why: it proposed `golang:1.25` → `1.27` in the Dockerfiles with nothing moving `go.mod` or CI's
+  `go-version`, `k8s.io/*` 0.35.4 → 0.37.0 with `controller-runtime` 0.25.0 while `cluster-api`
+  stayed on v1.13.4, and twelve major action bumps in one pull request. Base images are now limited
+  to digest refreshes, the pre-1.0 Kubernetes and Cluster API minors are excluded alongside all
+  majors, and action majors are excluded; patch and minor updates still flow.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
