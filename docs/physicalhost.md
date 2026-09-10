@@ -50,7 +50,7 @@ For the diagram and the full transition table, see [State Management](state-mana
 
 ## Bootstrap signaling
 
-When the Beskar7Machine controller has bootstrap data ready, it patches two annotations on the PhysicalHost. The PhysicalHost reconciler reads them on its next pass, persists the values to status, and clears the annotation:
+When the Beskar7Machine controller has bootstrap data ready, it patches two annotations on the PhysicalHost. The PhysicalHost reconciler reads them on its next pass, persists the values to status, and clears the annotation. For the credential annotations (`bootstrap-token`, and the `boot-nonce` minted at inspection time) the clear happens one pass later, once status already shows the same hash: the reconciler's patch writes metadata before status, so clearing in the same pass would publish a version of the host that advertises no credential, and a reader in that gap (the Beskar7Machine controller checks the annotation, then status) would mint a fresh one over a token the inspector may already hold:
 
 | Annotation | Persisted to | Source code |
 |---|---|---|

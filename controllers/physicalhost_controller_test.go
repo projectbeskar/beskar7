@@ -630,7 +630,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}, Timeout, Interval).Should(Succeed())
 		})
 
-		It("Should consume bootstrap-token annotation, persist hash+lifetime to Status.Bootstrap, and clear the annotation", func() {
+		It("Should consume bootstrap-token annotation, persist hash+lifetime to Status.Bootstrap, and clear the annotation only once status shows it", func() {
 			By("Creating the PhysicalHost and making it Available")
 			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
 
@@ -663,23 +663,36 @@ var _ = Describe("PhysicalHost Controller", func() {
 			phPatch.Annotations[BootstrapTokenAnnotation] = string(encoded)
 			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
 
-			By("Reconciling — controller should consume annotation and persist to Status.Bootstrap")
+			By("Reconciling once — the controller persists the mint to Status.Bootstrap but keeps the annotation")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
-				g.Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
-				g.Expect(got.Status.Bootstrap.IssuedAt).NotTo(BeNil())
-				g.Expect(got.Status.Bootstrap.ExpiresAt).NotTo(BeNil())
-				// Allow some skew between encoded and decoded times due to status round-trip.
-				g.Expect(got.Status.Bootstrap.ExpiresAt.Time.After(got.Status.Bootstrap.IssuedAt.Time)).To(BeTrue(),
-					"ExpiresAt must be after IssuedAt")
-				g.Expect(got.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation),
-					"bootstrap-token annotation must be removed after consumption")
-			}, Timeout, Interval).Should(Succeed())
+			got := &infrastructurev1beta1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+			Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
+			Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
+			Expect(got.Status.Bootstrap.IssuedAt).NotTo(BeNil())
+			Expect(got.Status.Bootstrap.ExpiresAt).NotTo(BeNil())
+			// Allow some skew between encoded and decoded times due to status round-trip.
+			Expect(got.Status.Bootstrap.ExpiresAt.Time.After(got.Status.Bootstrap.IssuedAt.Time)).To(BeTrue(),
+				"ExpiresAt must be after IssuedAt")
+			// The patch writes metadata before status. Clearing the annotation in the
+			// same pass would publish a version that advertises no token, and the
+			// Beskar7Machine controller (annotation, then status) would mint again over
+			// the token the inspector already fetched.
+			Expect(got.Annotations).To(HaveKey(BootstrapTokenAnnotation),
+				"the annotation must outlive the status write by one pass")
+			Expect(unexpiredBootstrapTokenHash(got, time.Now())).To(Equal(fakeHash),
+				"a reader must see the same hash through every published version")
+
+			By("Reconciling again — status already carries the mint, so the annotation is cleared")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+			Expect(got.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation),
+				"bootstrap-token annotation must be removed once status shows it")
+			Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
+			Expect(unexpiredBootstrapTokenHash(got, time.Now())).To(Equal(fakeHash))
 		})
 
 		It("Should consume inspection-result annotation, persist InspectionReport to Status, delete the ConfigMap, and clear the annotation", func() {
@@ -912,6 +925,75 @@ var _ = Describe("PhysicalHost Controller", func() {
 	})
 })
 
+// applyBootstrapTokenAnnotation two-phase handoff. Pure unit; no I/O.
+var _ = Describe("applyBootstrapTokenAnnotation", func() {
+	var r *PhysicalHostReconciler
+
+	BeforeEach(func() {
+		r = &PhysicalHostReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Log:    ctrl.Log.WithName("bootstrap-token-test"),
+		}
+	})
+
+	annotate := func(ph *infrastructurev1beta1.PhysicalHost, hash string, expiresAt metav1.Time) {
+		encoded, err := json.Marshal(BootstrapTokenAnnotationValue{
+			Hash:      hash,
+			IssuedAt:  metav1.NewTime(expiresAt.Add(-time.Hour)),
+			ExpiresAt: expiresAt,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		if ph.Annotations == nil {
+			ph.Annotations = map[string]string{}
+		}
+		ph.Annotations[BootstrapTokenAnnotation] = string(encoded)
+	}
+
+	It("keeps the annotation until status carries the mint, then clears it — a reader never sees neither", func() {
+		hash := "1111111111111111111111111111111111111111111111111111111111111111"
+		expiresAt := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
+		ph := &infrastructurev1beta1.PhysicalHost{}
+		annotate(ph, hash, expiresAt)
+
+		By("pass 1: status out, annotation kept")
+		r.applyBootstrapTokenAnnotation(r.Log, ph)
+		Expect(ph.Status.Bootstrap).NotTo(BeNil())
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(hash))
+		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation))
+		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(hash))
+
+		By("pass 2: status shows the mint, annotation cleared")
+		r.applyBootstrapTokenAnnotation(r.Log, ph)
+		Expect(ph.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation))
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(hash))
+		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(hash))
+	})
+
+	It("lets a newer mint replace the status hash, and clears that annotation only on the following pass", func() {
+		previous := "2222222222222222222222222222222222222222222222222222222222222222"
+		newer := "3333333333333333333333333333333333333333333333333333333333333333"
+		previousExpiry := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
+		newerExpiry := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
+		ph := &infrastructurev1beta1.PhysicalHost{
+			Status: infrastructurev1beta1.PhysicalHostStatus{
+				Bootstrap: &infrastructurev1beta1.BootstrapStatus{TokenHash: previous, ExpiresAt: &previousExpiry},
+			},
+		}
+		annotate(ph, newer, newerExpiry)
+
+		r.applyBootstrapTokenAnnotation(r.Log, ph)
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(newer))
+		Expect(ph.Status.Bootstrap.ExpiresAt.Time.Equal(newerExpiry.Time)).To(BeTrue())
+		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation), "not cleared until status carries the newer mint")
+		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(newer))
+
+		r.applyBootstrapTokenAnnotation(r.Log, ph)
+		Expect(ph.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation))
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(newer))
+	})
+})
+
 // applyBootNonceAnnotation unit tests (D-009). Pure unit; no I/O so no envtest needed.
 // Mirrors the applyBootstrapTokenAnnotation tests in the Context block above.
 var _ = Describe("applyBootNonceAnnotation", func() {
@@ -950,8 +1032,16 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 		Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(fakeHash))
 		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).NotTo(BeNil())
 		Expect(ph.Status.Bootstrap.BootNonceExpiresAt.Time.Equal(expiresAt.Time)).To(BeTrue())
+		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation),
+			"the annotation must outlive the status write by one pass (metadata is patched before status)")
+		Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(fakeHash))
+
+		By("clearing the annotation on the next pass, once status shows the same mint")
+		r.applyBootNonceAnnotation(r.Log, ph)
 		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation),
-			"annotation must be cleared after consumption")
+			"annotation must be cleared once status carries the mint")
+		Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(fakeHash))
+		Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(fakeHash))
 	})
 
 	It("does not touch BootNonceConsumedAt (that field belongs to the /boot handler)", func() {

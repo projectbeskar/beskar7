@@ -400,7 +400,7 @@ jobs:
         echo "=== Pods (all namespaces) ==="
         kubectl get pods -A -o wide
         echo "=== Beskar7 controller log (last 500) ==="
-        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=500 || true
+        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=2000 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== Mock-inspector Job + log ==="
