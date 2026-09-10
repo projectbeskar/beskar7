@@ -758,7 +758,7 @@ kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 ## FAQ
 
 **Q: Why is my PhysicalHost stuck in Enrolling for 5 minutes?**
-A: Controller has exponential backoff for Redfish connection failures. Check connectivity and credentials.
+A: A Redfish failure that needs something to change — a wrong address, wrong credentials, a rejected certificate — backs off exponentially, up to 30 minutes between attempts, so the host keeps the error for a while after you fix it. Edit the `PhysicalHost` or its credentials Secret to wake the controller at once. A BMC that is merely unreachable is different: it is retried every 15 seconds and enrols on the first attempt that connects.
 
 **Q: Inspection keeps timing out, can I increase the timeout?**
 A: Currently hardcoded to 10 minutes. If hardware is slow, consider filing an issue for configurable timeout.

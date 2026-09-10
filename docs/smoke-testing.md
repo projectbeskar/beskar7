@@ -30,7 +30,10 @@ hack/smoke/
 │   ├── 20-bmc-secret.yaml            # Credentials the operator uses to talk to it
 │   ├── 30-physicalhost.yaml          # PhysicalHost pointing at the fake BMC
 │   ├── 40-cluster-and-machine.yaml   # Beskar7Cluster + Beskar7Machine + CAPI Machine
-│   └── 50-mock-inspector-job.yaml    # Job + RBAC for the inspector simulator
+│   ├── 50-mock-inspector-job.yaml    # Job + RBAC for the inspector simulator
+│   ├── 60-mock-redfish-b.yaml        # Second fake BMC, for the layer-7 pool
+│   ├── 61-pool.yaml                  # Layer 7: two PhysicalHosts + template + MachineDeployment
+│   └── 62-pool-inspectors.yaml       # Layer 7: one inspector Job per pool host
 └── run.sh                            # Layered runner
 ```
 
@@ -65,7 +68,7 @@ The plaintext token is never logged. Only the first 12 chars of the hex hashes a
 
 1. Verifies the operator pod is running and the 4 CRDs are installed
 2. Submits a CR with a malformed Redfish address via `kubectl --dry-run=server` and asserts CRD validation rejects it
-3. Applies the mock + a `PhysicalHost`, waits for `Status.Ready=true`
+3. Applies the mock, waits for its rollout **and** for the Service to answer a Redfish request, then applies the `PhysicalHost` and waits for `Status.Ready=true` **and** `Status.State=Available`
 4. Applies `Beskar7Cluster` + `Beskar7Machine` + CAPI `Machine` (with a pre-baked bootstrap data Secret — see below). Verifies (a) the controller sets `consumerRef` on the `PhysicalHost` and (b) the host state machine progresses out of `Available` (to `InUse` or `Inspecting`).
 5. Applies the `mock-inspector` Job (image auto-derived from the installed controller's tag, or overridden via `MOCK_INSPECTOR_IMAGE`). The binary handles the Bootstrap-status polling, token read, hash cross-check, URL derivation, and POST. The runner then waits for `Job condition=Complete`, then for `PhysicalHost.Status.State=Ready` and `Beskar7Machine.Spec.ProviderID=b7://<ns>/<host>`.
 

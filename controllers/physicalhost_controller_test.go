@@ -515,7 +515,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}, Timeout*2, Interval).Should(BeTrue())
 		})
 
-		It("Should handle Redfish connection failure", func() {
+		It("Should hand a non-network Redfish failure to the workqueue's exponential backoff", func() {
+			// A plain error is not a network-level failure (see
+			// internalredfish.IsTransientConnectionError); that path returns a
+			// flat RequeueAfter instead and is covered in
+			// physicalhost_transient_retry_test.go.
 			By("Creating reconciler that fails connection")
 			failedReconciler := &PhysicalHostReconciler{
 				Client:   k8sClient,
@@ -546,8 +550,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			// requeue via the configured exponential rate-limiter (set in
 			// SetupWithManager). An explicit RequeueAfter here would override the
 			// rate-limiter and pin a misconfigured BMC to a fixed 60s ping forever.
-			Expect(result.RequeueAfter).To(BeZero(), "Redfish-connection-failure path must not set RequeueAfter; the workqueue rate-limiter governs the retry cadence")
-			Expect(result.RequeueAfter).To(BeZero(), "Redfish-connection-failure path must not set Requeue=true; the error return already triggers a rate-limited requeue")
+			Expect(result.RequeueAfter).To(BeZero(), "non-network Redfish failure path must not set RequeueAfter; the workqueue rate-limiter governs the retry cadence")
 
 			By("Checking error conditions")
 			Eventually(func(g Gomega) {

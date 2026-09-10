@@ -41,6 +41,45 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   scheduled run and the release image scan feed the Security tab. The release asset is now
   `osv-scanner-report.txt` (was `trivy-report.txt`).
 
+### Fixed
+
+- **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
+  A network-level Redfish failure (connection refused or reset, no route, DNS, a dial or request
+  timeout, or a 502/503/504 from a BMC that is still starting) now returns
+  `RequeueAfter: 15s` with no error, so the flat interval governs the retry. Returning the error
+  handed the retry to the workqueue's exponential rate-limiter, but the same failed reconcile also
+  wrote the raw error text to `status.errorMessage` — and that write is a watch event on the host,
+  which controller-runtime's priority queue puts ahead of the rate-limited retry. Each of those
+  event-driven attempts failed again and doubled the backoff, so a BMC that refused connections for
+  one second produced ~20 reconciles inside that second and then left the host in `Error` for
+  minutes after it was reachable again. The message is now a stable summary of the failure class
+  rather than the raw error (whose text names whichever URL failed and so differed between
+  attempts), which is what makes a repeated failure a no-op write instead of its own trigger.
+  Failures that need something to change before a retry can succeed — a malformed address, a
+  rejected certificate, refused credentials, a Redfish tree with no `ComputerSystem` — still
+  return the error and keep the exponential backoff. `status.state` is `Error` throughout, as
+  before.
+- **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
+  answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
+  which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
+  which is before the `EndpointSlice` is programmed and while the `ClusterIP` can still route to
+  the pod that is going away. The derived image is now substituted into the manifest before the
+  first apply, and both layer 3 and layer 7 wait for a ready endpoint and a successful Redfish
+  request through the Service before creating the host that points at it. Layer 3 also asserts
+  `status.state == Available` alongside `status.ready == true`, reading both from one `Get`: the
+  run that prompted this printed `[PASS] [layer 3] PhysicalHost Ready=true, state=Error`.
+  The second mock BMC moved to `hack/smoke/manifests/60-mock-redfish-b.yaml` (from `60-pool.yaml`,
+  now `61-pool.yaml`; `61-pool-inspectors.yaml` is now `62-pool-inspectors.yaml`) so it can be
+  rolled out and probed before the pool fixture creates `pool-host-b`, and it has the same
+  readiness probe as the layer-3 mock.
+- **`PhysicalHost`'s `HostAvailable` condition now reads `False` while the host is claimed.** It
+  was set `True` on the transition into `Available` and never flipped back, so a host that was
+  `InUse`, `Inspecting`, `Deploying` or `Ready` still advertised `HostAvailable=True`. The
+  controller now asserts it on every reconcile: `False` with the new reason `HostClaimed` while
+  `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
+  read the condition (it filters on `status.state`), so this changes what `kubectl describe`
+  and `kubectl wait --for=condition=HostAvailable` report, nothing else.
+
 ### Removed
 
 - **BREAKING: `Beskar7Machine.status.failureReason` and `status.failureMessage` are gone.** A
@@ -50,16 +89,6 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   v1.11+ never read `failureReason`/`failureMessage` — remediating a beskar7-failed machine now
   requires an explicit `spec.checks.unhealthyMachineConditions` entry keyed on `InfrastructureReady`;
   see the rewritten `examples/machinehealthcheck.yaml` and `docs/upgrading.md`.
-
-### Fixed
-
-- **`PhysicalHost`'s `HostAvailable` condition now reads `False` while the host is claimed.** It
-  was set `True` on the transition into `Available` and never flipped back, so a host that was
-  `InUse`, `Inspecting`, `Deploying` or `Ready` still advertised `HostAvailable=True`. The
-  controller now asserts it on every reconcile: `False` with the new reason `HostClaimed` while
-  `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
-  read the condition (it filters on `status.state`), so this changes what `kubectl describe`
-  and `kubectl wait --for=condition=HostAvailable` report, nothing else.
 
 ## [v0.5.0] - 2026-09-10
 
