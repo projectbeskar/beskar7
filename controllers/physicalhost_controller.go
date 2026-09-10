@@ -490,10 +490,17 @@ func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger,
 // Status.Bootstrap. The plaintext token is delivered out-of-band via a Secret —
 // the annotation only carries the hash + lifetime.
 //
-// Same idempotent "annotation in, status out, annotation cleared" pattern as
-// applyBootstrapURLAnnotation. Malformed JSON is logged and the annotation is
-// left in place so the next reconcile (or operator) can investigate; clearing
-// would silently drop a token-state signal.
+// "Annotation in, status out" as in applyBootstrapURLAnnotation, but the clear
+// is deferred by one pass: the annotation stays until status already carries
+// the same mint. The deferred patch writes metadata before status (two API
+// calls), so clearing in the same pass publishes a version of the host that
+// advertises no credential at all; the Beskar7Machine controller reads
+// annotation-then-status and, landing in that gap while the host is still
+// InUse, minted a fresh token over the one the inspector had already fetched
+// (401 on every callback). Keeping the annotation one pass longer also means a
+// failed status patch cannot lose the mint. Malformed JSON is logged and the
+// annotation is left in place so the next reconcile (or operator) can
+// investigate; clearing would silently drop a token-state signal.
 func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
 	raw := physicalHost.Annotations[BootstrapTokenAnnotation]
 	if raw == "" {
@@ -511,6 +518,14 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 		return
 	}
 
+	if bs := physicalHost.Status.Bootstrap; bs != nil && bs.TokenHash == value.Hash &&
+		bs.ExpiresAt != nil && bs.ExpiresAt.Equal(&value.ExpiresAt) {
+		// Second pass: the status patch carrying this mint has landed.
+		logger.V(1).Info("Status already carries the bootstrap-token mint; clearing the annotation", "host", physicalHost.Name)
+		delete(physicalHost.Annotations, BootstrapTokenAnnotation)
+		return
+	}
+
 	if physicalHost.Status.Bootstrap == nil {
 		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
 	}
@@ -521,8 +536,6 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 	physicalHost.Status.Bootstrap.IssuedAt = &issuedAt
 	physicalHost.Status.Bootstrap.ExpiresAt = &expiresAt
 	logger.Info("Applied bootstrap-token annotation to Status.Bootstrap", "host", physicalHost.Name)
-
-	delete(physicalHost.Annotations, BootstrapTokenAnnotation)
 }
 
 // applyBootNonceAnnotation reads the BootNonceAnnotation, JSON-decodes the
@@ -532,11 +545,13 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 // will see only whatever value was already in Status before the annotation was
 // applied (nil until the handler fires).
 //
-// Same idempotent "annotation in, status out, annotation cleared" pattern as
-// applyBootstrapTokenAnnotation. Malformed JSON → log + leave annotation in
-// place (do not clear) so the next reconcile or an operator can investigate;
-// clearing would silently discard a nonce-state signal. Empty hash → ignore
-// the annotation and clear it (nothing useful to persist).
+// Same two-phase handoff as applyBootstrapTokenAnnotation: status first, the
+// annotation is cleared on the following pass once status shows the same
+// mint, so no published version of the host is without a nonce. Malformed
+// JSON → log + leave annotation in place (do not clear) so the next reconcile
+// or an operator can investigate; clearing would silently discard a
+// nonce-state signal. Empty hash → ignore the annotation and clear it
+// (nothing useful to persist).
 func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
 	raw := physicalHost.Annotations[BootNonceAnnotation]
 	if raw == "" {
@@ -554,6 +569,14 @@ func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, ph
 		return
 	}
 
+	if bs := physicalHost.Status.Bootstrap; bs != nil && bs.BootNonceHash == value.Hash &&
+		bs.BootNonceExpiresAt != nil && bs.BootNonceExpiresAt.Equal(&value.ExpiresAt) {
+		// Second pass: the status patch carrying this mint has landed.
+		logger.V(1).Info("Status already carries the boot-nonce mint; clearing the annotation", "host", physicalHost.Name)
+		delete(physicalHost.Annotations, BootNonceAnnotation)
+		return
+	}
+
 	if physicalHost.Status.Bootstrap == nil {
 		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
 	}
@@ -564,8 +587,6 @@ func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, ph
 	// Intentionally do NOT touch BootNonceConsumedAt — that field belongs to
 	// the /boot handler (D-010). This controller must not clear or overwrite it.
 	logger.Info("Applied boot-nonce annotation to Status.Bootstrap", "host", physicalHost.Name)
-
-	delete(physicalHost.Annotations, BootNonceAnnotation)
 }
 
 // applyInspectionResultAnnotation reads the InspectionResultAnnotation, fetches

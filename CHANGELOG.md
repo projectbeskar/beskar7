@@ -8,6 +8,20 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **A bootstrap token or boot nonce is no longer re-minted while the host controller
+  is promoting it.** `applyBootstrapTokenAnnotation` / `applyBootNonceAnnotation`
+  copied the freshly minted hash into `Status.Bootstrap` and cleared the annotation
+  in the same pass, but the deferred patch writes metadata before status, so for
+  a moment the host advertised no credential at all. A `Beskar7Machine` reconcile
+  landing in that gap (the host is still `InUse`, so `triggerInspection` runs again)
+  found no unexpired hash, minted a new token, and the inspector — which had
+  already read the first plaintext from the Secret — got 401 on its callbacks
+  (seen in the E2E smoke on `pool-host-b`; the same mechanism as the dome-lab
+  strandings). The annotation now outlives the status write by one pass and is
+  cleared only once status carries the same hash, so no published version of the
+  host is without its credential; a failed status patch no longer loses the mint
+  either. The CI failure diagnostics keep 2000 manager log lines instead of 500 —
+  the first mint had scrolled out of the dump.
 - **A `PhysicalHost` turning `Available` now wakes the `Beskar7Machine`s still
   waiting for a host.** A machine that reconciled moments before its host
   finished enrolling (or before another machine released it) parked on the
