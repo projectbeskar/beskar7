@@ -50,6 +50,14 @@ const (
 	// The PhysicalHost controller reads it and drives InspectionPhase / State accordingly.
 	// Valid values: "inspect", "timeout".
 	InspectionRequestAnnotation = "infrastructure.cluster.x-k8s.io/inspection-request"
+
+	// DefaultTransientRetryInterval is the flat interval between attempts to
+	// reach a BMC that failed at the network level (connection refused or
+	// reset, no route, DNS, timeout — internalredfish.IsTransientConnectionError).
+	// Short enough that a host re-enrols promptly once its BMC answers, long
+	// enough not to hammer a BMC that is rebooting. Other Redfish failures
+	// keep the workqueue's exponential backoff (see SetupWithManager).
+	DefaultTransientRetryInterval = 15 * time.Second
 )
 
 // PhysicalHostReconciler reconciles a PhysicalHost object.
@@ -63,6 +71,10 @@ type PhysicalHostReconciler struct {
 	// MaxConcurrentReconciles is the worker count for this controller. Zero
 	// means DefaultMaxConcurrentReconciles (1).
 	MaxConcurrentReconciles int
+	// TransientRetryInterval overrides DefaultTransientRetryInterval. Zero
+	// means the default. Not a manager flag; it exists so the envtest specs
+	// can watch several retries without waiting a quarter of a minute each.
+	TransientRetryInterval time.Duration
 }
 
 // NewPhysicalHostReconciler creates a new PhysicalHostReconciler
@@ -229,11 +241,17 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create Redfish client")
-		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Redfish connection failed: %v", err))
-		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "Connection failed: %v", err)
 		internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed, internalmetrics.ErrorTypeConnection)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
-		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
+		if internalredfish.IsTransientConnectionError(err) {
+			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
+		}
+		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Redfish connection failed: %v", err))
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "Connection failed: %v", err)
+		// Not a network-level failure (malformed address, certificate the client
+		// rejects, refused credentials): something has to change before a retry
+		// can succeed, so the workqueue's exponential backoff (SetupWithManager)
+		// governs the cadence.
 		return ctrl.Result{}, err
 	}
 	defer rfClient.Close(ctx)
@@ -245,9 +263,15 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	sysInfo, err := rfClient.GetSystemInfo(ctx)
 	if err != nil {
 		logger.Error(err, "Failed to get system info from Redfish")
+		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeTransient)
+		// The service root answered but the first real query did not reach the
+		// BMC (the connection was refused or dropped between the two calls):
+		// the same network-level failure as above, retried the same way.
+		if internalredfish.IsTransientConnectionError(err) {
+			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
+		}
 		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Failed to query system: %v", err))
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishQueryFailedReason, "Query failed: %v", err)
-		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeTransient)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
 	}
@@ -362,6 +386,47 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 
 	logger.Info("Reconciliation complete", "state", physicalHost.Status.State, "ready", physicalHost.Status.Ready)
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+// transientRetryInterval returns the configured flat retry interval for
+// network-level BMC failures, falling back to DefaultTransientRetryInterval.
+func (r *PhysicalHostReconciler) transientRetryInterval() time.Duration {
+	if r.TransientRetryInterval > 0 {
+		return r.TransientRetryInterval
+	}
+	return DefaultTransientRetryInterval
+}
+
+// retryTransientRedfishFailure parks the host in Error for a network-level
+// failure to reach its BMC and schedules a flat, bounded retry.
+//
+// The reconcile returns no error on purpose. Returning one hands the retry to
+// the workqueue's exponential rate-limiter — and the status write below is a
+// watch event on the same host, which controller-runtime's priority queue
+// promotes ahead of the rate-limited retry. Every event-driven attempt failed
+// again and doubled the backoff, so an endpoint that flapped for a second
+// left the host in Error for minutes after the BMC was back: a burst of
+// reconciles in the first second, then nothing. A RequeueAfter with no error
+// keeps the interval flat and the workqueue's failure count at zero, and the
+// host recovers on the first attempt after the BMC answers.
+//
+// The persisted message is a stable summary of the failure class, not the raw
+// error. The raw text names whichever URL failed and differs between attempts
+// (the service root one time, /Systems the next), and every distinct status
+// write is itself the watch event that triggers the next attempt at once.
+// With a stable message the second failed attempt is a no-op patch — no
+// event — and the host is next visited by the timer. The raw error is logged.
+//
+// The state is Error whether or not the host is claimed, as before: the
+// Beskar7Machine controller decides what an unreachable BMC means for its
+// machine, this controller only reports it.
+func (r *PhysicalHostReconciler) retryTransientRedfishFailure(logger logr.Logger, physicalHost *infrav1.PhysicalHost, err error) ctrl.Result {
+	retry := r.transientRetryInterval()
+	msg := fmt.Sprintf("BMC unreachable (%s); retrying every %s", internalredfish.DescribeTransientConnectionError(err), retry)
+	r.updateStatus(physicalHost, infrav1.StateError, false, msg)
+	setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "%s", msg)
+	logger.Info("BMC unreachable, will retry", "retryAfter", retry, "cause", err.Error())
+	return ctrl.Result{RequeueAfter: retry}
 }
 
 // clearProvisioningRunState drops the status that belongs to one provisioning
@@ -833,12 +898,19 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
-			// Exponential backoff for transient Redfish failures. The previous
-			// fixed RequeueAfter: 1*time.Minute on every error path meant a
+			// Exponential backoff for Redfish failures that need something to
+			// change before a retry can succeed (wrong address, wrong creds,
+			// rejected certificate, no ComputerSystem). The previous fixed
+			// RequeueAfter: 1*time.Minute on every error path meant a
 			// persistently-misconfigured BMC was pinged every 60s forever; now
-			// a failing host backs off geometrically (5s, 10s, 20s, ... capped
-			// at 30m) so a wrong address / wrong creds / unreachable BMC settles
-			// into a low-frequency check instead of a hot loop.
+			// such a host backs off geometrically (5s, 10s, 20s, ... capped at
+			// 30m) and settles into a low-frequency check instead of a hot loop.
+			//
+			// Network-level failures (BMC rebooting, endpoint not yet programmed)
+			// never reach this limiter: reconcileNormal returns a flat
+			// RequeueAfter with no error for them (retryTransientRedfishFailure),
+			// because the failed reconcile's own status write re-enqueues the host
+			// ahead of the rate-limited retry and compounds the backoff.
 			RateLimiter: workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](
 				5*time.Second,
 				30*time.Minute,

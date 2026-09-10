@@ -43,6 +43,22 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
+  A network-level Redfish failure (connection refused or reset, no route, DNS, a dial or request
+  timeout, or a 502/503/504 from a BMC that is still starting) now returns
+  `RequeueAfter: 15s` with no error, so the flat interval governs the retry. Returning the error
+  handed the retry to the workqueue's exponential rate-limiter, but the same failed reconcile also
+  wrote the raw error text to `status.errorMessage` — and that write is a watch event on the host,
+  which controller-runtime's priority queue puts ahead of the rate-limited retry. Each of those
+  event-driven attempts failed again and doubled the backoff, so a BMC that refused connections for
+  one second produced ~20 reconciles inside that second and then left the host in `Error` for
+  minutes after it was reachable again. The message is now a stable summary of the failure class
+  rather than the raw error (whose text names whichever URL failed and so differed between
+  attempts), which is what makes a repeated failure a no-op write instead of its own trigger.
+  Failures that need something to change before a retry can succeed — a malformed address, a
+  rejected certificate, refused credentials, a Redfish tree with no `ComputerSystem` — still
+  return the error and keep the exponential backoff. `status.state` is `Error` throughout, as
+  before.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,

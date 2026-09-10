@@ -105,6 +105,8 @@ kubectl describe physicalhost <name>
 
 Look at the `RedfishConnectionReady` condition reason — it is one of `MissingCredentials`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, or `RedfishQueryFailed`. Fix the credentials Secret or the BMC address; the next reconcile transitions to `Available`.
 
+Two retry cadences sit behind that. A host whose BMC is simply unreachable — the message reads `BMC unreachable (connection refused)` or similar, covering a refused or reset connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still booting — is retried every 15 seconds, flat, and enrols on the first attempt after the BMC answers. Nothing has to be fixed for that to clear. Every other Redfish failure needs a change to the spec, the Secret or the BMC itself, so it backs off exponentially (5s, 10s, 20s, … capped at 30 minutes) and a host that has been failing for a while can take a few minutes to notice the fix. Editing the `PhysicalHost` or its credentials Secret wakes the controller immediately.
+
 ### Stuck in `Inspecting`
 
 The host booted but the inspection image never POSTed a report. Check:
