@@ -49,7 +49,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/controllers"
 	"github.com/projectbeskar/beskar7/internal/auth"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
@@ -201,10 +201,10 @@ func TestSetupManager(t *testing.T) {
 		if err != nil {
 			t.Fatalf("mint token: %v", err)
 		}
-		host := &infrastructurev1beta1.PhysicalHost{
+		host := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-1", Namespace: ns.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.0.2.10",
 					CredentialsSecretRef: "bmc-creds",
 				},
@@ -220,7 +220,7 @@ func TestSetupManager(t *testing.T) {
 				t.Errorf("delete PhysicalHost: %v", err)
 			}
 		})
-		host.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+		host.Status.Bootstrap = &infrav1.BootstrapStatus{
 			TokenHash: hash,
 			ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)},
 		}

@@ -30,7 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 const (
@@ -189,7 +189,7 @@ func sanitizeFailureReason(reason string) string {
 // non-Deploying host into Error. The Beskar7Machine controller will observe the
 // ErrorMessage on its next reconcile regardless of which path set it.
 func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log logr.Logger, namespace, hostName, sanitizedReason string) error {
-	ph := &infrastructurev1beta1.PhysicalHost{}
+	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, ph); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -199,9 +199,9 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 	}
 
 	switch ph.Status.State {
-	case infrastructurev1beta1.StateDeploying:
+	case infrav1.StateDeploying:
 		// Expected path: host is mid-deploy; set the failure annotation.
-	case infrastructurev1beta1.StateError:
+	case infrav1.StateError:
 		// Already in error (idempotent delivery or a second POST after reconcile acted).
 		// Clear any stale annotation so the reconciler doesn't double-process, then return.
 		log.V(1).Info("Provision-failed callback on already-errored host; clearing annotation idempotently", "host", hostName)

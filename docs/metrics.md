@@ -61,7 +61,7 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 **Labels:** `state`, `namespace`  
 **Description:** Number of PhysicalHosts in each state.
 
-**States** (match the `Status.State` strings — see `api/v1beta1/physicalhost_types.go:10-26`):
+**States** (match the `Status.State` strings — see `api/v1beta2/physicalhost_types.go:10-26`):
 - `Available`
 - `InUse`
 - `Inspecting`

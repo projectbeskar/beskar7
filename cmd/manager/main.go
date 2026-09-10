@@ -41,8 +41,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
-	"github.com/projectbeskar/beskar7/api/v1beta1/webhooks"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/api/v1beta2/webhooks"
 	"github.com/projectbeskar/beskar7/controllers"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	//+kubebuilder:scaffold:imports
@@ -59,7 +59,7 @@ func init() {
 	// Register Cluster API types
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 
-	utilruntime.Must(infrastructurev1beta1.AddToScheme(scheme))
+	utilruntime.Must(infrav1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 

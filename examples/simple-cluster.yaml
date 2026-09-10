@@ -30,7 +30,7 @@ stringData:
 
 ---
 # Step 2: Register physical hosts
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01
@@ -42,7 +42,7 @@ spec:
     insecureSkipVerify: true  # Only for testing!
 
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-02
@@ -54,7 +54,7 @@ spec:
     insecureSkipVerify: true
 
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-03
@@ -67,7 +67,7 @@ spec:
 
 ---
 # Step 3: Create cluster infrastructure
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Cluster
 metadata:
   name: test-cluster
@@ -97,7 +97,7 @@ spec:
       cidrBlocks:
         - 10.96.0.0/16
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Cluster
     name: test-cluster
     namespace: default
@@ -111,7 +111,7 @@ spec:
 
 ---
 # Step 5: Create control plane machine
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: control-plane-01
@@ -136,7 +136,7 @@ spec:
 
 ---
 # Step 6: Create worker machines
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: worker-01
@@ -154,7 +154,7 @@ spec:
     minDiskGB: 50
 
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: worker-02
@@ -190,7 +190,7 @@ spec:
       kind: KubeadmConfig
       name: control-plane-01-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: control-plane-01
 
@@ -211,7 +211,7 @@ spec:
       kind: KubeadmConfig
       name: worker-01-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: worker-01
 
@@ -232,7 +232,7 @@ spec:
       kind: KubeadmConfig
       name: worker-02-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: worker-02
 

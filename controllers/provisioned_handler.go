@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 const (
@@ -98,7 +98,7 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // so the PhysicalHostReconciler can drive the Deploying→Ready transition. It does NOT
 // write PhysicalHost.Status (D-005 / BUG-1 invariant).
 func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Logger, namespace, hostName string) error {
-	ph := &infrastructurev1beta1.PhysicalHost{}
+	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, ph); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -110,7 +110,7 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 	// Guard: only signal if the host is in Deploying. If it is already Ready
 	// (idempotent duplicate POST) or in an unexpected state, log and return 202
 	// without patching — the reconciler will handle it.
-	if ph.Status.State != infrastructurev1beta1.StateDeploying && ph.Status.State != infrastructurev1beta1.StateReady {
+	if ph.Status.State != infrav1.StateDeploying && ph.Status.State != infrav1.StateReady {
 		log.Info("Provisioned callback received but host is not in Deploying state; ignoring",
 			"host", hostName, "state", ph.Status.State)
 		return nil

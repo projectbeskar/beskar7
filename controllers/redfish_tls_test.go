@@ -26,7 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // newSchemeForTest returns a scheme registered with the types we need so the
@@ -37,8 +37,8 @@ func newSchemeForTest(t *testing.T) *runtime.Scheme {
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatalf("add corev1 to scheme: %v", err)
 	}
-	if err := infrastructurev1beta1.AddToScheme(scheme); err != nil {
-		t.Fatalf("add v1beta1 to scheme: %v", err)
+	if err := infrav1.AddToScheme(scheme); err != nil {
+		t.Fatalf("add v1beta2 to scheme: %v", err)
 	}
 	return scheme
 }
@@ -46,10 +46,10 @@ func newSchemeForTest(t *testing.T) *runtime.Scheme {
 func TestFetchRedfishCABundle_NoRef(t *testing.T) {
 	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 			},
@@ -75,10 +75,10 @@ func TestFetchRedfishCABundle_PrefersCACrt(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 				CABundleSecretRef:    "ca-bundle",
@@ -104,10 +104,10 @@ func TestFetchRedfishCABundle_FallsBackToTLSCrt(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 				CABundleSecretRef:    "ca-bundle",
@@ -126,10 +126,10 @@ func TestFetchRedfishCABundle_FallsBackToTLSCrt(t *testing.T) {
 func TestFetchRedfishCABundle_SecretMissing(t *testing.T) {
 	t.Parallel()
 	c := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 				CABundleSecretRef:    "missing",
@@ -156,10 +156,10 @@ func TestFetchRedfishCABundle_NoUsableKeys(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 				CABundleSecretRef:    "ca-bundle",
@@ -190,10 +190,10 @@ func TestFetchRedfishCABundle_EmptyDataValue(t *testing.T) {
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
-	host := &infrastructurev1beta1.PhysicalHost{
+	host := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "ns"},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://bmc.example.com",
 				CredentialsSecretRef: "creds",
 				CABundleSecretRef:    "ca-bundle",

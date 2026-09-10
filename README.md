@@ -27,7 +27,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 ## Current Status
 
 **Version:** v0.4.4 — patch release on the GA line (`v0.4.0` was the first GA)  
-**API:** `v1beta1` is **stable and frozen**. The schema evolves **additive-only**; a breaking change requires a future `v1beta2` introduced with a conversion webhook.  
+**API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
 
@@ -36,7 +36,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 ### Prerequisites
 
 1. Kubernetes v1.31+ with kubectl configured
-2. Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
+2. Cluster API v1.11+ — the controller reads the `cluster.x-k8s.io/v1beta2` API ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 3. cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 4. iPXE infrastructure - DHCP + HTTP server ([setup guide](docs/ipxe-setup.md))
 5. Inspection image - `vmlinuz` + `initrd.img` from [beskar7-inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases), served by your boot server. Match the inspector to the contract version your controller speaks (see [iPXE Setup](docs/ipxe-setup.md)).
@@ -66,7 +66,7 @@ See [Installation](docs/installation.md) for detailed install steps, or the [Qui
 ### 1. Register a Physical Host
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01
@@ -79,7 +79,7 @@ spec:
 ### 2. Create a Machine
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: worker-01

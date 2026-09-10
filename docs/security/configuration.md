@@ -9,7 +9,7 @@ How to configure the security features Beskar7 actually enforces. For an invento
 ### Strict verification (default, recommended)
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01
@@ -38,7 +38,7 @@ data:
   ca.crt: <base64 PEM>          # preferred key
   # tls.crt: <base64 PEM>       # fallback key, used only if ca.crt is absent
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01

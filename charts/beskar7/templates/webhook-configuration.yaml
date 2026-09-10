@@ -33,7 +33,7 @@ webhooks:
     service:
       name: {{ .Values.webhook.service.name }}
       namespace: {{ include "beskar7.namespace" . }}
-      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
       port: {{ .Values.webhook.service.port }}
   failurePolicy: {{ .Values.webhook.failurePolicy }}
   matchPolicy: {{ .Values.webhook.matchPolicy }}
@@ -42,7 +42,7 @@ webhooks:
   - apiGroups:
     - infrastructure.cluster.x-k8s.io
     apiVersions:
-    - v1beta1
+    - v1beta2
     operations:
     - CREATE
     - UPDATE
@@ -71,7 +71,7 @@ webhooks:
     service:
       name: {{ .Values.webhook.service.name }}
       namespace: {{ include "beskar7.namespace" . }}
-      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
       port: {{ .Values.webhook.service.port }}
   failurePolicy: {{ .Values.webhook.failurePolicy }}
   matchPolicy: {{ .Values.webhook.matchPolicy }}
@@ -80,7 +80,7 @@ webhooks:
   - apiGroups:
     - infrastructure.cluster.x-k8s.io
     apiVersions:
-    - v1beta1
+    - v1beta2
     operations:
     - CREATE
     - UPDATE

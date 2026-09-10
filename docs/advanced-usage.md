@@ -73,7 +73,7 @@ Pair this with manual host labelling (`topology.kubernetes.io/zone`, vendor labe
 The `Beskar7Cluster` reconciler discovers failure domains by listing `PhysicalHost` resources in the same namespace and extracting unique values from the `topology.kubernetes.io/zone` label. It populates `Beskar7Cluster.status.failureDomains`; CAPI uses this for placement.
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01

@@ -341,7 +341,7 @@ spec:
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false
   consumerRef:  # Set by Beskar7Machine when claimed
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: worker-01
     namespace: default

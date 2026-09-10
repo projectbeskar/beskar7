@@ -30,7 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/controllers"
 )
 
@@ -50,7 +50,7 @@ const (
 // host from Deploying to Ready.
 func simulateProvisioned(ctx context.Context, ns, hostName string) {
 	hostKey := client.ObjectKey{Namespace: ns, Name: hostName}
-	currentHost := &infrastructurev1beta1.PhysicalHost{}
+	currentHost := &infrav1.PhysicalHost{}
 	Expect(mgr.GetClient().Get(ctx, hostKey, currentHost)).To(Succeed())
 	base := currentHost.DeepCopy()
 	if currentHost.Annotations == nil {
@@ -65,7 +65,7 @@ func simulateProvisioned(ctx context.Context, ns, hostName string) {
 // callback server writes (locked-decision 2). The PhysicalHostReconciler's
 // applyInspectionResultAnnotation then consumes it under real watches.
 func simulateInspector(ctx context.Context, ns, hostName string) {
-	report := &infrastructurev1beta1.InspectionReport{
+	report := &infrav1.InspectionReport{
 		Timestamp:    metav1.Now(),
 		Manufacturer: "MockInc",
 		Model:        "MockSystem",
@@ -96,7 +96,7 @@ func simulateInspector(ctx context.Context, ns, hostName string) {
 	// Patch the annotation on the host using the cache client so the version
 	// is current and we do not produce an optimistic-lock conflict.
 	hostKey := client.ObjectKey{Namespace: ns, Name: hostName}
-	currentHost := &infrastructurev1beta1.PhysicalHost{}
+	currentHost := &infrav1.PhysicalHost{}
 	Expect(mgr.GetClient().Get(ctx, hostKey, currentHost)).To(Succeed())
 	base := currentHost.DeepCopy()
 	if currentHost.Annotations == nil {
@@ -120,8 +120,8 @@ var _ = Describe("Full provision flow", func() {
 	var (
 		specCtx   context.Context
 		ns        *corev1.Namespace
-		host      *infrastructurev1beta1.PhysicalHost
-		b7machine *infrastructurev1beta1.Beskar7Machine
+		host      *infrav1.PhysicalHost
+		b7machine *infrav1.Beskar7Machine
 	)
 
 	BeforeEach(func() {
@@ -156,9 +156,9 @@ var _ = Describe("Full provision flow", func() {
 		// Asserting on InUse would produce a race between the two controllers that
 		// could fail on fast CI runners.
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateInspecting))
 			// ConsumerRef must be set before the host can reach Inspecting.
 			g.Expect(current.Spec.ConsumerRef).NotTo(BeNil())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
@@ -170,11 +170,11 @@ var _ = Describe("Full provision flow", func() {
 		// The Beskar7Machine must not be Ready yet at this point.
 		By("waiting for PhysicalHostReconciler to consume the result (host → Deploying)")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateDeploying),
+			g.Expect(current.Status.State).To(Equal(infrav1.StateDeploying),
 				"inspect-complete must land in Deploying, not Ready (D-015)")
-			g.Expect(current.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseComplete))
+			g.Expect(current.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete))
 			g.Expect(current.Status.InspectionReport).NotTo(BeNil())
 			g.Expect(current.Status.DeployingTimestamp).NotTo(BeNil())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
@@ -184,9 +184,9 @@ var _ = Describe("Full provision flow", func() {
 
 		By("waiting for PhysicalHostReconciler to consume provisioned signal (host → Ready)")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateReady),
+			g.Expect(current.Status.State).To(Equal(infrav1.StateReady),
 				"provisioned callback must drive Deploying→Ready (D-015)")
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
@@ -194,7 +194,7 @@ var _ = Describe("Full provision flow", func() {
 		b7mKey := client.ObjectKeyFromObject(b7machine)
 		expectedProviderID := fmt.Sprintf("b7://%s/%s", ns.Name, host.Name)
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.Beskar7Machine{}
+			current := &infrav1.Beskar7Machine{}
 			g.Expect(mgr.GetClient().Get(specCtx, b7mKey, current)).To(Succeed())
 			g.Expect(current.Status.Ready).To(BeTrue())
 			g.Expect(current.Spec.ProviderID).NotTo(BeNil())
@@ -218,7 +218,7 @@ var _ = Describe("Secret-rotation watch", func() {
 	var (
 		specCtx   context.Context
 		ns        *corev1.Namespace
-		host      *infrastructurev1beta1.PhysicalHost
+		host      *infrav1.PhysicalHost
 		bmcSecret *corev1.Secret
 	)
 
@@ -238,12 +238,12 @@ var _ = Describe("Secret-rotation watch", func() {
 
 		By("waiting for host to reach Available (first successful reconcile)")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateAvailable))
 			// RedfishConnectionReady=True confirms the first reconcile ran.
 			for _, c := range current.Status.Conditions {
-				if c.Type == infrastructurev1beta1.RedfishConnectionReadyCondition {
+				if c.Type == infrav1.RedfishConnectionReadyCondition {
 					g.Expect(c.Status).To(Equal(corev1.ConditionTrue))
 					return
 				}
@@ -269,13 +269,13 @@ var _ = Describe("Secret-rotation watch", func() {
 		// timestamp (any re-set of the condition bumps LastTransitionTime or
 		// LastProbeTime depending on the CAPI conditions library).
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
 			// Host must still be Available — rotation must not break it.
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateAvailable))
 			found := false
 			for _, c := range current.Status.Conditions {
-				if c.Type == infrastructurev1beta1.RedfishConnectionReadyCondition {
+				if c.Type == infrav1.RedfishConnectionReadyCondition {
 					g.Expect(c.Status).To(Equal(corev1.ConditionTrue))
 					found = true
 					break
@@ -302,8 +302,8 @@ var _ = Describe("Delete and release", func() {
 	var (
 		specCtx   context.Context
 		ns        *corev1.Namespace
-		host      *infrastructurev1beta1.PhysicalHost
-		b7machine *infrastructurev1beta1.Beskar7Machine
+		host      *infrav1.PhysicalHost
+		b7machine *infrav1.Beskar7Machine
 	)
 
 	BeforeEach(func() {
@@ -328,24 +328,24 @@ var _ = Describe("Delete and release", func() {
 
 		By("driving the machine to Inspecting state")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateInspecting))
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("simulating the inspector: inspection result + provisioned callback (D-015 two-step)")
 		simulateInspector(specCtx, ns.Name, host.Name)
 		// Wait for Deploying before sending the provisioned callback.
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateDeploying))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateDeploying))
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 		simulateProvisioned(specCtx, ns.Name, host.Name)
 
 		By("waiting for Beskar7Machine to reach Ready=true (ProviderID set)")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.Beskar7Machine{}
+			current := &infrav1.Beskar7Machine{}
 			g.Expect(mgr.GetClient().Get(specCtx, b7mKey, current)).To(Succeed())
 			g.Expect(current.Status.Ready).To(BeTrue())
 			g.Expect(current.Spec.ProviderID).NotTo(BeNil())
@@ -356,17 +356,17 @@ var _ = Describe("Delete and release", func() {
 
 		By("waiting for host to be released (ConsumerRef cleared, state=Available)")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
 			g.Expect(current.Spec.ConsumerRef).To(BeNil(),
 				"ConsumerRef must be cleared after Beskar7Machine deletion")
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateAvailable),
+			g.Expect(current.Status.State).To(Equal(infrav1.StateAvailable),
 				"host must return to Available after release")
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("confirming the Beskar7Machine is fully gone (finalizer removed by reconcileDelete)")
 		Eventually(func(g Gomega) {
-			err := mgr.GetClient().Get(specCtx, b7mKey, &infrastructurev1beta1.Beskar7Machine{})
+			err := mgr.GetClient().Get(specCtx, b7mKey, &infrav1.Beskar7Machine{})
 			g.Expect(err).To(MatchError(ContainSubstring("not found")),
 				"Beskar7Machine must be fully deleted after finalizer removal")
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
@@ -380,14 +380,14 @@ var _ = Describe("Delete and release", func() {
 		// We deliberately do NOT simulate the inspector here, so the machine never
 		// reaches Ready and ProviderID is never set. This is the #107 window.
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+			g.Expect(current.Status.State).To(Equal(infrav1.StateInspecting))
 			g.Expect(current.Spec.ConsumerRef).NotTo(BeNil())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("confirming ProviderID is unset on the Beskar7Machine (proves we are in the pre-Ready window)")
-		currentB7M := &infrastructurev1beta1.Beskar7Machine{}
+		currentB7M := &infrav1.Beskar7Machine{}
 		Expect(mgr.GetClient().Get(specCtx, b7mKey, currentB7M)).To(Succeed())
 		Expect(currentB7M.Spec.ProviderID).To(BeNil(),
 			"ProviderID must be unset for this regression to exercise the ConsumerRef-based release path")
@@ -397,17 +397,17 @@ var _ = Describe("Delete and release", func() {
 
 		By("waiting for host to be released (ConsumerRef cleared, state=Available) despite ProviderID never being set")
 		Eventually(func(g Gomega) {
-			current := &infrastructurev1beta1.PhysicalHost{}
+			current := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
 			g.Expect(current.Spec.ConsumerRef).To(BeNil(),
 				"ConsumerRef must be cleared even when the machine was deleted before ProviderID was assigned (#107)")
-			g.Expect(current.Status.State).To(Equal(infrastructurev1beta1.StateAvailable),
+			g.Expect(current.Status.State).To(Equal(infrav1.StateAvailable),
 				"host must return to Available rather than stranding in InUse/Inspecting")
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("confirming the Beskar7Machine is fully gone")
 		Eventually(func(g Gomega) {
-			err := mgr.GetClient().Get(specCtx, b7mKey, &infrastructurev1beta1.Beskar7Machine{})
+			err := mgr.GetClient().Get(specCtx, b7mKey, &infrav1.Beskar7Machine{})
 			g.Expect(err).To(MatchError(ContainSubstring("not found")))
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 	})

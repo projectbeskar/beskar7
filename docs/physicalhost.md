@@ -8,7 +8,7 @@ For the full field reference, see [API Reference: PhysicalHost](api-reference.md
 
 ## Identity
 
-- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta2`
 - **Kind:** `PhysicalHost`
 - **Short name:** `ph`
 - **Scope:** Namespaced
@@ -93,7 +93,7 @@ stringData:
   username: "admin"
   password: "changeme"
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01

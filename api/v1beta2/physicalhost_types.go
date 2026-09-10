@@ -1,4 +1,4 @@
-package v1beta1
+package v1beta2
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -420,7 +420,6 @@ const (
 // +kubebuilder:printcolumn:name="Ready",type="boolean",JSONPath=".status.ready",description="Indicates if the host is ready"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Creation timestamp"
 // +kubebuilder:storageversion
-// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
 // +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/provider=infrastructure-beskar7
 // +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io/move-hierarchy="

@@ -18,7 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
@@ -66,7 +66,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 	}
 
 	Context("When reconciling a PhysicalHost", func() {
-		var physicalHost *infrastructurev1beta1.PhysicalHost
+		var physicalHost *infrav1.PhysicalHost
 		var credentialSecret *corev1.Secret
 		var mockRfClient *internalredfish.MockClient
 		var reconciler *PhysicalHostReconciler
@@ -95,13 +95,13 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
 			// Define the PhysicalHost resource
-			physicalHost = &infrastructurev1beta1.PhysicalHost{
+			physicalHost = &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-physicalhost",
 					Namespace: testNs.Name,
 				},
-				Spec: infrastructurev1beta1.PhysicalHostSpec{
-					RedfishConnection: infrastructurev1beta1.RedfishConnection{
+				Spec: infrav1.PhysicalHostSpec{
+					RedfishConnection: infrav1.RedfishConnection{
 						Address:              "https://redfish-mock.example.com",
 						CredentialsSecretRef: credentialSecret.Name,
 					},
@@ -139,7 +139,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				createdPh := &infrastructurev1beta1.PhysicalHost{}
+				createdPh := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, createdPh)).To(Succeed())
 				g.Expect(createdPh.Finalizers).To(ContainElement(PhysicalHostFinalizer))
 			}, Timeout, Interval).Should(Succeed())
@@ -149,13 +149,13 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				createdPh := &infrastructurev1beta1.PhysicalHost{}
+				createdPh := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, createdPh)).To(Succeed())
-				g.Expect(createdPh.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+				g.Expect(createdPh.Status.State).To(Equal(infrav1.StateAvailable))
 				g.Expect(createdPh.Status.ObservedPowerState).To(Equal(string(redfish.OffPowerState)))
 				g.Expect(createdPh.Status.HardwareDetails).NotTo(BeNil())
-				g.Expect(conditions.IsTrue(createdPh, infrastructurev1beta1.RedfishConnectionReadyCondition)).To(BeTrue())
-				g.Expect(conditions.IsTrue(createdPh, infrastructurev1beta1.HostAvailableCondition)).To(BeTrue())
+				g.Expect(conditions.IsTrue(createdPh, infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
+				g.Expect(conditions.IsTrue(createdPh, infrav1.HostAvailableCondition)).To(BeTrue())
 			}, Timeout, Interval).Should(Succeed())
 
 			// Verify mock client methods were called
@@ -175,7 +175,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err := reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 			Expect(ph.Finalizers).To(ContainElement(PhysicalHostFinalizer),
 				"finalizer must be present after first reconcile")
@@ -184,11 +184,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			ph2 := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
 			Expect(ph2.Finalizers).To(ContainElement(PhysicalHostFinalizer),
 				"finalizer must still be present after second reconcile")
-			Expect(ph2.Status.State).To(Equal(infrastructurev1beta1.StateAvailable),
+			Expect(ph2.Status.State).To(Equal(infrav1.StateAvailable),
 				"status must be persisted by the deferred patch")
 
 			By("Deleting the PhysicalHost")
@@ -200,7 +200,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("Ensuring PhysicalHost is eventually deleted (finalizer gone)")
 			Eventually(func() bool {
-				ph := &infrastructurev1beta1.PhysicalHost{}
+				ph := &infrav1.PhysicalHost{}
 				errGet := k8sClient.Get(ctx, phLookupKey, ph)
 				return client.IgnoreNotFound(errGet) == nil
 			}, Timeout*2, Interval).Should(BeTrue())
@@ -223,9 +223,9 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
 			By("Setting ConsumerRef and inspect annotation (as Beskar7Machine controller would)")
 			phPatch := ph.DeepCopy()
@@ -246,17 +246,17 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
-				g.Expect(got.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseBooting))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateInspecting))
+				g.Expect(got.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseBooting))
 				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
 				// Annotation must be cleared so it is not acted on again.
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 			}, Timeout, Interval).Should(Succeed())
 
 			By("Setting inspect-complete annotation (as Beskar7Machine controller would after validation)")
-			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			ph2 := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
 			ph2Patch := ph2.DeepCopy()
 			if ph2Patch.Annotations == nil {
@@ -272,11 +272,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateDeploying),
+				g.Expect(got.Status.State).To(Equal(infrav1.StateDeploying),
 					"inspect-complete must land in Deploying, not Ready (D-015)")
-				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeTrue())
+				g.Expect(conditions.IsTrue(got, infrav1.HostInspectedCondition)).To(BeTrue())
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 				g.Expect(got.Status.DeployingTimestamp).NotTo(BeNil(),
 					"DeployingTimestamp must be set on Deploying entry")
@@ -300,7 +300,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Driving a full provisioning run: claim -> Inspecting -> Deploying")
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 			phPatch := ph.DeepCopy()
 			if phPatch.Annotations == nil {
@@ -317,7 +317,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph2 := &infrastructurev1beta1.PhysicalHost{}
+			ph2 := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
 			ph2Patch := ph2.DeepCopy()
 			if ph2Patch.Annotations == nil {
@@ -330,15 +330,15 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("Confirming the run really did leave state behind")
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateDeploying))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateDeploying))
 				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
 				g.Expect(got.Status.DeployingTimestamp).NotTo(BeNil())
 			}, Timeout, Interval).Should(Succeed())
 
 			By("Releasing the host, as Beskar7Machine does on delete: ConsumerRef = nil")
-			released := &infrastructurev1beta1.PhysicalHost{}
+			released := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, released)).To(Succeed())
 			relPatch := released.DeepCopy()
 			relPatch.Spec.ConsumerRef = nil
@@ -349,9 +349,9 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("The released host must carry NOTHING from the previous run")
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateAvailable))
 
 				// The regression: these two drive the inspection and deployment
 				// timeouts in the Beskar7Machine controller. A stale value fails the
@@ -363,12 +363,12 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 				g.Expect(got.Status.InspectionPhase).To(BeEmpty(),
 					"InspectionPhase describes the finished run")
-				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeFalse(),
+				g.Expect(conditions.IsTrue(got, infrav1.HostInspectedCondition)).To(BeFalse(),
 					"HostInspected describes the finished run, not the hardware")
 			}, Timeout, Interval).Should(Succeed())
 
 			By("A second consumer can claim it and start a fresh inspection")
-			reclaim := &infrastructurev1beta1.PhysicalHost{}
+			reclaim := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, reclaim)).To(Succeed())
 			reclaimPatch := reclaim.DeepCopy()
 			if reclaimPatch.Annotations == nil {
@@ -386,9 +386,9 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateInspecting))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateInspecting))
 				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
 				// The whole point: the second consumer's clock starts now, not when
 				// the first consumer's run began.
@@ -418,7 +418,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("Ensuring PhysicalHost is eventually deleted")
 			Eventually(func() bool {
-				ph := &infrastructurev1beta1.PhysicalHost{}
+				ph := &infrav1.PhysicalHost{}
 				errGet := k8sClient.Get(ctx, phLookupKey, ph)
 				return client.IgnoreNotFound(errGet) == nil
 			}, Timeout*2, Interval).Should(BeTrue())
@@ -461,10 +461,10 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Checking error conditions")
 			Eventually(func(g Gomega) {
 				Expect(k8sClient.Get(ctx, phLookupKey, failedPh)).To(Succeed())
-				cond := conditions.Get(failedPh, infrastructurev1beta1.RedfishConnectionReadyCondition)
+				cond := conditions.Get(failedPh, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				g.Expect(failedPh.Status.State).To(Equal(infrastructurev1beta1.StateError))
+				g.Expect(failedPh.Status.State).To(Equal(infrav1.StateError))
 			}, Timeout, Interval).Should(Succeed())
 		})
 
@@ -504,13 +504,13 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("Verifying the InsecureCABundleConflict condition + Error state are set")
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				cond := conditions.Get(got, infrastructurev1beta1.RedfishConnectionReadyCondition)
+				cond := conditions.Get(got, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				g.Expect(cond.Reason).To(Equal(infrastructurev1beta1.InsecureCABundleConflictReason))
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateError))
+				g.Expect(cond.Reason).To(Equal(infrav1.InsecureCABundleConflictReason))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateError))
 				g.Expect(got.Status.ErrorMessage).To(ContainSubstring("mutually exclusive"))
 			}, Timeout, Interval).Should(Succeed())
 		})
@@ -589,13 +589,13 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(factoryCalled).To(BeFalse(), "factory must not be called when CA bundle fetch fails")
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				cond := conditions.Get(got, infrastructurev1beta1.RedfishConnectionReadyCondition)
+				cond := conditions.Get(got, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				g.Expect(cond.Reason).To(Equal(infrastructurev1beta1.CABundleFetchFailedReason))
-				g.Expect(got.Status.State).To(Equal(infrastructurev1beta1.StateError))
+				g.Expect(cond.Reason).To(Equal(infrav1.CABundleFetchFailedReason))
+				g.Expect(got.Status.State).To(Equal(infrav1.StateError))
 			}, Timeout, Interval).Should(Succeed())
 		})
 
@@ -613,7 +613,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 
 			By("Verifying power state is tracked")
 			Eventually(func(g Gomega) {
-				ph := &infrastructurev1beta1.PhysicalHost{}
+				ph := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OffPowerState)))
 			}, Timeout, Interval).Should(Succeed())
@@ -624,7 +624,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				ph := &infrastructurev1beta1.PhysicalHost{}
+				ph := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OnPowerState)))
 			}, Timeout, Interval).Should(Succeed())
@@ -640,9 +640,9 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
 			By("Setting the bootstrap-token annotation (as Beskar7Machine controller would)")
 			fakeHash := "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
@@ -667,7 +667,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			got := &infrastructurev1beta1.PhysicalHost{}
+			got := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
 			Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
 			Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
@@ -706,12 +706,12 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Creating the inspection-result ConfigMap that the handler would have written")
-			report := &infrastructurev1beta1.InspectionReport{
+			report := &infrav1.InspectionReport{
 				Timestamp:    metav1.Now(),
 				Manufacturer: "Acme",
 				Model:        "Test-1000",
 				SerialNumber: "SN-RESULT",
-				CPUs: []infrastructurev1beta1.CPUInfo{
+				CPUs: []infrav1.CPUInfo{
 					{ID: "cpu0", Cores: 16},
 				},
 			}
@@ -731,7 +731,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
 			By("Setting the inspection-result annotation pointing at the ConfigMap")
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 			phPatch := ph.DeepCopy()
 			if phPatch.Annotations == nil {
@@ -745,14 +745,14 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
 				g.Expect(got.Status.InspectionReport).NotTo(BeNil(), "Status.InspectionReport must be set")
 				g.Expect(got.Status.InspectionReport.Manufacturer).To(Equal("Acme"))
 				g.Expect(got.Status.InspectionReport.Model).To(Equal("Test-1000"))
 				g.Expect(got.Status.InspectionReport.SerialNumber).To(Equal("SN-RESULT"))
-				g.Expect(got.Status.InspectionPhase).To(Equal(infrastructurev1beta1.InspectionPhaseComplete))
-				g.Expect(conditions.IsTrue(got, infrastructurev1beta1.HostInspectedCondition)).To(BeTrue(),
+				g.Expect(got.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete))
+				g.Expect(conditions.IsTrue(got, infrav1.HostInspectedCondition)).To(BeTrue(),
 					"HostInspectedCondition must be True after consuming the report")
 				// Annotation cleared.
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionResultAnnotation),
@@ -780,9 +780,9 @@ var _ = Describe("PhysicalHost Controller", func() {
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph := &infrastructurev1beta1.PhysicalHost{}
+			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
 			By("Setting the bootstrap-url annotation (as Beskar7Machine controller would)")
 			const expectedURL = "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/test-physicalhost"
@@ -798,7 +798,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
-				got := &infrastructurev1beta1.PhysicalHost{}
+				got := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
 				g.Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
 				g.Expect(got.Status.Bootstrap.URL).To(Equal(expectedURL),
@@ -811,7 +811,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 	})
 
 	Describe("PhysicalHost pause functionality", func() {
-		var physicalHost *infrastructurev1beta1.PhysicalHost
+		var physicalHost *infrav1.PhysicalHost
 		var credentialSecret *corev1.Secret
 		var mockRfClient *internalredfish.MockClient
 		var reconciler *PhysicalHostReconciler
@@ -837,13 +837,13 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
-			physicalHost = &infrastructurev1beta1.PhysicalHost{
+			physicalHost = &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-physicalhost-pause",
 					Namespace: testNs.Name,
 				},
-				Spec: infrastructurev1beta1.PhysicalHostSpec{
-					RedfishConnection: infrastructurev1beta1.RedfishConnection{
+				Spec: infrav1.PhysicalHostSpec{
+					RedfishConnection: infrav1.RedfishConnection{
 						Address:              "https://redfish-pause.example.com",
 						CredentialsSecretRef: credentialSecret.Name,
 					},
@@ -906,7 +906,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(result).To(Equal(ctrl.Result{}))
 
 			By("Removing pause annotation")
-			pausedPh := &infrastructurev1beta1.PhysicalHost{}
+			pausedPh := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, pausedPh)).To(Succeed())
 			delete(pausedPh.Annotations, clusterv1.PausedAnnotation)
 			Expect(k8sClient.Update(ctx, pausedPh)).To(Succeed())
@@ -917,7 +917,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 
 			Eventually(func(g Gomega) {
-				resumedPh := &infrastructurev1beta1.PhysicalHost{}
+				resumedPh := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, resumedPh)).To(Succeed())
 				g.Expect(resumedPh.Finalizers).To(ContainElement(PhysicalHostFinalizer))
 			}, time.Second*10, time.Millisecond*250).Should(Succeed())
@@ -937,7 +937,7 @@ var _ = Describe("applyBootstrapTokenAnnotation", func() {
 		}
 	})
 
-	annotate := func(ph *infrastructurev1beta1.PhysicalHost, hash string, expiresAt metav1.Time) {
+	annotate := func(ph *infrav1.PhysicalHost, hash string, expiresAt metav1.Time) {
 		encoded, err := json.Marshal(BootstrapTokenAnnotationValue{
 			Hash:      hash,
 			IssuedAt:  metav1.NewTime(expiresAt.Add(-time.Hour)),
@@ -953,7 +953,7 @@ var _ = Describe("applyBootstrapTokenAnnotation", func() {
 	It("keeps the annotation until status carries the mint, then clears it — a reader never sees neither", func() {
 		hash := "1111111111111111111111111111111111111111111111111111111111111111"
 		expiresAt := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		annotate(ph, hash, expiresAt)
 
 		By("pass 1: status out, annotation kept")
@@ -975,9 +975,9 @@ var _ = Describe("applyBootstrapTokenAnnotation", func() {
 		newer := "3333333333333333333333333333333333333333333333333333333333333333"
 		previousExpiry := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
 		newerExpiry := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{TokenHash: previous, ExpiresAt: &previousExpiry},
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{TokenHash: previous, ExpiresAt: &previousExpiry},
 			},
 		}
 		annotate(ph, newer, newerExpiry)
@@ -1020,7 +1020,7 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 		encoded, err := json.Marshal(value)
 		Expect(err).NotTo(HaveOccurred())
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
 			},
@@ -1052,12 +1052,12 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 		encoded, err := json.Marshal(value)
 		Expect(err).NotTo(HaveOccurred())
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceConsumedAt: &consumed,
 				},
 			},
@@ -1071,7 +1071,7 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 	})
 
 	It("leaves annotation in place when JSON is malformed", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: "not-json"},
 			},
@@ -1090,7 +1090,7 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 		encoded, err := json.Marshal(value)
 		Expect(err).NotTo(HaveOccurred())
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
 			},
@@ -1104,7 +1104,7 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 	})
 
 	It("is a no-op when the annotation is absent", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		r.applyBootNonceAnnotation(r.Log, ph)
 		Expect(ph.Status.Bootstrap).To(BeNil())
 	})

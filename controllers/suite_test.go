@@ -34,7 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	//+kubebuilder:scaffold:imports
@@ -63,7 +63,7 @@ var _ = BeforeSuite(func() {
 
 	// === Setup Scheme FIRST ===
 	// Add Beskar7 types to scheme
-	Expect(infrastructurev1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(infrav1.AddToScheme(scheme.Scheme)).To(Succeed())
 	// Add CAPI types to scheme
 	Expect(clusterv1.AddToScheme(scheme.Scheme)).To(Succeed())
 	//+kubebuilder:scaffold:scheme

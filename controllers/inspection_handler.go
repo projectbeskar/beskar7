@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
@@ -217,7 +217,7 @@ func (h *InspectionHandler) processInspectionReport(
 	// validate the token; we re-Get here for a fresh resourceVersion before
 	// patching, and to handle the (rare) case where the host was deleted
 	// between the auth check and now.
-	physicalHost := &infrastructurev1beta1.PhysicalHost{}
+	physicalHost := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, physicalHost); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -243,8 +243,8 @@ func (h *InspectionHandler) processInspectionReport(
 
 // buildInspectionReport converts the request DTO to the API type. Keeping this
 // pure (no I/O) makes it trivially testable without a fake client.
-func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.InspectionReport {
-	report := &infrastructurev1beta1.InspectionReport{
+func buildInspectionReport(req InspectionReportRequest) *infrav1.InspectionReport {
+	report := &infrav1.InspectionReport{
 		Timestamp:        metav1.Now(),
 		Manufacturer:     req.Manufacturer,
 		Model:            req.Model,
@@ -253,7 +253,7 @@ func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.I
 		FirmwareVersion:  req.FirmwareVersion,
 	}
 	for _, cpu := range req.CPUs {
-		report.CPUs = append(report.CPUs, infrastructurev1beta1.CPUInfo{
+		report.CPUs = append(report.CPUs, infrav1.CPUInfo{
 			ID:        cpu.ID,
 			Vendor:    cpu.Vendor,
 			Model:     cpu.Model,
@@ -263,7 +263,7 @@ func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.I
 		})
 	}
 	for _, mem := range req.Memory {
-		report.Memory = append(report.Memory, infrastructurev1beta1.MemoryInfo{
+		report.Memory = append(report.Memory, infrav1.MemoryInfo{
 			ID:       mem.ID,
 			Type:     mem.Type,
 			Capacity: mem.Capacity,
@@ -271,7 +271,7 @@ func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.I
 		})
 	}
 	for _, disk := range req.Disks {
-		report.Disks = append(report.Disks, infrastructurev1beta1.DiskInfo{
+		report.Disks = append(report.Disks, infrav1.DiskInfo{
 			Name:         disk.Name,
 			Model:        disk.Model,
 			SizeGB:       disk.SizeGB,
@@ -280,7 +280,7 @@ func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.I
 		})
 	}
 	for _, nic := range req.NICs {
-		report.NICs = append(report.NICs, infrastructurev1beta1.NICInfo{
+		report.NICs = append(report.NICs, infrav1.NICInfo{
 			Name:        nic.Name,
 			MACAddress:  nic.MACAddress,
 			Driver:      nic.Driver,
@@ -298,8 +298,8 @@ func buildInspectionReport(req InspectionReportRequest) *infrastructurev1beta1.I
 func (h *InspectionHandler) upsertResultConfigMap(
 	ctx context.Context,
 	log logr.Logger,
-	physicalHost *infrastructurev1beta1.PhysicalHost,
-	report *infrastructurev1beta1.InspectionReport,
+	physicalHost *infrav1.PhysicalHost,
+	report *infrav1.InspectionReport,
 ) (string, error) {
 	body, err := json.Marshal(report)
 	if err != nil {
@@ -352,7 +352,7 @@ func inspectionResultConfigMapName(hostName string) string {
 func (h *InspectionHandler) setInspectionResultAnnotation(
 	ctx context.Context,
 	log logr.Logger,
-	physicalHost *infrastructurev1beta1.PhysicalHost,
+	physicalHost *infrav1.PhysicalHost,
 	cmName string,
 ) error {
 	base := physicalHost.DeepCopy()
@@ -494,8 +494,8 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	for _, obj := range []client.Object{
 		&corev1.ConfigMap{},
 		&corev1.Secret{},
-		&infrastructurev1beta1.PhysicalHost{},
-		&infrastructurev1beta1.Beskar7Machine{},
+		&infrav1.PhysicalHost{},
+		&infrav1.Beskar7Machine{},
 		&clusterv1.Machine{},
 	} {
 		if _, err := mgr.GetCache().GetInformer(context.Background(), obj); err != nil {
@@ -620,7 +620,7 @@ func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 		if namespace == "" || hostName == "" {
 			return fmt.Errorf("missing namespace or hostName in request path")
 		}
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		if err := c.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
 			// Both NotFound and Forbidden produce the same 401 to the client; the
 			// distinction lives in the logs.

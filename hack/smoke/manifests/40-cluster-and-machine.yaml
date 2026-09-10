@@ -4,7 +4,7 @@
 # v1beta1 contract) + Initialization.Provisioned (v1beta2 contract). The
 # v1beta2 field is what CAPI v1.10+ lifts into Cluster.status.initialization.
 # infrastructureProvisioned to unblock downstream reconciliation.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Cluster
 metadata:
   name: smoke-cluster
@@ -39,7 +39,7 @@ spec:
     services:
       cidrBlocks: ["10.96.0.0/16"]
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Cluster
     name: smoke-cluster
 ---
@@ -72,7 +72,7 @@ stringData:
     # smoke-test placeholder bootstrap data; not consumed
 ---
 # Beskar7Machine: the resource under test.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: smoke-machine-01
@@ -111,6 +111,6 @@ spec:
   bootstrap:
     dataSecretName: smoke-machine-01-bootstrap-data
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: smoke-machine-01

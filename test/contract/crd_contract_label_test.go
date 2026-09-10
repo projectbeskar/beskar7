@@ -50,25 +50,81 @@ func crdLabels(t *testing.T, path string) map[string]string {
 	return crd.Metadata.Labels
 }
 
-// TestCRDsClaimOnlyTheV1Beta1Contract pins the contract version the CRDs
-// advertise. CAPI resolves the NEWEST labelled contract, so claiming
-// cluster.x-k8s.io/v1beta2 makes CAPI >= v1.11 read status through the v1beta2
-// accessors — which model status.failureDomains as a list — while the v1beta1
-// API still publishes the map. That read fails hard and aborts the Cluster's
-// infrastructure reconcile (reproduced on CAPI v1.12.2, 2026-09-09). The
-// v1beta2 label may only return together with the list-shaped API (D-023).
-func TestCRDsClaimOnlyTheV1Beta1Contract(t *testing.T) {
+// TestCRDsClaimTheV1Beta2Contract pins the contract version the CRDs advertise
+// and the API version behind it. CAPI resolves the NEWEST labelled contract on
+// a CRD and, since v1beta2 references carry no version (apiGroup + kind only),
+// takes the label's VALUE as the apiVersion it addresses the provider's objects
+// with. So the three contract resources must claim exactly
+// cluster.x-k8s.io/v1beta2=v1beta2 — the single served version — and nothing
+// older: a stale v1beta1 label would point CAPI at an apiVersion that is no
+// longer served. PhysicalHost is not a CAPI contract resource and carries no
+// contract label (D-023).
+func TestCRDsClaimTheV1Beta2Contract(t *testing.T) {
+	const (
+		contractLabel = "cluster.x-k8s.io/v1beta2"
+		apiVersion    = "v1beta2"
+	)
+	contractResource := map[string]bool{
+		"infrastructure.cluster.x-k8s.io_beskar7clusters.yaml":         true,
+		"infrastructure.cluster.x-k8s.io_beskar7machines.yaml":         true,
+		"infrastructure.cluster.x-k8s.io_beskar7machinetemplates.yaml": true,
+		"infrastructure.cluster.x-k8s.io_physicalhosts.yaml":           false,
+	}
+
 	for _, dir := range crdDirs {
 		for _, f := range crdFiles(t, dir) {
-			labels := crdLabels(t, f)
-			if got := labels["cluster.x-k8s.io/v1beta1"]; got != "v1beta1" {
-				t.Errorf("%s: cluster.x-k8s.io/v1beta1 label = %q, want v1beta1", filepath.Base(f), got)
+			name := filepath.Base(f)
+			isContract, known := contractResource[name]
+			if !known {
+				t.Fatalf("%s: unexpected CRD %s — add it to this test and decide whether it is a CAPI contract resource", dir, name)
 			}
-			if got, ok := labels["cluster.x-k8s.io/v1beta2"]; ok {
-				t.Errorf("%s: claims the v1beta2 contract (%q) but publishes v1beta1-shaped status; CAPI >= v1.11 cannot read status.failureDomains through that contract", filepath.Base(f), got)
+
+			versions := crdVersions(t, f)
+			if len(versions) != 1 || versions[0].Name != apiVersion || !versions[0].Served || !versions[0].Storage {
+				t.Errorf("%s: want exactly one served+storage version %q, got %+v (no conversion webhook exists, so no second version may be served)",
+					name, apiVersion, versions)
+			}
+
+			labels := crdLabels(t, f)
+			for key, value := range labels {
+				if strings.HasPrefix(key, "cluster.x-k8s.io/v1") && key != contractLabel {
+					t.Errorf("%s: stale contract label %s=%s — CAPI would address objects at that apiVersion", name, key, value)
+				}
+			}
+			got, claims := labels[contractLabel]
+			switch {
+			case isContract && got != apiVersion:
+				t.Errorf("%s: %s label = %q, want %q", name, contractLabel, got, apiVersion)
+			case !isContract && claims:
+				t.Errorf("%s: is not a CAPI contract resource but claims %s=%s", name, contractLabel, got)
 			}
 		}
 	}
+}
+
+// crdVersion is the slice of spec.versions this package cares about.
+type crdVersion struct {
+	Name    string `json:"name"`
+	Served  bool   `json:"served"`
+	Storage bool   `json:"storage"`
+}
+
+// crdVersions returns spec.versions of the CRD manifest at path.
+func crdVersions(t *testing.T, path string) []crdVersion {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var crd struct {
+		Spec struct {
+			Versions []crdVersion `json:"versions"`
+		} `json:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &crd); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return crd.Spec.Versions
 }
 
 // TestCRDsCarryTheClusterctlLabels pins the labels `clusterctl move` keys on.

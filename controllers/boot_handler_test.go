@@ -37,7 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
@@ -87,19 +87,19 @@ func bootTestConfig() BootHandlerConfig {
 // The caller is responsible for minting and storing the boot nonce on the host's
 // Status.Bootstrap (use setHostBootNonce).
 func bootTestFixture(testNs string) (
-	*infrastructurev1beta1.PhysicalHost,
-	*infrastructurev1beta1.Beskar7Machine,
+	*infrav1.PhysicalHost,
+	*infrav1.Beskar7Machine,
 	string, /* bearerToken plaintext */
 	string, /* nonce plaintext */
 ) {
 	By("creating PhysicalHost")
-	ph := &infrastructurev1beta1.PhysicalHost{
+	ph := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "boot-handler-host",
 			Namespace: testNs,
 		},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://192.168.99.1",
 				CredentialsSecretRef: "irrelevant",
 			},
@@ -108,12 +108,12 @@ func bootTestFixture(testNs string) (
 	Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 
 	By("creating Beskar7Machine (consumer)")
-	b7m := &infrastructurev1beta1.Beskar7Machine{
+	b7m := &infrav1.Beskar7Machine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "boot-handler-b7m",
 			Namespace: testNs,
 		},
-		Spec: infrastructurev1beta1.Beskar7MachineSpec{
+		Spec: infrav1.Beskar7MachineSpec{
 			InspectionImageURL: "https://boot.example.com/inspect",
 			TargetImageURL:     "https://boot.example.com/kairos.tar.gz",
 			TargetImageDigest:  bootTestDigest,
@@ -122,7 +122,7 @@ func bootTestFixture(testNs string) (
 	Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
 
 	By("linking ConsumerRef on PhysicalHost")
-	freshPH := &infrastructurev1beta1.PhysicalHost{}
+	freshPH := &infrav1.PhysicalHost{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs}, freshPH)).To(Succeed())
 	base := freshPH.DeepCopy()
 	freshPH.Spec.ConsumerRef = &corev1.ObjectReference{
@@ -158,7 +158,7 @@ func bootTestFixture(testNs string) (
 	setHostBootNonce(freshPH.Name, testNs, nonceHash, bearerHash, 10*time.Minute)
 
 	// Return fresh copies so callers hold the latest resourceVersion.
-	gotPH := &infrastructurev1beta1.PhysicalHost{}
+	gotPH := &infrav1.PhysicalHost{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs}, gotPH)).To(Succeed())
 
 	return gotPH, b7m, bearerPlaintext, noncePlaintext
@@ -167,12 +167,12 @@ func bootTestFixture(testNs string) (
 // setHostBootNonce writes BootNonceHash, BootNonceExpiresAt, and TokenHash to
 // the host's Status.Bootstrap via Status().Update. Call after the host exists.
 func setHostBootNonce(hostName, ns, nonceHash, tokenHash string, ttl time.Duration) {
-	ph := &infrastructurev1beta1.PhysicalHost{}
+	ph := &infrav1.PhysicalHost{}
 	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: hostName, Namespace: ns}, ph)).To(Succeed())
 	expiresAt := metav1.NewTime(time.Now().Add(ttl))
 	issuedAt := metav1.NewTime(time.Now())
 	tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
-	ph.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+	ph.Status.Bootstrap = &infrav1.BootstrapStatus{
 		TokenHash:          tokenHash,
 		IssuedAt:           &issuedAt,
 		ExpiresAt:          &tokenExpiresAt,
@@ -265,7 +265,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 		By("asserting BootNonceConsumedAt is set")
 		Eventually(func(g Gomega) {
-			got := &infrastructurev1beta1.PhysicalHost{}
+			got := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
 			g.Expect(got.Status.Bootstrap).NotTo(BeNil())
 			g.Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
@@ -349,7 +349,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		By("BootNonceConsumedAt set exactly once — value stable after second fetch")
 		var firstConsumedAt *metav1.Time
 		Eventually(func(g Gomega) {
-			got := &infrastructurev1beta1.PhysicalHost{}
+			got := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
 			g.Expect(got.Status.Bootstrap).NotTo(BeNil())
 			g.Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil())
@@ -358,7 +358,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 		// A brief pause then a third fetch confirms value stability.
 		time.Sleep(50 * time.Millisecond)
-		got := &infrastructurev1beta1.PhysicalHost{}
+		got := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
 		Expect(got.Status.Bootstrap.BootNonceConsumedAt.Time).To(BeTemporally("==", firstConsumedAt.Time),
 			"BootNonceConsumedAt must not be advanced by subsequent fetches")
@@ -371,7 +371,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 		By("pre-consuming the nonce")
 		consumedAt := metav1.NewTime(time.Now().Add(-1 * time.Second))
-		freshPH := &infrastructurev1beta1.PhysicalHost{}
+		freshPH := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
 		freshPH.Status.Bootstrap.BootNonceConsumedAt = &consumedAt
 		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
@@ -386,7 +386,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(body).To(ContainSubstring("beskar7.token="))
 
 		By("ConsumedAt is unchanged — same second as the pre-set value")
-		got := &infrastructurev1beta1.PhysicalHost{}
+		got := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
 		Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil())
 		// metav1.Time serializes to second-precision RFC3339; compare truncated.
@@ -401,7 +401,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		ph, _, _, nonce := bootTestFixture(testNs.Name)
 
 		By("overwriting the expiry to the past")
-		freshPH := &infrastructurev1beta1.PhysicalHost{}
+		freshPH := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
 		expiredAt := metav1.NewTime(time.Now().Add(-1 * time.Hour))
 		freshPH.Status.Bootstrap.BootNonceExpiresAt = &expiredAt
@@ -435,13 +435,13 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 	It("opaque 404: no Beskar7Machine consumer (ConsumerRef nil)", func() {
 		By("creating a host with no ConsumerRef")
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "boot-no-consumer",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.99.2",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -485,10 +485,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		issuedAt := metav1.NewTime(time.Now())
 		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-empty-inspect", Namespace: "n"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
 				},
 				ConsumerRef: &corev1.ObjectReference{
@@ -498,8 +498,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash:          tokenHash,
 					IssuedAt:           &issuedAt,
 					ExpiresAt:          &tokenExpiresAt,
@@ -510,9 +510,9 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		// Beskar7Machine with empty InspectionImageURL (bypassing CRD validation
 		// via fake client — testing the handler's own guard, not the CRD schema).
-		b7mEmpty := &infrastructurev1beta1.Beskar7Machine{
+		b7mEmpty := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-empty", Namespace: "n"},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "", // empty — triggers the handler's guard
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 			},
@@ -550,13 +550,13 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	})
 
 	It("opaque 404: missing bootstrap-token Secret", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "boot-no-secret",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.99.4",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -564,12 +564,12 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "boot-b7m-no-secret",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "https://boot.example.com/inspect",
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -577,7 +577,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
 
-		freshPH := &infrastructurev1beta1.PhysicalHost{}
+		freshPH := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
 		base := freshPH.DeepCopy()
 		freshPH.Spec.ConsumerRef = &corev1.ObjectReference{
@@ -621,10 +621,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		issuedAt := metav1.NewTime(time.Now())
 		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-inject", Namespace: "n"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
 				},
 				ConsumerRef: &corev1.ObjectReference{
@@ -634,8 +634,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash:          tokenHash,
 					IssuedAt:           &issuedAt,
 					ExpiresAt:          &tokenExpiresAt,
@@ -644,9 +644,9 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				},
 			},
 		}
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-inject", Namespace: "n"},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: inspectionURL,
 				TargetImageURL:     targetURL,
 				TargetImageDigest:  bootTestDigest,
@@ -823,10 +823,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		issuedAt := metav1.NewTime(time.Now())
 		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-bad-digest", Namespace: "n"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
 				},
 				ConsumerRef: &corev1.ObjectReference{
@@ -836,8 +836,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash:          tokenHash,
 					IssuedAt:           &issuedAt,
 					ExpiresAt:          &tokenExpiresAt,
@@ -849,9 +849,9 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		// TargetImageDigest is intentionally malformed — uppercase hex, rejected
 		// by validateBootDigest (contract §5/§8.1, SEC-7). Bypasses CRD validation
 		// via fake client to test the handler's own guard.
-		b7mBadDigest := &infrastructurev1beta1.Beskar7Machine{
+		b7mBadDigest := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-bad-digest", Namespace: "n"},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "https://boot.example.com/inspect",
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 				TargetImageDigest:  "sha256:A3B4C5D6E7F80102030405060708090A0B0C0D0E0F101112131415161718191A",
@@ -910,10 +910,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		issuedAt := metav1.NewTime(time.Now())
 		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-large-ca", Namespace: "n"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
 				},
 				ConsumerRef: &corev1.ObjectReference{
@@ -923,8 +923,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash:          tokenHash,
 					IssuedAt:           &issuedAt,
 					ExpiresAt:          &tokenExpiresAt,
@@ -933,9 +933,9 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				},
 			},
 		}
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-large-ca", Namespace: "n"},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "https://boot.example.com/inspect",
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 				TargetImageDigest:  bootTestDigest,

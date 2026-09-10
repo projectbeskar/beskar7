@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // bootstrapDataSecretKey is the canonical key under which CAPI bootstrap
@@ -91,7 +91,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 1. Get PhysicalHost. The bearer verifier already did the same Get for
 	// auth purposes, but we re-Get here to read Spec.ConsumerRef from the same
 	// resourceVersion as the rest of the chain walk.
-	ph := &infrastructurev1beta1.PhysicalHost{}
+	ph := &infrav1.PhysicalHost{}
 	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
 		log.V(1).Info("bootstrap GET: PhysicalHost lookup failed", "err", err.Error())
 		http.Error(w, "not found", http.StatusNotFound)
@@ -105,7 +105,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	b7m := &infrastructurev1beta1.Beskar7Machine{}
+	b7m := &infrav1.Beskar7Machine{}
 	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}, b7m); err != nil {
 		log.V(1).Info("bootstrap GET: Beskar7Machine lookup failed", "err", err.Error())
 		http.Error(w, "not found", http.StatusNotFound)

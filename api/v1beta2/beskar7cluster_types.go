@@ -1,4 +1,4 @@
-package v1beta1
+package v1beta2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -79,7 +79,7 @@ type Beskar7ClusterStatus struct {
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Time duration since creation of Beskar7Cluster"
 // +kubebuilder:object:generate=true
 // +kubebuilder:storageversion
-// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta1=v1beta1
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta2
 // +kubebuilder:metadata:labels="clusterctl.cluster.x-k8s.io="
 // +kubebuilder:metadata:labels=cluster.x-k8s.io/provider=infrastructure-beskar7
 // Beskar7Cluster is the Schema for the beskar7clusters API.

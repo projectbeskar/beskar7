@@ -32,8 +32,9 @@ unless you ask us not to, and coordinate disclosure timing with you.
 
 ## Supported versions
 
-Only the latest release receives fixes; there is no backport branch. `v1beta1`
-is stable as of `v0.4.0`, so upgrades within the `v0.4.x` line are additive.
+Only the latest release receives fixes; there is no backport branch. Upgrades
+within the `v0.4.x` line are additive; `v0.5.0` renames the API to `v1beta2`
+without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
