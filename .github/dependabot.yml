@@ -36,8 +36,22 @@ updates:
         patterns:
           - "*"
     ignore:
+      # Majors are a project, not a bot merge.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # The Kubernetes and Cluster API packages are pre-1.0, so for them a minor
+      # bump IS the breaking bump — and it only works when cluster-api moves
+      # with them. Dependabot proposed k8s.io/* 0.35.4 → 0.37.0 with
+      # controller-runtime 0.23.3 → 0.25.0 while cluster-api stayed on v1.13.4,
+      # which is precisely the combination that does not hold together. Patch
+      # updates still come through, so security fixes within a minor are not
+      # blocked; moving the set is a deliberate piece of work (it was #162).
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/cluster-api"
+        update-types: ["version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-minor"]
 
   # Base images. Covers all three Dockerfiles in the repository root: the
   # manager, and the mock-redfish and mock-inspector images that the release
@@ -52,6 +66,17 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "chore(images)"
+    ignore:
+      # Digest refreshes only, which is the drift this entry exists to catch.
+      # Moving the Go minor version is something else entirely: it changes what
+      # the release binary is built with, and it has to move `go` / `toolchain`
+      # in go.mod and CI's `go-version` in the same breath or the image builds
+      # on a toolchain nothing tested. Dependabot's first run proposed
+      # golang:1.25 → 1.27 on its own, which is the case for this rule.
+      - dependency-name: "golang"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   # Workflow actions, including the ones pinned by commit (OSV-Scanner and
   # cosign-installer); Dependabot rewrites the pin and its version comment
@@ -69,3 +94,13 @@ updates:
       actions:
         patterns:
           - "*"
+    ignore:
+      # A major action bump is a behaviour change, and several of these actions
+      # carry the release: the artifact upload/download pair moves the release
+      # assets between jobs, and docker/build-push-action pushes the images.
+      # Dependabot's first run bundled twelve majors into one pull request
+      # (setup-go v5 → v7, upload-artifact v4 → v7, build-push-action v5 → v7,
+      # codecov v4 → v7 …), which is not reviewable as a unit. Minors and
+      # patches within a major still flow; majors are a deliberate pass.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

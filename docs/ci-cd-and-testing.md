@@ -207,9 +207,14 @@ Vulnerability scanning uses [OSV-Scanner](https://google.github.io/osv-scanner/)
 - **Releases**: the published image is scanned and `osv-scanner-report.txt` is attached to the GitHub release.
 
 Dependency and base-image updates are proposed weekly by Dependabot
-(`.github/dependabot.yml`): Go modules (Kubernetes and Cluster API packages grouped, since they
-must move together; major bumps excluded), the digest-pinned base images in all three Dockerfiles,
-and the workflow actions including the commit-pinned ones.
+(`.github/dependabot.yml`). It is deliberately scoped to the updates that are safe to take
+routinely, so anything that changes a contract stays a human decision:
+
+| Entry | Proposes | Left to a person |
+|---|---|---|
+| `gomod` | patch and minor updates, Kubernetes and Cluster API grouped because they must move together | all majors; and minors of `k8s.io/*`, `cluster-api` and `controller-runtime`, which are pre-1.0 so a minor is the breaking bump |
+| `docker` | digest refreshes for the pinned `golang` and `distroless` images in all three Dockerfiles | the Go minor version, which has to move with `go`/`toolchain` in `go.mod` and CI's `go-version` |
+| `github-actions` | minor and patch updates, including the commit-pinned actions | majors, since several of these actions carry the release assets and images |
 
 ```bash
 # Run the same scans locally
