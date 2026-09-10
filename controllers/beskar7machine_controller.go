@@ -38,10 +38,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
+	"sigs.k8s.io/cluster-api/util/paused"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,7 +74,7 @@ const (
 	// or very small images may lower it; operators with slow links should raise it.
 	DefaultDeploymentTimeout = 20 * time.Minute
 
-	// DeploymentTimedOutReason is the FailureReason set when a host stays in
+	// DeploymentTimedOutReason is the terminal reason set when a host stays in
 	// StateDeploying longer than the configured deployment timeout (D-015).
 	DeploymentTimedOutReason = "DeploymentTimedOut"
 
@@ -178,12 +180,6 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// even when reconcile short-circuits. Non-fatal: metric errors don't block reconcile.
 	r.recomputeBeskar7MachineMetrics(ctx, log, req.Namespace)
 
-	// Check if paused
-	if isPaused(b7machine) {
-		log.Info("Beskar7Machine reconciliation is paused")
-		return ctrl.Result{}, nil
-	}
-
 	// Fetch the owner Machine
 	machine, err := util.GetOwnerMachine(ctx, r.Client, b7machine.ObjectMeta)
 	if err != nil {
@@ -204,10 +200,14 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Check if cluster is paused
-	if isClusterPaused(cluster) {
-		log.Info("Reconciliation paused because owner cluster is paused")
-		return ctrl.Result{}, nil
+	// Cluster.spec.paused, the paused annotation on the Cluster and the one on
+	// this object all pause reconciliation; the helper also keeps the Paused
+	// condition current, which is why it runs before the patch helper snapshot.
+	if isPaused, requeue, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, b7machine); err != nil || isPaused || requeue {
+		if isPaused {
+			log.Info("Beskar7Machine reconciliation is paused")
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Initialize patch helper
@@ -219,8 +219,14 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Always patch on exit
 	defer func() {
-		conditions.SetSummary(b7machine, conditions.WithConditions(infrav1.InfrastructureReadyCondition))
-		if err := patchHelper.Patch(ctx, b7machine); err != nil {
+		setReadySummary(b7machine, log, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostAssociatedCondition, infrav1.BootstrapDataReadyCondition)
+		if err := patchHelper.Patch(ctx, b7machine, patch.WithOwnedConditions{Conditions: []string{
+			clusterv1.ReadyCondition,
+			clusterv1.PausedCondition,
+			infrav1.InfrastructureReadyCondition,
+			infrav1.PhysicalHostAssociatedCondition,
+			infrav1.BootstrapDataReadyCondition,
+		}}); err != nil {
 			log.Error(err, "Failed to patch Beskar7Machine")
 			if reterr == nil {
 				reterr = err
@@ -234,26 +240,26 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.reconcileDelete(ctx, log, b7machine)
 	}
 
-	// A terminal failure must actually be terminal. markTerminalFailure already
-	// documents that FailureReason is never cleared and means "needs operator
-	// intervention", but nothing stopped a later reconcile from running the
-	// normal state machine anyway: if the PhysicalHost subsequently recovered,
-	// handleReadyHost would set Ready/Provisioned on a machine still carrying
-	// FailureReason. That was observed on real hardware — a Beskar7Machine ended
-	// up Ready=true, Phase=Provisioned AND FailureReason=InspectionTimedOut.
+	// A terminal failure must actually be terminal. markTerminalFailure marks
+	// the machine Failed and never clears it ("needs operator intervention"),
+	// but nothing stopped a later reconcile from running the normal state
+	// machine anyway: if the PhysicalHost subsequently recovered,
+	// handleReadyHost would set Ready/Provisioned on a machine that had already
+	// failed. That was observed on real hardware — a Beskar7Machine ended up
+	// Ready=true, Phase=Provisioned AND a terminal InspectionTimedOut failure.
 	//
-	// The contradiction is not cosmetic. CAPI lifts FailureReason/FailureMessage
-	// onto the owning Machine and treats them as unrecoverable, so the pair
-	// "provisioned and permanently failed" both misleads an operator reading
-	// status and invites MachineHealthCheck to remediate a node that is actually
-	// serving traffic.
+	// The contradiction is not cosmetic. CAPI mirrors the Ready summary into
+	// the owning Machine's InfrastructureReady condition and a MachineHealthCheck
+	// may remediate on it, so the pair "provisioned and permanently failed" both
+	// misleads an operator reading status and invites remediation of a node that
+	// is actually serving traffic.
 	//
 	// Deletion is handled above, so a failed machine can still be deleted and
 	// release its PhysicalHost. Under a MachineDeployment that is precisely how
 	// CAPI self-heals: the failed replica is deleted and replaced.
-	if b7machine.Status.FailureReason != nil {
+	if isTerminallyFailed(b7machine) {
 		log.Info("Beskar7Machine is in a terminal failure state; skipping reconciliation",
-			"failureReason", *b7machine.Status.FailureReason)
+			"reason", conditions.GetReason(b7machine, infrav1.InfrastructureReadyCondition))
 		return ctrl.Result{}, nil
 	}
 
@@ -279,30 +285,25 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 			// It can never match; the spec has to change. Terminal, so it shows
 			// in `kubectl describe machine` instead of requeueing forever.
 			logger.Error(err, "Beskar7Machine hostSelector is invalid")
-			conditions.MarkFalse(b7machine, infrav1.PhysicalHostAssociatedCondition,
-				infrav1.InvalidHostSelectorReason, clusterv1.ConditionSeverityError, "%v", err)
+			setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.InvalidHostSelectorReason, "%v", err)
 			r.markTerminalFailure(b7machine, infrav1.InvalidHostSelectorReason, err.Error())
 			return ctrl.Result{}, nil
 		}
 		logger.Error(err, "Invalid host placement constraint")
-		conditions.MarkFalse(b7machine, infrav1.PhysicalHostAssociatedCondition,
-			infrav1.PhysicalHostAssociationFailedReason, clusterv1.ConditionSeverityWarning,
-			"Invalid host placement constraint: %v", err)
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociationFailedReason, "Invalid host placement constraint: %v", err)
 		return ctrl.Result{}, err
 	}
 	physicalHost, result, err := r.findAndClaimOrGetAssociatedHost(ctx, logger, b7machine, placement)
 	if err != nil {
 		logger.Error(err, "Failed to find, claim, or get associated PhysicalHost")
-		conditions.MarkFalse(b7machine, infrav1.PhysicalHostAssociatedCondition,
-			infrav1.PhysicalHostAssociationFailedReason, clusterv1.ConditionSeverityWarning,
-			"Failed to associate with PhysicalHost: %v", err)
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociationFailedReason, "Failed to associate with PhysicalHost: %v", err)
 		internalmetrics.RecordError("beskar7machine", b7machine.Namespace, internalmetrics.ErrorTypeTransient)
 		return result, err
 	}
 
 	if physicalHost != nil {
 		logger.Info("Successfully associated with PhysicalHost", "physicalhost", physicalHost.Name)
-		conditions.MarkTrue(b7machine, infrav1.PhysicalHostAssociatedCondition)
+		setTrue(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociatedReason)
 	} else if placement != nil {
 		// Distinct from an empty inventory: hosts may well be Available, just
 		// not where CAPI placed this Machine. Requeue, never terminal — a host in
@@ -310,15 +311,11 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		// a backstop: a host entering Available re-enqueues the machine at once
 		// (AvailablePhysicalHostToWaitingBeskar7Machines).
 		logger.Info("No available PhysicalHost satisfies the placement constraint, requeuing", "placement", placement.String())
-		conditions.MarkFalse(b7machine, infrav1.PhysicalHostAssociatedCondition,
-			infrav1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo,
-			"No available PhysicalHost matches the placement constraint %s", placement.String())
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "No available PhysicalHost matches the placement constraint %s", placement.String())
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	} else {
 		logger.Info("No available or associated PhysicalHost found, requeuing")
-		conditions.MarkFalse(b7machine, infrav1.PhysicalHostAssociatedCondition,
-			infrav1.WaitingForPhysicalHostReason, clusterv1.ConditionSeverityInfo,
-			"No available PhysicalHost found")
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason, "No available PhysicalHost found")
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
@@ -379,16 +376,14 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 			reason = infrav1.DeploymentFailedReason
 		}
 		msg := fmt.Sprintf("PhysicalHost %q in error state: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
-		// markTerminalFailure sets FailureReason, FailureMessage, Phase=Failed, Ready=false,
-		// and marks InfrastructureReadyCondition=False in one call.
+		// markTerminalFailure sets Phase=Failed, Ready=false and
+		// InfrastructureReady=False with this reason in one call.
 		r.markTerminalFailure(b7machine, reason, msg)
 		return ctrl.Result{}, nil
 
 	default:
 		logger.Info("PhysicalHost in intermediate state", "hostState", physicalHost.Status.State)
-		conditions.MarkFalse(b7machine, infrav1.InfrastructureReadyCondition,
-			infrav1.PhysicalHostNotReadyReason, clusterv1.ConditionSeverityInfo,
-			"PhysicalHost %q is in state: %s", physicalHost.Name, physicalHost.Status.State)
+		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "PhysicalHost %q is in state: %s", physicalHost.Name, physicalHost.Status.State)
 		phase := "Pending"
 		b7machine.Status.Phase = &phase
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -1009,9 +1004,7 @@ func (r *Beskar7MachineReconciler) handleDeployingHost(ctx context.Context, logg
 
 	phase := "Provisioning"
 	b7machine.Status.Phase = &phase
-	conditions.MarkFalse(b7machine, infrav1.InfrastructureReadyCondition,
-		infrav1.PhysicalHostNotReadyReason, clusterv1.ConditionSeverityInfo,
-		"PhysicalHost %q is deploying OS image", physicalHost.Name)
+	setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "PhysicalHost %q is deploying OS image", physicalHost.Name)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
@@ -1038,8 +1031,8 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 		// Hardware-validation failures are terminal. The BMC's hardware does not
 		// change at runtime; requeueing forever would just churn. Operator must
 		// lower the requirements, allocate to a different host, or replace the
-		// hardware. CAPI surfaces FailureReason/FailureMessage in
-		// `kubectl describe machine`.
+		// hardware. The reason and message surface on the Machine's
+		// InfrastructureReady condition in `kubectl describe machine`.
 		if reqs.MinCPUCores > 0 && totalCores < reqs.MinCPUCores {
 			msg := fmt.Sprintf("insufficient CPU cores: found %d, required %d", totalCores, reqs.MinCPUCores)
 			logger.Info("Hardware validation failed (terminal)", "check", "MinCPUCores", "found", totalCores, "required", reqs.MinCPUCores)
@@ -1098,9 +1091,9 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 
 	// Set ProviderID
 	currentProviderID := providerID(physicalHost.Namespace, physicalHost.Name)
-	if b7machine.Spec.ProviderID == nil || *b7machine.Spec.ProviderID != currentProviderID {
+	if b7machine.Spec.ProviderID != currentProviderID {
 		logger.Info("Setting ProviderID", "ProviderID", currentProviderID)
-		b7machine.Spec.ProviderID = &currentProviderID
+		b7machine.Spec.ProviderID = currentProviderID
 	}
 
 	// Copy addresses from PhysicalHost
@@ -1115,12 +1108,12 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	firstProvisioning := !b7machine.Status.Ready
 
 	// Mark as ready
-	conditions.MarkTrue(b7machine, infrav1.InfrastructureReadyCondition)
+	setTrue(b7machine, infrav1.InfrastructureReadyCondition, infrav1.ProvisionedReason)
 	b7machine.Status.Ready = true
 	// CAPI v1beta2 contract: surface to Machine.status.initialization.infrastructureProvisioned.
 	// Without this, CAPI v1.10+ does not advance the Machine past Pending and
 	// the parent Cluster never reaches Available.
-	b7machine.Status.Initialization = &infrav1.Beskar7MachineInitializationStatus{Provisioned: true}
+	b7machine.Status.Initialization.Provisioned = ptr.To(true)
 	phase := "Provisioned"
 	b7machine.Status.Phase = &phase
 
@@ -1212,8 +1205,8 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	claimStart := time.Now()
 
 	// (1) ProviderID lookup.
-	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
-		ns, name, err := parseProviderID(*b7machine.Spec.ProviderID)
+	if b7machine.Spec.ProviderID != "" {
+		ns, name, err := parseProviderID(b7machine.Spec.ProviderID)
 		if err == nil && ns == b7machine.Namespace {
 			host := &infrav1.PhysicalHost{}
 			if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host); err == nil {
@@ -1375,8 +1368,8 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 // uses in the claim direction. Returns (nil, nil) when no host is claimed by us.
 func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (*infrav1.PhysicalHost, error) {
 	// Fast path: ProviderID names the host directly.
-	if b7machine.Spec.ProviderID != nil && *b7machine.Spec.ProviderID != "" {
-		ns, name, parseErr := parseProviderID(*b7machine.Spec.ProviderID)
+	if b7machine.Spec.ProviderID != "" {
+		ns, name, parseErr := parseProviderID(b7machine.Spec.ProviderID)
 		if parseErr != nil {
 			logger.V(1).Info("Cannot parse ProviderID during deletion; falling back to ConsumerRef scan", "err", parseErr)
 		} else {
@@ -1434,33 +1427,29 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	}
 }
 
-// markTerminalFailure sets FailureReason/FailureMessage on the Beskar7Machine,
-// flips Status.Ready to false and Phase to "Failed", and marks
-// InfrastructureReadyCondition=False with the same reason at Severity=Error.
-// CAPI surfaces FailureReason/FailureMessage in `kubectl describe machine`.
+// markTerminalFailure flips Status.Ready to false and Phase to Failed and
+// marks InfrastructureReady=False with the terminal reason and message; the
+// Ready summary follows, and Cluster API mirrors it into the owning Machine's
+// InfrastructureReady condition, which is what a MachineHealthCheck's
+// unhealthyMachineConditions can key on (the v1beta2 contract has no
+// failureReason/failureMessage: terminal failures are conditions).
 //
-// Once set, FailureReason indicates the resource needs operator intervention.
-// Subsequent reconciles must NOT clear it — clearing on success would mask
-// history and the operator wouldn't know the resource ever failed. Callers
-// should return ctrl.Result{}, nil after invoking this helper to stop the
-// requeue cycle (CAPI does not auto-recover from FailureReason).
+// Phase=Failed is the terminal marker: Reconcile returns early on it, so a
+// failed machine is never healed by a later state change and the history
+// stays visible. Callers return ctrl.Result{}, nil after this helper.
 func (r *Beskar7MachineReconciler) markTerminalFailure(b7machine *infrav1.Beskar7Machine, reason, message string) {
 	// Only record the provisioning-failed metric on the first terminal transition
 	// to avoid double-counting on re-reconciles that call markTerminalFailure again.
-	if b7machine.Status.FailureReason == nil {
+	if !isTerminallyFailed(b7machine) {
 		internalmetrics.RecordBeskar7MachineProvisioning(
 			b7machine.Namespace,
 			internalmetrics.ProvisioningOutcomeFailed,
 			time.Since(b7machine.CreationTimestamp.Time),
 		)
 	}
-	b7machine.Status.FailureReason = &reason
-	b7machine.Status.FailureMessage = &message
 	b7machine.Status.Ready = false
-	phase := "Failed"
-	b7machine.Status.Phase = &phase
-	conditions.MarkFalse(b7machine, infrav1.InfrastructureReadyCondition,
-		reason, clusterv1.ConditionSeverityError, "%s", message)
+	b7machine.Status.Phase = ptr.To(infrav1.PhaseFailed)
+	setFalse(b7machine, infrav1.InfrastructureReadyCondition, reason, "%s", message)
 }
 
 // setInspectionRequestAnnotation patches only the annotations of a PhysicalHost to request
@@ -1497,9 +1486,7 @@ func (r *Beskar7MachineReconciler) ensureBootstrapDataReady(
 ) (ctrl.Result, error) {
 	if machine.Spec.Bootstrap.DataSecretName == nil {
 		logger.Info("Waiting for bootstrap data secret name to be set on Machine.Spec.Bootstrap")
-		conditions.MarkFalse(b7machine, infrav1.BootstrapDataReadyCondition,
-			infrav1.WaitingForBootstrapDataReason, clusterv1.ConditionSeverityInfo,
-			"Waiting for Machine.Spec.Bootstrap.DataSecretName to be set")
+		setFalse(b7machine, infrav1.BootstrapDataReadyCondition, infrav1.WaitingForBootstrapDataReason, "Waiting for Machine.Spec.Bootstrap.DataSecretName to be set")
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -1511,12 +1498,8 @@ func (r *Beskar7MachineReconciler) ensureBootstrapDataReady(
 			// Terminal: the bootstrap provider set a secret name that doesn't exist.
 			msg := fmt.Sprintf("bootstrap data secret %q not found in namespace %q", secretName, b7machine.Namespace)
 			logger.Error(err, msg)
-			conditions.MarkFalse(b7machine, infrav1.BootstrapDataReadyCondition,
-				infrav1.BootstrapDataUnavailableReason, clusterv1.ConditionSeverityError,
-				"%s", msg)
-			reason := infrav1.BootstrapDataUnavailableReason
-			b7machine.Status.FailureReason = &reason
-			b7machine.Status.FailureMessage = &msg
+			setFalse(b7machine, infrav1.BootstrapDataReadyCondition, infrav1.BootstrapDataUnavailableReason, "%s", msg)
+			r.markTerminalFailure(b7machine, infrav1.BootstrapDataUnavailableReason, msg)
 			// Don't requeue — this is terminal until the operator resolves it.
 			return ctrl.Result{}, nil
 		}
@@ -1535,7 +1518,7 @@ func (r *Beskar7MachineReconciler) ensureBootstrapDataReady(
 		}
 	}
 
-	conditions.MarkTrue(b7machine, infrav1.BootstrapDataReadyCondition)
+	setTrue(b7machine, infrav1.BootstrapDataReadyCondition, infrav1.BootstrapDataReadyReason)
 	return ctrl.Result{}, nil
 }
 
@@ -1637,8 +1620,6 @@ func (r *Beskar7MachineReconciler) recomputeBeskar7MachineMetrics(ctx context.Co
 	}
 	internalmetrics.UpdateBeskar7MachineStateCounts(namespace, counts)
 }
-
-// isPaused and isClusterPaused functions are in utils.go
 
 // defaultFactory sets RedfishClientFactory to the real gofish-backed constructor
 // when the caller left it nil. Separated from SetupWithManager to keep the defaulting
@@ -1772,7 +1753,7 @@ func (r *Beskar7MachineReconciler) AvailablePhysicalHostToWaitingBeskar7Machines
 	var requests []reconcile.Request
 	for i := range machines.Items {
 		m := &machines.Items[i]
-		if !m.DeletionTimestamp.IsZero() || m.Status.FailureReason != nil ||
+		if !m.DeletionTimestamp.IsZero() || isTerminallyFailed(m) ||
 			conditions.IsTrue(m, infrav1.PhysicalHostAssociatedCondition) {
 			continue
 		}
@@ -1845,4 +1826,11 @@ func parseMemoryCapacityGB(s string) (int, error) {
 	}
 
 	return int(bytes / 1_000_000_000), nil
+}
+
+// isTerminallyFailed reports whether markTerminalFailure has run: Phase=Failed
+// is the marker (InfrastructureReady=False alone also covers a machine that is
+// merely not provisioned yet).
+func isTerminallyFailed(b7machine *infrav1.Beskar7Machine) bool {
+	return ptr.Deref(b7machine.Status.Phase, "") == infrav1.PhaseFailed
 }

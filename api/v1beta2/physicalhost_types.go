@@ -323,7 +323,10 @@ type PhysicalHostStatus struct {
 
 	// Conditions defines current service state of the PhysicalHost
 	// +optional
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // BootstrapStatus is the per-host bootstrap data fetch coordinates and the
@@ -383,9 +386,14 @@ type BootstrapStatus struct {
 
 // Redfish conditions and reasons - simplified for power management only
 const (
-	RedfishConnectionReadyCondition clusterv1.ConditionType = "RedfishConnectionReady"
-	HostAvailableCondition          clusterv1.ConditionType = "HostAvailable"
-	HostInspectedCondition          clusterv1.ConditionType = "HostInspected"
+	RedfishConnectionReadyCondition = "RedfishConnectionReady"
+	HostAvailableCondition          = "HostAvailable"
+	HostInspectedCondition          = "HostInspected"
+
+	// Reasons for the True state of the conditions above (metav1.Condition requires one).
+	RedfishConnectedReason string = "RedfishConnected"
+	HostAvailableReason    string = "HostAvailable"
+	HostInspectedReason    string = "HostInspected"
 
 	// Reasons
 	MissingCredentialsReason      string = "MissingCredentials"
@@ -452,13 +460,13 @@ type PhysicalHostList struct {
 	Items           []PhysicalHost `json:"items"`
 }
 
-// GetConditions returns the conditions for the PhysicalHost
-func (h *PhysicalHost) GetConditions() clusterv1.Conditions {
+// GetConditions returns the conditions of the PhysicalHost (conditions.Getter).
+func (h *PhysicalHost) GetConditions() []metav1.Condition {
 	return h.Status.Conditions
 }
 
-// SetConditions sets the conditions for the PhysicalHost
-func (h *PhysicalHost) SetConditions(conditions clusterv1.Conditions) {
+// SetConditions sets the conditions of the PhysicalHost (conditions.Setter).
+func (h *PhysicalHost) SetConditions(conditions []metav1.Condition) {
 	h.Status.Conditions = conditions
 }
 
@@ -505,8 +513,10 @@ func (in *PhysicalHostStatus) DeepCopyInto(out *PhysicalHostStatus) {
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make(clusterv1.Conditions, len(*in))
-		copy(*out, *in)
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
@@ -549,10 +559,3 @@ func (in *InspectionReport) DeepCopy() *InspectionReport {
 func init() {
 	SchemeBuilder.Register(&PhysicalHost{}, &PhysicalHostList{})
 }
-
-// GetV1Beta1Conditions is the accessor the CAPI v1beta2 deprecated-conditions
-// helpers require; the v1beta1-shaped conditions stay in Status.Conditions.
-func (h *PhysicalHost) GetV1Beta1Conditions() clusterv1.Conditions { return h.Status.Conditions }
-
-// SetV1Beta1Conditions is the matching setter.
-func (h *PhysicalHost) SetV1Beta1Conditions(c clusterv1.Conditions) { h.Status.Conditions = c }

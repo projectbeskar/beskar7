@@ -124,7 +124,7 @@ The host entered `Deploying` (inspection passed and the inspector is writing the
 kubectl get physicalhost <name> -o jsonpath='{.status.deployingTimestamp}'
 ```
 
-If the timestamp is older than the `--deployment-timeout` (default 20 min), the Beskar7Machine controller will set `FailureReason=DeploymentTimedOut` on the `Beskar7Machine` and mark it failed. Common causes:
+If the timestamp is older than the `--deployment-timeout` (default 20 min), the Beskar7Machine controller marks the `Beskar7Machine` terminally failed: `status.phase=Failed` and `InfrastructureReady=False` with reason `DeploymentTimedOut`. Common causes:
 
 - The OS image download is slow or stalled — check network reachability from the host to `Beskar7Machine.Spec.TargetImageURL`.
 - The inspector's TLS verification failed for the provisioned-callback endpoint — check that `beskar7.api` is externally reachable and that the certificate uses a two-tier PKI (CA cert distinct from the server cert; see the TLS note in `docs/inspector-contract.md` §8).
@@ -164,11 +164,13 @@ kubectl patch physicalhost <name> --type=merge -p '{"metadata":{"finalizers":[]}
 
 ### Conditions
 
-`kubectl describe physicalhost <name>` shows the conditions list. Key types:
+`kubectl describe physicalhost <name>` shows the conditions list — native `metav1.Condition`, no `severity` field, every condition (including `True`) carries a `reason`. Key types:
 
-- `RedfishConnectionReady` — BMC connectivity.
-- `HostAvailable` — host has no consumer.
-- `HostInspected` — inspection report has been persisted.
+- `RedfishConnectionReady` — BMC connectivity. True reason `RedfishConnected`.
+- `HostAvailable` — host has no consumer. True reason `HostAvailable`.
+- `HostInspected` — inspection report has been persisted. True reason `HostInspected`; `False (HostReleased)` when a host returns to `Available` after a run.
+
+Full reason lists: [PhysicalHost → Conditions](physicalhost.md#conditions).
 
 ### Events
 

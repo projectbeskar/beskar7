@@ -16,8 +16,9 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -302,9 +303,9 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(err).NotTo(HaveOccurred(), "passing hardware checks must not error")
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "post-inspection should requeue once to observe the new state")
 
-			// FailureReason must NOT be set on a passing report.
-			Expect(beskar7Machine.Status.FailureReason).To(BeNil(),
-				"successful validation must leave FailureReason unset")
+			// The machine must NOT be terminally failed on a passing report.
+			Expect(isTerminallyFailed(beskar7Machine)).To(BeFalse(),
+				"successful validation must leave the machine non-terminal")
 
 			// Annotation handoff: validateInspectionReport calls
 			// setInspectionRequestAnnotation("inspect-complete") on success.
@@ -362,7 +363,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
-					ProviderID:         &provID,
+					ProviderID:         provID,
 				},
 			}
 			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -430,7 +431,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
-					ProviderID:         &provID,
+					ProviderID:         provID,
 				},
 			}
 			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -481,7 +482,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
-					ProviderID:         &provID,
+					ProviderID:         provID,
 				},
 			}
 			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -533,7 +534,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
-					ProviderID:         &provID,
+					ProviderID:         provID,
 				},
 			}
 			Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
@@ -558,16 +559,48 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		})
 
 		// Converted from PIt "[SKIP - Hardware Testing] Should handle pause annotation".
-		// pause is honored on the Beskar7Machine path (controllers/utils.go isPaused
-		// is called from Reconcile at controllers/beskar7machine_controller.go:123).
-		// When paused, Reconcile returns immediately with no error and no requeue,
-		// and never reaches the claim path.
+		// The cluster.x-k8s.io/paused annotation on the Beskar7Machine itself is
+		// honored via paused.EnsurePausedCondition (controllers/beskar7machine_controller.go),
+		// called once the owner Machine and Cluster are resolved. A machine with no
+		// resolvable owner now bails out earlier, at "Waiting for Machine Controller
+		// to set OwnerRef", before ever reaching the pause check — so this needs a
+		// full owner chain to actually exercise paused.EnsurePausedCondition.
 		It("Should skip reconciliation when the pause annotation is set", func() {
-			beskar7Machine.Namespace = testNs.Name
 			beskar7Machine.Annotations = map[string]string{
 				clusterv1.PausedAnnotation: "true",
 			}
 			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
+
+			ownerCluster := &clusterv1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "pause-annotation-cluster", Namespace: testNs.Name},
+				Spec:       clusterv1.ClusterSpec{Paused: ptr.To(false)},
+			}
+			Expect(k8sClient.Create(ctx, ownerCluster)).To(Succeed())
+
+			ownerMachine := &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "pause-annotation-machine",
+					Namespace: testNs.Name,
+					Labels:    map[string]string{clusterv1.ClusterNameLabel: ownerCluster.Name},
+				},
+				Spec: clusterv1.MachineSpec{
+					ClusterName: ownerCluster.Name,
+					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef;
+					// nothing in envtest acts on either fixture reference.
+					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ownerMachine)).To(Succeed())
+
+			beskar7Machine.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: clusterv1.GroupVersion.String(),
+				Kind:       "Machine",
+				Name:       ownerMachine.Name,
+				UID:        ownerMachine.UID,
+			}}
+			beskar7Machine.Labels = map[string]string{clusterv1.ClusterNameLabel: ownerCluster.Name}
+			Expect(k8sClient.Update(ctx, beskar7Machine)).To(Succeed())
 
 			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: beskar7Machine.Namespace}
 
@@ -580,6 +613,91 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			unchangedHost := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, unchangedHost)).To(Succeed())
 			Expect(unchangedHost.Spec.ConsumerRef).To(BeNil(), "paused reconcile must not claim a host")
+
+			updated := &infrav1.Beskar7Machine{}
+			Expect(k8sClient.Get(ctx, machineLookupKey, updated)).To(Succeed())
+			Expect(conditions.IsTrue(updated, clusterv1.PausedCondition)).To(BeTrue(),
+				"the paused annotation must be reflected in the Beskar7Machine's Paused condition")
+		})
+
+		// New spec: Cluster.spec.paused must pause the Beskar7Machine too (the
+		// signal comes from the owner Cluster this time, not the object's own
+		// annotation), and reconciliation must resume once the Cluster unpauses.
+		It("Should not act while the owner Cluster is paused, and resume once it is unpaused", func() {
+			Expect(k8sClient.Create(ctx, beskar7Machine)).To(Succeed())
+
+			ownerCluster := &clusterv1.Cluster{
+				ObjectMeta: metav1.ObjectMeta{Name: "cluster-pause-cluster", Namespace: testNs.Name},
+				Spec:       clusterv1.ClusterSpec{Paused: ptr.To(true)},
+			}
+			Expect(k8sClient.Create(ctx, ownerCluster)).To(Succeed())
+
+			ownerMachine := &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cluster-pause-machine",
+					Namespace: testNs.Name,
+					Labels:    map[string]string{clusterv1.ClusterNameLabel: ownerCluster.Name},
+				},
+				Spec: clusterv1.MachineSpec{
+					ClusterName: ownerCluster.Name,
+					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef;
+					// nothing in envtest acts on either fixture reference.
+					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ownerMachine)).To(Succeed())
+
+			beskar7Machine.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: clusterv1.GroupVersion.String(),
+				Kind:       "Machine",
+				Name:       ownerMachine.Name,
+				UID:        ownerMachine.UID,
+			}}
+			beskar7Machine.Labels = map[string]string{clusterv1.ClusterNameLabel: ownerCluster.Name}
+			Expect(k8sClient.Update(ctx, beskar7Machine)).To(Succeed())
+
+			machineLookupKey := types.NamespacedName{Name: beskar7Machine.Name, Namespace: testNs.Name}
+			req := ctrl.Request{NamespacedName: machineLookupKey}
+
+			By("reconciling while Cluster.spec.paused is true")
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			hostWhilePaused := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostWhilePaused)).To(Succeed())
+			Expect(hostWhilePaused.Spec.ConsumerRef).To(BeNil(), "a machine paused via its owner Cluster must not claim a host")
+
+			pausedMachine := &infrav1.Beskar7Machine{}
+			Expect(k8sClient.Get(ctx, machineLookupKey, pausedMachine)).To(Succeed())
+			Expect(conditions.IsTrue(pausedMachine, clusterv1.PausedCondition)).To(BeTrue(),
+				"Cluster.spec.paused must be reflected in the Beskar7Machine's Paused condition")
+
+			By("unpausing the Cluster")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ownerCluster.Name, Namespace: testNs.Name}, ownerCluster)).To(Succeed())
+			ownerCluster.Spec.Paused = ptr.To(false)
+			Expect(k8sClient.Update(ctx, ownerCluster)).To(Succeed())
+
+			// Drive reconciliation past the pause transition: the first
+			// post-unpause call only flips the condition and requeues (no prior
+			// condition to compare against costs a cycle the same way the initial
+			// pause did); the second reaches reconcileNormal and adds the
+			// finalizer. Stop there — a third call would proceed into
+			// findAndClaimOrGetAssociatedHost, whose Available-host list uses a
+			// field index this Context's plain (non-manager-backed) k8sClient
+			// does not register; claiming itself is covered by the race and
+			// placement Describe blocks below, which do set that index up.
+			for i := 0; i < 2; i++ {
+				_, err := reconciler.Reconcile(ctx, req)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			resumedMachine := &infrav1.Beskar7Machine{}
+			Expect(k8sClient.Get(ctx, machineLookupKey, resumedMachine)).To(Succeed())
+			Expect(conditions.IsFalse(resumedMachine, clusterv1.PausedCondition)).To(BeTrue(),
+				"unpausing the Cluster must flip the Beskar7Machine's Paused condition to False")
+			Expect(resumedMachine.Finalizers).To(ContainElement(Beskar7MachineFinalizer),
+				"reconciliation must resume and reach reconcileNormal once unpaused")
 		})
 
 		// Converted from "[SKIP - Hardware Testing] Should validate hardware requirements".
@@ -614,19 +732,16 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				}
 			}
 
-			expectTerminalFailure := func(b *infrav1.Beskar7Machine, expectedReason string) {
-				Expect(b.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set on terminal failure")
-				Expect(*b.Status.FailureReason).To(Equal(expectedReason))
-				Expect(b.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be set")
-				Expect(*b.Status.FailureMessage).NotTo(BeEmpty())
+			expectTerminalFailure := func(b *infrav1.Beskar7Machine, expectedReason string) string {
 				Expect(b.Status.Ready).To(BeFalse())
 				Expect(b.Status.Phase).NotTo(BeNil())
-				Expect(*b.Status.Phase).To(Equal("Failed"))
+				Expect(*b.Status.Phase).To(Equal(infrav1.PhaseFailed))
 				cond := conditions.Get(b, infrav1.InfrastructureReadyCondition)
 				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
-				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				Expect(cond.Reason).To(Equal(expectedReason))
-				Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
+				Expect(cond.Message).NotTo(BeEmpty(), "the condition message must carry the failure detail")
+				return cond.Message
 			}
 
 			It("Should mark Beskar7Machine terminally Failed when CPU cores are insufficient", func() {
@@ -638,10 +753,10 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error (would requeue forever)")
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
-				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("CPU cores"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("4"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
+				msg := expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
+				Expect(msg).To(ContainSubstring("CPU cores"))
+				Expect(msg).To(ContainSubstring("4"))
+				Expect(msg).To(ContainSubstring("16"))
 			})
 
 			It("Should mark Beskar7Machine terminally Failed when memory is insufficient", func() {
@@ -654,10 +769,10 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("memory"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("64"))
+				msg := expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
+				Expect(msg).To(ContainSubstring("memory"))
+				Expect(msg).To(ContainSubstring("16"))
+				Expect(msg).To(ContainSubstring("64"))
 			})
 
 			It("Should mark Beskar7Machine terminally Failed when disk space is insufficient", func() {
@@ -671,13 +786,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("disk"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("250"))
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("1000"))
+				msg := expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
+				Expect(msg).To(ContainSubstring("disk"))
+				Expect(msg).To(ContainSubstring("250"))
+				Expect(msg).To(ContainSubstring("1000"))
 			})
 
-			It("Should NOT clear FailureReason on a subsequent reconcile (idempotent terminality)", func() {
+			It("Should NOT clear the terminal failure on a subsequent reconcile (idempotent terminality)", func() {
 				machine := buildMachine(&infrav1.HardwareRequirements{MinCPUCores: 16})
 				host := buildHostWithReport(&infrav1.InspectionReport{
 					CPUs: []infrav1.CPUInfo{{ID: "0", Cores: 4}},
@@ -685,15 +800,15 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 				_, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				originalReason := *machine.Status.FailureReason
+				Expect(isTerminallyFailed(machine)).To(BeTrue())
+				originalReason := conditions.GetReason(machine, infrav1.InfrastructureReadyCondition)
 
 				// Re-run validation (simulating a subsequent reconcile). The helper
-				// must overwrite-but-not-clear: same reason, no transition to nil.
+				// must overwrite-but-not-clear: same reason, no transition away from terminal.
 				_, err = reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
-				Expect(machine.Status.FailureReason).NotTo(BeNil(), "FailureReason must persist across reconciles")
-				Expect(*machine.Status.FailureReason).To(Equal(originalReason))
+				Expect(isTerminallyFailed(machine)).To(BeTrue(), "the terminal failure must persist across reconciles")
+				Expect(conditions.GetReason(machine, infrav1.InfrastructureReadyCondition)).To(Equal(originalReason))
 			})
 		})
 
@@ -736,13 +851,14 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
 
 				// Beskar7Machine in-memory state assertions.
-				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionTimedOutReason))
-				Expect(machine.Status.FailureMessage).NotTo(BeNil())
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
 				Expect(machine.Status.Ready).To(BeFalse())
 				Expect(machine.Status.Phase).NotTo(BeNil())
-				Expect(*machine.Status.Phase).To(Equal("Failed"))
+				Expect(*machine.Status.Phase).To(Equal(infrav1.PhaseFailed))
+				cond := conditions.Get(machine, infrav1.InfrastructureReadyCondition)
+				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				Expect(cond.Reason).To(Equal(infrav1.InspectionTimedOutReason))
+				Expect(cond.Message).To(ContainSubstring("Inspection did not complete"))
 
 				// PhysicalHost should have received the timeout annotation.
 				patchedHost := &infrav1.PhysicalHost{}
@@ -797,9 +913,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(err).NotTo(HaveOccurred())
 				// validateInspectionReport returns Requeue=true on success; at minimum
 				// the machine must NOT be terminally failed.
-				Expect(machine.Status.FailureReason).To(BeNil(),
+				Expect(isTerminallyFailed(machine)).To(BeFalse(),
 					"Complete inspection must never be marked InspectionTimedOut, even when the timestamp is past the timeout window")
-				Expect(machine.Status.FailureMessage).To(BeNil())
 				// Confirm the success path was taken: the annotation must have been set.
 				patchedHost := &infrav1.PhysicalHost{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
@@ -838,19 +953,15 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
 
-				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionFailedReason))
-				Expect(machine.Status.FailureMessage).NotTo(BeNil())
-				Expect(*machine.Status.FailureMessage).NotTo(BeEmpty())
 				Expect(machine.Status.Ready).To(BeFalse())
 				Expect(machine.Status.Phase).NotTo(BeNil())
-				Expect(*machine.Status.Phase).To(Equal("Failed"))
+				Expect(*machine.Status.Phase).To(Equal(infrav1.PhaseFailed))
 
 				cond := conditions.Get(machine, infrav1.InfrastructureReadyCondition)
 				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
-				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				Expect(cond.Reason).To(Equal(infrav1.InspectionFailedReason))
-				Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
+				Expect(cond.Message).NotTo(BeEmpty())
 			})
 		})
 
@@ -893,12 +1004,14 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
 
-				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionTimedOutReason))
-				Expect(machine.Status.FailureMessage).NotTo(BeNil())
-				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
 				Expect(machine.Status.Ready).To(BeFalse())
-				Expect(*machine.Status.Phase).To(Equal("Failed"))
+				Expect(machine.Status.Phase).NotTo(BeNil())
+				Expect(*machine.Status.Phase).To(Equal(infrav1.PhaseFailed))
+				cond := conditions.Get(machine, infrav1.InfrastructureReadyCondition)
+				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
+				Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				Expect(cond.Reason).To(Equal(infrav1.InspectionTimedOutReason))
+				Expect(cond.Message).To(ContainSubstring("Inspection did not complete"))
 			})
 		})
 	})
@@ -1096,9 +1209,9 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		// neither machine has a CAPI owner so ProviderID will not be set on either.
 		// The important invariant: the losing machine has no host associated.
 		if aWon {
-			Expect(machineB.Spec.ProviderID).To(BeNil(), "losing machine-b must have no ProviderID")
+			Expect(machineB.Spec.ProviderID).To(BeEmpty(), "losing machine-b must have no ProviderID")
 		} else {
-			Expect(machineA.Spec.ProviderID).To(BeNil(), "losing machine-a must have no ProviderID")
+			Expect(machineA.Spec.ProviderID).To(BeEmpty(), "losing machine-a must have no ProviderID")
 		}
 	})
 
@@ -1247,7 +1360,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 
 		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
-		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.WaitingForBootstrapDataReason))
 
 		By("Verifying no bootstrap-url annotation was set on PhysicalHost")
@@ -1256,7 +1369,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(ph.Annotations).NotTo(HaveKey(BootstrapURLAnnotation))
 	})
 
-	It("Should set FailureReason=BootstrapDataUnavailable when the named Secret is missing", func() {
+	It("Should mark a terminal InfrastructureReady=False/BootstrapDataUnavailable when the named Secret is missing", func() {
 		By("Setting DataSecretName to a non-existent secret")
 		missingName := "does-not-exist"
 		machine.Spec.Bootstrap.DataSecretName = &missingName
@@ -1265,19 +1378,22 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 
 		By("Expecting a terminal (zero requeue, no error returned) result")
 		Expect(err).NotTo(HaveOccurred(),
-			"terminal failures must return nil error so CAPI surfaces FailureReason/FailureMessage")
+			"terminal failures must return nil error so CAPI surfaces the failure via conditions")
 		Expect(result.IsZero()).To(BeTrue(),
 			"terminal failure must not requeue")
 
 		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
-		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.BootstrapDataUnavailableReason))
 
-		Expect(b7machine.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set")
-		Expect(*b7machine.Status.FailureReason).To(Equal(infrav1.BootstrapDataUnavailableReason))
-		Expect(b7machine.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be non-empty")
-		Expect(*b7machine.Status.FailureMessage).NotTo(BeEmpty())
+		Expect(b7machine.Status.Phase).NotTo(BeNil())
+		Expect(*b7machine.Status.Phase).To(Equal(infrav1.PhaseFailed))
+		infraCond := conditions.Get(b7machine, infrav1.InfrastructureReadyCondition)
+		Expect(infraCond).NotTo(BeNil(), "InfrastructureReady condition must be set")
+		Expect(infraCond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(infraCond.Reason).To(Equal(infrav1.BootstrapDataUnavailableReason))
+		Expect(infraCond.Message).NotTo(BeEmpty())
 	})
 
 	It("Should set BootstrapDataReadyCondition=True and annotate PhysicalHost when Secret exists", func() {
@@ -1305,7 +1421,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		By("Verifying BootstrapDataReadyCondition=True")
 		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 
 		By("Verifying the bootstrap-url annotation was set on the PhysicalHost")
 		ph := &infrav1.PhysicalHost{}
@@ -2303,12 +2419,14 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		b7m := withSelector(&metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "rack", Operator: "Bogus"}}})
 
 		result, err := r.reconcileNormal(context.Background(), r.Log, b7m, &clusterv1.Machine{Spec: clusterv1.MachineSpec{ClusterName: "fake-cluster"}})
-		Expect(err).NotTo(HaveOccurred(), "terminal failures return nil so CAPI surfaces FailureReason/FailureMessage")
+		Expect(err).NotTo(HaveOccurred(), "terminal failures return nil so CAPI surfaces the failure via conditions")
 		Expect(result.IsZero()).To(BeTrue(), "a terminal failure must not requeue")
-		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.InvalidHostSelectorReason))
-		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
-		Expect(*b7m.Status.FailureMessage).To(ContainSubstring("Bogus"))
+		Expect(b7m.Status.Phase).NotTo(BeNil())
+		Expect(*b7m.Status.Phase).To(Equal(infrav1.PhaseFailed))
+		infraCond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
+		Expect(infraCond).NotTo(BeNil())
+		Expect(infraCond.Reason).To(Equal(infrav1.InvalidHostSelectorReason))
+		Expect(infraCond.Message).To(ContainSubstring("Bogus"))
 		cond := conditions.Get(b7m, infrav1.PhysicalHostAssociatedCondition)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Reason).To(Equal(infrav1.InvalidHostSelectorReason))
@@ -2331,7 +2449,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 
 		cond := conditions.Get(b7m, infrav1.PhysicalHostAssociatedCondition)
 		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.NoMatchingPhysicalHostReason))
 		Expect(cond.Message).To(ContainSubstring(zoneLabelKey + "=rack-1"))
 		Expect(consumerOf(c, "a-other-zone")).To(BeNil(), "the out-of-domain host must stay unclaimed")
@@ -2398,19 +2516,21 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 	It("enqueues the machines still waiting for a host in the host's namespace and nothing else", func() {
 		never := machine("default", "never-reconciled", nil)
 		waiting := machine("default", "waiting", func(m *infrav1.Beskar7Machine) {
-			conditions.MarkFalse(m, infrav1.PhysicalHostAssociatedCondition,
-				infrav1.WaitingForPhysicalHostReason, clusterv1.ConditionSeverityInfo, "No available PhysicalHost found")
+			setFalse(m, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason, "No available PhysicalHost found")
 		})
 		placed := machine("default", "no-match", func(m *infrav1.Beskar7Machine) {
-			conditions.MarkFalse(m, infrav1.PhysicalHostAssociatedCondition,
-				infrav1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo, "no host in rack-1")
+			setFalse(m, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "no host in rack-1")
 		})
 		associated := machine("default", "associated", func(m *infrav1.Beskar7Machine) {
-			conditions.MarkTrue(m, infrav1.PhysicalHostAssociatedCondition)
+			setTrue(m, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociatedReason)
 		})
+		// Still unassociated (like "waiting" above) but terminally failed — the
+		// isTerminallyFailed guard in AvailablePhysicalHostToWaitingBeskar7Machines
+		// must exclude it even though its PhysicalHostAssociatedCondition alone
+		// would otherwise mark it as still waiting for a host.
 		failed := machine("default", "failed", func(m *infrav1.Beskar7Machine) {
-			reason := infrav1.InvalidHostSelectorReason
-			m.Status.FailureReason = &reason
+			setFalse(m, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason, "No available PhysicalHost found")
+			m.Status.Phase = ptr.To(infrav1.PhaseFailed)
 		})
 		now := metav1.Now()
 		deleting := machine("default", "deleting", func(m *infrav1.Beskar7Machine) {
@@ -2431,8 +2551,11 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 			return out
 		}
 
-		Expect(names(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrav1.StateAvailable)))).
-			To(ConsistOf("never-reconciled", "waiting", "no-match"))
+		woken := names(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrav1.StateAvailable)))
+		Expect(woken).To(ConsistOf("never-reconciled", "waiting", "no-match"))
+
+		By("never waking a terminally-failed machine, even though it is otherwise indistinguishable from \"waiting\"")
+		Expect(woken).NotTo(ContainElement("failed"))
 
 		By("mapping nothing for a host that is not claimable")
 		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrav1.StateAvailable))).To(BeEmpty())

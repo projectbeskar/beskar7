@@ -33,8 +33,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -182,9 +180,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if err != nil {
 		logger.Error(err, "Failed to get Redfish credentials")
 		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
-			infrav1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
-			"Failed to retrieve credentials: %v", err)
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.MissingCredentialsReason, "Failed to retrieve credentials: %v", err)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Return the error without an explicit RequeueAfter so the workqueue's
 		// exponential rate-limiter (configured in SetupWithManager) governs the
@@ -207,9 +203,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if err := validateRedfishTLSCombination(insecure, physicalHost.Spec.RedfishConnection.CABundleSecretRef); err != nil {
 		logger.Error(err, "Invalid Redfish TLS configuration")
 		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
-			infrav1.InsecureCABundleConflictReason, clusterv1.ConditionSeverityError,
-			"%s", err.Error())
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.InsecureCABundleConflictReason, "%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
@@ -219,9 +213,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if err != nil {
 		logger.Error(err, "Failed to fetch Redfish CA bundle")
 		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
-			infrav1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
-			"%s", err.Error())
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.CABundleFetchFailedReason, "%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
@@ -238,9 +230,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if err != nil {
 		logger.Error(err, "Failed to create Redfish client")
 		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Redfish connection failed: %v", err))
-		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
-			infrav1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
-			"Connection failed: %v", err)
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "Connection failed: %v", err)
 		internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed, internalmetrics.ErrorTypeConnection)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
@@ -256,9 +246,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if err != nil {
 		logger.Error(err, "Failed to get system info from Redfish")
 		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Failed to query system: %v", err))
-		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
-			infrav1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
-			"Query failed: %v", err)
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishQueryFailedReason, "Query failed: %v", err)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeTransient)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
 		return ctrl.Result{}, err
@@ -297,7 +285,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	}
 
 	// Connection successful - mark as ready
-	conditions.MarkTrue(physicalHost, infrav1.RedfishConnectionReadyCondition)
+	setTrue(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectedReason)
 
 	// Drop anything left over from a previous provisioning run before the
 	// annotation handlers below, so a host that is claimed again starts clean.
@@ -368,7 +356,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		if physicalHost.Status.State != infrav1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")
 			r.updateStatus(physicalHost, infrav1.StateAvailable, true, "")
-			conditions.MarkTrue(physicalHost, infrav1.HostAvailableCondition)
+			setTrue(physicalHost, infrav1.HostAvailableCondition, infrav1.HostAvailableReason)
 		}
 	}
 
@@ -414,9 +402,7 @@ func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, p
 
 	// HostInspected describes the run that just ended, not the host. Leaving it
 	// True would tell the next consumer the box had already been inspected.
-	conditions.MarkFalse(physicalHost, infrav1.HostInspectedCondition,
-		infrav1.HostReleasedReason, clusterv1.ConditionSeverityInfo,
-		"Host released; previous inspection no longer applies")
+	setFalse(physicalHost, infrav1.HostInspectedCondition, infrav1.HostReleasedReason, "Host released; previous inspection no longer applies")
 }
 
 // applyInspectionRequest reads the InspectionRequestAnnotation and, when present, drives
@@ -445,7 +431,7 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 		logger.Info("Applying inspection-request annotation: transitioning to Deploying")
 		physicalHost.Status.State = infrav1.StateDeploying
 		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
-		conditions.MarkTrue(physicalHost, infrav1.HostInspectedCondition)
+		setTrue(physicalHost, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
 		// Record when Deploying started so Beskar7Machine can enforce the deploy timeout.
 		if physicalHost.Status.DeployingTimestamp == nil {
 			t := metav1.Now()
@@ -644,7 +630,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 	// written by the controller — D-005 invariant.
 	physicalHost.Status.InspectionReport = report
 	physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
-	conditions.MarkTrue(physicalHost, infrav1.HostInspectedCondition)
+	setTrue(physicalHost, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
 	logger.Info("Applied inspection report to Status.InspectionReport", "host", physicalHost.Name)
 
 	// One-shot consumption: delete the ConfigMap and clear the annotation.

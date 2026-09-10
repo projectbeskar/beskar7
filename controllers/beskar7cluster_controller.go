@@ -28,8 +28,9 @@ import (
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
+	"sigs.k8s.io/cluster-api/util/paused"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -109,12 +110,6 @@ func (r *Beskar7ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// even when reconcile short-circuits. Non-fatal: metric errors don't block reconcile.
 	r.recomputeBeskar7ClusterMetrics(ctx, logger, req.Namespace)
 
-	// Check if the Beskar7Cluster is paused
-	if isPaused(b7cluster) {
-		logger.Info("Beskar7Cluster reconciliation is paused")
-		return ctrl.Result{}, nil
-	}
-
 	// Set the ownerRefs on the Beskar7Cluster
 	cluster, err := util.GetOwnerCluster(ctx, r.Client, b7cluster.ObjectMeta)
 	if err != nil {
@@ -130,10 +125,14 @@ func (r *Beskar7ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	logger = logger.WithValues("cluster", cluster.Name)
 
-	// Check if the owner cluster is paused
-	if isClusterPaused(cluster) {
-		logger.Info("Beskar7Cluster reconciliation is paused because owner cluster is paused")
-		return ctrl.Result{}, nil
+	// Cluster.spec.paused, the paused annotation on the Cluster and the one on
+	// this object all pause reconciliation; the helper also keeps the Paused
+	// condition current, which is why it runs before the patch helper snapshot.
+	if isPaused, requeue, err := paused.EnsurePausedCondition(ctx, r.Client, cluster, b7cluster); err != nil || isPaused || requeue {
+		if isPaused {
+			logger.Info("Beskar7Cluster reconciliation is paused")
+		}
+		return ctrl.Result{}, err
 	}
 
 	// Initialize patch helper.
@@ -148,9 +147,13 @@ func (r *Beskar7ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Always attempt to Patch the Beskar7Cluster object and status after reconciliation.
 	defer func() {
 		// Set the summary condition based on ControlPlaneEndpointReady
-		conditions.SetSummary(b7cluster, conditions.WithConditions(infrav1.ControlPlaneEndpointReady))
+		setReadySummary(b7cluster, logger, infrav1.ControlPlaneEndpointReady)
 
-		if err := patchHelper.Patch(ctx, b7cluster); err != nil {
+		if err := patchHelper.Patch(ctx, b7cluster, patch.WithOwnedConditions{Conditions: []string{
+			clusterv1.ReadyCondition,
+			clusterv1.PausedCondition,
+			infrav1.ControlPlaneEndpointReady,
+		}}); err != nil {
 			logger.Error(err, "Failed to patch Beskar7Cluster")
 			if reterr == nil {
 				reterr = err
@@ -312,10 +315,10 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 			Host: specEndpoint.Host,
 			Port: port,
 		}
-		conditions.MarkTrue(b7cluster, infrav1.ControlPlaneEndpointReady)
+		setTrue(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointSetReason)
 		b7cluster.Status.Ready = true
 		// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
-		b7cluster.Status.Initialization = &infrav1.Beskar7ClusterInitializationStatus{Provisioned: true}
+		b7cluster.Status.Initialization.Provisioned = ptr.To(true)
 		return nil
 	}
 
@@ -329,7 +332,7 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 	}
 
 	if cpEndpoint == nil {
-		conditions.MarkFalse(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointNotSetReason, clusterv1.ConditionSeverityInfo, "Waiting for control plane Beskar7Machine(s) to have IP addresses")
+		setFalse(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointNotSetReason, "Waiting for control plane Beskar7Machine(s) to have IP addresses")
 		b7cluster.Status.Ready = false
 		// Initialization.Provisioned is one-shot per the v1beta2 contract; leave it
 		// nil here rather than flipping back to false, so a cluster that briefly
@@ -343,10 +346,10 @@ func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Con
 
 	logger.Info("Control plane endpoint discovered", "host", cpEndpoint.Host, "port", cpEndpoint.Port)
 	b7cluster.Status.ControlPlaneEndpoint = *cpEndpoint
-	conditions.MarkTrue(b7cluster, infrav1.ControlPlaneEndpointReady)
+	setTrue(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointSetReason)
 	b7cluster.Status.Ready = true
 	// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
-	b7cluster.Status.Initialization = &infrav1.Beskar7ClusterInitializationStatus{Provisioned: true}
+	b7cluster.Status.Initialization.Provisioned = ptr.To(true)
 
 	return nil
 }
@@ -420,7 +423,7 @@ func (r *Beskar7ClusterReconciler) reconcileDelete(ctx context.Context, logger l
 	logger.Info("Reconciling Beskar7Cluster deletion")
 
 	// Mark conditions False
-	conditions.MarkFalse(b7cluster, infrav1.ControlPlaneEndpointReady, clusterv1.DeletingReason, clusterv1.ConditionSeverityInfo, "Beskar7Cluster is being deleted")
+	setFalse(b7cluster, infrav1.ControlPlaneEndpointReady, clusterv1.DeletingReason, "Beskar7Cluster is being deleted")
 
 	// Beskar7Cluster typically does not own external resources that require cleanup.
 	// All infrastructure resources (PhysicalHosts, Beskar7Machines) are cleaned up

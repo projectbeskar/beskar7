@@ -478,7 +478,7 @@ kubectl get physicalhost -o wide
 kubectl get physicalhost -o json | jq '.items[] | select(.status.state=="Error")'
 
 # Check Redfish connectivity
-kubectl get physicalhost -o json | jq '.items[] | select(.status.conditions[]? | select(.type=="RedfishConnected" and .status=="False"))'
+kubectl get physicalhost -o json | jq '.items[] | select(.status.conditions[]? | select(.type=="RedfishConnectionReady" and .status=="False"))'
 ```
 
 ### Beskar7Machine Health
@@ -615,12 +615,22 @@ started, or it cannot reach the control plane.
 
 Beskar7 cannot detect this: observing the workload Node requires the workload kubeconfig, which an
 infrastructure provider does not hold (see `docs/inspector-contract.md` §13). CAPI models it with
-`MachineHealthCheck.spec.nodeStartupTimeout` — **recommended `15m`** — which remediates a machine
-that never produced a Node. See [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml).
+`MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds` — **recommended `900` (15m)** — which
+remediates a machine that never produced a Node. See
+[`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml), and
+[Upgrading](upgrading.md) if you have an older `cluster.x-k8s.io/v1beta1`-shaped `MachineHealthCheck`
+to convert.
 
 Note that remediation is **destructive**: CAPI deletes the Machine and beskar7 re-provisions the
-host with a whole-disk overwrite. Keep `maxUnhealthy` set so a fleet-wide fault (a bad image digest,
-an unreachable boot server) cannot put the whole pool into a reprovision loop.
+host with a whole-disk overwrite. Keep `spec.remediation.triggerIf` (`unhealthyLessThanOrEqualTo` /
+`unhealthyInRange`) set so a fleet-wide fault (a bad image digest, an unreachable boot server)
+cannot put the whole pool into a reprovision loop.
+
+A `Beskar7Machine` that beskar7 itself marks terminally failed (see
+[Beskar7Machine → Terminal failures](beskar7machine.md#terminal-failures)) is a distinct case from
+a missing Node: it surfaces as `InfrastructureReady=False` on the owning `Machine`, and a
+`MachineHealthCheck` only remediates it if `spec.checks.unhealthyMachineConditions` names that
+condition explicitly — there is no automatic remediation from `status.phase` alone.
 
 ### 13. k0s control plane never forms: joins hang, or a joiner became its own cluster
 

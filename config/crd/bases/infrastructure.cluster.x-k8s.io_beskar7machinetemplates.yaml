@@ -83,6 +83,8 @@ spec:
                         pattern: ^https?://[^\s]+$
                         type: string
                       providerID:
+                        maxLength: 512
+                        minLength: 1
                         type: string
                       staticIP:
                         pattern: ^([0-9]{1,3}\.){3}[0-9]{1,3}::(([0-9]{1,3}\.){3}[0-9]{1,3})?:(([0-9]{1,3}\.){3}[0-9]{1,3}|[0-9]{1,2})(:([0-9]{1,3}\.){3}[0-9]{1,3})?$

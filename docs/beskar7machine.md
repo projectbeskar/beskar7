@@ -66,7 +66,7 @@ When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssoc
 The reconciler runs through these phases. Each phase corresponds to a state of the claimed `PhysicalHost`.
 
 1. **Wait for owner Machine.** If the owning CAPI `Machine` does not have an `OwnerReference` to this Beskar7Machine yet, requeue.
-2. **Bootstrap data check.** Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and set `FailureReason` (terminal).
+2. **Bootstrap data check.** Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and mark the machine terminally failed (terminal).
 3. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
     1. If `Spec.ProviderID` is set (only after inspection completes), `Get` the host directly by the encoded `<ns>/<name>` and return it.
     2. List PhysicalHosts in the namespace and return the one whose `Spec.ConsumerRef.Name` matches this Beskar7Machine — covers the window between claim and `ProviderID` assignment. Without this branch the controller would forget its own claim after the first reconcile (the host has transitioned to `InUse` so the next branch's `Available` filter skips it).
@@ -85,24 +85,45 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 
 ## Conditions
 
-| Type | Meaning | Common reasons |
-|---|---|---|
-| `InfrastructureReady` | Standard CAPI infra-ready condition. Summary across the others; True once the host reaches `Ready` (the inspector's provisioned callback was received) and `ProviderID` is set. | – |
-| `PhysicalHostAssociated` | A host has been claimed. | `WaitingForPhysicalHost`, `PhysicalHostAssociationFailed`. |
-| `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `WaitingForBootstrapData`, `BootstrapDataUnavailable`. |
+Every condition is a native `metav1.Condition` (`status.conditions[]`: `type`, `status`, `reason`, `message`, `lastTransitionTime`, `observedGeneration`) — there is no `severity` field, and a `True` condition carries a `reason` too.
 
-There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed from the API. Use `InfrastructureReady` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) as the provisioned signal.
+`Ready` is the **summary** condition: the controller computes it every reconcile from the other three (worst status wins), it is not itself hand-set. It is also the condition Cluster API mirrors into the owning `Machine`'s own `InfrastructureReady` condition — a same-named-but-different condition on a different object than this resource's own `InfrastructureReady` row below. See [API Reference → Conditions and the CAPI mirror](api-reference.md#conditions-and-the-capi-mirror).
+
+| Type | Meaning | True reason | Other reasons |
+|---|---|---|---|
+| `Ready` | Summary of the three rows below. | Derived from the summarized conditions. | Same, `False`/`Unknown`. |
+| `InfrastructureReady` | True once the host reaches `Ready` (the inspector's provisioned callback was received) and `ProviderID` is set. | `Provisioned` | `PhysicalHostNotReady` (host claimed, still deploying); terminal — see [Terminal failures](#terminal-failures). |
+| `PhysicalHostAssociated` | A host has been claimed. | `PhysicalHostAssociated` | `WaitingForPhysicalHost`, `NoMatchingPhysicalHost`, `PhysicalHostAssociationFailed`, `InvalidHostSelector` (terminal). |
+| `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
+| `Paused` | Maintained by `sigs.k8s.io/cluster-api/util/paused`. See [Paused](#paused). | `NotPaused` | `Paused`. |
+
+There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed from the API. Use `Ready` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) as the provisioned signal.
+
+## Paused
+
+`paused.EnsurePausedCondition` (`sigs.k8s.io/cluster-api/util/paused`) runs before every reconcile, including deletion, and pauses when either is true:
+
+- **`Cluster.spec.paused`** — the CAPI `Cluster`'s own spec field. This is what `clusterctl move` sets on the source cluster before moving objects and clears on the target afterwards.
+- **The `cluster.x-k8s.io/paused` annotation on this `Beskar7Machine`.**
+
+It does **not** check the annotation on the owning `Cluster` object — only `Cluster.spec.paused` and the annotation on this object. If you were previously pausing by annotating the `Cluster` directly, switch to `Cluster.spec.paused` (or annotate the `Beskar7Machine` itself); the old pattern stopped working when this controller moved off its own hand-rolled `isClusterPaused` check. See [Upgrading](upgrading.md).
+
+While paused, the reconciler returns immediately — a `Beskar7Machine` with a `DeletionTimestamp` does not finish deleting until it is unpaused.
 
 ## Terminal failures
 
-These set `Status.FailureReason` and `Status.FailureMessage`. Once set, the controller stops requeueing — operator must intervene. CAPI surfaces both fields in `kubectl describe machine`.
+A terminal failure is `status.phase: Failed`, `status.ready: false`, and the `InfrastructureReady` condition `False` with the reason below and a message describing the specific cause. `Ready` (the summary) goes `False` too. Once `status.phase` reads `Failed` (`isTerminallyFailed`), the controller stops reconciling that machine — it will never be healed by a later state change; only deletion is still handled. Cluster API mirrors `Ready` into the owning `Machine`'s own `InfrastructureReady` condition, which is what a `MachineHealthCheck`'s `unhealthyMachineConditions` should key on — see [Upgrading](upgrading.md) and [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml). There is no `status.failureReason` / `status.failureMessage` any more, and `MachineHealthCheck` on Cluster API v1.11+ does not read those fields even when present on other providers.
 
 | Reason | Trigger |
 |---|---|
 | `BootstrapDataUnavailable` | The Secret named by `Machine.Spec.Bootstrap.DataSecretName` does not exist. |
-| `HardwareRequirementsNotMet` | Inspection report falls below `hardwareRequirements`. |
+| `HardwareRequirementsNotMet` | Inspection report falls below `hardwareRequirements` (CPU, memory, or disk). |
 | `InvalidHostSelector` | `spec.hostSelector` cannot be parsed (for example an unknown `matchExpressions` operator). It can never match; fix the template and roll the machine. |
 | `InspectionTimedOut` | No inspection report received within the inspection timeout (default 10 min; `--inspection-timeout` flag). |
+| `InspectionFailed` | The claimed `PhysicalHost` reported `Status.InspectionPhase = Failed` — the inspector booted but the inspection itself errored. Check the host's `Status` and serial console. |
+| `DeploymentTimedOut` | The host stayed in `Deploying` (OS image write) longer than the deployment timeout (default 20 min; `--deployment-timeout` flag). |
+| `DeploymentFailed` | The inspector explicitly reported a deploy failure via `POST /api/v1/provision-failed` (contract v4.1) — image fetch, digest verify, disk write, or `COS_OEM` inject failed. |
+| `PhysicalHostError` | The claimed `PhysicalHost` entered `StateError` for a Redfish/BMC-level reason (not a reported deploy failure). |
 
 To recover, delete the Beskar7Machine (and its owner `Machine`); the host returns to `Available` and a fresh attempt can be made.
 

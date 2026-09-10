@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -103,7 +103,14 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// First reconcile adds finalizer
+			// The very first reconcile of any object is consumed entirely by
+			// paused.EnsurePausedCondition establishing the initial NotPaused
+			// condition (no prior condition to compare against, so it always
+			// patches and requeues) — it never reaches reconcileNormal.
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile adds finalizer
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue after adding finalizer")
@@ -114,7 +121,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				g.Expect(b7cluster.Finalizers).To(ContainElement(Beskar7ClusterFinalizer))
 			}, "5s", "100ms").Should(Succeed())
 
-			// Second reconcile tries to find endpoint, fails, sets condition, and requeues
+			// Third reconcile tries to find endpoint, fails, sets condition, and requeues
 			result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue when no machines are found")
@@ -124,7 +131,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal(infrav1.ControlPlaneEndpointNotSetReason))
 				g.Expect(b7cluster.Status.Ready).To(BeFalse())
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.IsZero()).To(BeTrue())
@@ -143,11 +150,15 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-			// First reconcile adds finalizer.
+			// First reconcile establishes the NotPaused condition (see the
+			// comment in "should add finalizer and wait for control plane
+			// machines" above); second adds finalizer.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile should observe the user-supplied endpoint, mark
+			// Third reconcile should observe the user-supplied endpoint, mark
 			// Ready=true, and NOT requeue waiting for control-plane machines.
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -160,7 +171,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				g.Expect(b7cluster.Status.Ready).To(BeTrue())
 				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 			}, "5s", "100ms").Should(Succeed())
 		})
 
@@ -193,12 +204,16 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			cpMachine.Status.Addresses = []clusterv1.MachineAddress{
 				{Type: clusterv1.MachineInternalIP, Address: "10.0.0.42"},
 			}
-			conditions.MarkTrue(cpMachine, clusterv1.InfrastructureReadyCondition)
+			conditions.Set(cpMachine, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
 			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
 
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
+			// First reconcile establishes the NotPaused condition, second adds
+			// the finalizer, third discovers the control-plane endpoint.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -248,7 +263,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 					{Type: clusterv1.MachineExternalIP, Address: "1.1.1.1"},
 					{Type: clusterv1.MachineInternalIP, Address: "192.168.1.10"},
 				}
-				conditions.MarkTrue(machineToUpdate, clusterv1.InfrastructureReadyCondition)
+				conditions.Set(machineToUpdate, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
 				// Attempt the status update
 				return k8sClient.Status().Update(ctx, machineToUpdate)
 			}, "10s", "100ms").Should(Succeed(), "Failed to update Machine status")
@@ -265,22 +280,25 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				Scheme: k8sClient.Scheme(),
 			}
 
-			// First reconcile adds finalizer
+			// First reconcile establishes the NotPaused condition.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Second reconcile should find the machine and set the endpoint
+			// Second reconcile adds finalizer
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Third reconcile should find the machine and set the endpoint
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero(), "Should not requeue once endpoint is derived")
-			Expect(result.RequeueAfter).To(BeZero())
 
 			// Check condition and status
 			Eventually(func(g Gomega) {
 				Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionTrue))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 				g.Expect(b7cluster.Status.Ready).To(BeTrue())
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("192.168.1.10"))
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
@@ -322,12 +340,16 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-			// First reconcile - should add finalizer
+			// First reconcile establishes the NotPaused condition.
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second reconcile - should add finalizer
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue after adding finalizer")
 
-			// Second reconcile - should check for control plane endpoint (but not find one)
+			// Third reconcile - should check for control plane endpoint (but not find one)
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -371,12 +393,16 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			cpMachine.Status.Addresses = []clusterv1.MachineAddress{
 				{Type: clusterv1.MachineExternalIP, Address: "203.0.113.10"},
 			}
-			conditions.MarkTrue(cpMachine, clusterv1.InfrastructureReadyCondition)
+			conditions.Set(cpMachine, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
 			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
 
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
+			// First reconcile establishes the NotPaused condition, second adds
+			// the finalizer, third discovers the control-plane endpoint.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
@@ -429,8 +455,13 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 
-			// Reconcile - should not set control plane endpoint for non-ready machine
+			// First reconcile establishes the NotPaused condition; second adds the
+			// finalizer; third actually evaluates the not-ready control-plane machine.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify that control plane endpoint is not set for non-ready machine
@@ -442,10 +473,13 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 		})
 
 		It("should discover FailureDomains from PhysicalHost labels", func() {
-			// Create the Beskar7Cluster first (will have finalizer added on first reconcile)
+			// Create the Beskar7Cluster first (will have finalizer added on the
+			// second reconcile — the first establishes the NotPaused condition).
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Create PhysicalHosts with different zone labels
@@ -487,10 +521,13 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 		})
 
 		It("should optimize failure domain discovery by avoiding unnecessary updates", func() {
-			// Create the Beskar7Cluster first (will have finalizer added on first reconcile)
+			// Create the Beskar7Cluster first (will have finalizer added on the
+			// second reconcile — the first establishes the NotPaused condition).
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Create PhysicalHosts with zone labels
@@ -528,6 +565,53 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			// Note: In a real test environment, resource version should remain the same
 			// but since we're using a test environment, we just verify the optimization doesn't break functionality
 			Expect(b7cluster.ResourceVersion).NotTo(BeEmpty(), "Resource version should exist, initial was: %s", initialResourceVersion)
+		})
+	})
+
+	Context("Pause handling", func() {
+		// Cluster.spec.paused must stop the Beskar7Cluster from acting, and lift
+		// once the Cluster unpauses — the same contract the Beskar7Machine
+		// controller honours (see the pause specs in beskar7machine_controller_test.go).
+		It("should not act while Cluster.spec.paused is true, and resume once unpaused", func() {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: capiCluster.Name, Namespace: testNs.Name}, capiCluster)).To(Succeed())
+			capiCluster.Spec.Paused = ptr.To(true)
+			Expect(k8sClient.Update(ctx, capiCluster)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			reconciler := &Beskar7ClusterReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			By("reconciling while the owner Cluster is paused")
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			pausedCluster := &infrav1.Beskar7Cluster{}
+			Expect(k8sClient.Get(ctx, key, pausedCluster)).To(Succeed())
+			Expect(pausedCluster.Finalizers).To(BeEmpty(), "a paused reconcile must never reach the finalizer/normal path")
+			Expect(conditions.IsTrue(pausedCluster, clusterv1.PausedCondition)).To(BeTrue(),
+				"Cluster.spec.paused must be reflected in the Beskar7Cluster's Paused condition")
+
+			By("unpausing the Cluster")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: capiCluster.Name, Namespace: testNs.Name}, capiCluster)).To(Succeed())
+			capiCluster.Spec.Paused = ptr.To(false)
+			Expect(k8sClient.Update(ctx, capiCluster)).To(Succeed())
+
+			// Drive reconciliation until it settles: the pause-transition reconcile
+			// only flips the condition and requeues; the next one does real work.
+			for i := 0; i < 3; i++ {
+				_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			resumedCluster := &infrav1.Beskar7Cluster{}
+			Expect(k8sClient.Get(ctx, key, resumedCluster)).To(Succeed())
+			Expect(conditions.IsFalse(resumedCluster, clusterv1.PausedCondition)).To(BeTrue(),
+				"unpausing the Cluster must flip the Beskar7Cluster's Paused condition to False")
+			Expect(resumedCluster.Finalizers).To(ContainElement(Beskar7ClusterFinalizer),
+				"reconciliation must resume and add the finalizer once unpaused")
 		})
 	})
 

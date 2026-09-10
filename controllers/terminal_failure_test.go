@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -158,14 +159,12 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 	})
 
 	It("must not stamp success over an existing terminal failure", func() {
-		// Put the machine in the exact state markTerminalFailure leaves behind.
+		// Put the machine in the exact state markTerminalFailure leaves behind —
+		// call the real helper rather than hand-rolling the fields, so this test
+		// tracks whatever markTerminalFailure actually does.
 		reason := infrav1.InspectionTimedOutReason
 		msg := "Inspection did not complete within 10m0s"
-		phase := "Failed"
-		b7machine.Status.FailureReason = &reason
-		b7machine.Status.FailureMessage = &msg
-		b7machine.Status.Phase = &phase
-		b7machine.Status.Ready = false
+		reconciler.markTerminalFailure(b7machine, reason, msg)
 		Expect(k8sClient.Status().Update(ctx, b7machine)).To(Succeed())
 
 		// The first reconcile only adds the finalizer and requeues, so a single
@@ -186,18 +185,69 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 
 		Expect(updated.Status.Ready).To(BeFalse(),
 			"a terminally-failed machine must not become Ready even when its host recovers")
-		Expect(updated.Spec.ProviderID).To(BeNil(),
+		Expect(updated.Spec.ProviderID).To(BeEmpty(),
 			"a terminally-failed machine must not be assigned a ProviderID")
-		if updated.Status.Initialization != nil {
-			Expect(updated.Status.Initialization.Provisioned).To(BeFalse(),
-				"a terminally-failed machine must not report Initialization.Provisioned")
-		}
+		Expect(ptr.Deref(updated.Status.Initialization.Provisioned, false)).To(BeFalse(),
+			"a terminally-failed machine must not report Initialization.Provisioned")
 
-		// The failure itself is preserved: markTerminalFailure documents that
-		// FailureReason is never cleared, so an operator can still see why.
-		Expect(updated.Status.FailureReason).NotTo(BeNil())
-		Expect(*updated.Status.FailureReason).To(Equal(reason))
-		Expect(*updated.Status.Phase).To(Equal("Failed"))
+		// The failure itself is preserved: markTerminalFailure documents that the
+		// terminal reason is never cleared, so an operator can still see why. The
+		// v1beta2 contract carries this as InfrastructureReady=False with the
+		// reason and message, not FailureReason/FailureMessage.
+		Expect(updated.Status.Phase).NotTo(BeNil())
+		Expect(*updated.Status.Phase).To(Equal(infrav1.PhaseFailed))
+		cond := conditions.Get(updated, infrav1.InfrastructureReadyCondition)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(reason))
+		Expect(cond.Message).To(Equal(msg))
+
+		By("the Ready summary condition must also be False")
+		Expect(conditions.IsFalse(updated, clusterv1.ReadyCondition)).To(BeTrue())
+	})
+
+	It("does not claim a PhysicalHost that becomes Available while the machine is terminally failed", func() {
+		reason := infrav1.InspectionTimedOutReason
+		msg := "Inspection did not complete within 10m0s"
+		reconciler.markTerminalFailure(b7machine, reason, msg)
+		Expect(k8sClient.Status().Update(ctx, b7machine)).To(Succeed())
+
+		By("creating a second, unclaimed PhysicalHost and marking it Available")
+		freeHost := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "free-host", Namespace: testNs.Name},
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
+					Address:              "https://192.168.1.101",
+					CredentialsSecretRef: "creds",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, freeHost)).To(Succeed())
+		freeHost.Status.State = infrav1.StateAvailable
+		freeHost.Status.Ready = true
+		Expect(k8sClient.Status().Update(ctx, freeHost)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: b7machine.Name, Namespace: testNs.Name},
+		}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("the free host must remain unclaimed and Available — the terminally-failed machine never runs the claim path")
+		gotFree := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: freeHost.Name, Namespace: testNs.Name}, gotFree)).To(Succeed())
+		Expect(gotFree.Spec.ConsumerRef).To(BeNil(),
+			"a terminally-failed machine must never claim a PhysicalHost")
+		Expect(gotFree.Status.State).To(Equal(infrav1.StateAvailable))
+
+		By("the machine must still report the terminal failure, unchanged")
+		updated := &infrav1.Beskar7Machine{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{
+			Name: b7machine.Name, Namespace: testNs.Name,
+		}, updated)).To(Succeed())
+		Expect(updated.Status.Phase).NotTo(BeNil())
+		Expect(*updated.Status.Phase).To(Equal(infrav1.PhaseFailed))
+		Expect(updated.Status.Ready).To(BeFalse())
 	})
 
 	It("still allows a terminally-failed machine to be deleted", func() {
@@ -205,8 +255,7 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 		// MachineDeployment, CAPI can replace the failed replica.
 		reason := infrav1.InspectionTimedOutReason
 		msg := "Inspection did not complete within 10m0s"
-		b7machine.Status.FailureReason = &reason
-		b7machine.Status.FailureMessage = &msg
+		reconciler.markTerminalFailure(b7machine, reason, msg)
 		Expect(k8sClient.Status().Update(ctx, b7machine)).To(Succeed())
 
 		Expect(k8sClient.Delete(ctx, b7machine)).To(Succeed())

@@ -28,6 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -197,10 +198,9 @@ var _ = Describe("Full provision flow", func() {
 			current := &infrav1.Beskar7Machine{}
 			g.Expect(mgr.GetClient().Get(specCtx, b7mKey, current)).To(Succeed())
 			g.Expect(current.Status.Ready).To(BeTrue())
-			g.Expect(current.Spec.ProviderID).NotTo(BeNil())
-			g.Expect(*current.Spec.ProviderID).To(Equal(expectedProviderID))
-			g.Expect(current.Status.Initialization).NotTo(BeNil())
-			g.Expect(current.Status.Initialization.Provisioned).To(BeTrue())
+			g.Expect(current.Spec.ProviderID).NotTo(BeEmpty())
+			g.Expect(current.Spec.ProviderID).To(Equal(expectedProviderID))
+			g.Expect(ptr.Deref(current.Status.Initialization.Provisioned, false)).To(BeTrue())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 	})
 })
@@ -244,7 +244,7 @@ var _ = Describe("Secret-rotation watch", func() {
 			// RedfishConnectionReady=True confirms the first reconcile ran.
 			for _, c := range current.Status.Conditions {
 				if c.Type == infrav1.RedfishConnectionReadyCondition {
-					g.Expect(c.Status).To(Equal(corev1.ConditionTrue))
+					g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
 					return
 				}
 			}
@@ -276,7 +276,7 @@ var _ = Describe("Secret-rotation watch", func() {
 			found := false
 			for _, c := range current.Status.Conditions {
 				if c.Type == infrav1.RedfishConnectionReadyCondition {
-					g.Expect(c.Status).To(Equal(corev1.ConditionTrue))
+					g.Expect(c.Status).To(Equal(metav1.ConditionTrue))
 					found = true
 					break
 				}
@@ -348,7 +348,7 @@ var _ = Describe("Delete and release", func() {
 			current := &infrav1.Beskar7Machine{}
 			g.Expect(mgr.GetClient().Get(specCtx, b7mKey, current)).To(Succeed())
 			g.Expect(current.Status.Ready).To(BeTrue())
-			g.Expect(current.Spec.ProviderID).NotTo(BeNil())
+			g.Expect(current.Spec.ProviderID).NotTo(BeEmpty())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
 		By("deleting the Beskar7Machine")
@@ -389,7 +389,7 @@ var _ = Describe("Delete and release", func() {
 		By("confirming ProviderID is unset on the Beskar7Machine (proves we are in the pre-Ready window)")
 		currentB7M := &infrav1.Beskar7Machine{}
 		Expect(mgr.GetClient().Get(specCtx, b7mKey, currentB7M)).To(Succeed())
-		Expect(currentB7M.Spec.ProviderID).To(BeNil(),
+		Expect(currentB7M.Spec.ProviderID).To(BeEmpty(),
 			"ProviderID must be unset for this regression to exercise the ConsumerRef-based release path")
 
 		By("deleting the Beskar7Machine while the host is still Inspecting")

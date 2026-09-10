@@ -20,7 +20,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -81,66 +80,4 @@ var _ = Describe("Utils", func() {
 		})
 	})
 
-	Describe("isClusterPaused", func() {
-		It("should return false when cluster is nil", func() {
-			Expect(isClusterPaused(nil)).To(BeFalse())
-		})
-
-		It("should return false when cluster has no pause annotation", func() {
-			cluster := &clusterv1.Cluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
-				},
-				// The v1beta2 Cluster CRD requires a non-empty spec.
-				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
-			}
-			Expect(isClusterPaused(cluster)).To(BeFalse())
-		})
-
-		It("should return true when cluster pause annotation is set to false", func() {
-			cluster := &clusterv1.Cluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
-					Annotations: map[string]string{
-						clusterv1.PausedAnnotation: "false",
-					},
-				},
-				// The v1beta2 Cluster CRD requires a non-empty spec.
-				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
-			}
-			Expect(isClusterPaused(cluster)).To(BeTrue())
-		})
-
-		It("should return true when cluster pause annotation is set to true", func() {
-			cluster := &clusterv1.Cluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
-					Annotations: map[string]string{
-						clusterv1.PausedAnnotation: "true",
-					},
-				},
-				// The v1beta2 Cluster CRD requires a non-empty spec.
-				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
-			}
-			Expect(isClusterPaused(cluster)).To(BeTrue())
-		})
-
-		It("should return true when cluster pause annotation has invalid value", func() {
-			cluster := &clusterv1.Cluster{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-cluster",
-					Namespace: "default",
-					Annotations: map[string]string{
-						clusterv1.PausedAnnotation: "invalid",
-					},
-				},
-				// The v1beta2 Cluster CRD requires a non-empty spec.
-				Spec: clusterv1.ClusterSpec{Paused: ptr.To(false)},
-			}
-			Expect(isClusterPaused(cluster)).To(BeTrue())
-		})
-	})
 })

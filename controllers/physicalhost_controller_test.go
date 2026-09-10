@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -463,7 +463,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Expect(k8sClient.Get(ctx, phLookupKey, failedPh)).To(Succeed())
 				cond := conditions.Get(failedPh, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(failedPh.Status.State).To(Equal(infrav1.StateError))
 			}, Timeout, Interval).Should(Succeed())
 		})
@@ -508,7 +508,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
 				cond := conditions.Get(got, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal(infrav1.InsecureCABundleConflictReason))
 				g.Expect(got.Status.State).To(Equal(infrav1.StateError))
 				g.Expect(got.Status.ErrorMessage).To(ContainSubstring("mutually exclusive"))
@@ -593,7 +593,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
 				cond := conditions.Get(got, infrav1.RedfishConnectionReadyCondition)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal(infrav1.CABundleFetchFailedReason))
 				g.Expect(got.Status.State).To(Equal(infrav1.StateError))
 			}, Timeout, Interval).Should(Succeed())

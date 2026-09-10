@@ -18,7 +18,6 @@ package controllers
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/annotations"
 	"time"
 )
@@ -27,15 +26,6 @@ import (
 // It returns true if the pause annotation exists (regardless of value).
 func isPaused(obj metav1.Object) bool {
 	return annotations.HasPaused(obj)
-}
-
-// isClusterPaused checks if the owner cluster has the pause annotation present.
-// It returns true if the pause annotation exists (regardless of value).
-func isClusterPaused(cluster *clusterv1.Cluster) bool {
-	if cluster == nil {
-		return false
-	}
-	return annotations.HasPaused(cluster)
 }
 
 // DefaultMaxConcurrentReconciles is the per-controller worker count used when
