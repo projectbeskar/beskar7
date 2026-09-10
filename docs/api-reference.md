@@ -143,7 +143,7 @@ Per-host bootstrap fetch coordinates and the hashed bearer token used to authent
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|
 | `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
-| `HostAvailable` | `PhysicalHost` | `HostAvailable` | — (set only on the transition into `Available`; the controller does not currently flip it back to `False` when the host is claimed). |
+| `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host — `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`). |
 | `HostInspected` | `PhysicalHost` | `HostInspected` | `HostReleased` (the host went back to `Available`; the prior inspection describes a run that ended, not the hardware). |
 
 ### Example
