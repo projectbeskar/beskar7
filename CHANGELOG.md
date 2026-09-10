@@ -99,6 +99,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
   read the condition (it filters on `status.state`), so this changes what `kubectl describe`
   and `kubectl wait --for=condition=HostAvailable` report, nothing else.
+- **The two published mock images no longer build on a stale Go.** `Dockerfile.mock-redfish` and
+  `Dockerfile.mock-inspector` still pinned the May `golang:1.25` digest after the manager's was
+  refreshed, so the release workflow would have published `mock-redfish` and `mock-inspector`
+  carrying the go1.25.9 standard-library advisories while the manager image was clean. All three
+  Dockerfiles now pin the same go1.25.14 builder, which is what their "same pins as the main
+  Dockerfile" comment already claimed. Neither image is scanned by CI, which is why this did not
+  show up in the baseline.
 
 ### Removed
 
