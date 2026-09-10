@@ -36,6 +36,11 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   was already `omitempty` and the `b7://<namespace>/<name>` format is unchanged. Affects Go
   importers of `api/v1beta2` only.
 
+- **CI: vulnerability scanning moved from Trivy to OSV-Scanner.** Pull requests are diffed against
+  their base branch and fail only on vulnerabilities they introduce; pushes to `main`, a weekly
+  scheduled run and the release image scan feed the Security tab. The release asset is now
+  `osv-scanner-report.txt` (was `trivy-report.txt`).
+
 ### Removed
 
 - **BREAKING: `Beskar7Machine.status.failureReason` and `status.failureMessage` are gone.** A

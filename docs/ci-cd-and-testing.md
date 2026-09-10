@@ -15,7 +15,7 @@ Runs on every push and pull request to `main` and `develop` branches.
 
 **Jobs:**
 - **Lint and Code Quality**: Go linting, formatting checks, and code quality analysis
-- **Security Scanning**: Vulnerability scanning with Gosec and Trivy
+- **Security Scanning**: dependency vulnerability scanning with OSV-Scanner (a pull request fails only on vulnerabilities it introduces)
 - **Unit Tests**: Multi-version Go testing with coverage reporting
 - **Integration Tests**: Full integration test suite
 - **Container Build**: Multi-arch Docker image building and security scanning
@@ -200,18 +200,17 @@ golangci-lint run --fix
 
 ### Security Scanning
 
-Multiple security tools are integrated:
+Vulnerability scanning uses [OSV-Scanner](https://google.github.io/osv-scanner/) against the [OSV](https://osv.dev) database:
 
-- **Gosec**: Go security checker
-- **Trivy**: Vulnerability scanner for code and containers
-- **CodeQL**: GitHub's semantic code analysis
+- **Pull requests**: the dependency scan is diffed against the base branch, so a PR fails only when it introduces a vulnerability (`Security Scanning` job). The container image built for the PR is scanned as well and reported to the Security tab without blocking.
+- **Pushes to `main`** and a **weekly schedule** (`.github/workflows/osv-scanner-scheduled.yml`): full dependency scans feed the Security tab; the weekly run fails when an advisory affects the tree.
+- **Releases**: the published image is scanned and `osv-scanner-report.txt` is attached to the GitHub release.
 
 ```bash
-# Run security scan locally
-gosec ./...
-
-# Scan container images
-trivy image ghcr.io/projectbeskar/beskar7/beskar7:latest
+# Run the same scans locally
+go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+osv-scanner scan source -r .
+osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
 ```
 
 ## Development Workflow

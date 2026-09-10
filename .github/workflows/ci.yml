@@ -55,25 +55,36 @@ jobs:
           exit 1
         fi
 
-  # Job 2: Security Scanning
+  # Job 2: Dependency vulnerability scan (OSV-Scanner, https://google.github.io/osv-scanner/).
+  # A pull request is diffed against its base branch, so only a vulnerability the
+  # PR introduces fails the job. Pushes run a full scan that feeds the Security
+  # tab without blocking; osv-scanner-scheduled.yml repeats it weekly.
   security:
     name: Security Scanning
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-        
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: 'trivy-results.sarif'
+    if: github.event_name == 'pull_request'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      scan-args: |-
+        -r
+        ./
+
+  security-push:
+    name: Security Scanning (full)
+    if: github.event_name == 'push'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      scan-args: |-
+        -r
+        ./
+      fail-on-vuln: false
 
   # Job 3: Unit Tests
   test:
@@ -186,17 +197,37 @@ jobs:
         cache-to: type=gha,mode=max
         load: true  # Load the image to local Docker daemon for scanning
         
-    - name: Run container security scan
-      uses: aquasecurity/trivy-action@master
+    # OSV-Scanner runs as a container action without access to the Docker
+    # daemon, so the freshly built image is handed over as a docker-save archive.
+    - name: Export the image for scanning
+      run: docker save -o osv-image.tar "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test"
+
+    - name: Scan the container image with OSV-Scanner
+      uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+      continue-on-error: true # exits 1 on findings; the report below decides
       with:
-        image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
-        format: 'sarif'
-        output: 'container-scan.sarif'
-        
+        scan-args: |-
+          scan
+          image
+          --archive
+          osv-image.tar
+          --format=json
+          --output=osv-image-results.json
+
+    - name: Convert the image scan to SARIF
+      uses: google/osv-scanner-action/osv-reporter-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+      with:
+        scan-args: |-
+          --new=osv-image-results.json
+          --output=osv-image-results.sarif
+          --gh-annotations=false
+          --fail-on-vuln=false
+
     - name: Upload container scan results
       uses: github/codeql-action/upload-sarif@v3
       with:
-        sarif_file: 'container-scan.sarif'
+        sarif_file: osv-image-results.sarif
+        category: osv-scanner-image
 
   # Job 6: Generate and Validate Manifests
   manifests:
@@ -615,13 +646,14 @@ jobs:
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, security, test, integration-test, container, manifests, e2e-setup, e2e-clusterctl]
+    needs: [lint, security, security-push, test, integration-test, container, manifests, e2e-setup, e2e-clusterctl]
     if: always()
     steps:
     - name: Check all jobs status
       run: |
         if [[ "${{ needs.lint.result }}" != "success" || \
-              "${{ needs.security.result }}" != "success" || \
+              ( "${{ needs.security.result }}" != "success" && "${{ needs.security.result }}" != "skipped" ) || \
+              ( "${{ needs.security-push.result }}" != "success" && "${{ needs.security-push.result }}" != "skipped" ) || \
               "${{ needs.test.result }}" != "success" || \
               "${{ needs.integration-test.result }}" != "success" || \
               "${{ needs.container.result }}" != "success" || \

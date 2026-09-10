@@ -1,0 +1,24 @@
+name: OSV-Scanner (scheduled)
+
+# A weekly full dependency scan of the default branch, so an advisory published
+# against code that has not changed still surfaces: the run turns red and the
+# findings land in the Security tab. Pull requests and pushes are scanned by
+# ci.yml; released images by release.yml.
+on:
+  schedule:
+    - cron: "12 12 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  scan:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      scan-args: |-
+        -r
+        ./
