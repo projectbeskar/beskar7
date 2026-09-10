@@ -251,6 +251,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(got.Status.State).To(Equal(infrav1.StateInspecting))
 				g.Expect(got.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseBooting))
 				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
+				// The claim and the inspect request arrived in one patch, so the host
+				// went Available -> Inspecting without ever being InUse. HostAvailable
+				// must still read False: it follows the claim, not the InUse edge.
+				g.Expect(conditions.IsFalse(got, infrav1.HostAvailableCondition)).To(BeTrue(),
+					"a claimed host must not advertise HostAvailable=True, even one that skipped InUse")
 				// Annotation must be cleared so it is not acted on again.
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 			}, Timeout, Interval).Should(Succeed())
@@ -365,6 +370,8 @@ var _ = Describe("PhysicalHost Controller", func() {
 					"InspectionPhase describes the finished run")
 				g.Expect(conditions.IsTrue(got, infrav1.HostInspectedCondition)).To(BeFalse(),
 					"HostInspected describes the finished run, not the hardware")
+				g.Expect(conditions.IsTrue(got, infrav1.HostAvailableCondition)).To(BeTrue(),
+					"a released host is available again")
 			}, Timeout, Interval).Should(Succeed())
 
 			By("A second consumer can claim it and start a fresh inspection")
@@ -394,6 +401,90 @@ var _ = Describe("PhysicalHost Controller", func() {
 				// the first consumer's run began.
 				g.Expect(got.Status.InspectionTimestamp.Time).To(BeTemporally("~", time.Now(), 2*time.Minute),
 					"the reclaimed host's inspection clock must start at the new claim")
+			}, Timeout, Interval).Should(Succeed())
+		})
+
+		// HostAvailable is a condition, not an event: it has to read False for
+		// as long as a consumer holds the host and True again once released.
+		// The controller used to set it True on the transition into Available
+		// and never flip it back, so a host that was InUse, Inspecting,
+		// Deploying or Ready kept advertising HostAvailable=True.
+		It("Should hold HostAvailable=False while the host is claimed and restore True on release", func() {
+			By("Creating the PhysicalHost resource and making it Available")
+			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
+
+			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
+
+			_, err := reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrav1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrav1.StateAvailable))
+				g.Expect(conditions.IsTrue(got, infrav1.HostAvailableCondition)).To(BeTrue())
+			}, Timeout, Interval).Should(Succeed())
+
+			By("Claiming the host with a bare ConsumerRef, so it lands in InUse")
+			ph := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
+			claim := ph.DeepCopy()
+			claim.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       "claimant",
+				Namespace:  ph.Namespace,
+			}
+			Expect(k8sClient.Patch(ctx, claim, client.MergeFrom(ph))).To(Succeed())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			var claimedAt time.Time
+			Eventually(func(g Gomega) {
+				got := &infrav1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrav1.StateInUse))
+				cond := conditions.Get(got, infrav1.HostAvailableCondition)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+					"a claimed host must not advertise HostAvailable=True")
+				g.Expect(cond.Reason).To(Equal(infrav1.HostClaimedReason))
+				g.Expect(cond.Message).To(ContainSubstring("claimant"))
+				claimedAt = cond.LastTransitionTime.Time
+			}, Timeout, Interval).Should(Succeed())
+
+			By("Reconciling again while still claimed: the condition is re-asserted, not re-transitioned")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			stillClaimed := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, stillClaimed)).To(Succeed())
+			cond := conditions.Get(stillClaimed, infrav1.HostAvailableCondition)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.LastTransitionTime.Time).To(BeTemporally("==", claimedAt),
+				"re-asserting an unchanged status must not move lastTransitionTime")
+
+			By("Releasing the host: ConsumerRef = nil")
+			released := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, phLookupKey, released)).To(Succeed())
+			relPatch := released.DeepCopy()
+			relPatch.Spec.ConsumerRef = nil
+			Expect(k8sClient.Patch(ctx, relPatch, client.MergeFrom(released))).To(Succeed())
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				got := &infrav1.PhysicalHost{}
+				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
+				g.Expect(got.Status.State).To(Equal(infrav1.StateAvailable))
+				cond := conditions.Get(got, infrav1.HostAvailableCondition)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+					"a released host is available again")
+				g.Expect(cond.Reason).To(Equal(infrav1.HostAvailableReason))
 			}, Timeout, Interval).Should(Succeed())
 		})
 

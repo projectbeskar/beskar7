@@ -83,6 +83,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   requires an explicit `spec.checks.unhealthyMachineConditions` entry keyed on `InfrastructureReady`;
   see the rewritten `examples/machinehealthcheck.yaml` and `docs/upgrading.md`.
 
+### Fixed
+
+- **`PhysicalHost`'s `HostAvailable` condition now reads `False` while the host is claimed.** It
+  was set `True` on the transition into `Available` and never flipped back, so a host that was
+  `InUse`, `Inspecting`, `Deploying` or `Ready` still advertised `HostAvailable=True`. The
+  controller now asserts it on every reconcile: `False` with the new reason `HostClaimed` while
+  `spec.consumerRef` is set, `True` with reason `HostAvailable` otherwise. Host selection never
+  read the condition (it filters on `status.state`), so this changes what `kubectl describe`
+  and `kubectl wait --for=condition=HostAvailable` report, nothing else.
+
 ## [v0.5.0] - 2026-09-10
 
 A clean break from the `v0.4.x` line, with no in-place upgrade path — read

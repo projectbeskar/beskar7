@@ -411,6 +411,10 @@ const (
 	// Available. The inspection described the run that just ended, not the
 	// hardware, so it must not carry into the next consumer's claim.
 	HostReleasedReason string = "HostReleased"
+	// HostClaimedReason marks HostAvailable=False for as long as a consumer
+	// holds the host (Spec.ConsumerRef is set). The condition returns to True
+	// with HostAvailableReason once the claim is released.
+	HostClaimedReason string = "HostClaimed"
 	// InsecureCABundleConflictReason is set when InsecureSkipVerify=true is
 	// combined with CABundleSecretRef != "" — the two are mutually exclusive
 	// (a CA bundle and "skip verification" together is incoherent). The

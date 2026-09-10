@@ -71,7 +71,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 | Type | Meaning | True reason | Other reasons |
 |---|---|---|---|
 | `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
-| `HostAvailable` | Host has no consumer claim. | `HostAvailable` | — (set only on the transition into `Available`; not currently flipped back to `False` on claim). |
+| `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only — BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released). |
 | `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
 
 ## Deletion

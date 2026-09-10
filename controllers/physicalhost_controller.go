@@ -376,12 +376,21 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 			logger.Info("Host claimed, transitioning to InUse", "consumer", physicalHost.Spec.ConsumerRef.Name)
 			r.updateStatus(physicalHost, infrav1.StateInUse, true, "")
 		}
+		// HostAvailable follows the claim, not the sub-state, so it is asserted
+		// on every claimed reconcile rather than on the InUse edge above: a
+		// claim that lands together with the inspect annotation goes straight
+		// to Inspecting and never crosses that edge. Re-asserting an unchanged
+		// status leaves lastTransitionTime alone.
+		setFalse(physicalHost, infrav1.HostAvailableCondition, infrav1.HostClaimedReason,
+			"Claimed by %s %s", physicalHost.Spec.ConsumerRef.Kind, physicalHost.Spec.ConsumerRef.Name)
 	} else {
 		if physicalHost.Status.State != infrav1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")
 			r.updateStatus(physicalHost, infrav1.StateAvailable, true, "")
-			setTrue(physicalHost, infrav1.HostAvailableCondition, infrav1.HostAvailableReason)
 		}
+		// Same level-triggered shape as the claimed branch: True for as long
+		// as nobody holds the host.
+		setTrue(physicalHost, infrav1.HostAvailableCondition, infrav1.HostAvailableReason)
 	}
 
 	logger.Info("Reconciliation complete", "state", physicalHost.Status.State, "ready", physicalHost.Status.Ready)
