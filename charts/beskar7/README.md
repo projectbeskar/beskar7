@@ -157,6 +157,10 @@ upgrade fails to render. `--reset-then-reuse-values` (Helm 3.14+) replays your
 overrides on top of the new chart's defaults; on older Helm, pass your own
 `-f values.yaml` every time. See [docs/upgrading.md](../../docs/upgrading.md).
 
+## `clusterctl move`
+
+The bundled CRDs carry the `clusterctl.cluster.x-k8s.io` label that `clusterctl move` discovers CRDs by (a Helm install never goes through `clusterctl init`, which is what would otherwise add it), and `PhysicalHost` carries `clusterctl.cluster.x-k8s.io/move-hierarchy` so hosts move along with the cluster objects. Helm does not register beskar7 in clusterctl's provider inventory, so install the chart on the target management cluster before moving, and re-apply the CRDs on installs that predate the labels (`helm upgrade` never touches CRDs). Prerequisites and current limitations: [docs/installation.md](../../docs/installation.md#clusterctl-move).
+
 ## Uninstall
 
 ```bash

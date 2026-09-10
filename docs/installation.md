@@ -74,6 +74,31 @@ kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `beskar7-system` namespace and the default `bootstrap.urlBase`.
 
+## `clusterctl move`
+
+`clusterctl move` builds its object graph only from CRDs that carry the `clusterctl.cluster.x-k8s.io` label. `clusterctl init` adds that label to everything it installs, but neither the Helm chart nor the release manifest goes through `clusterctl init`, so the four beskar7 CRDs carry it themselves, together with `cluster.x-k8s.io/provider: infrastructure-beskar7` (the component label the CAPI provider contract asks for; every other beskar7 component carries the same two). `Beskar7Cluster`, `Beskar7Machine` and `Beskar7MachineTemplate` objects are then moved through their owner references to the `Cluster`, as with any provider. `PhysicalHost` also carries `clusterctl.cluster.x-k8s.io/move-hierarchy`: nothing owns a host, so without it a move would discover the hosts and leave every one of them behind. With it, every `PhysicalHost` in the namespace being moved goes along, together with the bootstrap-token Secret and inspection-result ConfigMap it owns, and is deleted from the source afterwards like any other namespaced object.
+
+Before moving a namespace:
+
+1. **Install beskar7 on the target management cluster first.** A Helm or manifest install does not register beskar7 in clusterctl's provider inventory, so `clusterctl move` cannot check that the target has beskar7 the way it does for providers installed with `clusterctl init`; it simply creates the objects there, which fails if the CRDs are missing.
+2. **Bring the BMC credentials along.** The Secret a `PhysicalHost` names in `credentialsSecretRef` (and any `caBundleSecretRef` Secret) is yours, not owned by the host, so the owner-reference walk does not reach it. Either label it so clusterctl moves it, or create it on the target by hand:
+
+   ```bash
+   kubectl label secret bmc-credentials -n <namespace> clusterctl.cluster.x-k8s.io/move=""
+   ```
+
+3. **On an existing install, re-apply the CRDs first.** `helm upgrade` never touches CRDs, so CRDs installed before the labels were added still lack them; see [Upgrading](upgrading.md).
+
+**Known limitation.** `clusterctl move` pauses each `Cluster` through `spec.paused`, but the beskar7 controllers currently honour only the `cluster.x-k8s.io/paused` annotation, so they keep reconciling on the source during the move — including the deletion path, which powers a host off over Redfish when its `Beskar7Machine` goes away. Until that is fixed, pause the beskar7 objects yourself before the move and unpause them on the target afterwards:
+
+```bash
+kubectl annotate -n <namespace> beskar7clusters,beskar7machines --all cluster.x-k8s.io/paused=""
+clusterctl move -n <namespace> --to-kubeconfig target.kubeconfig
+kubectl --kubeconfig target.kubeconfig annotate -n <namespace> beskar7clusters,beskar7machines --all cluster.x-k8s.io/paused-
+```
+
+Moving a live workload cluster has not been exercised end to end yet; rehearse on a lab cluster before relying on it.
+
 ## Verify release artifacts (supply chain)
 
 Container images are signed with [cosign](https://docs.sigstore.dev/) using keyless

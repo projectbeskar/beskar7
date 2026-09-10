@@ -14,7 +14,7 @@ Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines.
 
 ## Beskar7MachineTemplate
 
-`Beskar7MachineTemplate` is consumed by `KubeadmControlPlane` and `MachineDeployment` objects to mint `Beskar7Machine` resources. It carries the same spec fields as `Beskar7Machine`. Templates must survive `clusterctl move` — they carry the `cluster.x-k8s.io/v1beta1: v1_beta1` label.
+`Beskar7MachineTemplate` is consumed by `KubeadmControlPlane` and `MachineDeployment` objects to mint `Beskar7Machine` resources. It carries the same spec fields as `Beskar7Machine`. Templates survive `clusterctl move` through the owner reference to the `Cluster` that CAPI sets on every template a `KubeadmControlPlane` or `MachineSet` references; all four beskar7 CRDs carry the `clusterctl.cluster.x-k8s.io` label that makes `clusterctl move` discover them in the first place (see [Installation](installation.md#clusterctl-move)).
 
 ## Beskar7Cluster
 

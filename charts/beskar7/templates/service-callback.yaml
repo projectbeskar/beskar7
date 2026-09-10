@@ -23,7 +23,6 @@ metadata:
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
     app.kubernetes.io/component: callback-server
-    cluster.x-k8s.io/provider: beskar7
   {{- with $callbackSvc.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}

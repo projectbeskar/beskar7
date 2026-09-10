@@ -6,7 +6,6 @@ metadata:
   namespace: {{ include "beskar7.namespace" . }}
   labels:
     {{- include "beskar7.labels" . | nindent 4 }}
-    cluster.x-k8s.io/provider: beskar7
 spec:
   ports:
   - port: {{ .Values.webhook.service.port }}

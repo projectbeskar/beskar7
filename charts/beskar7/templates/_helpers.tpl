@@ -40,7 +40,13 @@ helm.sh/chart: {{ include "beskar7.chart" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
-cluster.x-k8s.io/provider: beskar7
+{{- /* clusterctl's component labels, as `clusterctl init` would add them:
+clusterctl.cluster.x-k8s.io marks the object as clusterctl-managed (it is also
+what `clusterctl move` discovers CRDs by) and cluster.x-k8s.io/provider is the
+provider contract's component label. The CRDs under crds/ carry the same two
+from their controller-gen markers. */}}
+clusterctl.cluster.x-k8s.io: ""
+cluster.x-k8s.io/provider: infrastructure-beskar7
 {{- if .Values.labels }}
 {{ toYaml .Values.labels }}
 {{- end }}

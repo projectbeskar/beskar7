@@ -25,8 +25,9 @@ patches:
 - path: patches/cainjection_in_physicalhosts.yaml
 # +kubebuilder:scaffold:crdkustomizecainjectionpatch
 
-labels:
-- pairs:
-    cluster.x-k8s.io/contract: v1beta1
-    cluster.x-k8s.io/provider: beskar7
-  includeSelectors: true 
+# No label transformer here on purpose. The CRD labels — the CAPI contract
+# label, clusterctl.cluster.x-k8s.io (what `clusterctl move` discovers CRDs
+# by) and cluster.x-k8s.io/provider — come from the +kubebuilder:metadata:labels
+# markers in api/, so config/crd/bases and charts/beskar7/crds stay
+# byte-identical (test/contract pins both).
+ 
