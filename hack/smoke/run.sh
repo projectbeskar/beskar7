@@ -43,7 +43,7 @@ SMOKE_NS="beskar7-smoke"
 # operator's --watch-namespaces list when running in watch-namespaces mode.
 ISOLATION_NS="${SMOKE_NS}-unwatched"
 OPERATOR_NS="${OPERATOR_NS:-capb7-system}"
-OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-beskar7-controller-manager}"
+OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-capb7-controller-manager}"
 MOCK_IMAGE="${MOCK_IMAGE:-}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"
 # Grace window for the isolation check: how long to wait before asserting an

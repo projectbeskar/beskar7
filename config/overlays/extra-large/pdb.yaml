@@ -1,7 +1,7 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: controller-manager-pdb
+  name: capb7-controller-manager-pdb
   namespace: capb7-system
 spec:
   minAvailable: 2

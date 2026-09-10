@@ -48,7 +48,7 @@ spec:
 #   certManager:
 #     enabled: true               # callback endpoint still needs serving certs
 #   bootstrap:
-#     urlBase: "https://beskar7-controller-manager.capb7-system.svc:8082"
+#     urlBase: "https://capb7-controller-manager.capb7-system.svc:8082"
 #   controllerManager:
 #     # Verbose logging via the controller-runtime zap dev encoder. Adds stack
 #     # traces from Warn and a console (not JSON) encoder.

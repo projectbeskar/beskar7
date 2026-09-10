@@ -25,7 +25,7 @@ The default cluster-wide topology stays in place for two reasons: backward compa
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  name: capb7-manager-role
 rules:
 
 # ConfigMaps: inspection-result handoff (D-005). list+watch are required
@@ -147,7 +147,7 @@ The kustomize equivalent is the `config/rbac/namespace-scoped/` overlay (SEC-2 P
     patches:
     - target:
         kind: Deployment
-        name: controller-manager
+        name: capb7-manager
       patch: |-
         - op: add
           path: /spec/template/spec/containers/0/args/-
@@ -242,7 +242,7 @@ Test what the controller can actually do as its ServiceAccount:
 
 ```bash
 kubectl auth can-i --list \
-  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:capb7-manager
 ```
 
 For the namespace-scoped topology, also check per-namespace permissions:
@@ -250,12 +250,12 @@ For the namespace-scoped topology, also check per-namespace permissions:
 ```bash
 kubectl auth can-i list secrets \
   -n tenant-a \
-  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:capb7-manager
 # Expect: yes
 
 kubectl auth can-i list secrets \
   -n some-other-namespace \
-  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:capb7-manager
 # Expect: no
 ```
 

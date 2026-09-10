@@ -258,7 +258,7 @@ Ensure PXE/network boot is enabled in BIOS:
 ```bash
 # Check controller logs
 kubectl logs -n capb7-system \
-  deployment/beskar7-controller-manager -f
+  deployment/capb7-controller-manager -f
 
 # Test from controller pod
 kubectl run -it --rm debug \

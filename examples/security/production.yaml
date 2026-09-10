@@ -117,7 +117,7 @@ spec:
 #   certManager:
 #     enabled: true
 #   bootstrap:
-#     urlBase: "https://beskar7-controller-manager.capb7-system.svc:8082"
+#     urlBase: "https://capb7-controller-manager.capb7-system.svc:8082"
 #   controllerManager:
 #     replicaCount: 1                       # leader-elect=true; only one active
 #     resources:

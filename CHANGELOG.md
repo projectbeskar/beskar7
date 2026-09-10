@@ -24,10 +24,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 - **The kustomize / release-manifest install could not provision a host.** It had
   no Service for the callback server (the manager's default `--bootstrap-url-base`
-  named a `beskar7-controller-manager` Service only the Helm chart created), the serving certificate did not cover that name, and the NetworkPolicy
+  named a `…-controller-manager` Service only the Helm chart created), the serving certificate did not cover that name, and the NetworkPolicy
   allowed neither `:8082` nor the metrics port the manager actually binds (`:8443`,
   not `:8080`). All four are fixed; the Deployment is now named
-  `beskar7-controller-manager` like the chart's (delete the old `controller-manager`
+  `capb7-controller-manager` like the chart's (delete the old `controller-manager`
   Deployment after re-applying a manifest install, see `docs/upgrading.md`), and its
   image pull policy is `IfNotPresent` (the tag is pinned per release).
 - **A bootstrap token or boot nonce is no longer re-minted while the host controller
@@ -91,15 +91,21 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
-- **BREAKING: the install namespace is `capb7-system`** (was `beskar7-system`), the
-  `cap<provider>-system` convention every Cluster API provider follows. kustomize
-  overlay, release manifest, clusterctl components, the chart's documented install,
-  the smoke runner's default and the manager's default `--bootstrap-url-base`
-  (`https://beskar7-controller-manager.capb7-system.svc:8082`) all move. The chart
-  now derives that default from the release name and namespace instead of
-  hardcoding `beskar7`/`beskar7-system`, so a differently named release no longer
-  needs `bootstrap.urlBase` just to point at its own Service. Existing installs are
-  removed and re-installed, not upgraded in place — `docs/upgrading.md`.
+- **BREAKING: the install namespace is `capb7-system` and every component is named
+  `capb7-…`**, the `cap<provider>` convention Cluster API providers follow
+  (`capi-system`, `capd-controller-manager`, …). kustomize overlay, release manifest,
+  clusterctl components and the Helm chart (default `fullnameOverride: capb7`) all
+  produce the same names now: Deployment and callback Service
+  `capb7-controller-manager`, ServiceAccount `capb7-manager`, ClusterRole
+  `capb7-manager-role`, `capb7-webhook-service`, `capb7-serving-cert`,
+  `capb7-selfsigned-issuer`, `capb7-{mutating,validating}-webhook-configuration`, and
+  the manager's default `--bootstrap-url-base` is
+  `https://capb7-controller-manager.capb7-system.svc:8082`. The chart derives that
+  default from the release name and namespace instead of hardcoding it, so a
+  differently named release no longer needs `bootstrap.urlBase` just to point at its
+  own Service. Existing installs are removed and re-installed, not upgraded in place —
+  `docs/upgrading.md`. The size overlays under `config/overlays/` patch the Deployment
+  by name and had silently stopped building when it was renamed; CI builds them now.
 - **BREAKING: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`, the only
   served version.** `api/v1beta1` was renamed to `api/v1beta2` in place — no
   field changed — with **no conversion webhook** (there are no `v1beta1` users to

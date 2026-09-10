@@ -97,10 +97,10 @@ All configurable values with their defaults:
 | `webhook.service.port` | `443` | Port the webhook Service exposes. |
 | `webhook.service.targetPort` | `9443` | Container port the webhook handler listens on. |
 | `certManager.enabled` | `true` | `true`: cert-manager issues the TLS cert + injects the webhook caBundle. `false`: the chart self-generates a self-signed cert and writes the caBundle directly (no cert-manager dependency). |
-| `certManager.issuer.name` | `beskar7-selfsigned-issuer` | cert-manager Issuer or ClusterIssuer name. |
+| `certManager.issuer.name` | `capb7-selfsigned-issuer` | cert-manager Issuer or ClusterIssuer name. |
 | `certManager.issuer.kind` | `ClusterIssuer` | Kind of the cert-manager issuer (`Issuer` or `ClusterIssuer`). |
-| `certManager.certificate.name` | `beskar7-serving-cert` | Name of the cert-manager Certificate resource. |
-| `certManager.certificate.secretName` | `beskar7-webhook-server-cert` | Name of the Secret cert-manager writes the TLS certificate to. |
+| `certManager.certificate.name` | `capb7-serving-cert` | Name of the cert-manager Certificate resource. |
+| `certManager.certificate.secretName` | `capb7-webhook-server-cert` | Name of the Secret cert-manager writes the TLS certificate to. |
 | `certManager.certificate.duration` | `8760h` | Certificate validity (1 year). |
 | `certManager.certificate.renewBefore` | `720h` | Renew 30 days before expiry. |
 | `namespace.create` | `false` | Render a Namespace resource. Set `true` only when not using `--create-namespace`. |

@@ -427,7 +427,7 @@ evaluate correctly:
   externally-routable address (LoadBalancer/NodePort/Ingress), NOT cluster DNS.
   `beskar7.api` MUST be that external address, and the callback serving cert MUST
   have a SAN covering it. The current `--bootstrap-url-base` default
-  (`https://beskar7-controller-manager.capb7-system.svc:8082`) is unreachable
+  (`https://capb7-controller-manager.capb7-system.svc:8082`) is unreachable
   from bare metal and a `.svc`-only cert forces operators toward insecure-skip —
   operators MUST override it (the manager SHOULD warn at startup if it is a
   `.svc` name).

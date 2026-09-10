@@ -2,13 +2,13 @@
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
-  name: beskar7-mutating-webhook-configuration
+  name: capb7-mutating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: beskar7-webhook-service
+      name: capb7-webhook-service
       namespace: capb7-system
       path: /mutate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
   failurePolicy: Fail
@@ -29,13 +29,13 @@ webhooks:
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
 metadata:
-  name: beskar7-validating-webhook-configuration
+  name: capb7-validating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
   clientConfig:
     service:
-      name: beskar7-webhook-service
+      name: capb7-webhook-service
       namespace: capb7-system
       path: /validate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
   failurePolicy: Fail

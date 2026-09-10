@@ -19,7 +19,7 @@ End-to-end:
 
 If the named Secret does not exist when the Beskar7Machine reconciles, `BootstrapDataReady=False (BootstrapDataUnavailable)` is set and the reconciler stops requeueing — operator must intervene (the bootstrap provider failed or the name is wrong).
 
-The `--bootstrap-url-base` manager flag controls the base URL used in step 3. The default is `https://beskar7-controller-manager.capb7-system.svc:8082`, which works when the chart release name is `beskar7`. Override it (`--bootstrap-url-base=https://<service>.<namespace>.svc:8082`) when:
+The `--bootstrap-url-base` manager flag controls the base URL used in step 3. The default is `https://capb7-controller-manager.capb7-system.svc:8082`, which works when the chart release name is `beskar7`. Override it (`--bootstrap-url-base=https://<service>.<namespace>.svc:8082`) when:
 
 - You install the chart with a non-default release name; the Service name follows `<release>-controller-manager`.
 - You front the manager with an external load balancer and want hosts to reach it via that VIP rather than the cluster Service DNS.

@@ -130,7 +130,7 @@ func main() {
 		"How long to poll for PhysicalHost.Status.Bootstrap.URL + TokenHash to be populated.")
 	flag.BoolVar(&insecureSkipVerify, "insecure-skip-verify", true,
 		"Skip TLS verification when POSTing to the inspection endpoint. The callback "+
-			"server cert typically covers beskar7-webhook-service, not the "+
+			"server cert typically covers capb7-webhook-service, not the "+
 			"controller-manager service DNS name the bootstrap URL resolves to. "+
 			"Mutually exclusive with --ca-bundle-file.")
 	flag.StringVar(&caBundleFile, "ca-bundle-file", "",
@@ -534,7 +534,7 @@ func buildHTTPClient(insecure bool, caBundleFile string, timeout time.Duration) 
 
 	if insecure {
 		// InsecureSkipVerify accepted here by design: the smoke-test callback
-		// server's cert-manager certificate covers beskar7-webhook-service, not
+		// server's cert-manager certificate covers capb7-webhook-service, not
 		// the controller-manager service the bootstrap URL resolves to. In
 		// production deployments with a properly SANed certificate, pass
 		// --insecure-skip-verify=false and optionally --ca-bundle-file.

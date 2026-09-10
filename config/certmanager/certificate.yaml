@@ -1,21 +1,21 @@
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: beskar7-serving-cert
+  name: capb7-serving-cert
   namespace: capb7-system
 spec:
-  secretName: beskar7-webhook-server-cert
+  secretName: capb7-webhook-server-cert
   duration: 8760h # 1 year
   renewBefore: 720h # 30 days
   subject:
     organizations:
     - beskar7
-  commonName: beskar7-webhook-service.capb7-system.svc
+  commonName: capb7-webhook-service.capb7-system.svc
   dnsNames:
-  - beskar7-webhook-service.capb7-system.svc
+  - capb7-webhook-service.capb7-system.svc
   # The callback server (:8082) serves from the same certificate directory;
   # in-cluster callers verify against the callback Service name.
-  - beskar7-controller-manager.capb7-system.svc
+  - capb7-controller-manager.capb7-system.svc
   issuerRef:
-    name: beskar7-selfsigned-issuer
+    name: capb7-selfsigned-issuer
     kind: ClusterIssuer 

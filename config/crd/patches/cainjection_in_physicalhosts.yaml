@@ -3,4 +3,4 @@ kind: CustomResourceDefinition
 metadata:
   name: physicalhosts.infrastructure.cluster.x-k8s.io
   annotations:
-    cert-manager.io/inject-ca-from: capb7-system/beskar7-serving-cert 
+    cert-manager.io/inject-ca-from: capb7-system/capb7-serving-cert 

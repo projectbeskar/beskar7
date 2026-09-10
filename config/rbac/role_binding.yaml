@@ -1,12 +1,12 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: manager-rolebinding
+  name: capb7-manager-rolebinding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: manager-role # Must match ClusterRole name
+  name: capb7-manager-role # Must match ClusterRole name
 subjects:
 - kind: ServiceAccount
-  name: controller-manager # Must match ServiceAccount name
+  name: capb7-manager # Must match ServiceAccount name
   namespace: capb7-system # Must match the namespace 

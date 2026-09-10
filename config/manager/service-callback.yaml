@@ -9,7 +9,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: beskar7-controller-manager
+  name: capb7-controller-manager
   namespace: capb7-system
   labels:
     app.kubernetes.io/component: callback-server

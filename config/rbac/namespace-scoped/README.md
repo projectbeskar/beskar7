@@ -54,7 +54,7 @@ comma-separated list:
 patches:
 - target:
     kind: Deployment
-    name: controller-manager
+    name: capb7-manager
   patch: |-
     - op: add
       path: /spec/template/spec/containers/0/args/-

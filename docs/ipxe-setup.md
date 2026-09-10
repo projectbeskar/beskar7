@@ -161,7 +161,7 @@ at the time the inspector runs (§8.2 of `docs/inspector-contract.md`).
 
 Set `--bootstrap-url-base` on the controller to the externally-routable address
 and ensure the serving certificate has a SAN covering it. The default
-(`https://beskar7-controller-manager.capb7-system.svc:8082`) is cluster-internal
+(`https://capb7-controller-manager.capb7-system.svc:8082`) is cluster-internal
 and unreachable from bare metal — the manager logs a warning at startup when it
 detects a `.svc` name.
 

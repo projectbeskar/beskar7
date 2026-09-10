@@ -112,13 +112,17 @@ What changes on your side:
   `clusterctl.cluster.x-k8s.io/move-hierarchy` (nothing owns a host, so without it a move would leave
   every host behind). Replacing the CRDs installs them; there is no relabel step. Read
   [Installation](installation.md#clusterctl-move) before moving a namespace.
+- **Every component is named `capb7-…`** (Deployment and callback Service `capb7-controller-manager`,
+  ServiceAccount `capb7-manager`, `capb7-webhook-service`, `capb7-serving-cert`, …), from the
+  kustomize overlay and from the chart alike (its default `fullnameOverride` is `capb7`). Update any
+  automation that names the old `beskar7-…` objects.
 - **The install namespace is `capb7-system`** (the upstream `cap<provider>-system` convention; it was
   `beskar7-system`). The kustomize overlay, the release manifest, the clusterctl components and the
   chart's documented install all use it, and the manager's default `--bootstrap-url-base` becomes
-  `https://beskar7-controller-manager.capb7-system.svc:8082`. The old install is removed, not
+  `https://capb7-controller-manager.capb7-system.svc:8082`. The old install is removed, not
   upgraded in place — see the procedure.
-- **Release-manifest installs:** the Deployment is now named `beskar7-controller-manager` (it was
-  `controller-manager`; the chart's name), a `beskar7-controller-manager` Service exposes the callback
+- **Release-manifest installs:** the Deployment is now named `capb7-controller-manager` (it was
+  `controller-manager`; the chart's name), a `capb7-controller-manager` Service exposes the callback
   server on `:8082`, and the serving certificate and NetworkPolicy cover it — a manifest install can
   provision hosts for the first time.
 - **clusterctl:** the release ships `infrastructure-components.yaml` and `metadata.yaml`, so

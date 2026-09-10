@@ -226,6 +226,12 @@ jobs:
           exit 1
         fi
         
+    - name: Build the kustomize overlays
+      run: |
+        # The size overlays patch the Deployment by name; a rename in config/manager
+        # broke all three once without anything noticing.
+        for o in config/overlays/*/; do kustomize build "$o" > /dev/null; done
+
     - name: Validate CRDs
       run: |
         # Validate CRD syntax using kubeval as client-side validation
@@ -403,7 +409,7 @@ jobs:
         echo "=== Pods (all namespaces) ==="
         kubectl get pods -A -o wide
         echo "=== Beskar7 controller log (last 500) ==="
-        kubectl -n capb7-system logs deploy/beskar7-controller-manager --tail=2000 || true
+        kubectl -n capb7-system logs deploy/capb7-controller-manager --tail=2000 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== Mock-inspector Job + log ==="
@@ -414,7 +420,7 @@ jobs:
         echo "=== Beskar7Machine ==="
         kubectl -n beskar7-smoke get beskar7machine -o yaml || true
         echo "=== Operator args (watch-namespaces mode?) ==="
-        kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' || true; echo
+        kubectl -n capb7-system get deploy capb7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' || true; echo
         echo "=== Isolation PhysicalHost (layer 6; must have no finalizer/state) ==="
         kubectl -n beskar7-smoke-unwatched get physicalhost -o yaml || true
         echo "=== Namespace-scoped RBAC ==="
@@ -573,12 +579,12 @@ jobs:
       run: |
         clusterctl init --infrastructure "beskar7:${OVERRIDE_VERSION}" --config /tmp/clusterctl.yaml -v 3
         kubectl -n capb7-system get pods,deploy,svc
-        kubectl -n capb7-system rollout status deploy/beskar7-controller-manager --timeout=300s
+        kubectl -n capb7-system rollout status deploy/capb7-controller-manager --timeout=300s
         echo "=== provider inventory ==="
         kubectl get providers -A
         echo "=== the args clusterctl rendered (variable default must be resolved) ==="
-        kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'; echo
-        if kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q '\${'; then
+        kubectl -n capb7-system get deploy capb7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'; echo
+        if kubectl -n capb7-system get deploy capb7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q '\${'; then
           echo "unresolved clusterctl variable in the rendered Deployment"; exit 1
         fi
 
@@ -595,7 +601,7 @@ jobs:
         echo "=== Beskar7 objects in capb7-system ==="
         kubectl -n capb7-system get all,certificate,networkpolicy || true
         echo "=== Beskar7 controller log (last 2000) ==="
-        kubectl -n capb7-system logs deploy/beskar7-controller-manager --tail=2000 || true
+        kubectl -n capb7-system logs deploy/capb7-controller-manager --tail=2000 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== Mock-inspector Job + log ==="

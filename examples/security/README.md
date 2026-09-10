@@ -52,7 +52,7 @@ kubectl get physicalhost -A
 kubectl describe physicalhost <name> -n <namespace> | grep -A3 RedfishConnectionReady
 
 # Is the manager seeing the bearer-token traffic?
-kubectl logs -n capb7-system deployment/beskar7-controller-manager | grep -i bearer
+kubectl logs -n capb7-system deployment/capb7-controller-manager | grep -i bearer
 ```
 
 ## See also

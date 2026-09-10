@@ -65,7 +65,7 @@ Create the name of the service account to use
 */}}
 {{- define "beskar7.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create }}
-{{- default (include "beskar7.fullname" .) .Values.serviceAccount.name }}
+{{- default (printf "%s-manager" (include "beskar7.fullname" .)) .Values.serviceAccount.name }}
 {{- else }}
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
