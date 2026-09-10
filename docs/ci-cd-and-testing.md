@@ -206,6 +206,11 @@ Vulnerability scanning uses [OSV-Scanner](https://google.github.io/osv-scanner/)
 - **Pushes to `main`** and a **weekly schedule** (`.github/workflows/osv-scanner-scheduled.yml`): full dependency scans feed the Security tab; the weekly run fails when an advisory affects the tree.
 - **Releases**: the published image is scanned and `osv-scanner-report.txt` is attached to the GitHub release.
 
+Dependency and base-image updates are proposed weekly by Dependabot
+(`.github/dependabot.yml`): Go modules (Kubernetes and Cluster API packages grouped, since they
+must move together; major bumps excluded), the digest-pinned base images in all three Dockerfiles,
+and the workflow actions including the commit-pinned ones.
+
 ```bash
 # Run the same scans locally
 go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest

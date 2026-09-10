@@ -56,6 +56,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   this codebase, but image scans match on module version and have no such analysis; that carries
   `cel-go` ahead of the 0.26.0 `k8s.io/apiserver` v0.35.4 pins.
   `sigs.k8s.io/cluster-api` v1.13.4 and `sigs.k8s.io/controller-runtime` v0.23.3 are unchanged.
+- **Dependabot keeps dependencies and pinned base images current** (`.github/dependabot.yml`):
+  weekly Go module updates with the Kubernetes and Cluster API packages grouped and major bumps
+  excluded, the digest-pinned images in all three Dockerfiles, and the workflow actions. Added
+  after a four-month-stale builder digest carried Go standard-library advisories into a release.
 
 ### Fixed
 
