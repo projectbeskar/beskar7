@@ -41,6 +41,11 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   scheduled run and the release image scan feed the Security tab. The release asset is now
   `osv-scanner-report.txt` (was `trivy-report.txt`).
 
+- **Dependabot keeps dependencies and pinned base images current** (`.github/dependabot.yml`):
+  weekly Go module updates with the Kubernetes and Cluster API packages grouped and major bumps
+  excluded, the digest-pinned images in all three Dockerfiles, and the workflow actions. Added
+  after a four-month-stale builder digest carried Go standard-library advisories into a release.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**

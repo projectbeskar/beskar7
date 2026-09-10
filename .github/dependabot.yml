@@ -1,0 +1,71 @@
+# Keep dependencies and pinned base images current.
+#
+# This exists because the builder image digest in the Dockerfiles went four
+# months stale and carried twenty Go standard-library advisories into the
+# released v0.5.0 image, which only surfaced when CI moved to OSV-Scanner. A
+# weekly nudge is cheaper than a scan that goes red and has to be chased.
+version: 2
+
+updates:
+  # Go modules. The Kubernetes and Cluster API packages must move together —
+  # bumping k8s.io/* without controller-runtime and cluster-api does not
+  # compile — so they are one pull request. Everything else is grouped too,
+  # because this module's dependency tree is almost entirely indirect and
+  # per-dependency pull requests would drown the queue.
+  #
+  # Major bumps are deliberately excluded. The CAPI v1beta1 to v1beta2 contract
+  # move was a multi-pull-request project, not something to merge from a bot.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/cluster-api"
+          - "sigs.k8s.io/controller-runtime"
+          - "sigs.k8s.io/apiserver-network-proxy*"
+          - "sigs.k8s.io/structured-merge-diff*"
+      go-modules:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Base images. Covers all three Dockerfiles in the repository root: the
+  # manager, and the mock-redfish and mock-inspector images that the release
+  # workflow also publishes. Both the golang builder and the distroless
+  # runtime are pinned by digest, which is exactly what goes quietly stale.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(images)"
+
+  # Workflow actions, including the ones pinned by commit (OSV-Scanner and
+  # cosign-installer); Dependabot rewrites the pin and its version comment
+  # together.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
