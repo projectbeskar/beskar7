@@ -26,13 +26,13 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
         
     - name: Install dependencies
       run: |
         go mod download
         # Pin to a CI-known-good v2 version. The v2 module path includes /v2/.
-        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+        go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
 
     - name: Run golangci-lint
       run: golangci-lint run --timeout=5m
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ['1.25']
+        go-version: ['1.27']
     steps:
     - uses: actions/checkout@v4
     
@@ -159,7 +159,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
         
     - name: Install dependencies
       run: go mod download
@@ -239,7 +239,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
         
     - name: Install dependencies
       run: |
@@ -474,7 +474,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
         
     - name: Run benchmarks
       run: |
@@ -511,7 +511,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
 
     - name: Install kustomize and controller-gen
       run: |

@@ -150,7 +150,7 @@ Source: `charts/beskar7/templates/networkpolicy.yaml`.
 The Dockerfile uses a multi-stage build with `CGO_ENABLED=0` and a distroless `nonroot` runtime base, both pinned by digest:
 
 ```Dockerfile
-FROM golang:1.25@sha256:8a7adc288b77e9b787cd2695029eb54d10ae80571b21d44fed68d067ad0a9c96 as builder
+FROM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea as builder
 ...
 FROM gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
 ```

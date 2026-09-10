@@ -67,6 +67,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   stayed on v1.13.4, and twelve major action bumps in one pull request. Base images are now limited
   to digest refreshes, the pre-1.0 Kubernetes and Cluster API minors are excluded alongside all
   majors, and action majors are excluded; patch and minor updates still flow.
+- **Go 1.27.** `go.mod` moves to `go 1.27.0` / `toolchain go1.27.1`, the `golang` builder in all
+  three Dockerfiles to the `1.27` tag (go1.27.1) by digest, and every `go-version` in CI and the
+  release workflow to `1.27`. This also lifts the constraint that held `golang.org/x/text` at 0.41.0
+  and `golang.org/x/mod` at 0.40.0, whose newer releases require Go ≥ 1.26.
+  `golangci-lint` moves with it, to **v2.13.2**: v2.12.2 cannot analyse a Go 1.27 tree at all — its
+  bundled staticcheck (honnef.co/go/tools v0.7.0) panics in the IR builder on `*ast.KeyValueExpr`,
+  so the lint job would crash rather than report. v2.13.2 carries v0.8.1 and reports cleanly.
+  `go mod tidy` under 1.27 regroups the `require` blocks; no dependency version changed.
 
 ### Fixed
 

@@ -61,7 +61,7 @@ install-controller-gen:
 # schema; this target installs the matching v2 binary so local lint matches
 # CI. The v2 module path includes /v2/.
 GOLANGCI_LINT = $(GOBIN)/golangci-lint
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.13.2
 install-golangci-lint:
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
