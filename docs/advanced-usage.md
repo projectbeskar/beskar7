@@ -42,7 +42,7 @@ Validation rules:
 - `minMemoryGB` is summed across `report.memory[].capacity`, parsed by `parseMemoryCapacityGB`. The parser accepts `GB`, `GiB`, `MB`, `MiB`, `TB`, `TiB`. Bare integers are rejected. Fractional results are truncated to whole GB.
 - `minDiskGB` is summed across `report.disks[].sizeGB`.
 
-If any minimum is violated, the controller calls `markTerminalFailure(HardwareRequirementsNotMet, msg)`, sets `Status.FailureReason` and `Status.FailureMessage`, and stops requeueing. The BMC's hardware does not change at runtime — the failure is terminal. Recovery: lower the requirement, allocate to a different host, or replace the hardware (then delete-and-recreate the Beskar7Machine).
+If any minimum is violated, the controller calls `markTerminalFailure(HardwareRequirementsNotMet, msg)`, which sets `Status.Phase=Failed`, `Status.Ready=false`, and marks the `InfrastructureReady` condition `False` with reason `HardwareRequirementsNotMet` and the shortfall in the message, then stops requeueing. The BMC's hardware does not change at runtime — the failure is terminal. Recovery: lower the requirement, allocate to a different host, or replace the hardware (then delete-and-recreate the Beskar7Machine).
 
 You can use `hardwareRequirements` to enforce node-class invariants before bootstrap:
 

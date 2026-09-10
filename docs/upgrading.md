@@ -3,9 +3,11 @@
 > **Audience:** Operators
 
 `v0.4.0` was the first GA release and the `v0.4.x` line evolved additive-only.
-`v0.5.0` renames the API to `v1beta2` with no conversion — a clean break, see the
-first section below — and the **alpha series before `v0.4.0` contains breaking
-changes**. Read the section for your starting version before upgrading.
+`v0.5.0` renames the API to `v1beta2` with no conversion, and `v0.6.0` moves
+`status.conditions` to native `metav1.Condition` and removes `failureReason` /
+`failureMessage` — both breaking, see the first two sections below — and the
+**alpha series before `v0.4.0` contains breaking changes**. Read the section
+for your starting version before upgrading.
 
 ## Before you start
 
@@ -56,6 +58,8 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.6.0` | `v4.2` **frozen** |
+| `v0.5.0` | `v4.2` **frozen** |
 | `v0.4.3` | `v4.2` **frozen** |
 | `v0.4.2` | `v4.2` **frozen** |
 | `v0.4.1` | `v4.2` **frozen** |
@@ -87,6 +91,126 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.5.0` → `v0.6.0` — **breaking**: native `metav1.Condition`, `failureReason`/`failureMessage` removed
+
+The API stays `infrastructure.cluster.x-k8s.io/v1beta2` — same group, version and served/storage
+status, no tear-down needed — but the `status` schema of all four CRDs changed. Apply the new CRDs
+before the new controller image; no inspector or bootstrap-template change (the wire contract stays
+`v4.2`).
+
+`Beskar7Machine`, `Beskar7Cluster` and `PhysicalHost` conditions are now native Kubernetes
+`metav1.Condition` (`status.conditions[]`: `type`, `status`, `reason`, `message`,
+`lastTransitionTime`, `observedGeneration`) instead of the CAPI v1beta1-shaped `clusterv1.Conditions`.
+The practical differences:
+
+- **No `severity` field.** Anything reading `.status.conditions[].severity` gets nothing back.
+- **Every condition carries a `reason`, including `True` ones.** Previously only failure
+  (`False`) conditions reliably had a reason; a script that only checked `reason` on a `False`
+  condition still works, but one that assumed a `True` condition has no `reason` needs updating.
+- **`Beskar7Machine` and `Beskar7Cluster` gain a `Ready` condition** — the summary the controller
+  rolls the resource's other conditions up into every reconcile — and a **`Paused` condition**
+  maintained by `sigs.k8s.io/cluster-api/util/paused`. `Ready`, not the resource's own
+  `InfrastructureReady`, is what Cluster API mirrors into the *owning* `Machine` / `Cluster`'s own
+  `InfrastructureReady` condition. See `docs/api-reference.md` § Conditions and the CAPI mirror.
+- **`PhysicalHost` gains no `Ready` or `Paused` condition** — it is not a CAPI contract resource
+  and has no owning `Cluster`. Its three conditions (`RedfishConnectionReady`, `HostAvailable`,
+  `HostInspected`) are otherwise unchanged, now with a `reason` on their `True` state too
+  (`RedfishConnected`, `HostAvailable`, `HostInspected`).
+
+### `Beskar7Machine.status.failureReason` / `status.failureMessage` are gone
+
+A terminal failure is now `status.phase: Failed` (unchanged marker) together with the
+`InfrastructureReady` condition `False` and a reason — the same reason strings as before
+(`InspectionTimedOut`, `InspectionFailed`, `DeploymentTimedOut`, `DeploymentFailed`,
+`HardwareRequirementsNotMet`, `InvalidHostSelector`, `BootstrapDataUnavailable`,
+`PhysicalHostError`). If you have scripts, dashboards or alerts reading `.status.failureReason` /
+`.status.failureMessage` directly, switch them to `.status.phase == "Failed"` and
+`.status.conditions[] | select(.type=="InfrastructureReady")`:
+
+```bash
+kubectl get beskar7machine -A -o json | jq -r '
+  .items[]
+  | select(.status.phase == "Failed")
+  | [.metadata.namespace, .metadata.name,
+     (.status.conditions[]? | select(.type=="InfrastructureReady") | .reason),
+     (.status.conditions[]? | select(.type=="InfrastructureReady") | .message)]
+  | @tsv'
+```
+
+**`MachineHealthCheck` remediation.** Cluster API's `MachineHealthCheck` controller on v1.11+ does
+not read `failureReason` / `failureMessage` at all — not before this release, not after. A
+`MachineHealthCheck` that relies on remediating a beskar7-failed machine must key on the mirrored
+condition explicitly:
+
+```yaml
+spec:
+  checks:
+    unhealthyMachineConditions:
+      - type: InfrastructureReady
+        status: "False"
+        timeoutSeconds: 0
+```
+
+See the fully worked [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml),
+rewritten for this release to the `cluster.x-k8s.io/v1beta2` `MachineHealthCheck` schema — CAPI
+v1.11+ also reshaped `MachineHealthCheck` itself (`spec.nodeStartupTimeout` →
+`spec.checks.nodeStartupTimeoutSeconds`, `spec.maxUnhealthy`/`spec.unhealthyRange` →
+`spec.remediation.triggerIf.unhealthyLessThanOrEqualTo`/`unhealthyInRange`,
+`spec.unhealthyConditions` → `spec.checks.unhealthyNodeConditions`), independently of beskar7. If
+your `MachineHealthCheck` is still `apiVersion: cluster.x-k8s.io/v1beta1`-shaped, convert it using
+the example as a template.
+
+### `Cluster.spec.paused` is now honoured
+
+`Beskar7Machine` and `Beskar7Cluster` reconciliation now pauses on **`Cluster.spec.paused`** (the
+field `clusterctl move` sets on the source cluster before moving objects) in addition to the
+`cluster.x-k8s.io/paused` annotation on the `Beskar7Machine` / `Beskar7Cluster` object itself. This
+closes the CAPI conformance gap `docs/installation.md` previously documented as a known limitation:
+you no longer need to annotate beskar7 objects by hand before a `clusterctl move`.
+
+**Narrower than before in one respect**: the previous code additionally checked the
+`cluster.x-k8s.io/paused` annotation *on the owning `Cluster` object*. The new
+`sigs.k8s.io/cluster-api/util/paused` helper does not — it checks `Cluster.spec.paused` and the
+annotation on the reconciled object (the `Beskar7Machine` / `Beskar7Cluster`) only. If you were
+pausing by annotating the `Cluster` object directly (rather than setting `spec.paused` or
+annotating the beskar7 object), switch to `Cluster.spec.paused: true` or annotate the
+`Beskar7Machine` / `Beskar7Cluster` directly:
+
+```bash
+kubectl patch cluster <name> -n <namespace> --type=merge -p '{"spec":{"paused":true}}'
+# or, to pause one object without pausing the whole Cluster:
+kubectl annotate beskar7machine <name> -n <namespace> cluster.x-k8s.io/paused=""
+```
+
+`PhysicalHost` is unaffected either way — it has no owning `Cluster` and has always paused on its
+own `cluster.x-k8s.io/paused` annotation only.
+
+### `Beskar7Machine.spec.providerID` is a plain string
+
+`spec.providerID` changed from `*string` to `string` in the Go API (`api/v1beta2`). The JSON/YAML
+shape and the `b7://<namespace>/<name>` format are unchanged — this only matters if you import
+`github.com/projectbeskar/beskar7/api/v1beta2` as a Go module and dereferenced the pointer.
+
+### Procedure
+
+```bash
+# 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.0/beskar7-manifests-v0.6.0.yaml
+# or, for a chart install: apply charts/beskar7/crds/*.yaml, then
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.0 --reset-then-reuse-values
+
+# 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema
+#    (see examples/machinehealthcheck.yaml).
+
+# 3. Grep your own scripts/dashboards for the removed fields:
+grep -rn "failureReason\|failureMessage" your-tooling/
+```
+
+No inspector upgrade, no `Beskar7Machine`/`Beskar7Cluster`/`PhysicalHost` data migration — existing
+objects keep reconciling once the controller restarts; a machine already `phase: Failed` before the
+upgrade stays `Failed` (it is never reconciled again either way — see
+`docs/beskar7machine.md#terminal-failures`), it just no longer grows new `failureReason` values.
 
 ## `v0.4.4` → `v0.5.0` — **breaking**: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`
 
@@ -426,3 +550,5 @@ older release tag first.
 | CRs rejected on CRD apply | fix the CRs before upgrading (see the breaking changes above) |
 | Hosts provision but Machines stay `Provisioned` | ProviderID mismatch — see [troubleshooting](troubleshooting.md) entry 12 |
 | Inspector never posts a report | inspector/controller contract mismatch — check `contract-version.txt` |
+| `.status.failureReason` / `.status.failureMessage` read as empty/absent | Expected on `v0.6.0`+ — read `.status.phase` and the `InfrastructureReady` condition instead (see `v0.5.0` → `v0.6.0` above) |
+| `MachineHealthCheck` stopped remediating failed `Beskar7Machine`s | Its `unhealthyConditions`/`maxUnhealthy` are v1beta1 fields Cluster API v1.11+ ignores — convert to `spec.checks.unhealthyMachineConditions` / `spec.remediation.triggerIf` (see `v0.5.0` → `v0.6.0` above and `examples/machinehealthcheck.yaml`) |

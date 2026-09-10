@@ -35,6 +35,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -191,7 +193,7 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 		Expect(b7m.Status.Phase).NotTo(BeNil())
 		Expect(*b7m.Status.Phase).To(Equal("Provisioning"))
 		Expect(b7m.Status.Ready).To(BeFalse())
-		Expect(b7m.Status.FailureReason).To(BeNil())
+		Expect(isTerminallyFailed(b7m)).To(BeFalse())
 	})
 
 	It("provisioned annotation → PhysicalHost transitions Deploying→Ready", func() {
@@ -235,13 +237,12 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 		Expect(result).To(Equal(ctrl.Result{}))
 
 		By("Verifying ProviderID is set")
-		Expect(b7m.Spec.ProviderID).NotTo(BeNil())
-		Expect(*b7m.Spec.ProviderID).To(Equal("b7://" + testNs.Name + "/" + ph.Name))
+		Expect(b7m.Spec.ProviderID).NotTo(BeEmpty())
+		Expect(b7m.Spec.ProviderID).To(Equal("b7://" + testNs.Name + "/" + ph.Name))
 
 		By("Verifying Status.Ready and Initialization.Provisioned")
 		Expect(b7m.Status.Ready).To(BeTrue())
-		Expect(b7m.Status.Initialization).NotTo(BeNil())
-		Expect(b7m.Status.Initialization.Provisioned).To(BeTrue())
+		Expect(ptr.Deref(b7m.Status.Initialization.Provisioned, false)).To(BeTrue())
 
 		By("Verifying ClearBootSourceOverride was called on first provisioning")
 		Expect(mockRf.ClearBootSourceOverrideCalled).To(BeTrue(),
@@ -265,7 +266,7 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.raw",
 				TargetImageDigest:  bootTestDigest,
-				ProviderID:         &provID,
+				ProviderID:         provID,
 			},
 		}
 		// Already provisioned — simulate a re-reconcile.
@@ -331,15 +332,16 @@ var _ = Describe("D-015 deploy-timeout: terminal failure when host stuck in Depl
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}), "terminal failure must not requeue")
 
-		By("Verifying FailureReason == DeploymentTimedOutReason")
-		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(DeploymentTimedOutReason))
-		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
-		Expect(*b7m.Status.FailureMessage).To(ContainSubstring("did not complete within"))
+		By("Verifying InfrastructureReady is False with DeploymentTimedOutReason")
+		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
+		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		Expect(cond.Reason).To(Equal(DeploymentTimedOutReason))
+		Expect(cond.Message).To(ContainSubstring("did not complete within"))
 
 		By("Verifying Phase == Failed and Ready == false")
 		Expect(b7m.Status.Phase).NotTo(BeNil())
-		Expect(*b7m.Status.Phase).To(Equal("Failed"))
+		Expect(*b7m.Status.Phase).To(Equal(infrav1.PhaseFailed))
 		Expect(b7m.Status.Ready).To(BeFalse())
 	})
 
@@ -373,7 +375,7 @@ var _ = Describe("D-015 deploy-timeout: terminal failure when host stuck in Depl
 		result, err := r.handleDeployingHost(ctx, r.Log, b7m, ph)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(Equal(30*time.Second), "must requeue every 30s while deploying")
-		Expect(b7m.Status.FailureReason).To(BeNil(), "must not mark failure for a recent deploy")
+		Expect(isTerminallyFailed(b7m)).To(BeFalse(), "must not mark failure for a recent deploy")
 	})
 })
 

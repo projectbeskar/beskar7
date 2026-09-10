@@ -6,6 +6,46 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **`Paused` condition on `Beskar7Machine` and `Beskar7Cluster`.** Maintained by
+  `sigs.k8s.io/cluster-api/util/paused`, reason `Paused` or `NotPaused`, alongside the existing
+  `Ready` summary condition. `PhysicalHost` is unaffected — it is not a CAPI contract resource and
+  has no owning `Cluster`.
+
+### Changed
+
+- **BREAKING: `status.conditions` on `Beskar7Machine`, `Beskar7Cluster` and `PhysicalHost` are now
+  native `[]metav1.Condition`** (`type`, `status`, `reason`, `message`, `lastTransitionTime`,
+  `observedGeneration`) instead of the CAPI v1beta1-shaped `clusterv1.Conditions`. There is no
+  `severity` field, and every condition — including `True` ones — now carries a `reason`
+  (`Provisioned`, `PhysicalHostAssociated`, `BootstrapDataReady`, `ControlPlaneEndpointSet`,
+  `RedfishConnected`, `HostAvailable`, `HostInspected` are new True-state reason constants).
+  `Beskar7Machine.GetV1Beta1Conditions`/`SetV1Beta1Conditions` and the matching methods on
+  `Beskar7Cluster`/`PhysicalHost` (the CAPI deprecated-conditions compatibility shim) are removed.
+  See `docs/upgrading.md`.
+- **BREAKING: `Beskar7Machine`/`Beskar7Cluster` reconciliation now honours `Cluster.spec.paused`**
+  (what `clusterctl move` sets), in addition to the `cluster.x-k8s.io/paused` annotation on the
+  `Beskar7Machine`/`Beskar7Cluster` object itself — closing the CAPI conformance gap
+  `docs/installation.md` previously carried as a known limitation. The replacement
+  (`sigs.k8s.io/cluster-api/util/paused.EnsurePausedCondition`) no longer checks the
+  `cluster.x-k8s.io/paused` annotation on the *owning* `Cluster` object the way the old
+  `isClusterPaused` helper did; pause via `Cluster.spec.paused` or the annotation on the beskar7
+  object itself. `PhysicalHost` is unchanged (annotation-only; it has no owning `Cluster`).
+- **`Beskar7Machine.spec.providerID` is `string`, not `*string`.** No JSON/YAML change — the field
+  was already `omitempty` and the `b7://<namespace>/<name>` format is unchanged. Affects Go
+  importers of `api/v1beta2` only.
+
+### Removed
+
+- **BREAKING: `Beskar7Machine.status.failureReason` and `status.failureMessage` are gone.** A
+  terminal failure is now `status.phase: Failed` (unchanged marker) plus the `InfrastructureReady`
+  condition `False` with the same reason strings as before, which Cluster API mirrors into the
+  owning `Machine`'s own `InfrastructureReady` condition. `MachineHealthCheck` on Cluster API
+  v1.11+ never read `failureReason`/`failureMessage` — remediating a beskar7-failed machine now
+  requires an explicit `spec.checks.unhealthyMachineConditions` entry keyed on `InfrastructureReady`;
+  see the rewritten `examples/machinehealthcheck.yaml` and `docs/upgrading.md`.
+
 ## [v0.5.0] - 2026-09-10
 
 A clean break from the `v0.4.x` line, with no in-place upgrade path — read

@@ -5,16 +5,38 @@ import (
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
+// Condition types on Beskar7Machine. All are metav1.Condition (Cluster API
+// v1beta2 contract): Ready is the summary CAPI mirrors into the owning
+// Machine's InfrastructureReady condition, and Paused reflects
+// Cluster.spec.paused / the cluster.x-k8s.io/paused annotation.
 const (
 	// InfrastructureReadyCondition reports on the readiness of the infrastructure provider.
-	InfrastructureReadyCondition clusterv1.ConditionType = "InfrastructureReady"
+	InfrastructureReadyCondition = "InfrastructureReady"
 	// PhysicalHostAssociatedCondition indicates whether the Beskar7Machine has
 	// successfully associated with a PhysicalHost.
-	PhysicalHostAssociatedCondition clusterv1.ConditionType = "PhysicalHostAssociated"
+	PhysicalHostAssociatedCondition = "PhysicalHostAssociated"
 	// BootstrapDataReadyCondition indicates the bootstrap data secret named by
 	// Machine.Spec.Bootstrap.DataSecretName is present and the per-host bootstrap
 	// URL has been signaled to the PhysicalHost.
-	BootstrapDataReadyCondition clusterv1.ConditionType = "BootstrapDataReady"
+	BootstrapDataReadyCondition = "BootstrapDataReady"
+)
+
+// Reasons for the True state of the Beskar7Machine conditions (metav1.Condition
+// requires one) and for the terminal phase.
+const (
+	// ProvisionedReason (InfrastructureReady=True): the host is provisioned and
+	// the ProviderID is set.
+	ProvisionedReason = "Provisioned"
+	// PhysicalHostAssociatedReason (PhysicalHostAssociated=True): a PhysicalHost
+	// is claimed for this machine.
+	PhysicalHostAssociatedReason = "PhysicalHostAssociated"
+	// BootstrapDataReadyReason (BootstrapDataReady=True): the bootstrap data
+	// Secret exists and the per-host bootstrap URL has been signalled.
+	BootstrapDataReadyReason = "BootstrapDataReady"
+	// PhaseFailed is the Status.Phase of a machine that hit a terminal failure.
+	// It is the terminal marker: the controller stops reconciling such a machine
+	// (deletion still works), and Ready/InfrastructureReady carry the reason.
+	PhaseFailed = "Failed"
 )
 
 // Reasons for condition failures
@@ -80,8 +102,12 @@ const (
 // Simplified for iPXE + inspection workflow.
 type Beskar7MachineSpec struct {
 	// ProviderID is the unique identifier as specified by the cloud provider.
+	// Format b7://<namespace>/<physicalhost-name>; set once the host is
+	// provisioned, and mirrored by Cluster API into the owning Machine.
 	// +optional
-	ProviderID *string `json:"providerID,omitempty"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	ProviderID string `json:"providerID,omitempty"`
 
 	// InspectionImageURL is the base URL of a location serving the inspection
 	// image's boot artifacts. The controller renders an iPXE script that boots
@@ -196,12 +222,13 @@ type HardwareRequirements struct {
 // CAPI core lifts `status.initialization.provisioned` from the
 // InfrastructureMachine into the parent Machine's
 // `status.initialization.infrastructureProvisioned`.
+// +kubebuilder:validation:MinProperties=1
 type Beskar7MachineInitializationStatus struct {
 	// Provisioned is true when the machine is fully provisioned: the host has
 	// been claimed, inspected, and the ProviderID is set. The Beskar7Machine
 	// controller sets this in lockstep with status.ready=true.
 	// +optional
-	Provisioned bool `json:"provisioned,omitempty"`
+	Provisioned *bool `json:"provisioned,omitempty"`
 }
 
 // Beskar7MachineStatus defines the observed state of Beskar7Machine.
@@ -215,26 +242,23 @@ type Beskar7MachineStatus struct {
 	// CAPI never advances the Machine past Pending and never marks the parent
 	// Cluster as available.
 	// +optional
-	Initialization *Beskar7MachineInitializationStatus `json:"initialization,omitempty"`
+	Initialization Beskar7MachineInitializationStatus `json:"initialization,omitempty,omitzero"`
 
 	// Phase represents the current phase of the machine
 	Phase *string `json:"phase,omitempty"`
 
-	// FailureReason will be set in the event that there is a terminal problem
-	// reconciling the Machine and will contain a succinct value suitable
-	// for machine interpretation.
-	FailureReason *string `json:"failureReason,omitempty"`
-
-	// FailureMessage will be set in the event that there is a terminal problem
-	// reconciling the Machine and will contain a more verbose string suitable
-	// for logging and human consumption.
-	FailureMessage *string `json:"failureMessage,omitempty"`
-
 	// Addresses contains the associated addresses for the machine.
 	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
 
-	// Conditions defines current service state of the Beskar7Machine.
-	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+	// Conditions defines current service state of the Beskar7Machine. Ready is
+	// the summary condition Cluster API mirrors into the owning Machine; a
+	// terminal failure is Ready=False and InfrastructureReady=False with the
+	// failure reason, together with Phase=Failed.
+	// +optional
+	// +listType=map
+	// +listMapKey=type
+	// +kubebuilder:validation:MaxItems=32
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -260,13 +284,13 @@ type Beskar7Machine struct {
 	Status Beskar7MachineStatus `json:"status,omitempty"`
 }
 
-// GetConditions returns the observations of the operational state of the Beskar7Machine resource.
-func (m *Beskar7Machine) GetConditions() clusterv1.Conditions {
+// GetConditions returns the conditions of the Beskar7Machine (conditions.Getter).
+func (m *Beskar7Machine) GetConditions() []metav1.Condition {
 	return m.Status.Conditions
 }
 
-// SetConditions sets the underlying service state of the Beskar7Machine to the pre-defined clusterv1.Conditions.
-func (m *Beskar7Machine) SetConditions(conditions clusterv1.Conditions) {
+// SetConditions sets the conditions of the Beskar7Machine (conditions.Setter).
+func (m *Beskar7Machine) SetConditions(conditions []metav1.Condition) {
 	m.Status.Conditions = conditions
 }
 
@@ -282,11 +306,6 @@ type Beskar7MachineList struct {
 // DeepCopyInto is an autogenerated deepcopy function, copying the receiver, writing into out. in must be non-nil.
 func (in *Beskar7MachineSpec) DeepCopyInto(out *Beskar7MachineSpec) {
 	*out = *in
-	if in.ProviderID != nil {
-		in, out := &in.ProviderID, &out.ProviderID
-		*out = new(string)
-		**out = **in
-	}
 	if in.StaticIP != nil {
 		in, out := &in.StaticIP, &out.StaticIP
 		*out = new(string)
@@ -327,14 +346,9 @@ func (in *Beskar7MachineStatus) DeepCopyInto(out *Beskar7MachineStatus) {
 		*out = new(string)
 		**out = **in
 	}
-	if in.FailureReason != nil {
-		in, out := &in.FailureReason, &out.FailureReason
-		*out = new(string)
-		**out = **in
-	}
-	if in.FailureMessage != nil {
-		in, out := &in.FailureMessage, &out.FailureMessage
-		*out = new(string)
+	if in.Initialization.Provisioned != nil {
+		in, out := &in.Initialization.Provisioned, &out.Initialization.Provisioned
+		*out = new(bool)
 		**out = **in
 	}
 	if in.Addresses != nil {
@@ -344,18 +358,13 @@ func (in *Beskar7MachineStatus) DeepCopyInto(out *Beskar7MachineStatus) {
 	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
-		*out = make(clusterv1.Conditions, len(*in))
-		copy(*out, *in)
+		*out = make([]metav1.Condition, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
 	}
 }
 
 func init() {
 	SchemeBuilder.Register(&Beskar7Machine{}, &Beskar7MachineList{})
 }
-
-// GetV1Beta1Conditions is the accessor the CAPI v1beta2 deprecated-conditions
-// helpers require; the v1beta1-shaped conditions stay in Status.Conditions.
-func (in *Beskar7Machine) GetV1Beta1Conditions() clusterv1.Conditions { return in.Status.Conditions }
-
-// SetV1Beta1Conditions is the matching setter.
-func (in *Beskar7Machine) SetV1Beta1Conditions(c clusterv1.Conditions) { in.Status.Conditions = c }

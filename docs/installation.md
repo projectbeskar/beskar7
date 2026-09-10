@@ -117,12 +117,15 @@ Before moving a namespace:
 
 3. **On an existing install, re-apply the CRDs first.** `helm upgrade` never touches CRDs, so CRDs installed before the labels were added still lack them; see [Upgrading](upgrading.md).
 
-**Known limitation.** `clusterctl move` pauses each `Cluster` through `spec.paused`, but the beskar7 controllers currently honour only the `cluster.x-k8s.io/paused` annotation, so they keep reconciling on the source during the move — including the deletion path, which powers a host off over Redfish when its `Beskar7Machine` goes away. Until that is fixed, pause the beskar7 objects yourself before the move and unpause them on the target afterwards:
+**Pausing during a move.** `clusterctl move` pauses each `Cluster` by setting `spec.paused: true` on the source before moving objects, and clears it on the target afterward. `Beskar7Cluster` and `Beskar7Machine` honour `Cluster.spec.paused` (via `sigs.k8s.io/cluster-api/util/paused`), so they stop reconciling — including the deletion path that would otherwise power a host off over Redfish — for the duration of the move, with no manual annotate/unannotate step required.
+
+`PhysicalHost` has no owning `Cluster` and does not consult `spec.paused`; it only understands its own `cluster.x-k8s.io/paused` annotation. This does not weaken move safety here: the `PhysicalHost` reconciler performs no Redfish calls at all during deletion (that is the consuming `Beskar7Machine`'s job, and `Beskar7Machine` is paused).
+
+If you need to pause a `Beskar7Machine` or `Beskar7Cluster` independently of its `Cluster` — for example, to freeze one object while debugging — annotate that object directly; annotating the owning `Cluster` object itself has no effect on them (see [Beskar7Machine → Paused](beskar7machine.md#paused)):
 
 ```bash
-kubectl annotate -n <namespace> beskar7clusters,beskar7machines --all cluster.x-k8s.io/paused=""
-clusterctl move -n <namespace> --to-kubeconfig target.kubeconfig
-kubectl --kubeconfig target.kubeconfig annotate -n <namespace> beskar7clusters,beskar7machines --all cluster.x-k8s.io/paused-
+kubectl annotate -n <namespace> beskar7machine <name> cluster.x-k8s.io/paused=""
+kubectl annotate -n <namespace> beskar7machine <name> cluster.x-k8s.io/paused-   # unpause
 ```
 
 Moving a live workload cluster has not been exercised end to end yet; rehearse on a lab cluster before relying on it.

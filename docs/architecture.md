@@ -411,12 +411,20 @@ spec:
 status:
   phase: Provisioned   # Pending, Inspecting, Provisioning, Provisioned, Failed
   ready: true
+  initialization:
+    provisioned: true
   conditions:
+    - type: Ready               # the summary condition; mirrored by CAPI into
+      status: "True"            # the owning Machine's own InfrastructureReady
+      reason: Provisioned        # condition — see docs/api-reference.md
+      lastTransitionTime: "2026-09-10T12:00:00Z"
     - type: InfrastructureReady
       status: "True"
+      reason: Provisioned
+      lastTransitionTime: "2026-09-10T12:00:00Z"
 ```
 
-There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed. `InfrastructureReady` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) is the provisioned signal.
+Conditions are native `metav1.Condition` — no `severity` field, and every condition (including `True`) carries a `reason`. There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed. `Ready` (backed by `Status.Ready` and `Status.Initialization.Provisioned`, and itself a summary of `InfrastructureReady` + `PhysicalHostAssociated` + `BootstrapDataReady`) is the provisioned signal CAPI reads; see [API Reference → Conditions and the CAPI mirror](api-reference.md#conditions-and-the-capi-mirror). There is no `status.failureReason` / `status.failureMessage` — a terminal failure is `phase: Failed` plus `InfrastructureReady: False` with a reason.
 
 ### Beskar7Cluster
 
@@ -490,25 +498,25 @@ Beskar7Machine      PhysicalHost       BMC        Inspection Image      Inspecti
 
 ### Inspection Timeout
 
-If no inspection report received within 10 minutes:
-1. PhysicalHost.status.inspectionPhase set to `Timeout`
-2. Beskar7Machine marked as Failed with appropriate condition
-3. PhysicalHost powered off
-4. `PhysicalHost` transitions to `StateError` (terminal); the `Beskar7Machine` is failed with `FailureReason=InspectionTimedOut`. There is no automatic retry — the operator deletes and recreates the `Beskar7Machine`.
+If no inspection report is received within the inspection timeout (default 10 minutes; `--inspection-timeout`):
+1. The Beskar7Machine controller writes the `inspection-request: timeout` annotation on the `PhysicalHost`.
+2. `PhysicalHost.status.state` transitions to `Error` (a later reconcile of the underlying error condition can still move it back to `Available`).
+3. `Beskar7Machine` is marked terminally failed: `status.phase=Failed`, `InfrastructureReady=False` with reason `InspectionTimedOut`.
+
+The controller does not power the host off on this path — it is left in whatever state the BMC reports. There is no automatic retry: the operator deletes and recreates the `Beskar7Machine`.
 
 ### Hardware Validation Failure
 
-If inspection report doesn't meet requirements:
-1. Beskar7Machine condition updated with validation error
-2. PhysicalHost powered off
-3. `PhysicalHost` transitions to `StateError` (terminal); the `Beskar7Machine` is failed with `FailureReason=HardwareRequirementsNotMet`
-4. User must adjust requirements or use different hardware
+If the inspection report doesn't meet `hardwareRequirements`:
+1. `Beskar7Machine` is marked terminally failed: `status.phase=Failed`, `InfrastructureReady=False` with reason `HardwareRequirementsNotMet` and a message naming the shortfall (CPU/memory/disk).
+2. The controller does not signal the `PhysicalHost` on this path — it stays `Inspecting` rather than advancing to `Deploying`, since only the `Beskar7Machine` fails.
+3. User must adjust `hardwareRequirements` or use different hardware, then delete-and-recreate the `Beskar7Machine`.
 
 ### Redfish Connection Failure
 
 If BMC connection fails:
 1. PhysicalHost.status.state set to `Error`
-2. Ready condition set to False with error message
+2. `RedfishConnectionReady` condition set to `False` with a reason (`RedfishConnectionFailed`, `RedfishQueryFailed`, `MissingCredentials`, …) and the error in the message
 3. Retry with exponential backoff
 4. If persistent, requires manual intervention
 

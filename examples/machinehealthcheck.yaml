@@ -1,5 +1,12 @@
----
 # Recommended MachineHealthCheck for a Beskar7-provisioned pool.
+#
+# Schema: cluster.x-k8s.io/v1beta2 (Cluster API v1.11+). The v1beta2 MachineHealthCheck
+# reshaped several fields relative to v1beta1 — see docs/upgrading.md if you are
+# converting an existing v1beta1 MachineHealthCheck:
+#   spec.nodeStartupTimeout (Duration)        -> spec.checks.nodeStartupTimeoutSeconds (int32)
+#   spec.unhealthyConditions (Node only)      -> spec.checks.unhealthyNodeConditions (timeoutSeconds, not timeout)
+#   spec.maxUnhealthy / spec.unhealthyRange   -> spec.remediation.triggerIf.unhealthyLessThanOrEqualTo / unhealthyInRange
+#   spec.remediationTemplate                  -> spec.remediation.templateRef
 #
 # Beskar7 deliberately owns no provisioning-retry loop: a bare-metal reprovision
 # overwrites the whole disk, so it must be an explicit remediation decision rather
@@ -7,16 +14,27 @@
 # limiting and remediation therefore live here, in CAPI, where they can see the
 # whole fleet.
 #
-# This object covers two distinct failures:
+# This object covers three distinct failures:
 #
-#   1. "Provisioned but never joined" — beskar7 wrote the disk and reported
-#      success, but no Node ever registered. nodeStartupTimeout catches it.
+#   1. Beskar7 itself gives up — inspection timed out, hardware requirements
+#      weren't met, the inspector reported a deploy failure, and so on. Beskar7
+#      marks these terminal: Beskar7Machine.status.phase = Failed and its
+#      InfrastructureReady condition False with a reason (InspectionTimedOut,
+#      DeploymentFailed, HardwareRequirementsNotMet, ...; see
+#      docs/beskar7machine.md#terminal-failures for the full list). Cluster API
+#      mirrors that into the owning Machine's own InfrastructureReady condition,
+#      which is what spec.checks.unhealthyMachineConditions below keys on.
+#      MachineHealthCheck does NOT remediate a terminal Beskar7Machine failure
+#      automatically — nothing does, unless this condition is listed here.
+#
+#   2. "Provisioned but never joined" — beskar7 wrote the disk and reported
+#      success, but no Node ever registered. nodeStartupTimeoutSeconds catches it.
 #      The usual cause is a ProviderID mismatch rather than a slow boot; check
 #      docs/troubleshooting.md before raising the timeout.
 #
-#   2. A Node that joined and later went unhealthy — the standard Ready=False /
-#      Unknown conditions below.
-apiVersion: cluster.x-k8s.io/v1beta1
+#   3. A Node that joined and later went unhealthy — the standard Ready=False /
+#      Unknown Node conditions below.
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: MachineHealthCheck
 metadata:
   name: beskar7-pool-health
@@ -30,24 +48,41 @@ spec:
     matchLabels:
       cluster.x-k8s.io/deployment-name: my-worker-pool
 
-  # How long CAPI waits, from "infrastructure provisioned", for a Node carrying
-  # the matching ProviderID to appear. 15m is the recommended starting value
-  # (docs/inspector-contract.md §13): a Kairos host reboots via firmware,
-  # auto-installs on first boot, then the kubelet registers — ~2-3 minutes
-  # observed on real hardware. The rest is margin for slow POST, large-disk
-  # expansion, and a control plane that is slow to admit.
-  nodeStartupTimeout: 15m
+  checks:
+    # How long CAPI waits, from "infrastructure provisioned", for a Node carrying
+    # the matching ProviderID to appear. 900s (15m) is the recommended starting
+    # value (docs/inspector-contract.md §13): a Kairos host reboots via firmware,
+    # auto-installs on first boot, then the kubelet registers — ~2-3 minutes
+    # observed on real hardware. The rest is margin for slow POST, large-disk
+    # expansion, and a control plane that is slow to admit.
+    nodeStartupTimeoutSeconds: 900
 
-  # Remediate only while most of the pool is healthy. Without this, a
-  # provisioning-wide fault (bad image digest, unreachable boot server) would
-  # cause CAPI to delete and re-provision every machine in a loop — each one a
-  # destructive whole-disk write.
-  maxUnhealthy: 40%
+    # Case 1 above: a terminal Beskar7Machine failure, mirrored onto the Machine's
+    # own InfrastructureReady condition. timeoutSeconds: 0 is deliberate — unlike a
+    # Node condition, this one never flaps and never clears on its own (beskar7
+    # does not heal a failed machine back to health; see
+    # docs/beskar7machine.md#terminal-failures), so there is nothing to wait out.
+    unhealthyMachineConditions:
+      - type: InfrastructureReady
+        status: "False"
+        timeoutSeconds: 0
 
-  unhealthyConditions:
-    - type: Ready
-      status: Unknown
-      timeout: 5m
-    - type: Ready
-      status: "False"
-      timeout: 5m
+    # Case 3 above: a Node that registered and then stopped reporting Ready.
+    unhealthyNodeConditions:
+      - type: Ready
+        status: Unknown
+        timeoutSeconds: 300
+      - type: Ready
+        status: "False"
+        timeoutSeconds: 300
+
+  remediation:
+    # Remediate only while most of the pool is healthy. Without this, a
+    # provisioning-wide fault (bad image digest, unreachable boot server) would
+    # cause CAPI to delete and re-provision every machine in a loop — each one a
+    # destructive whole-disk write.
+    triggerIf:
+      unhealthyLessThanOrEqualTo: "40%"
+    # No templateRef: remediation goes through the default path (CAPI sets
+    # OwnerRemediated on the unhealthy Machine; the owning MachineSet /
+    # KubeadmControlPlane deletes and replaces it).

@@ -110,8 +110,10 @@ receiving this signal — not at inspection completion. A deployment-timeout gua
 digest-verify, disk write, `COS_OEM` mount/inject), the inspector SHOULD POST
 `/api/v1/provision-failed/{ns}/{host}` with an advisory `{"reason":"..."}` body
 before exiting. The controller transitions the `PhysicalHost` to `StateError`
-immediately (fast-fail path) and marks the `Beskar7Machine` with
-`FailureReason=DeploymentFailed`, surfacing the error to `kubectl describe machine`
+immediately (fast-fail path) and marks the `Beskar7Machine` terminally failed
+(`status.phase=Failed`, `InfrastructureReady=False` reason `DeploymentFailed`),
+which Cluster API mirrors into the owning Machine's own `InfrastructureReady`
+condition, surfacing the error via `kubectl describe machine`
 without waiting out the deployment-timeout. If the inspector cannot reach the
 endpoint (404 on a v4 controller, or a network failure), the host falls back to
 timing out at `--deployment-timeout`.
@@ -298,9 +300,9 @@ deployment-timeout.
   sanitized reason onto the `PhysicalHost` metadata. The `PhysicalHostReconciler`
   reads this on its next pass, transitions `State` from `StateDeploying` to
   `StateError`, sets `Status.ErrorMessage`, and clears the annotation (D-005
-  invariant). The `Beskar7MachineReconciler` then marks a terminal failure with
-  `FailureReason=DeploymentFailed`. A non-`Deploying` host returns 202 but
-  receives no state transition (no-op guard).
+  invariant). The `Beskar7MachineReconciler` then marks a terminal failure
+  (`status.phase=Failed`, `InfrastructureReady=False` reason `DeploymentFailed`).
+  A non-`Deploying` host returns 202 but receives no state transition (no-op guard).
 - **Inspector MUST**: call this endpoint on any Phase 2 error, then exit (do NOT
   continue to the provisioned POST or `reboot(2)` after a failure).
 - **Inspector MUST**: tolerate a `404` response (v4 controller without this
@@ -791,7 +793,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v2** | **Handoff redesign — §6 report schema unchanged.** Replaces kexec with whole-disk image deployment: the inspector writes a Kairos whole-disk raw image (`beskar7.target`) to the target disk, injects the per-host config (with CAPI user-data) as a numbered Kairos cloud-config (`99_beskar7.yaml`) into the image's `COS_OEM` partition, and reboots. Adds required cmdline param `beskar7.target-digest` (`sha256:<hex>`) plus optional `beskar7.disk` (operator disk-selection override), the §8.1 digest-pinning trust model (target image over plain HTTP, integrity by content digest, not TLS), and a specified disk-selection policy (smallest eligible disk by default). Reframes §9 around the two-phase enroll/provision role model (§9.0–9.2). **Report path:** the §6 schema and golden fixture are untouched, so the bump forces **no** inspector report-code or fixture change. **Controller side:** the CRD delta is **implemented** in this repo — the required `Beskar7Machine.Spec.TargetImageDigest` field and the `/boot` render of `beskar7.target` + `beskar7.target-digest`, plus the optional `Beskar7Machine.Spec.TargetDisk` field and its `beskar7.disk` render. The inspector deploy path (§9.1 step 5) is a new, separately-tested drift surface (§10). |
 | **v3** | **Static-network override — §6 report schema and golden fixture unchanged.** Un-reserves the optional `beskar7.ip` cmdline param (§5): adds `Beskar7Machine.Spec.StaticIP` (optional `*string`, CRD validation pattern for the `<ip>::[<gw>]:<mask>[:<dns>]` shape); `/boot` renders `beskar7.ip=<value>` after `beskar7.disk` (or after `beskar7.ca` when `beskar7.disk` is absent) when set. The inspector configures the selected NIC statically and skips DHCP when `beskar7.ip` is present; a multi-NIC host with `beskar7.ip` and no `BOOTIF` is rejected. Handler-side `validateStaticIP` / `formatStaticIP` guard (C-1a, SEC-7 omit-on-invalid) mirrors `formatBootif`. **No inspector report-code or fixture change.** The v2 whole-disk deploy flow (§9.1 steps 4–5) is unchanged. |
 | **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
-| **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (via `FailureReason=DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
+| **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (a terminal `InfrastructureReady=False` reason `DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
 | **v4.2** | **Per-host `ProviderID` delivery for templated pools/HA (D-014 P2) — §6 report schema and golden fixture unchanged. Additive and backward-compatible.** A shared `Beskar7MachineTemplate`/bootstrap-config template cannot pin a per-host `ProviderID` (P1's hand-authored, one-Machine-at-a-time pattern breaks for `MachineDeployment` pools and multi-replica control planes). Adds a new required cmdline param `beskar7.provider-id=b7://{ns}/{host}` (§5), rendered by `/boot` immediately after `beskar7.target-digest` and before `beskar7.ca`, and **always** rendered (the controller always knows the host's identity — no omitted form). The value is `providerID(ph.Namespace, ph.Name)`, the identical call `handleReadyHost` uses to stamp `Beskar7Machine.Spec.ProviderID`, so the rendered and stamped values cannot diverge by construction. Adds a new `COS_OEM` artifact `/oem/beskar7/provider-id` (§9.1 step 5.4): the inspector writes the cmdline value verbatim (no trailing newline, mode `0600`, root-owned) during the *same* mount session as `99_beskar7.yaml`, no new mount or fetch. A shared boot-time stage in the node's bootstrap config reads this file to set a per-host kubelet `--provider-id` before the k8s distro starts — the residual per-distro glue that lets a shared template still produce a correct, unique `Node.spec.providerID` per replica. **Backward-compatible:** a v4.1 inspector ignores the unknown cmdline param and never writes the new artifact (P1's single hand-authored Machine path is unaffected); a v4.2 controller tolerates a v4.1 inspector. **Controller side**: `controllers/boot_handler.go` — `validateProviderID` (anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth) + the `beskar7.provider-id` render in `buildBootIPXEScript`/`renderBootScript`; new golden fixtures `test/contract/golden_boot_cmdline.txt` and `test/contract/golden_provider_id_artifact.json` (§10); `controllers/deploy_contract_test.go` (new). Inspector side: `CONTRACT_VERSION="v4.2"`, cmdline parser + `COS_OEM` writer for `/oem/beskar7/provider-id`, per `.claude/context/GA-P2-VALIDATION.md` §1.5 (spec only from this repo's side — cross-repo). |
 
 ---
@@ -881,16 +883,19 @@ inside beskar7 would also fight CAPI's own remediation, so the controller delibe
 not own one.
 
 1. **Terminal on failure.** `InspectionTimedOut`, `DeploymentTimedOut` and `DeploymentFailed`
-   route through `markTerminalFailure` and stop requeueing. Once `FailureReason` is set the
-   controller does not continue reconciling the machine (it can still be deleted, which is how
-   CAPI replaces it).
+   route through `markTerminalFailure` and stop requeueing. Once `status.phase` reads `Failed`
+   the controller does not continue reconciling the machine (it can still be deleted, which is
+   how CAPI replaces it) — see `docs/api-reference.md` § Conditions and the CAPI mirror for how
+   this surfaces as `InfrastructureReady=False` on the owning `Machine`.
 2. **Re-drive means fresh capability, never reuse.** A re-driven Machine — CAPI recreates it, or
    a released host is re-claimed — runs `triggerInspection`, which mints a **fresh single-use
    boot nonce** (`BootNonceLifetime` = 10 min) and a **fresh bearer token** (`TokenLifetime` =
    60 min). There is no un-consume path (§7): a consumed nonce is spent, and a nonce that expires
    unconsumed (the host never PXE-booted) is re-minted on a later reconcile.
 3. **Attempt limits belong to CAPI, not beskar7.** Capping attempts across delete-recreate cycles
-   is `MachineHealthCheck` (`maxUnhealthy` / `unhealthyRange`) and the `MachineDeployment` / control
+   is `MachineHealthCheck` (`spec.remediation.triggerIf.unhealthyLessThanOrEqualTo` /
+   `unhealthyInRange` — the `cluster.x-k8s.io/v1beta2` MachineHealthCheck schema; these replace the
+   older top-level `maxUnhealthy` / `unhealthyRange` fields) and the `MachineDeployment` / control
    plane `remediationStrategy`. Duplicating a counter here would diverge from CAPI's fleet-wide view.
    See [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml).
 4. **Relationship to `--deployment-timeout`** (default 20 min). It bounds a single `Deploying`
@@ -909,16 +914,16 @@ not own one.
 
 ## 13. Node-join timeout
 
-**Delegated to CAPI's `MachineHealthCheck.spec.nodeStartupTimeout`. Recommended: 15 minutes.
-beskar7 runs no workload-cluster watch.**
+**Delegated to CAPI's `MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds`. Recommended: 900
+(15 minutes). beskar7 runs no workload-cluster watch.**
 
 A workload Node registering with `ProviderID=b7://<ns>/<host>` is observable *only* with the
 workload kubeconfig, which an **infrastructure** provider does not and must not hold. CAPI core's
-Machine controller already performs the Node↔Machine association, and `nodeStartupTimeout` already
-models "infrastructure provisioned, but no Node appeared in time". A beskar7-side watch would cross
+Machine controller already performs the Node↔Machine association, and `nodeStartupTimeoutSeconds`
+already models "infrastructure provisioned, but no Node appeared in time". A beskar7-side watch would cross
 the infra/core boundary and re-implement CAPI.
 
-- **Recommended value: `nodeStartupTimeout: 15m`**, measured by CAPI from infrastructure-provisioned.
+- **Recommended value: `nodeStartupTimeoutSeconds: 900`**, measured by CAPI from infrastructure-provisioned.
   On the dome e2e a Kairos host reboots via firmware, auto-installs on first boot (recovery → reset →
   reboot → active), then the distro starts and the kubelet registers — roughly 2–3 minutes. 15 minutes
   leaves margin for slow POST, large-disk expansion, and a control plane that is slow to admit.

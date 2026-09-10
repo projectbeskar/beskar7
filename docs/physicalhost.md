@@ -66,11 +66,13 @@ The inspection HTTP handler does not write to `PhysicalHost.Status` directly. In
 
 ## Conditions
 
-| Type | Meaning | Common reasons |
-|---|---|---|
-| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
-| `HostAvailable` | Host has no consumer claim. | – |
-| `HostInspected` | An inspection report has been persisted. | – |
+Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a `True` condition carries a `reason` too. `PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition (only these three) and no `Paused` condition — its pause check (`controllers/utils.go:isPaused`) is the `cluster.x-k8s.io/paused` annotation on the host itself; a `PhysicalHost` has no owning `Cluster` to read `spec.paused` from. See [API Reference → Conditions and the CAPI mirror](api-reference.md#conditions-and-the-capi-mirror).
+
+| Type | Meaning | True reason | Other reasons |
+|---|---|---|---|
+| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `HostAvailable` | Host has no consumer claim. | `HostAvailable` | — (set only on the transition into `Available`; not currently flipped back to `False` on claim). |
+| `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
 
 ## Deletion
 

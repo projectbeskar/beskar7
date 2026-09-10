@@ -51,9 +51,17 @@ CAPI uses these for placement: a `KubeadmControlPlane` or equivalent spreads its
 
 ## Conditions
 
-| Type | Meaning | Common reasons |
-|---|---|---|
-| `ControlPlaneEndpointReady` | The endpoint is populated. | `ControlPlaneEndpointNotSet`. |
+Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a `True` condition carries a `reason` too. `Ready` is the summary the controller computes each reconcile from `ControlPlaneEndpointReady` (today its only source condition), and it is what Cluster API mirrors into the owning `Cluster`'s own `InfrastructureReady` condition. `Paused` is maintained by `sigs.k8s.io/cluster-api/util/paused`. See [API Reference → Conditions and the CAPI mirror](api-reference.md#conditions-and-the-capi-mirror).
+
+| Type | Meaning | True reason | False reason |
+|---|---|---|---|
+| `Ready` | Summary of `ControlPlaneEndpointReady`. | Derived from it. | Same. |
+| `ControlPlaneEndpointReady` | The endpoint is populated. | `ControlPlaneEndpointSet` | `ControlPlaneEndpointNotSet`. |
+| `Paused` | See [Paused](#paused) below. | `NotPaused` | `Paused`. |
+
+## Paused
+
+`paused.EnsurePausedCondition` runs before every reconcile, including deletion, and pauses when either is true: **`Cluster.spec.paused`** (what `clusterctl move` sets on the source cluster before moving objects), or **the `cluster.x-k8s.io/paused` annotation on this `Beskar7Cluster`**. It does not check an annotation on the `Cluster` object itself. See [Upgrading](upgrading.md).
 
 ## Webhook
 

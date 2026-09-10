@@ -41,8 +41,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -521,24 +520,17 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}), "terminal failure must not requeue")
 
-		By("Verifying FailureReason == DeploymentFailedReason")
-		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.DeploymentFailedReason))
-
-		By("Verifying FailureMessage is set and contains the error detail")
-		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
-		Expect(*b7m.Status.FailureMessage).To(ContainSubstring("COS_OEM partition not found"))
-
 		By("Verifying Phase == Failed and Ready == false")
 		Expect(b7m.Status.Phase).NotTo(BeNil())
-		Expect(*b7m.Status.Phase).To(Equal("Failed"))
+		Expect(*b7m.Status.Phase).To(Equal(infrav1.PhaseFailed))
 		Expect(b7m.Status.Ready).To(BeFalse())
 
-		By("Verifying InfrastructureReadyCondition is False with DeploymentFailedReason")
+		By("Verifying InfrastructureReadyCondition is False with DeploymentFailedReason and the error detail")
 		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil(), "InfrastructureReadyCondition must be set")
-		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.DeploymentFailedReason))
+		Expect(cond.Message).To(ContainSubstring("COS_OEM partition not found"))
 	})
 
 	It("marks terminal failure with PhysicalHostErrorReason when ErrorMessage lacks the inspector prefix", func() {
@@ -573,13 +565,10 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(ctrl.Result{}))
 
-		By("Verifying FailureReason == PhysicalHostErrorReason (not DeploymentFailed)")
-		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.PhysicalHostErrorReason))
-
-		By("Verifying InfrastructureReadyCondition has PhysicalHostErrorReason")
+		By("Verifying InfrastructureReadyCondition has PhysicalHostErrorReason (not DeploymentFailed)")
 		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil())
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.PhysicalHostErrorReason))
 	})
 })
@@ -587,7 +576,7 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 // ── Beskar7Machine markTerminalFailure with DeploymentFailed ─────────────────
 
 var _ = Describe("v4.1 Beskar7Machine markTerminalFailure DeploymentFailed", func() {
-	It("sets FailureReason, FailureMessage, Phase=Failed, Ready=false, and condition", func() {
+	It("sets Phase=Failed, Ready=false, and InfrastructureReady=False with reason and message", func() {
 		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-terminal", Namespace: "default"},
 		}
@@ -599,18 +588,14 @@ var _ = Describe("v4.1 Beskar7Machine markTerminalFailure DeploymentFailed", fun
 		msg := "inspector reported deploy failure: disk write I/O error"
 		r.markTerminalFailure(b7m, infrav1.DeploymentFailedReason, msg)
 
-		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.DeploymentFailedReason))
-		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
-		Expect(*b7m.Status.FailureMessage).To(Equal(msg))
 		Expect(b7m.Status.Phase).NotTo(BeNil())
-		Expect(*b7m.Status.Phase).To(Equal("Failed"))
+		Expect(*b7m.Status.Phase).To(Equal(infrav1.PhaseFailed))
 		Expect(b7m.Status.Ready).To(BeFalse())
 
 		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil())
-		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
+		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond.Reason).To(Equal(infrav1.DeploymentFailedReason))
-		Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
+		Expect(cond.Message).To(Equal(msg))
 	})
 })
