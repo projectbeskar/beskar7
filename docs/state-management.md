@@ -167,7 +167,7 @@ kubectl patch physicalhost <name> --type=merge -p '{"metadata":{"finalizers":[]}
 `kubectl describe physicalhost <name>` shows the conditions list — native `metav1.Condition`, no `severity` field, every condition (including `True`) carries a `reason`. Key types:
 
 - `RedfishConnectionReady` — BMC connectivity. True reason `RedfishConnected`.
-- `HostAvailable` — host has no consumer. True reason `HostAvailable`.
+- `HostAvailable` — no consumer holds the host. True reason `HostAvailable`; `False (HostClaimed)` while `spec.consumerRef` is set.
 - `HostInspected` — inspection report has been persisted. True reason `HostInspected`; `False (HostReleased)` when a host returns to `Available` after a run.
 
 Full reason lists: [PhysicalHost → Conditions](physicalhost.md#conditions).

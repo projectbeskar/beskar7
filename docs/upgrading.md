@@ -115,8 +115,12 @@ The practical differences:
   `InfrastructureReady` condition. See `docs/api-reference.md` § Conditions and the CAPI mirror.
 - **`PhysicalHost` gains no `Ready` or `Paused` condition** — it is not a CAPI contract resource
   and has no owning `Cluster`. Its three conditions (`RedfishConnectionReady`, `HostAvailable`,
-  `HostInspected`) are otherwise unchanged, now with a `reason` on their `True` state too
+  `HostInspected`) keep their types, now with a `reason` on their `True` state too
   (`RedfishConnected`, `HostAvailable`, `HostInspected`).
+- **`HostAvailable` now goes `False` (reason `HostClaimed`) while a consumer holds the host.**
+  Previously it was set `True` once, on the transition into `Available`, and never flipped back,
+  so a claimed host kept reporting `HostAvailable=True`. Anything that waits on the condition
+  (`kubectl wait --for=condition=HostAvailable`) now sees it drop on claim and return on release.
 
 ### `Beskar7Machine.status.failureReason` / `status.failureMessage` are gone
 
