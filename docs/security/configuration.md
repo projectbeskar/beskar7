@@ -196,7 +196,7 @@ The `Deployment` template (kustomize and Helm) sets `runAsNonRoot: true`, `runAs
 There is no built-in security-scanning or compliance-reporting CronJob. Use your platform's normal tooling:
 
 - Kubernetes audit logs from the kube-apiserver.
-- A workload-CVE scanner (e.g. Trivy, Grype) against the manager image.
+- A workload-CVE scanner (e.g. OSV-Scanner, Trivy, Grype) against the manager image.
 - A Pod Security Admission profile (`baseline` or `restricted`) on the `capb7-system` namespace.
 
 ## See also
