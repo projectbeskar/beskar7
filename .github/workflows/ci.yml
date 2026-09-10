@@ -550,11 +550,16 @@ jobs:
         fi
         echo "OVERRIDE_VERSION=$OVERRIDE_VERSION" >> "$GITHUB_ENV"
         make clusterctl-override VERSION="$OVERRIDE_VERSION"
+        # A versioned URL, not releases/latest/: clusterctl resolves "latest"
+        # against GitHub while creating the repository client, before it looks
+        # at the local repository, and the latest published release may not
+        # carry the assets yet. With the explicit version every read is served
+        # from ~/.cluster-api/overrides.
         cat > /tmp/clusterctl.yaml <<EOF
         providers:
           - name: beskar7
             type: InfrastructureProvider
-            url: https://github.com/projectbeskar/beskar7/releases/latest/infrastructure-components.yaml
+            url: https://github.com/projectbeskar/beskar7/releases/${OVERRIDE_VERSION}/infrastructure-components.yaml
         images:
           infrastructure-beskar7:
             repository: ${{ env.REGISTRY }}/${{ github.repository }}
