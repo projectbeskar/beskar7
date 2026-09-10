@@ -53,6 +53,12 @@ helm install beskar7 beskar7/beskar7 \
 ```
 
 
+**Using clusterctl** (add the provider to `~/.cluster-api/clusterctl.yaml` first, see [Installation](docs/installation.md#install-via-clusterctl)):
+
+```bash
+clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the clusterctl assets
+```
+
 **Using Release Manifests:**
 
 ```bash

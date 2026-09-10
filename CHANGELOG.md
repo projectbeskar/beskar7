@@ -6,8 +6,31 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **Installable with `clusterctl init`.** Every release now publishes the two assets
+  the [clusterctl provider contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/clusterctl)
+  asks for: `infrastructure-components.yaml` (the kustomize overlay, with the
+  clusterctl variable `${BESKAR7_BOOTSTRAP_URL_BASE:=…}` for `--bootstrap-url-base`)
+  and `metadata.yaml` (release series → contract, pinned to the CRD contract label by
+  `test/contract`). `beskar7-manifests-<version>.yaml` stays as the plain-kubectl
+  manifest with the variables resolved. Until beskar7 is in clusterctl's built-in
+  list, declare it under `providers:` in the clusterctl config; `docs/installation.md`
+  has the snippet. `make clusterctl-override` publishes the current tree into a
+  clusterctl local repository, and a new CI job installs beskar7 that way on every
+  pull request and runs the smoke suite against it.
+
 ### Fixed
 
+- **The kustomize / release-manifest install could not provision a host.** It had
+  no Service for the callback server (`--bootstrap-url-base` pointed at
+  `beskar7-controller-manager.beskar7-system.svc:8082`, a name only the Helm chart
+  created), the serving certificate did not cover that name, and the NetworkPolicy
+  allowed neither `:8082` nor the metrics port the manager actually binds (`:8443`,
+  not `:8080`). All four are fixed; the Deployment is now named
+  `beskar7-controller-manager` like the chart's (delete the old `controller-manager`
+  Deployment after re-applying a manifest install, see `docs/upgrading.md`), and its
+  image pull policy is `IfNotPresent` (the tag is pinned per release).
 - **A bootstrap token or boot nonce is no longer re-minted while the host controller
   is promoting it.** `applyBootstrapTokenAnnotation` / `applyBootNonceAnnotation`
   copied the freshly minted hash into `Status.Bootstrap` and cleared the annotation

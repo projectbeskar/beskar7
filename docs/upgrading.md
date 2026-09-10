@@ -112,6 +112,14 @@ What changes on your side:
   `clusterctl.cluster.x-k8s.io/move-hierarchy` (nothing owns a host, so without it a move would leave
   every host behind). Replacing the CRDs installs them; there is no relabel step. Read
   [Installation](installation.md#clusterctl-move) before moving a namespace.
+- **Release-manifest installs:** the Deployment is now named `beskar7-controller-manager` (it was
+  `controller-manager`; the chart's name), a `beskar7-controller-manager` Service exposes the callback
+  server on `:8082`, and the serving certificate and NetworkPolicy cover it — a manifest install can
+  provision hosts for the first time. After re-applying the manifest, delete the old Deployment or
+  two managers will run: `kubectl -n beskar7-system delete deploy controller-manager`.
+- **clusterctl:** the release ships `infrastructure-components.yaml` and `metadata.yaml`, so
+  `clusterctl init --infrastructure beskar7` is a supported install path from `v0.5.0` on (see
+  [Installation](installation.md#install-via-clusterctl)).
 
 ### Procedure
 

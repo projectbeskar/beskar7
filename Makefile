@@ -17,6 +17,14 @@ IMAGE_REGISTRY ?= ghcr.io/projectbeskar/beskar7
 IMAGE_REPO ?= beskar7
 IMG ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO):$(VERSION)
 
+# clusterctl variable syntax (${VAR:=default}, drone/envsubst) resolved to the
+# default for consumers that never run envsubst: `make deploy` and the
+# plain-kubectl release manifest. `clusterctl init` gets the raw file.
+RESOLVE_CLUSTERCTL_DEFAULTS = sed -E 's/\$$\{[A-Za-z_][A-Za-z0-9_]*:=([^}]*)\}/\1/g'
+
+# Where `make clusterctl-override` writes a local clusterctl repository.
+CLUSTERCTL_OVERRIDES ?= $(HOME)/.cluster-api/overrides
+
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "generateEmbeddedObjectMeta=true,maxDescLen=0"
 
@@ -166,31 +174,40 @@ uninstall:
 deploy:
 	$(MAKE) manifests
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
+	$(KUSTOMIZE) build config/default | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl apply -f -
 
 # Undeploy controller from the cluster specified in ~/.kube/config
 undeploy:
-	$(KUSTOMIZE) build config/default | kubectl delete -f -
+	$(KUSTOMIZE) build config/default | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl delete -f -
 
-# Generate a single manifest file for a release
+# Generate the release manifests: infrastructure-components.yaml (clusterctl,
+# keeps ${VAR:=default}) and beskar7-manifests-$(VERSION).yaml (plain kubectl,
+# defaults resolved). VERSION is stamped into the image tag and the version
+# label of temporary copies of the kustomizations; the originals are restored
+# afterwards from a scratch directory — never with `git checkout`, which would
+# also throw away uncommitted edits to those files.
 release-manifests:
-	$(MAKE) manifests # Ensure CRDs and RBAC are up-to-date
-	# Update kustomization.yaml files with current VERSION before building
-	# Pattern matches versions with optional suffixes like -alpha, -beta, -rc1, etc.
-	sed -i.bak 's/app\.kubernetes\.io\/version: v[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9]\+\)*/app.kubernetes.io\/version: $(VERSION)/g' config/default/kustomization.yaml
-	sed -i.bak 's/newTag: v[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9]\+\)*/newTag: $(VERSION)/g' config/default/kustomization.yaml
-	# Update manager kustomization (critical for image tag)
-	sed -i.bak 's/newTag: v[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9]\+\)*/newTag: $(VERSION)/g' config/manager/kustomization.yaml
-	# Update overlay files too
-	find config/overlays -name "kustomization.yaml" -exec sed -i.bak 's/app\.kubernetes\.io\/version: v[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9]\+\)*/app.kubernetes.io\/version: $(VERSION)/g' {} \;
-	find config/overlays -name "kustomization.yaml" -exec sed -i.bak 's/newTag: v[0-9]\+\.[0-9]\+\.[0-9]\+\(-[a-zA-Z0-9]\+\)*/newTag: $(VERSION)/g' {} \;
-	# CRITICAL: Delete backup files BEFORE kustomize runs (it tries to parse them)
-	find config/ -name "*.yaml.bak" -delete 2>/dev/null || true
-	# Build manifests (now that .bak files are gone)
-	$(KUSTOMIZE) build config/default > beskar7-manifests-$(VERSION).yaml
-	# Restore original kustomization.yaml files using git
-	git checkout config/default/kustomization.yaml config/manager/kustomization.yaml 2>/dev/null || true
-	git checkout config/overlays/ 2>/dev/null || true
-	@echo "Release manifests generated: beskar7-manifests-$(VERSION).yaml"
+	$(MAKE) manifests
+	@set -e; \
+	files="config/default/kustomization.yaml config/manager/kustomization.yaml $$(find config/overlays -name kustomization.yaml)"; \
+	tmp=$$(mktemp -d); \
+	for f in $$files; do \
+	  mkdir -p "$$tmp/$$(dirname $$f)"; cp "$$f" "$$tmp/$$f"; \
+	  sed -i -E 's/app\.kubernetes\.io\/version: v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?/app.kubernetes.io\/version: $(VERSION)/g; s/newTag: v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?/newTag: $(VERSION)/g' "$$f"; \
+	done; \
+	rc=0; $(KUSTOMIZE) build config/default > infrastructure-components.yaml || rc=$$?; \
+	for f in $$files; do cp "$$tmp/$$f" "$$f"; done; rm -rf "$$tmp"; \
+	if [ $$rc -ne 0 ]; then echo "kustomize build failed ($$rc)"; rm -f infrastructure-components.yaml; exit $$rc; fi; \
+	$(RESOLVE_CLUSTERCTL_DEFAULTS) infrastructure-components.yaml > beskar7-manifests-$(VERSION).yaml; \
+	echo "Release manifests generated: infrastructure-components.yaml (clusterctl) and beskar7-manifests-$(VERSION).yaml (kubectl)"
 
-.PHONY: build build-mock-redfish build-mock-inspector generate manifests test lint docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install-golangci-lint install uninstall undeploy rbac crd webhook release-manifests sync-chart-crds manifests-and-sync smoke smoke-teardown
+# Publish the release assets into a clusterctl local repository so that
+# `clusterctl init --infrastructure beskar7:$(VERSION)` installs this tree.
+# VERSION must be a semantic version (the directory name is one).
+clusterctl-override: release-manifests
+	mkdir -p $(CLUSTERCTL_OVERRIDES)/infrastructure-beskar7/$(VERSION)
+	cp infrastructure-components.yaml metadata.yaml $(CLUSTERCTL_OVERRIDES)/infrastructure-beskar7/$(VERSION)/
+	@echo "clusterctl local repository: $(CLUSTERCTL_OVERRIDES)/infrastructure-beskar7/$(VERSION)"
+	@echo "install with: clusterctl init --infrastructure beskar7:$(VERSION)  (provider 'beskar7' must be in your clusterctl config, see docs/installation.md)"
+
+.PHONY: build build-mock-redfish build-mock-inspector generate manifests test lint docker-build docker-build-mock-redfish docker-build-mock-inspector docker-push deploy install-controller-gen install-golangci-lint install uninstall undeploy rbac crd webhook release-manifests clusterctl-override sync-chart-crds manifests-and-sync smoke smoke-teardown

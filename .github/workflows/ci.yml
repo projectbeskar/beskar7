@@ -242,7 +242,10 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: release-manifests
-        path: beskar7-manifests-v0.0.0-ci.yaml
+        path: |
+          beskar7-manifests-v0.0.0-ci.yaml
+          infrastructure-components.yaml
+          metadata.yaml
 
   # Job 7: End-to-End Smoke Test
   #
@@ -383,7 +386,7 @@ jobs:
         # created in a live namespace (creating content in a Terminating
         # namespace is forbidden), so wait for the deletion to finish before
         # recreating it.
-        kubectl wait --for=delete namespace/beskar7-smoke --timeout=120s 2>/dev/null || true
+        kubectl wait --for=delete namespace/beskar7-smoke --timeout=300s 2>/dev/null || true
         kubectl apply -f hack/smoke/manifests/00-namespace.yaml
         helm upgrade beskar7 ./charts/beskar7 \
           --namespace beskar7-system \
@@ -447,10 +450,166 @@ jobs:
         path: benchmark.txt
 
   # Summary Job
+  # The same smoke, installed the way clusterctl users get it: the components
+  # YAML built from this tree published into a clusterctl local repository
+  # (~/.cluster-api/overrides), then `clusterctl init --infrastructure beskar7`.
+  # This is what proves the clusterctl provider contract end to end — variable
+  # substitution, target namespace, labels, cert-manager wiring, the provider
+  # inventory — and that the kustomize-based install can actually provision
+  # (callback Service, cert SAN, NetworkPolicy), which the Helm job never
+  # exercises.
+  e2e-clusterctl:
+    name: E2E clusterctl install
+    runs-on: ubuntu-latest
+    needs: [manifests, container]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: beskar7-clusterctl
+        kubectl_version: v1.31.0
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
+
+    - name: Install kustomize and controller-gen
+      run: |
+        go install sigs.k8s.io/kustomize/kustomize/v5@v5.4.3
+        make install-controller-gen
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build controller image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64
+        push: false
+        tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build mock-redfish image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.mock-redfish
+        platforms: linux/amd64
+        push: false
+        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build mock-inspector image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: Dockerfile.mock-inspector
+        platforms: linux/amd64
+        push: false
+        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Load images into kind
+      run: |
+        kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci --name beskar7-clusterctl
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci --name beskar7-clusterctl
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci --name beskar7-clusterctl
+
+    - name: Install Cluster API core via clusterctl
+      run: |
+        # clusterctl installs cert-manager itself. Keep the version in step
+        # with the sigs.k8s.io/cluster-api version in go.mod (v1beta2 API).
+        CLUSTERCTL_VERSION=v1.13.4
+        curl -L -o /tmp/clusterctl "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CLUSTERCTL_VERSION}/clusterctl-linux-amd64"
+        chmod +x /tmp/clusterctl
+        sudo mv /tmp/clusterctl /usr/local/bin/clusterctl
+        clusterctl version
+        clusterctl init
+        for ns in capi-system capi-kubeadm-bootstrap-system capi-kubeadm-control-plane-system; do
+          kubectl wait --for=condition=Available --timeout=300s deployment --all -n "$ns"
+        done
+
+    - name: Publish this tree as a clusterctl local repository
+      run: |
+        # The newest release series in metadata.yaml, patch 0, names the
+        # repository version; the image tag inside the components is rewritten
+        # to the kind-loaded one through clusterctl's image overrides.
+        OVERRIDE_VERSION=$(awk '/major:/{M=$NF} /minor:/{m=$NF; print "v" M "." m ".0"; exit}' metadata.yaml)
+        if ! [[ "$OVERRIDE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "could not derive a semantic version from metadata.yaml: '$OVERRIDE_VERSION'"; exit 1
+        fi
+        echo "OVERRIDE_VERSION=$OVERRIDE_VERSION" >> "$GITHUB_ENV"
+        make clusterctl-override VERSION="$OVERRIDE_VERSION"
+        # A versioned URL, not releases/latest/: clusterctl resolves "latest"
+        # against GitHub while creating the repository client, before it looks
+        # at the local repository, and the latest published release may not
+        # carry the assets yet. With the explicit version every read is served
+        # from ~/.cluster-api/overrides.
+        cat > /tmp/clusterctl.yaml <<EOF
+        providers:
+          - name: beskar7
+            type: InfrastructureProvider
+            url: https://github.com/projectbeskar/beskar7/releases/${OVERRIDE_VERSION}/infrastructure-components.yaml
+        images:
+          infrastructure-beskar7:
+            repository: ${{ env.REGISTRY }}/${{ github.repository }}
+            tag: smoke-ci
+        EOF
+        cat /tmp/clusterctl.yaml
+
+    - name: Install Beskar7 via clusterctl init
+      env:
+        GOPROXY: "off"
+      run: |
+        clusterctl init --infrastructure "beskar7:${OVERRIDE_VERSION}" --config /tmp/clusterctl.yaml -v 3
+        kubectl -n beskar7-system get pods,deploy,svc
+        kubectl -n beskar7-system rollout status deploy/beskar7-controller-manager --timeout=300s
+        echo "=== provider inventory ==="
+        kubectl get providers -A
+        echo "=== the args clusterctl rendered (variable default must be resolved) ==="
+        kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'; echo
+        if kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q '\${'; then
+          echo "unresolved clusterctl variable in the rendered Deployment"; exit 1
+        fi
+
+    - name: Run make smoke
+      run: make smoke
+
+    - name: Diagnostics on failure
+      if: failure()
+      run: |
+        echo "=== Providers ==="
+        kubectl get providers -A || true
+        echo "=== Pods (all namespaces) ==="
+        kubectl get pods -A -o wide
+        echo "=== Beskar7 objects in beskar7-system ==="
+        kubectl -n beskar7-system get all,certificate,networkpolicy || true
+        echo "=== Beskar7 controller log (last 2000) ==="
+        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=2000 || true
+        echo "=== Mock-redfish log ==="
+        kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
+        echo "=== Mock-inspector Job + log ==="
+        kubectl -n beskar7-smoke get job mock-inspector -o yaml || true
+        kubectl -n beskar7-smoke logs -l app.kubernetes.io/name=mock-inspector --tail=100 || true
+        echo "=== PhysicalHost ==="
+        kubectl -n beskar7-smoke get physicalhost -o yaml || true
+        echo "=== Beskar7Machine ==="
+        kubectl -n beskar7-smoke get beskar7machine -o yaml || true
+
   ci-success:
     name: CI Success
     runs-on: ubuntu-latest
-    needs: [lint, security, test, integration-test, container, manifests, e2e-setup]
+    needs: [lint, security, test, integration-test, container, manifests, e2e-setup, e2e-clusterctl]
     if: always()
     steps:
     - name: Check all jobs status
@@ -461,7 +620,8 @@ jobs:
               "${{ needs.integration-test.result }}" != "success" || \
               "${{ needs.container.result }}" != "success" || \
               "${{ needs.manifests.result }}" != "success" || \
-              "${{ needs.e2e-setup.result }}" != "success" ]]; then
+              "${{ needs.e2e-setup.result }}" != "success" || \
+              "${{ needs.e2e-clusterctl.result }}" != "success" ]]; then
           echo "One or more critical jobs failed"
           exit 1
         fi

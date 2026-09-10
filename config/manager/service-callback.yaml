@@ -1,0 +1,24 @@
+# The host-callback server: inspection POST, bootstrap GET, the provisioned /
+# provision-failed callbacks and the per-host /boot endpoint, all on :8082 over
+# TLS. The manager's default --bootstrap-url-base points at this Service, and
+# PhysicalHost.Status.Bootstrap.URL is derived from it, so without it a
+# kustomize / clusterctl install could never hear back from a host. Bare-metal
+# hosts reach it while PXE-booting: expose it (LoadBalancer/NodePort/Ingress)
+# or run a callback-only manager on the provisioning network, and set
+# BESKAR7_BOOTSTRAP_URL_BASE to the address they will use.
+apiVersion: v1
+kind: Service
+metadata:
+  name: beskar7-controller-manager
+  namespace: beskar7-system
+  labels:
+    app.kubernetes.io/component: callback-server
+spec:
+  type: ClusterIP
+  ports:
+  - name: callback
+    port: 8082
+    targetPort: 8082
+    protocol: TCP
+  selector:
+    control-plane: controller-manager

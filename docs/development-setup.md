@@ -67,6 +67,15 @@ make deploy IMG=my-registry/my-repo:dev
 
 This applies the full kustomize overlay including RBAC, the deployment, and the webhook configuration. Ensure cert-manager is installed first (see [Installation](installation.md#prerequisites)).
 
+To exercise the clusterctl install path against the current tree, publish it as a clusterctl local repository and let `clusterctl init` install it:
+
+```bash
+make clusterctl-override VERSION=v0.5.0        # writes ~/.cluster-api/overrides/infrastructure-beskar7/v0.5.0/
+clusterctl init --infrastructure beskar7:v0.5.0 # needs the provider in ~/.cluster-api/clusterctl.yaml, see Installation
+```
+
+`VERSION` must be a semantic version; it names the repository directory and the image tag in the components, so point clusterctl at the image you built (`images:` overrides in its config) or push it under that tag.
+
 ## Verify
 
 ```bash

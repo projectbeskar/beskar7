@@ -48,4 +48,5 @@ fix-go-env.sh
 # release workflow attaches them as GitHub Release assets but they should
 # not be tracked in git).
 beskar7-manifests-*.yaml
+infrastructure-components.yaml
 field-testing/

@@ -130,8 +130,14 @@ teardown() {
   # namespace is already gone (idempotent re-runs).
   kubectl get ns "${SMOKE_NS}" >/dev/null 2>&1 || return 0
 
+  # The layer-7 MachineDeployment/MachineSet go first: a MachineSet that
+  # outlives its Machines recreates them (new finalizers, new claims against
+  # hosts that are being deleted), and the namespace then takes minutes to
+  # finalize instead of seconds.
   kubectl delete --ignore-not-found=true -n "${SMOKE_NS}" \
-    machine,kubeadmconfig,beskar7machine,beskar7cluster,cluster,physicalhost --all \
+    machinedeployment,machineset --all --wait=false >/dev/null 2>&1 || true
+  kubectl delete --ignore-not-found=true -n "${SMOKE_NS}" \
+    machine,kubeadmconfig,beskar7machine,beskar7machinetemplate,beskar7cluster,cluster,physicalhost --all \
     --wait=false >/dev/null 2>&1 || true
 
   # Give controllers a few seconds to honour finalizers, then force-remove
@@ -142,7 +148,7 @@ teardown() {
   # Force-removing is safe for ephemeral smoke fixtures.
   sleep 5
   local obj name
-  for obj in machine kubeadmconfig beskar7machine beskar7cluster cluster physicalhost; do
+  for obj in machinedeployment machineset machine kubeadmconfig beskar7machine beskar7cluster cluster physicalhost; do
     while read -r name; do
       [[ -z "${name}" ]] && continue
       kubectl -n "${SMOKE_NS}" patch "${name}" --type=merge \

@@ -24,20 +24,30 @@ spec:
     - protocol: TCP
       port: 9443
   
-  # Allow metrics scraping from monitoring systems
+  # Allow metrics scraping from monitoring systems (the manager binds
+  # --metrics-bind-address=:8443)
   - from:
     - namespaceSelector:
         matchLabels:
           name: monitoring
     ports:
     - protocol: TCP
-      port: 8080
+      port: 8443
   
   # Allow health checks from ingress controllers/load balancers
   - from: []
     ports:
     - protocol: TCP
       port: 8081
+  
+  # Callback traffic (inspection POST, bootstrap GET, provisioned / provision-failed
+  # callbacks, the per-host /boot endpoint). Authorization is the per-host bearer
+  # token and boot nonce; bare-metal hosts boot from addresses that cannot be
+  # allow-listed here. TLS is mandatory.
+  - from: []
+    ports:
+    - protocol: TCP
+      port: 8082
   
   # Egress rules - what the manager can connect TO
   egress:
@@ -130,7 +140,7 @@ spec:
           app: prometheus
     ports:
     - protocol: TCP
-      port: 8080
+      port: 8443
 
 ---
 apiVersion: networking.k8s.io/v1
