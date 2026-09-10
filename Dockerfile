@@ -4,7 +4,7 @@
 #   docker inspect <tag> --format '{{index .RepoDigests 0}}'
 # then update both the digest and the human-readable tag comment below.
 # golang:1.25 (refreshed 2026-09-10) — go1.25.14
-FROM golang:1.25@sha256:699337d620559a59b4a2bb298ad59611e535d2ee755a34cf2d2a98f37578dc80 as builder
+FROM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea as builder
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.mod go.mod
