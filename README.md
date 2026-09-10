@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.4.4 — patch release on the GA line (`v0.4.0` was the first GA)  
+**Version:** v0.5.0 — a clean break from the `v0.4.x` line: API `v1beta2`, install namespace `capb7-system`, installable with `clusterctl init` (`v0.4.0` was the first GA)  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.4/beskar7-manifests-v0.4.4.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.5.0/beskar7-manifests-v0.5.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

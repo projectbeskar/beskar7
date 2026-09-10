@@ -6,6 +6,22 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.5.0] - 2026-09-10
+
+A clean break from the `v0.4.x` line, with no in-place upgrade path — read
+`docs/upgrading.md` before touching an existing install. The API is
+`infrastructure.cluster.x-k8s.io/v1beta2`, the only served version (the
+`v1beta1` schema renamed, no conversion webhook); the controller is built
+against Cluster API v1.13 and needs a management cluster on Cluster API
+v1.11 or newer; the install namespace is `capb7-system` and every component
+is named `capb7-…`; every release now ships the clusterctl provider assets,
+so `clusterctl init --infrastructure beskar7` works, and `clusterctl move`
+discovers beskar7 objects. Behind the scenes: the callback-only manager mode
+for management clusters off the provisioning network, a bootstrap-credential
+reuse check backed by the per-host Secret, hosts turning `Available` waking
+the machines waiting for one, and the credential promotion window that
+re-minted tokens under an inspector's feet closed.
+
 ### Added
 
 - **Installable with `clusterctl init`.** Every release now publishes the two assets
@@ -1237,7 +1253,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.5.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...v0.5.0
 [v0.4.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...v0.4.3
 [v0.4.2]: https://github.com/projectbeskar/beskar7/compare/v0.4.1...v0.4.2

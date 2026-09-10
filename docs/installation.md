@@ -95,7 +95,7 @@ To install a build of the current tree instead of a release, publish it into a c
 ## Install via release manifests
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.4.4/beskar7-manifests-v0.4.4.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.5.0/beskar7-manifests-v0.5.0.yaml
 ```
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `capb7-system` namespace and the default `bootstrap.urlBase`. It is the clusterctl components file with the variables above resolved to their defaults; do not `kubectl apply` `infrastructure-components.yaml` itself — it keeps the `${…}` placeholders for `clusterctl init` to fill in.
