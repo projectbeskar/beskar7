@@ -6,7 +6,7 @@ This page covers building Beskar7 from source and deploying it into a developmen
 
 ## Prerequisites
 
-- Go 1.25 (matches `go.mod` and the CI toolchain in `.github/workflows/ci.yml`)
+- Go 1.27 (matches `go.mod` and the CI toolchain in `.github/workflows/ci.yml`)
 - Docker with `buildx` configured for multi-arch builds:
   ```bash
   docker buildx create --use
