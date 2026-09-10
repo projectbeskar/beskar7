@@ -300,8 +300,17 @@ jobs:
     - name: Verify manifest generation
       run: |
         VERSION=${{ github.ref_name }}
-        if [ ! -f "beskar7-manifests-$VERSION.yaml" ]; then
-          echo "❌ Manifest file not generated: beskar7-manifests-$VERSION.yaml"
+        for f in "beskar7-manifests-$VERSION.yaml" infrastructure-components.yaml metadata.yaml; do
+          if [ ! -f "$f" ]; then
+            echo "❌ Release asset missing: $f"
+            exit 1
+          fi
+        done
+        # The kubectl manifest must have every clusterctl variable resolved; the
+        # clusterctl components keep them (clusterctl init resolves them).
+        if grep -q '\${' "beskar7-manifests-$VERSION.yaml"; then
+          echo "❌ Unresolved clusterctl variables in the kubectl manifest:"
+          grep '\${' "beskar7-manifests-$VERSION.yaml"
           exit 1
         fi
         echo "✅ Manifest file generated successfully: beskar7-manifests-$VERSION.yaml"
@@ -316,7 +325,7 @@ jobs:
         
     - name: Generate checksums
       run: |
-        sha256sum beskar7-manifests-${{ github.ref_name }}.yaml > checksums.txt
+        sha256sum beskar7-manifests-${{ github.ref_name }}.yaml infrastructure-components.yaml metadata.yaml > checksums.txt
         
     - name: Upload release artifacts
       uses: actions/upload-artifact@v4
@@ -324,6 +333,8 @@ jobs:
         name: release-artifacts
         path: |
           beskar7-manifests-${{ github.ref_name }}.yaml
+          infrastructure-components.yaml
+          metadata.yaml
           checksums.txt
 
   # Job 4: Create Helm Chart (TODO: Implement Helm chart)
@@ -408,6 +419,18 @@ jobs:
         echo "" >> release-notes.md
         echo "## 📦 Installation" >> release-notes.md
         echo "" >> release-notes.md
+        echo "### Using clusterctl" >> release-notes.md
+        echo "Add the provider to \`~/.cluster-api/clusterctl.yaml\` (until beskar7 is in clusterctl's built-in list):" >> release-notes.md
+        echo "\`\`\`yaml" >> release-notes.md
+        echo "providers:" >> release-notes.md
+        echo "  - name: beskar7" >> release-notes.md
+        echo "    type: InfrastructureProvider" >> release-notes.md
+        echo "    url: https://github.com/projectbeskar/beskar7/releases/latest/infrastructure-components.yaml" >> release-notes.md
+        echo "\`\`\`" >> release-notes.md
+        echo "\`\`\`bash" >> release-notes.md
+        echo "clusterctl init --infrastructure beskar7:$VERSION" >> release-notes.md
+        echo "\`\`\`" >> release-notes.md
+        echo "" >> release-notes.md
         echo "### Using Kubectl" >> release-notes.md
         echo "\`\`\`bash" >> release-notes.md
         echo "kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/$VERSION/beskar7-manifests-$VERSION.yaml" >> release-notes.md
@@ -450,6 +473,8 @@ jobs:
         prerelease: ${{ contains(github.ref_name, '-') }}
         files: |
           release-artifacts/beskar7-manifests-${{ github.ref_name }}.yaml
+          release-artifacts/infrastructure-components.yaml
+          release-artifacts/metadata.yaml
           release-artifacts/checksums.txt
           sbom/sbom.spdx.json
           vulnerability-report/trivy-report.txt
@@ -470,14 +495,15 @@ jobs:
     - name: Update README with latest version
       run: |
         VERSION=${{ github.ref_name }}
-        # Update installation examples in README
-        sed -i "s|beskar7-manifests-v[0-9]\+\.[0-9]\+\.[0-9]\+\.yaml|beskar7-manifests-$VERSION.yaml|g" README.md
+        # Update installation examples: the release path and the manifest name
+        # carry the version (the old pattern left `releases/download/<old>/` behind).
+        sed -i -E "s|releases/download/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?/beskar7-manifests-v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?\.yaml|releases/download/$VERSION/beskar7-manifests-$VERSION.yaml|g" README.md docs/installation.md
         
     - name: Commit changes
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add README.md
+        git add README.md docs/installation.md
         if git diff --staged --quiet; then
           echo "No changes to commit"
         else

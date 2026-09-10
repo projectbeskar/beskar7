@@ -13,6 +13,9 @@ spec:
   commonName: beskar7-webhook-service.beskar7-system.svc
   dnsNames:
   - beskar7-webhook-service.beskar7-system.svc
+  # The callback server (:8082) serves from the same certificate directory;
+  # in-cluster callers verify against the callback Service name.
+  - beskar7-controller-manager.beskar7-system.svc
   issuerRef:
     name: beskar7-selfsigned-issuer
     kind: ClusterIssuer 
