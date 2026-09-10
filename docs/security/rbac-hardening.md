@@ -95,7 +95,7 @@ The Helm chart variant is identical apart from name templating; the chart does n
 When `watchNamespaces` is set, the chart and kustomize variants both generate three pieces:
 
 1. **Minimal `ClusterRole` + `ClusterRoleBinding`** — only the `rbac.authorization.k8s.io/clusterroles, clusterrolebindings` reads, which are the residual cluster-scoped permissions the manager has via a kubebuilder marker. Everything else is removed from cluster scope.
-2. **Leader-election `Role` + `RoleBinding`** in the operator's own namespace (`beskar7-system` by default) covering `coordination.k8s.io/leases` (the leader-election lease) and operator-side `events` creation. The lease lives where the operator runs, regardless of which namespaces it watches.
+2. **Leader-election `Role` + `RoleBinding`** in the operator's own namespace (`capb7-system` by default) covering `coordination.k8s.io/leases` (the leader-election lease) and operator-side `events` creation. The lease lives where the operator runs, regardless of which namespaces it watches.
 3. **Watch `Role` + `RoleBinding`** in each listed namespace covering everything the controller needs to reconcile a Beskar7 CR there: `Secrets`, `ConfigMaps`, `Events`, the Beskar7 CRDs, the CAPI `Machine` / `Cluster` reads.
 
 The manager's `--watch-namespaces` flag must list the same namespaces — otherwise the controller-runtime cache will try to watch namespaces it has no RBAC for and the manager will fail at startup.
@@ -125,7 +125,7 @@ The kustomize equivalent is the `config/rbac/namespace-scoped/` overlay (SEC-2 P
 1. **Swap the RBAC base.** In your top-level overlay, reference `../rbac/namespace-scoped` instead of `../rbac`. List the shared bits (`service_account.yaml`, `metrics_auth_*`, `metrics_reader_role.yaml`) individually because the namespace-scoped dir doesn't bundle them:
 
     ```yaml
-    namespace: beskar7-system
+    namespace: capb7-system
     resources:
     - ../../rbac/namespace-scoped
     - ../../rbac/service_account.yaml
@@ -219,7 +219,7 @@ kubectl get clusterrole -l app.kubernetes.io/name=beskar7
 # Should show one ClusterRole ending in -clusterscope-role
 
 # Leader-election Role in operator namespace:
-kubectl -n beskar7-system get role,rolebinding
+kubectl -n capb7-system get role,rolebinding
 
 # Per-watched-namespace Roles:
 for ns in default tenant-a tenant-b; do
@@ -242,7 +242,7 @@ Test what the controller can actually do as its ServiceAccount:
 
 ```bash
 kubectl auth can-i --list \
-  --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
 ```
 
 For the namespace-scoped topology, also check per-namespace permissions:
@@ -250,12 +250,12 @@ For the namespace-scoped topology, also check per-namespace permissions:
 ```bash
 kubectl auth can-i list secrets \
   -n tenant-a \
-  --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
 # Expect: yes
 
 kubectl auth can-i list secrets \
   -n some-other-namespace \
-  --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
+  --as=system:serviceaccount:capb7-system:beskar7-controller-manager
 # Expect: no
 ```
 

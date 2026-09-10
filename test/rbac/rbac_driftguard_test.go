@@ -665,7 +665,7 @@ func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
 	root := repoRoot(t)
 
 	t.Run("cluster-wide", func(t *testing.T) {
-		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system")
+		rendered := renderHelmTemplate(t, root, "--namespace", "capb7-system")
 		crs, roles := collectRoles(t, rendered)
 		rbs, crbs := collectBindings(t, rendered)
 		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces empty)")
@@ -673,7 +673,7 @@ func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
 	})
 
 	t.Run("namespaced", func(t *testing.T) {
-		rendered := renderHelmTemplate(t, root, "--namespace", "beskar7-system", "--set", "watchNamespaces={rbac-driftguard-test-ns}")
+		rendered := renderHelmTemplate(t, root, "--namespace", "capb7-system", "--set", "watchNamespaces={rbac-driftguard-test-ns}")
 		crs, roles := collectRoles(t, rendered)
 		rbs, crbs := collectBindings(t, rendered)
 		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces=[rbac-driftguard-test-ns])")

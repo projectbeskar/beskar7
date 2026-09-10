@@ -40,8 +40,8 @@ func TestDeriveInspectionURL(t *testing.T) {
 	}{
 		{
 			name:  "happy path",
-			input: "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/beskar7-smoke/smoke-host-01",
-			want:  "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/inspection/beskar7-smoke/smoke-host-01",
+			input: "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/bootstrap/beskar7-smoke/smoke-host-01",
+			want:  "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/inspection/beskar7-smoke/smoke-host-01",
 		},
 		{
 			name:  "replaces only the first occurrence",
@@ -99,8 +99,8 @@ func TestDeriveProvisionedURL(t *testing.T) {
 	}{
 		{
 			name:  "happy path",
-			input: "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/beskar7-smoke/smoke-host-01",
-			want:  "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/provisioned/beskar7-smoke/smoke-host-01",
+			input: "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/bootstrap/beskar7-smoke/smoke-host-01",
+			want:  "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/provisioned/beskar7-smoke/smoke-host-01",
 		},
 		{
 			name:  "replaces only the first occurrence",

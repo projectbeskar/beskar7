@@ -32,7 +32,7 @@ serving certificate. Two modes:
 
   ```bash
   helm install beskar7 beskar7/beskar7 \
-    --namespace beskar7-system --create-namespace \
+    --namespace capb7-system --create-namespace \
     --set certManager.enabled=false
   ```
 
@@ -42,17 +42,11 @@ serving certificate. Two modes:
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace
+  --namespace capb7-system --create-namespace
 ```
 
 
-**Bootstrap URL.** The default `bootstrap.urlBase` is `https://beskar7-controller-manager.beskar7-system.svc:8082`. This matches the Service name when the release is named `beskar7`. If you use a different release name, pass the matching URL:
-
-```bash
-helm install my-release beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace \
-  --set bootstrap.urlBase=https://my-release-controller-manager.beskar7-system.svc:8082
-```
+**Bootstrap URL.** The default `bootstrap.urlBase` follows the release name and namespace: `https://<release>-controller-manager.<namespace>.svc:8082`, the callback Service this chart creates. Set it explicitly when hosts reach the callback server through another address.
 
 Bare-metal hosts must be able to reach the `bootstrap.urlBase` during PXE boot. It is rendered into `PhysicalHost.Status.Bootstrap.URL` for each provisioned host.
 
@@ -110,7 +104,7 @@ All configurable values with their defaults:
 | `certManager.certificate.duration` | `8760h` | Certificate validity (1 year). |
 | `certManager.certificate.renewBefore` | `720h` | Renew 30 days before expiry. |
 | `namespace.create` | `false` | Render a Namespace resource. Set `true` only when not using `--create-namespace`. |
-| `namespace.name` | `beskar7-system` | Namespace for all chart resources. |
+| `namespace.name` | `capb7-system` | Namespace for all chart resources. |
 | `rbac.create` | `true` | Create RBAC resources for the manager. With `watchNamespaces` empty, renders a cluster-scoped ClusterRole + ClusterRoleBinding. With `watchNamespaces` set, renders a minimal ClusterRole + per-namespace Role/RoleBinding pairs (see `watchNamespaces`). |
 | `watchNamespaces` | `[]` | Namespaces the controller watches. Empty (default) = all namespaces, cluster-scoped RBAC. Non-empty list scopes both the cache (`--watch-namespaces` flag on the manager) and the RBAC (per-namespace Role/RoleBinding in each listed namespace + leader-election Role in the operator's own namespace). Beskar7 CRs outside the listed namespaces are ignored. |
 | `networkPolicy.enabled` | `false` | Deploy NetworkPolicy rules for the manager pod. |
@@ -125,7 +119,7 @@ All configurable values with their defaults:
 | `livenessProbe.httpGet.port` | `8081` | Liveness probe port. |
 | `readinessProbe.httpGet.path` | `/readyz` | Readiness probe HTTP path. |
 | `readinessProbe.httpGet.port` | `8081` | Readiness probe port. |
-| `bootstrap.urlBase` | `https://beskar7-controller-manager.beskar7-system.svc:8082` | Base URL for the inspection callback and bootstrap data endpoints. Must be reachable by bare-metal hosts during PXE boot. |
+| `bootstrap.urlBase` | `https://<release>-controller-manager.<namespace>.svc:8082` | Base URL for the inspection callback and bootstrap data endpoints. Must be reachable by bare-metal hosts during PXE boot. |
 | `labels` | `{}` | Additional labels applied to all chart resources. |
 | `annotations` | `{}` | Additional annotations applied to all chart resources. |
 
@@ -164,7 +158,7 @@ The bundled CRDs carry the `clusterctl.cluster.x-k8s.io` label that `clusterctl 
 ## Uninstall
 
 ```bash
-helm uninstall beskar7 --namespace beskar7-system
+helm uninstall beskar7 --namespace capb7-system
 ```
 
 `helm uninstall` does not remove CRDs. Delete them explicitly:

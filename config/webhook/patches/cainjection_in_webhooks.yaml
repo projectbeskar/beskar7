@@ -3,11 +3,11 @@ kind: ValidatingWebhookConfiguration
 metadata:
   name: beskar7-validating-webhook-configuration
   annotations:
-    cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert
+    cert-manager.io/inject-ca-from: capb7-system/beskar7-serving-cert
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
   name: beskar7-mutating-webhook-configuration
   annotations:
-    cert-manager.io/inject-ca-from: beskar7-system/beskar7-serving-cert 
+    cert-manager.io/inject-ca-from: capb7-system/beskar7-serving-cert 

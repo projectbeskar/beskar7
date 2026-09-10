@@ -4,7 +4,7 @@ metadata:
   # Same name as the Helm chart's Deployment so docs, diagnostics and the
   # smoke runner (OPERATOR_DEPLOY) work for both install paths.
   name: beskar7-controller-manager
-  namespace: beskar7-system
+  namespace: capb7-system
   labels:
     control-plane: controller-manager
 spec:
@@ -47,7 +47,7 @@ spec:
         # BESKAR7_BOOTSTRAP_URL_BASE from the environment or its config file and
         # falls back to the in-cluster callback Service. `make release-manifests`
         # and `make deploy` resolve the default for plain kubectl consumers.
-        - --bootstrap-url-base=${BESKAR7_BOOTSTRAP_URL_BASE:=https://beskar7-controller-manager.beskar7-system.svc:8082}
+        - --bootstrap-url-base=${BESKAR7_BOOTSTRAP_URL_BASE:=https://beskar7-controller-manager.capb7-system.svc:8082}
         image: controller
         # The tag is pinned per release; IfNotPresent also lets a locally loaded
         # image (kind, clusterctl local repository) run without a registry.

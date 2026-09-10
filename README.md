@@ -49,7 +49,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 helm repo add beskar7 https://projectbeskar.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
-  --namespace beskar7-system --create-namespace
+  --namespace capb7-system --create-namespace
 ```
 
 

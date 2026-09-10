@@ -83,7 +83,7 @@ By default the runner tears down everything in the `beskar7-smoke` namespace on 
 
 Prerequisites on the target cluster:
 
-- Beskar7 controller installed (`helm install beskar7 beskar7/beskar7 -n beskar7-system --create-namespace`)
+- Beskar7 controller installed (`helm install beskar7 beskar7/beskar7 -n capb7-system --create-namespace`)
 - cert-manager installed (the chart depends on it for the webhook serving cert)
 - Cluster API core installed (so the CAPI `Machine` controller is present and won't block reconciliation on a missing webhook)
 

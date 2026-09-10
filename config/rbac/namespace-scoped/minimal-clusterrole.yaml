@@ -34,4 +34,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: controller-manager
-  namespace: beskar7-system
+  namespace: capb7-system

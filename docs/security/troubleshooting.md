@@ -73,7 +73,7 @@ The callback endpoint returns an opaque `401` for every authentication failure. 
 
 ```bash
 # Tail the logs while the inspector retries:
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager -f | grep "rejected bearer token"
+kubectl logs -n capb7-system deployment/beskar7-controller-manager -f | grep "rejected bearer token"
 ```
 
 Possible causes:
@@ -91,13 +91,13 @@ Possible causes:
 ### Symptom: controller logs show `forbidden`
 
 ```bash
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager | grep -i forbidden
+kubectl logs -n capb7-system deployment/beskar7-controller-manager | grep -i forbidden
 ```
 
 Identify the verb + resource being denied. Compare with the deployed ClusterRole:
 
 ```bash
-kubectl auth can-i --list --as=system:serviceaccount:beskar7-system:beskar7-controller-manager
+kubectl auth can-i --list --as=system:serviceaccount:capb7-system:beskar7-controller-manager
 ```
 
 If the missing permission is for one of the resources the controller legitimately needs to access (e.g. `beskar7machines/finalizers`), the ClusterRole shipped with the chart is incomplete — file a bug. If it is something Beskar7 should not need, do not grant it; file a bug instead.
@@ -123,8 +123,8 @@ The Beskar7Cluster validating webhook is the only webhook in the codebase. Check
 
 ```bash
 kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7
-kubectl get certificate -n beskar7-system
-kubectl get pods -n beskar7-system
+kubectl get certificate -n capb7-system
+kubectl get pods -n capb7-system
 ```
 
 Common causes:
@@ -166,7 +166,7 @@ kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
 If a Pod Security Admission profile is enforced on the namespace, verify the pod manifest matches the chart's expectations:
 
 ```bash
-kubectl get pod -n beskar7-system -l app.kubernetes.io/name=beskar7 -o yaml | grep -A20 securityContext
+kubectl get pod -n capb7-system -l app.kubernetes.io/name=beskar7 -o yaml | grep -A20 securityContext
 ```
 
 The chart's `Deployment` is compatible with `restricted`; if you have customised the manifest and dropped a required field, restore it.
@@ -176,11 +176,11 @@ The chart's `Deployment` is compatible with `restricted`; if you have customised
 When opening an issue with a security symptom:
 
 ```bash
-kubectl get pods -n beskar7-system -o yaml > pods.yaml
+kubectl get pods -n capb7-system -o yaml > pods.yaml
 kubectl get clusterrole -l app.kubernetes.io/name=beskar7 -o yaml > rbac-clusterrole.yaml
-kubectl get networkpolicy -n beskar7-system -o yaml > networkpolicy.yaml
+kubectl get networkpolicy -n capb7-system -o yaml > networkpolicy.yaml
 kubectl get validatingwebhookconfigurations -l app.kubernetes.io/name=beskar7 -o yaml > webhooks.yaml
-kubectl logs -n beskar7-system deployment/beskar7-controller-manager --tail=500 > controller.log
+kubectl logs -n capb7-system deployment/beskar7-controller-manager --tail=500 > controller.log
 
 kubectl get physicalhost -o yaml > physicalhosts.yaml          # redact BMC addresses if shareable
 kubectl get events -A --sort-by='.lastTimestamp' > events.txt

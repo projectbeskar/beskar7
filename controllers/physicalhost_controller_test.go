@@ -785,7 +785,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
 			By("Setting the bootstrap-url annotation (as Beskar7Machine controller would)")
-			const expectedURL = "https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/test-physicalhost"
+			const expectedURL = "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/bootstrap/default/test-physicalhost"
 			phPatch := ph.DeepCopy()
 			if phPatch.Annotations == nil {
 				phPatch.Annotations = map[string]string{}

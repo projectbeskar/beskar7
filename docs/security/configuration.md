@@ -131,7 +131,7 @@ The manager flags that affect security posture (`cmd/manager/main.go`):
 |---|---|---|
 | `--metrics-bind-address` | `:8443` | Metrics endpoint. |
 | `--secure-metrics` | `true` | When true, `/metrics` requires a TokenReview-validated SA bearer; metrics_reader role required. Set false only for local dev. |
-| `--bootstrap-url-base` | `https://beskar7-controller-manager.beskar7-system.svc:8082` | Base URL for the per-host bootstrap URL written to `PhysicalHost.Status.Bootstrap.URL`. Override when the manager Service has a non-default DNS name (e.g. you installed with a release name other than `beskar7`). |
+| `--bootstrap-url-base` | `https://beskar7-controller-manager.capb7-system.svc:8082` | Base URL for the per-host bootstrap URL written to `PhysicalHost.Status.Bootstrap.URL`. Override when the manager Service has a non-default DNS name (e.g. you installed with a release name other than `beskar7`). |
 | `--inspection-port` | `8082` | Port the callback HTTPS endpoint listens on. |
 | `--inspection-cert-dir` | `/tmp/k8s-webhook-server/serving-certs` | Directory containing `tls.crt` + `tls.key` for the callback endpoint. Defaults to the webhook cert dir; both endpoints share a cert covering the controller-manager Service DNS name when cert-manager issues the chart's Certificate. |
 | `--enable-webhook` | `false` | Run the Beskar7Cluster webhook server. |
@@ -197,7 +197,7 @@ There is no built-in security-scanning or compliance-reporting CronJob. Use your
 
 - Kubernetes audit logs from the kube-apiserver.
 - A workload-CVE scanner (e.g. Trivy, Grype) against the manager image.
-- A Pod Security Admission profile (`baseline` or `restricted`) on the `beskar7-system` namespace.
+- A Pod Security Admission profile (`baseline` or `restricted`) on the `capb7-system` namespace.
 
 ## See also
 

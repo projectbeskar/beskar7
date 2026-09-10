@@ -3,7 +3,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: beskar7-manager-network-policy
-  namespace: beskar7-system
+  namespace: capb7-system
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/component: network-policy
@@ -93,7 +93,7 @@ spec:
 
 ---
 # NOTE: The beskar7-allow-namespace-communication policy has been removed because:
-# 1. It was too restrictive, only allowing egress within beskar7-system namespace
+# 1. It was too restrictive, only allowing egress within capb7-system namespace
 # 2. It blocked the controller from reaching the Kubernetes API server
 # 3. The beskar7-manager-network-policy already provides proper egress controls
 # 4. Having overlapping NetworkPolicies can cause unexpected denials
@@ -109,7 +109,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: beskar7-allow-monitoring
-  namespace: beskar7-system
+  namespace: capb7-system
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/component: network-policy
@@ -147,7 +147,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: beskar7-security-monitoring
-  namespace: beskar7-system
+  namespace: capb7-system
   labels:
     app.kubernetes.io/name: beskar7
     app.kubernetes.io/component: network-policy

@@ -9,4 +9,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: controller-manager # Must match ServiceAccount name
-  namespace: beskar7-system # Must match the namespace 
+  namespace: capb7-system # Must match the namespace 

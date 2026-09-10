@@ -38,7 +38,7 @@ Check for errors:
 ```bash
 kubectl describe physicalhost test-server
 kubectl describe beskar7machine test-machine
-kubectl logs -n beskar7-system -l control-plane=beskar7-controller-manager
+kubectl logs -n capb7-system -l control-plane=beskar7-controller-manager
 ```
 
 ## Next steps

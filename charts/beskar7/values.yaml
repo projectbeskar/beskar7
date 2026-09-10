@@ -105,7 +105,7 @@ certManager:
 # without `--create-namespace` and want the chart to render the Namespace.
 namespace:
   create: false
-  name: beskar7-system
+  name: capb7-system
 
 # RBAC configuration
 rbac:
@@ -188,7 +188,11 @@ bootstrap:
   # election) and set urlBase to ITS address; start it with the same
   # --bootstrap-url-base. The chart does not deploy that instance — see the
   # chart README and docs/ipxe-setup.md.
-  urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+  # Empty: derived from the release name and namespace as
+  # https://<release>-controller-manager.<namespace>.svc:8082 — the callback
+  # Service this chart creates. Set it when hosts reach the callback server
+  # through another address.
+  urlBase: ""
 
 # Callback server (inspection POST + bootstrap GET + per-host /boot) exposure.
 #

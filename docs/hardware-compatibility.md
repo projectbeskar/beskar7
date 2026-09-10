@@ -257,7 +257,7 @@ Ensure PXE/network boot is enabled in BIOS:
 **Debug:**
 ```bash
 # Check controller logs
-kubectl logs -n beskar7-system \
+kubectl logs -n capb7-system \
   deployment/beskar7-controller-manager -f
 
 # Test from controller pod

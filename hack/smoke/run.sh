@@ -25,7 +25,7 @@
 #   MOCK_INSPECTOR_IMAGE=... hack/smoke/run.sh   # override mock-inspector image
 #
 # Required: kubectl in PATH, current context with cert-manager + CAPI core
-# installed and the beskar7 chart already deployed to beskar7-system.
+# installed and the beskar7 chart already deployed to capb7-system.
 #
 # Layer 6 (isolation) only does work when the operator was installed with
 # --watch-namespaces (chart value watchNamespaces); otherwise it self-skips.
@@ -42,7 +42,7 @@ SMOKE_NS="beskar7-smoke"
 # Namespace used by the layer-6 isolation check. Deliberately NOT in the
 # operator's --watch-namespaces list when running in watch-namespaces mode.
 ISOLATION_NS="${SMOKE_NS}-unwatched"
-OPERATOR_NS="${OPERATOR_NS:-beskar7-system}"
+OPERATOR_NS="${OPERATOR_NS:-capb7-system}"
 OPERATOR_DEPLOY="${OPERATOR_DEPLOY:-beskar7-controller-manager}"
 MOCK_IMAGE="${MOCK_IMAGE:-}"
 WAIT_TIMEOUT="${WAIT_TIMEOUT:-180s}"

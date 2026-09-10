@@ -952,7 +952,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("race-test"),
 			RedfishClientFactory: noopFactory,
-			BootstrapURLBase:     "https://test-mgr.beskar7-system.svc:8082",
+			BootstrapURLBase:     "https://test-mgr.capb7-system.svc:8082",
 		}
 		// SetupWithManager registers the PhysicalHostStateIndex on the manager's
 		// cache indexer and adds the Beskar7Machine controller to the manager.
@@ -1159,7 +1159,7 @@ var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func
 // Bootstrap data secret tests — envtest + unit level.
 var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 	const (
-		bootstrapURLBase = "https://beskar7-controller-manager.beskar7-system.svc:8082"
+		bootstrapURLBase = "https://beskar7-controller-manager.capb7-system.svc:8082"
 		Timeout          = time.Second * 10
 		Interval         = time.Millisecond * 250
 	)
@@ -1375,10 +1375,10 @@ var _ = Describe("Bootstrap URL formatting", func() {
 	}
 
 	It("should produce the same URL with and without a trailing slash in base", func() {
-		withSlash := buildURL("https://beskar7-controller-manager.beskar7-system.svc:8082/", "default", "my-host")
-		withoutSlash := buildURL("https://beskar7-controller-manager.beskar7-system.svc:8082", "default", "my-host")
+		withSlash := buildURL("https://beskar7-controller-manager.capb7-system.svc:8082/", "default", "my-host")
+		withoutSlash := buildURL("https://beskar7-controller-manager.capb7-system.svc:8082", "default", "my-host")
 		Expect(withSlash).To(Equal(withoutSlash))
-		Expect(withSlash).To(Equal("https://beskar7-controller-manager.beskar7-system.svc:8082/api/v1/bootstrap/default/my-host"))
+		Expect(withSlash).To(Equal("https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/bootstrap/default/my-host"))
 	})
 
 	It("should encode namespace and name correctly in path segments", func() {

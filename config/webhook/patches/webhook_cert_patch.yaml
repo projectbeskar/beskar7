@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: controller-manager
-  namespace: beskar7-system
+  namespace: capb7-system
 spec:
   template:
     spec:

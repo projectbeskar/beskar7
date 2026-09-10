@@ -359,12 +359,12 @@ jobs:
     - name: Install Beskar7 chart (Helm)
       run: |
         helm install beskar7 ./charts/beskar7 \
-          --namespace beskar7-system --create-namespace \
+          --namespace capb7-system --create-namespace \
           --set controllerManager.image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
           --set controllerManager.image.tag=smoke-ci \
           --set controllerManager.image.pullPolicy=Never \
           --wait --timeout=5m
-        kubectl -n beskar7-system get pods,deploy,svc
+        kubectl -n capb7-system get pods,deploy,svc
 
     - name: Run make smoke
       run: |
@@ -389,7 +389,7 @@ jobs:
         kubectl wait --for=delete namespace/beskar7-smoke --timeout=300s 2>/dev/null || true
         kubectl apply -f hack/smoke/manifests/00-namespace.yaml
         helm upgrade beskar7 ./charts/beskar7 \
-          --namespace beskar7-system \
+          --namespace capb7-system \
           --reuse-values \
           --set 'watchNamespaces={beskar7-smoke}' \
           --wait --timeout=5m
@@ -403,7 +403,7 @@ jobs:
         echo "=== Pods (all namespaces) ==="
         kubectl get pods -A -o wide
         echo "=== Beskar7 controller log (last 500) ==="
-        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=2000 || true
+        kubectl -n capb7-system logs deploy/beskar7-controller-manager --tail=2000 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== Mock-inspector Job + log ==="
@@ -414,7 +414,7 @@ jobs:
         echo "=== Beskar7Machine ==="
         kubectl -n beskar7-smoke get beskar7machine -o yaml || true
         echo "=== Operator args (watch-namespaces mode?) ==="
-        kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' || true; echo
+        kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' || true; echo
         echo "=== Isolation PhysicalHost (layer 6; must have no finalizer/state) ==="
         kubectl -n beskar7-smoke-unwatched get physicalhost -o yaml || true
         echo "=== Namespace-scoped RBAC ==="
@@ -572,13 +572,13 @@ jobs:
         GOPROXY: "off"
       run: |
         clusterctl init --infrastructure "beskar7:${OVERRIDE_VERSION}" --config /tmp/clusterctl.yaml -v 3
-        kubectl -n beskar7-system get pods,deploy,svc
-        kubectl -n beskar7-system rollout status deploy/beskar7-controller-manager --timeout=300s
+        kubectl -n capb7-system get pods,deploy,svc
+        kubectl -n capb7-system rollout status deploy/beskar7-controller-manager --timeout=300s
         echo "=== provider inventory ==="
         kubectl get providers -A
         echo "=== the args clusterctl rendered (variable default must be resolved) ==="
-        kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'; echo
-        if kubectl -n beskar7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q '\${'; then
+        kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}'; echo
+        if kubectl -n capb7-system get deploy beskar7-controller-manager -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q '\${'; then
           echo "unresolved clusterctl variable in the rendered Deployment"; exit 1
         fi
 
@@ -592,10 +592,10 @@ jobs:
         kubectl get providers -A || true
         echo "=== Pods (all namespaces) ==="
         kubectl get pods -A -o wide
-        echo "=== Beskar7 objects in beskar7-system ==="
-        kubectl -n beskar7-system get all,certificate,networkpolicy || true
+        echo "=== Beskar7 objects in capb7-system ==="
+        kubectl -n capb7-system get all,certificate,networkpolicy || true
         echo "=== Beskar7 controller log (last 2000) ==="
-        kubectl -n beskar7-system logs deploy/beskar7-controller-manager --tail=2000 || true
+        kubectl -n capb7-system logs deploy/beskar7-controller-manager --tail=2000 || true
         echo "=== Mock-redfish log ==="
         kubectl -n beskar7-smoke logs deploy/mock-redfish --tail=100 || true
         echo "=== Mock-inspector Job + log ==="

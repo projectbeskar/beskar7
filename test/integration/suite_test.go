@@ -184,7 +184,7 @@ var _ = BeforeSuite(func() {
 		// Use a stable local URL for bootstrap URL computation; the callback
 		// server is not started in this suite (we simulate the inspector
 		// directly), but the URL must be non-empty to pass validateAndDefault.
-		BootstrapURLBase: "https://test-mgr.beskar7-system.svc:8082",
+		BootstrapURLBase: "https://test-mgr.capb7-system.svc:8082",
 	}
 	Expect(b7mReconciler.SetupWithManager(mgr)).To(Succeed())
 

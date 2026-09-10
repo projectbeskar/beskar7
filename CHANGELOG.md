@@ -23,9 +23,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 ### Fixed
 
 - **The kustomize / release-manifest install could not provision a host.** It had
-  no Service for the callback server (`--bootstrap-url-base` pointed at
-  `beskar7-controller-manager.beskar7-system.svc:8082`, a name only the Helm chart
-  created), the serving certificate did not cover that name, and the NetworkPolicy
+  no Service for the callback server (the manager's default `--bootstrap-url-base`
+  named a `beskar7-controller-manager` Service only the Helm chart created), the serving certificate did not cover that name, and the NetworkPolicy
   allowed neither `:8082` nor the metrics port the manager actually binds (`:8443`,
   not `:8080`). All four are fixed; the Deployment is now named
   `beskar7-controller-manager` like the chart's (delete the old `controller-manager`
@@ -92,6 +91,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- **BREAKING: the install namespace is `capb7-system`** (was `beskar7-system`), the
+  `cap<provider>-system` convention every Cluster API provider follows. kustomize
+  overlay, release manifest, clusterctl components, the chart's documented install,
+  the smoke runner's default and the manager's default `--bootstrap-url-base`
+  (`https://beskar7-controller-manager.capb7-system.svc:8082`) all move. The chart
+  now derives that default from the release name and namespace instead of
+  hardcoding `beskar7`/`beskar7-system`, so a differently named release no longer
+  needs `bootstrap.urlBase` just to point at its own Service. Existing installs are
+  removed and re-installed, not upgraded in place — `docs/upgrading.md`.
 - **BREAKING: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`, the only
   served version.** `api/v1beta1` was renamed to `api/v1beta2` in place — no
   field changed — with **no conversion webhook** (there are no `v1beta1` users to

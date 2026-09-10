@@ -73,7 +73,7 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: beskar7-bmc-egress
-  namespace: beskar7-system
+  namespace: capb7-system
 spec:
   podSelector:
     matchLabels:
@@ -108,7 +108,7 @@ spec:
 #   certManager.enabled          — webhook + callback endpoint serving certs
 #
 # Apply with:
-#   helm install beskar7 beskar7/beskar7 -n beskar7-system --create-namespace -f values-prod.yaml
+#   helm install beskar7 beskar7/beskar7 -n capb7-system --create-namespace -f values-prod.yaml
 #
 # values-prod.yaml:
 #
@@ -117,7 +117,7 @@ spec:
 #   certManager:
 #     enabled: true
 #   bootstrap:
-#     urlBase: "https://beskar7-controller-manager.beskar7-system.svc:8082"
+#     urlBase: "https://beskar7-controller-manager.capb7-system.svc:8082"
 #   controllerManager:
 #     replicaCount: 1                       # leader-elect=true; only one active
 #     resources:

@@ -1,5 +1,5 @@
 # Adds namespace to all resources.
-namespace: beskar7-system
+namespace: capb7-system
 
 # Value of this field is prepended to the
 # names of all resources, e.g. a deployment named
@@ -66,7 +66,7 @@ images:
 replacements:
 - source:
     kind: Namespace
-    name: beskar7-system
+    name: capb7-system
     fieldPath: metadata.labels.[app.kubernetes.io/version]
   targets:
   - select:

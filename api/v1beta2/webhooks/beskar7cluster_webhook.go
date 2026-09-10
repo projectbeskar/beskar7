@@ -39,8 +39,8 @@ func (webhook *Beskar7ClusterWebhook) SetupWebhookWithManager(mgr ctrl.Manager) 
 //
 // +kubebuilder:webhookconfiguration:mutating=true,name=beskar7-mutating-webhook-configuration
 // +kubebuilder:webhookconfiguration:mutating=false,name=beskar7-validating-webhook-configuration
-// +kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta2,name=validation.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=beskar7-system
-// +kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta2,name=defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=beskar7-system
+// +kubebuilder:webhook:verbs=create;update,path=/validate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster,mutating=false,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta2,name=validation.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=capb7-system
+// +kubebuilder:webhook:verbs=create;update,path=/mutate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster,mutating=true,failurePolicy=fail,matchPolicy=Equivalent,groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,versions=v1beta2,name=defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io,sideEffects=None,admissionReviewVersions=v1,serviceName=beskar7-webhook-service,serviceNamespace=capb7-system
 
 var _ admission.Validator[*infrav1.Beskar7Cluster] = &Beskar7ClusterWebhook{}
 var _ admission.Defaulter[*infrav1.Beskar7Cluster] = &Beskar7ClusterWebhook{}

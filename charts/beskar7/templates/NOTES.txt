@@ -23,7 +23,7 @@
 
 {{- if eq (((.Values.callback | default dict).service | default dict).type | default "ClusterIP") "ClusterIP" }}
 
-NOTE: bootstrap.urlBase is "{{ (.Values.bootstrap | default dict).urlBase }}".
+NOTE: bootstrap.urlBase is "{{ include "beskar7.bootstrapURLBase" . }}".
    Bare-metal hosts must reach the callback server (:8082) DURING PXE boot, before
    they join the cluster network — a cluster-internal .svc address is NOT reachable
    from real hardware. Expose the callback Service externally (set
@@ -34,7 +34,7 @@ NOTE: bootstrap.urlBase is "{{ (.Values.bootstrap | default dict).urlBase }}".
 {{- else }}
 
 8. Callback Service is exposed as type {{ ((.Values.callback | default dict).service | default dict).type | default "ClusterIP" }}. Confirm
-   bootstrap.urlBase ({{ (.Values.bootstrap | default dict).urlBase }}) resolves to that address and is
+   bootstrap.urlBase ({{ include "beskar7.bootstrapURLBase" . }}) resolves to that address and is
    listed in callback.externalNames / callback.externalIPs (serving-cert SAN), or the
    inspector will reject the callback TLS handshake.
    SECURITY: scope this exposure to the provisioning network — do NOT publish :8082
