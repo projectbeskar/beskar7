@@ -1,0 +1,105 @@
+---
+# Second mock BMC, for layer 7 (the templated multi-replica pool).
+#
+# A PhysicalHost is a 1:1 record of a BMC endpoint, so the two pool hosts need
+# two endpoints. This is 10-mock-redfish.yaml's Deployment + Service under a
+# different name; it is a separate document from 61-pool.yaml so the runner can
+# roll it out and probe it BEFORE creating the PhysicalHost that points at it.
+#
+# The readinessProbe is what makes `kubectl rollout status` mean "the TLS
+# listener accepts connections". Without it the pod is Ready the moment the
+# container starts, the Service has no programmed endpoint yet, and the first
+# reconcile of pool-host-b gets `connection refused` and parks the host in
+# Error until the controller's next retry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-redfish-b
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-redfish-b
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-redfish-b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-redfish-b
+        app.kubernetes.io/part-of: beskar7
+        app.kubernetes.io/component: smoke-test
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: mock-redfish
+        # Default image. hack/smoke/run.sh substitutes the tag derived from the
+        # installed controller before the first apply. Keep this literal in
+        # lockstep with 10-mock-redfish.yaml.
+        image: ghcr.io/projectbeskar/beskar7/mock-redfish:v0.4.0-alpha.3
+        imagePullPolicy: IfNotPresent
+        args:
+        - --listen-addr=:8443
+        - --vendor=Generic
+        - --tls=true
+        - --cert-san=mock-redfish-b.beskar7-smoke.svc
+        - --cert-san=mock-redfish-b.beskar7-smoke.svc.cluster.local
+        - --username=admin
+        - --password=password123
+        ports:
+        - containerPort: 8443
+          name: https
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 8443
+          initialDelaySeconds: 2
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8443
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-redfish-b
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/name: mock-redfish-b
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8443
+    targetPort: 8443
+    protocol: TCP
+    name: https
+  selector:
+    app.kubernetes.io/name: mock-redfish-b

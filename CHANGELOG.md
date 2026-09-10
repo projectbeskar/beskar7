@@ -41,6 +41,22 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   scheduled run and the release image scan feed the Security tab. The release asset is now
   `osv-scanner-report.txt` (was `trivy-report.txt`).
 
+### Fixed
+
+- **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
+  answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
+  which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
+  which is before the `EndpointSlice` is programmed and while the `ClusterIP` can still route to
+  the pod that is going away. The derived image is now substituted into the manifest before the
+  first apply, and both layer 3 and layer 7 wait for a ready endpoint and a successful Redfish
+  request through the Service before creating the host that points at it. Layer 3 also asserts
+  `status.state == Available` alongside `status.ready == true`, reading both from one `Get`: the
+  run that prompted this printed `[PASS] [layer 3] PhysicalHost Ready=true, state=Error`.
+  The second mock BMC moved to `hack/smoke/manifests/60-mock-redfish-b.yaml` (from `60-pool.yaml`,
+  now `61-pool.yaml`; `61-pool-inspectors.yaml` is now `62-pool-inspectors.yaml`) so it can be
+  rolled out and probed before the pool fixture creates `pool-host-b`, and it has the same
+  readiness probe as the layer-3 mock.
+
 ### Removed
 
 - **BREAKING: `Beskar7Machine.status.failureReason` and `status.failureMessage` are gone.** A

@@ -181,6 +181,137 @@ fi
 trap 'rc=$?; teardown; exit $rc' EXIT INT TERM
 
 # ---------------------------------------------------------------------------
+# Shared helpers: image resolution and BMC reachability
+# ---------------------------------------------------------------------------
+
+# resolve_component_image <component> <override> <override-var-name>
+#
+# Resolves the image for one of the smoke helper components, in priority order:
+#   1. the override env var (forces imagePullPolicy=Always, because iterative
+#      dev usually re-pushes the same tag)
+#   2. auto-derived from the installed controller: same registry path with
+#      "/beskar7" swapped for "/<component>", same tag. This keeps the helpers
+#      in lockstep with the chart in use, so `make smoke` works against any
+#      released version without manifest edits.
+#   3. empty — leave the manifest's literal alone (a release-time default that
+#      lags by one alpha when a fresh tag has just been cut).
+#
+# Writes RESOLVED_IMAGE and RESOLVED_PULL_POLICY (both possibly empty, meaning
+# "keep what the manifest says"); render_component_manifest consumes them.
+resolve_component_image() {
+  local component="$1" override="$2" override_var="$3" controller_img
+  RESOLVED_IMAGE=""
+  RESOLVED_PULL_POLICY=""
+
+  if [[ -n "${override}" ]]; then
+    RESOLVED_IMAGE="${override}"
+    RESOLVED_PULL_POLICY="Always"
+    info "  ${component} image: ${RESOLVED_IMAGE} (from ${override_var})"
+    return 0
+  fi
+
+  controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
+    -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+  if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
+    RESOLVED_IMAGE="${BASH_REMATCH[1]}/${component}:${BASH_REMATCH[2]}"
+    info "  ${component} image: ${RESOLVED_IMAGE} (auto-derived from ${OPERATOR_DEPLOY})"
+  else
+    info "  ${component} image: <manifest default> (could not parse controller image '${controller_img}')"
+  fi
+}
+
+# render_component_manifest <manifest> <component>
+#
+# Prints the manifest with the resolved image and pull policy substituted in,
+# for piping straight into `kubectl apply -f -`.
+#
+# Substituting BEFORE the first apply is the point: patching the image after
+# the fact (`kubectl set image`) starts a second rollout, and for the window
+# between "the new pod is Ready" and "kube-proxy has moved the ClusterIP off
+# the terminating pod" every connection to the Service is refused. A
+# PhysicalHost created in that window fails its first BMC handshake. Jobs are
+# immutable once their pod is scheduled, which makes a post-apply patch racy
+# there for a second reason.
+render_component_manifest() {
+  local manifest="$1" component="$2"
+  local script=""
+  if [[ -n "${RESOLVED_IMAGE}" ]]; then
+    script+="s|image: ghcr.io/projectbeskar/beskar7/${component}:.*|image: ${RESOLVED_IMAGE}|;"
+  fi
+  if [[ -n "${RESOLVED_PULL_POLICY}" ]]; then
+    script+="s|imagePullPolicy: .*|imagePullPolicy: ${RESOLVED_PULL_POLICY}|;"
+  fi
+  if [[ -z "${script}" ]]; then
+    cat "${manifest}"
+    return 0
+  fi
+  sed "${script}" "${manifest}"
+}
+
+# wait_for_redfish_service <service> [timeout-seconds]
+#
+# Blocks until the mock BMC is actually reachable through its Service: an
+# EndpointSlice carries a ready address, and a Redfish request to the service
+# root comes back.
+#
+# `kubectl rollout status` is not that gate. It returns as soon as the pod is
+# Ready, which is before the EndpointSlice is written and before kube-proxy
+# has programmed the ClusterIP. A PhysicalHost created in that window gets
+# `connection refused` on its first reconcile, parks in Error, and only clears
+# on the controller's next retry — which is what made both E2E jobs fail on
+# run 34458472589 while asserting a green "[PASS] ... state=Error".
+#
+# The request goes through the API server's service proxy rather than a curl
+# pod: it needs no extra image (nothing to pull, nothing to rate-limit), it
+# resolves the Service through the same ready-endpoint list, and it speaks
+# HTTPS to the backend without verifying the mock's self-signed certificate.
+# The Redfish service root is unauthenticated by spec, so no credentials are
+# needed. If the caller lacks services/proxy RBAC the probe says so and the
+# endpoint gate above stands on its own.
+wait_for_redfish_service() {
+  local svc="$1" timeout="${2:-120}"
+  local deadline=$(( $(date +%s) + timeout ))
+  local ready=0 out=""
+
+  info "  waiting for Service ${svc} to have a ready endpoint"
+  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+    ready="$(kubectl -n "${SMOKE_NS}" get endpointslices \
+      -l "kubernetes.io/service-name=${svc}" \
+      -o jsonpath='{range .items[*].endpoints[*]}{.conditions.ready}{"\n"}{end}' 2>/dev/null \
+      | grep -c '^true$' || true)"
+    (( ready >= 1 )) && break
+    sleep 2
+  done
+  if (( ready < 1 )); then
+    fail "Service ${svc} has no ready endpoint after ${timeout}s"
+    kubectl -n "${SMOKE_NS}" get endpointslices -l "kubernetes.io/service-name=${svc}" -o wide 2>&1 | sed 's/^/    /'
+    kubectl -n "${SMOKE_NS}" describe deploy "${svc}" 2>&1 | tail -20 | sed 's/^/    /'
+    return 1
+  fi
+
+  info "  probing the Redfish service root through Service ${svc}"
+  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+    if out="$(kubectl get --raw \
+        "/api/v1/namespaces/${SMOKE_NS}/services/https:${svc}:8443/proxy/redfish/v1/" 2>&1)"; then
+      if [[ "${out}" == *RedfishVersion* ]]; then
+        pass "  ${svc} answers Redfish through its Service"
+        return 0
+      fi
+      dim "  (unexpected service-root payload: $(printf '%s' "${out}" | head -c 120))"
+    elif [[ "${out}" == *orbidden* ]]; then
+      warn "  cannot probe ${svc} through the API server (no services/proxy permission); relying on the endpoint check"
+      return 0
+    fi
+    sleep 2
+  done
+
+  fail "Redfish service root on ${svc} did not answer within ${timeout}s"
+  printf '%s\n' "${out}" | head -5 | sed 's/^/    /'
+  kubectl -n "${SMOKE_NS}" logs "deploy/${svc}" --tail=20 2>&1 | sed 's/^/    /'
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # Layer 1: static install sanity
 # ---------------------------------------------------------------------------
 
@@ -238,40 +369,9 @@ layer_3_reconcile() {
   info "[layer 3] applying mock BMC + PhysicalHost"
   kubectl apply -f "${MANIFEST_DIR}/00-namespace.yaml" >/dev/null
 
-  # Resolve the mock image. Priority:
-  #   1. MOCK_IMAGE env var (operator override; forces imagePullPolicy=Always
-  #      because iterative dev usually reuses the same tag).
-  #   2. Auto-derive from the installed controller: same registry path with
-  #      "/beskar7" swapped for "/mock-redfish". This keeps the mock in
-  #      lockstep with the chart, so `make smoke` works against any released
-  #      version without manifest edits.
-  #   3. Fall back to the literal in the manifest (a release-time default
-  #      that lags by one alpha when a fresh tag has just been cut).
-  local controller_img mock_image="" pull_policy=""
-  if [[ -n "${MOCK_IMAGE}" ]]; then
-    mock_image="${MOCK_IMAGE}"
-    pull_policy="Always"
-    info "  mock image: ${mock_image} (from MOCK_IMAGE)"
-  else
-    controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
-      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-    if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
-      mock_image="${BASH_REMATCH[1]}/mock-redfish:${BASH_REMATCH[2]}"
-      info "  mock image: ${mock_image} (auto-derived from ${OPERATOR_DEPLOY})"
-    else
-      info "  mock image: <manifest default> (could not parse controller image '${controller_img}')"
-    fi
-  fi
-
-  kubectl apply -f "${MANIFEST_DIR}/10-mock-redfish.yaml" >/dev/null
-  if [[ -n "${mock_image}" ]]; then
-    kubectl -n "${SMOKE_NS}" set image deploy/mock-redfish "mock-redfish=${mock_image}" >/dev/null
-  fi
-  if [[ -n "${pull_policy}" ]]; then
-    kubectl -n "${SMOKE_NS}" patch deploy mock-redfish --type=json -p="[
-      {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"${pull_policy}\"}
-    ]" >/dev/null
-  fi
+  resolve_component_image mock-redfish "${MOCK_IMAGE}" MOCK_IMAGE
+  render_component_manifest "${MANIFEST_DIR}/10-mock-redfish.yaml" mock-redfish \
+    | kubectl apply -f - >/dev/null
 
   kubectl apply -f "${MANIFEST_DIR}/20-bmc-secret.yaml" >/dev/null
 
@@ -282,25 +382,39 @@ layer_3_reconcile() {
     return 1
   fi
 
+  # Only now is the PhysicalHost worth creating: the host's first reconcile is
+  # its BMC handshake, and a handshake against a Service with no programmed
+  # endpoint fails.
+  if ! wait_for_redfish_service mock-redfish; then
+    fail "[layer 3] mock BMC never became reachable through its Service"
+    return 1
+  fi
+
   kubectl apply -f "${MANIFEST_DIR}/30-physicalhost.yaml" >/dev/null
 
-  # The PhysicalHost reconciler sets .status.ready (boolean) and condition
-  # HostAvailable, but does not emit a generic "Ready" condition. We poll
-  # both via jsonpath to keep the assertion explicit.
-  info "  waiting up to ${WAIT_TIMEOUT} for PhysicalHost.Status.Ready=true"
-  if ! kubectl -n "${SMOKE_NS}" wait --for=jsonpath='{.status.ready}'=true \
-        physicalhost/smoke-host-01 --timeout="${WAIT_TIMEOUT}"; then
-    fail "[layer 3] PhysicalHost did not become Ready in ${WAIT_TIMEOUT}"
+  # The reconciler sets .status.ready (boolean) and .status.state; both must
+  # line up. Ready=true with state=Error is a host that answered once and then
+  # failed a later handshake, which is not a pass — the two fields are read in
+  # one Get so they come from the same version of the object rather than from
+  # two reads straddling a reconcile.
+  info "  waiting up to ${WAIT_TIMEOUT} for PhysicalHost Ready=true, state=Available"
+  local deadline=$(( $(date +%s) + ${WAIT_TIMEOUT%s} ))
+  local observed=""
+  while [[ "$(date +%s)" -lt "${deadline}" ]]; do
+    observed="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 \
+      -o jsonpath='{.status.ready}/{.status.state}' 2>/dev/null || true)"
+    [[ "${observed}" == "true/Available" ]] && break
+    sleep 3
+  done
+  if [[ "${observed}" != "true/Available" ]]; then
+    fail "[layer 3] PhysicalHost did not reach Ready=true, state=Available in ${WAIT_TIMEOUT} (last seen: ${observed:-<empty>})"
     dim "  --- describe PhysicalHost ---"
     kubectl -n "${SMOKE_NS}" describe physicalhost smoke-host-01 | tail -40
     dim "  --- controller log (last 30) ---"
     kubectl -n "${OPERATOR_NS}" logs deploy/"${OPERATOR_DEPLOY}" --tail=30 | grep -iE "physicalhost|redfish|error" || true
     return 1
   fi
-
-  local state
-  state="$(kubectl -n "${SMOKE_NS}" get physicalhost smoke-host-01 -o jsonpath='{.status.state}' 2>/dev/null || true)"
-  pass "[layer 3] PhysicalHost Ready=true, state=${state:-<empty>}"
+  pass "[layer 3] PhysicalHost Ready=true, state=Available"
 }
 
 # ---------------------------------------------------------------------------
@@ -394,44 +508,9 @@ layer_4_claim() {
 layer_5_inspection() {
   info "[layer 5] running mock-inspector Job to POST hardware report"
 
-  # Derive the mock-inspector image from the installed controller image
-  # (same approach as layer_3_reconcile for mock-redfish): keep them in
-  # lockstep with the chart in use, so smoke runs against any released
-  # version without manifest edits. Respect MOCK_INSPECTOR_IMAGE for
-  # iterative dev (forces imagePullPolicy=Always).
-  local controller_img inspector_image="" pull_policy=""
-  if [[ -n "${MOCK_INSPECTOR_IMAGE:-}" ]]; then
-    inspector_image="${MOCK_INSPECTOR_IMAGE}"
-    pull_policy="Always"
-    info "  inspector image: ${inspector_image} (from MOCK_INSPECTOR_IMAGE)"
-  else
-    controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
-      -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-    if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
-      inspector_image="${BASH_REMATCH[1]}/mock-inspector:${BASH_REMATCH[2]}"
-      info "  inspector image: ${inspector_image} (auto-derived from ${OPERATOR_DEPLOY})"
-    else
-      info "  inspector image: <manifest default> (could not parse controller image '${controller_img}')"
-    fi
-  fi
-
-  # Substitute the inspector image into the Job manifest before apply.
-  # Jobs are immutable after pod scheduling, so `kubectl set image` is
-  # racy here — substitute before kubectl-apply instead. The sed pattern
-  # matches the literal default tag in the manifest.
-  local rendered
-  if [[ -n "${inspector_image}" ]]; then
-    rendered="$(sed "s|image: ghcr.io/projectbeskar/beskar7/mock-inspector:.*|image: ${inspector_image}|" \
-      "${MANIFEST_DIR}/50-mock-inspector-job.yaml")"
-  else
-    rendered="$(cat "${MANIFEST_DIR}/50-mock-inspector-job.yaml")"
-  fi
-  printf '%s\n' "${rendered}" | kubectl apply -f - >/dev/null
-  if [[ -n "${pull_policy}" ]]; then
-    kubectl -n "${SMOKE_NS}" patch job mock-inspector --type=json -p="[
-      {\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/imagePullPolicy\",\"value\":\"${pull_policy}\"}
-    ]" >/dev/null 2>&1 || true
-  fi
+  resolve_component_image mock-inspector "${MOCK_INSPECTOR_IMAGE:-}" MOCK_INSPECTOR_IMAGE
+  render_component_manifest "${MANIFEST_DIR}/50-mock-inspector-job.yaml" mock-inspector \
+    | kubectl apply -f - >/dev/null
 
   # Wait for the Job to reach a terminal state. activeDeadlineSeconds=300
   # on the Job itself bounds the inner pod; --timeout here covers the
@@ -581,22 +660,24 @@ EOF
 layer_7_pool() {
   info "[layer 7] templated multi-replica pool: distinct per-host ProviderIDs"
 
-  kubectl apply -f "${MANIFEST_DIR}/60-pool.yaml" >/dev/null
-
-  # Match the mock image to the installed controller image, same derivation as layer 3.
-  local mock_image=""
-  if controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
-        -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"; then
-    if [[ "${controller_img}" =~ ^(.*)/beskar7:(.*)$ ]]; then
-      mock_image="${BASH_REMATCH[1]}/mock-redfish:${BASH_REMATCH[2]}"
-      kubectl -n "${SMOKE_NS}" set image deploy/mock-redfish-b "mock-redfish=${mock_image}" >/dev/null || true
-    fi
-  fi
+  # The second mock BMC first, and reachable, before the PhysicalHost that
+  # points at it exists: pool-host-b's first reconcile is its BMC handshake
+  # (same ordering as layer 3).
+  resolve_component_image mock-redfish "${MOCK_IMAGE}" MOCK_IMAGE
+  render_component_manifest "${MANIFEST_DIR}/60-mock-redfish-b.yaml" mock-redfish \
+    | kubectl apply -f - >/dev/null
 
   if ! kubectl -n "${SMOKE_NS}" rollout status deploy/mock-redfish-b --timeout=120s >/dev/null; then
     fail "[layer 7] second mock BMC failed to become ready"
+    kubectl -n "${SMOKE_NS}" describe deploy/mock-redfish-b | tail -20
     return 1
   fi
+  if ! wait_for_redfish_service mock-redfish-b; then
+    fail "[layer 7] second mock BMC never became reachable through its Service"
+    return 1
+  fi
+
+  kubectl apply -f "${MANIFEST_DIR}/61-pool.yaml" >/dev/null
 
   # Wait for the MachineSet to clone the template into two Beskar7Machines.
   local -i waited=0 count=0
@@ -614,27 +695,15 @@ layer_7_pool() {
   fi
   pass "[layer 7] MachineSet cloned ${count} Beskar7Machines from one template"
 
-  # Drive each host's inspection to completion, one mock-inspector Job per host.
-  # The mock-inspector Role is namespace-scoped, so the existing ServiceAccount
-  # covers both hosts without additional RBAC.
-  local inspector_image=""
-  if [[ -n "${controller_img:-}" && "${controller_img}" =~ ^(.*)/beskar7:(.*)$ ]]; then
-    inspector_image="${BASH_REMATCH[1]}/mock-inspector:${BASH_REMATCH[2]}"
-  fi
-  # Explicit per-host Jobs (61-pool-inspectors.yaml) reusing the ServiceAccount
-  # and namespace-scoped Role created by 50-mock-inspector-job.yaml in layer 5.
-  # Only the image is substituted — no document surgery.
-  local rendered
-  if [[ -n "${inspector_image}" ]]; then
-    rendered="$(sed "s|image: ghcr.io/projectbeskar/beskar7/mock-inspector:.*|image: ${inspector_image}|" \
-      "${MANIFEST_DIR}/61-pool-inspectors.yaml")"
-  else
-    rendered="$(cat "${MANIFEST_DIR}/61-pool-inspectors.yaml")"
-  fi
-  printf '%s\n' "${rendered}" | kubectl apply -f - >/dev/null
+  # Drive each host's inspection to completion, one explicit mock-inspector Job
+  # per host (62-pool-inspectors.yaml). Both reuse the ServiceAccount and
+  # namespace-scoped Role created by 50-mock-inspector-job.yaml in layer 5:
+  # that Role already covers every host in the namespace.
+  resolve_component_image mock-inspector "${MOCK_INSPECTOR_IMAGE:-}" MOCK_INSPECTOR_IMAGE
+  render_component_manifest "${MANIFEST_DIR}/62-pool-inspectors.yaml" mock-inspector \
+    | kubectl apply -f - >/dev/null
 
   local host
-
   for host in pool-host-a pool-host-b; do
     if ! kubectl -n "${SMOKE_NS}" wait --for=condition=complete \
          "job/mock-inspector-${host}" --timeout=300s >/dev/null 2>&1; then

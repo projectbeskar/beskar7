@@ -9,77 +9,12 @@
 # b7://<ns>/<its-own-host> ProviderID.
 #
 # Two mock BMCs are required — one per host — because a PhysicalHost is a 1:1
-# record of a BMC endpoint.
+# record of a BMC endpoint. The second one lives in 60-mock-redfish-b.yaml so
+# hack/smoke/run.sh can roll it out and probe it BEFORE the PhysicalHost that
+# points at it exists (a host whose first reconcile races the rollout parks in
+# Error until the controller's next retry).
 
-# Second mock BMC. Identical to 10-mock-redfish.yaml but a distinct
-# Deployment/Service so the two PhysicalHosts address different endpoints.
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mock-redfish-b
-  namespace: beskar7-smoke
-  labels:
-    app.kubernetes.io/name: mock-redfish-b
-    app.kubernetes.io/part-of: beskar7
-    app.kubernetes.io/component: smoke-test
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: mock-redfish-b
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: mock-redfish-b
-        app.kubernetes.io/part-of: beskar7
-        app.kubernetes.io/component: smoke-test
-    spec:
-      securityContext:
-        runAsNonRoot: true
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-      - name: mock-redfish
-        image: ghcr.io/projectbeskar/beskar7/mock-redfish:smoke-dev
-        args:
-        - --listen-addr=:8443
-        - --vendor=Generic
-        - --tls=true
-        - --cert-san=mock-redfish-b.beskar7-smoke.svc
-        ports:
-        - name: https
-          containerPort: 8443
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          capabilities:
-            drop: ["ALL"]
-        resources:
-          requests:
-            cpu: 10m
-            memory: 32Mi
-          limits:
-            cpu: 200m
-            memory: 128Mi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mock-redfish-b
-  namespace: beskar7-smoke
-  labels:
-    app.kubernetes.io/name: mock-redfish-b
-    app.kubernetes.io/part-of: beskar7
-    app.kubernetes.io/component: smoke-test
-spec:
-  selector:
-    app.kubernetes.io/name: mock-redfish-b
-  ports:
-  - name: https
-    port: 8443
-    targetPort: https
----
-# Host A -> the layer-3 mock BMC. Host B -> the second one above.
+# Host A -> the layer-3 mock BMC. Host B -> the one in 60-mock-redfish-b.yaml.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
