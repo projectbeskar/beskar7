@@ -57,6 +57,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `cel-go` ahead of the 0.26.0 `k8s.io/apiserver` v0.35.4 pins.
   `sigs.k8s.io/cluster-api` v1.13.4 and `sigs.k8s.io/controller-runtime` v0.23.3 are unchanged.
 
+- **The two published mock images no longer build on a stale Go.** `Dockerfile.mock-redfish` and
+  `Dockerfile.mock-inspector` still pinned the May `golang:1.25` digest after the manager's was
+  refreshed, so the release workflow would have published `mock-redfish` and `mock-inspector`
+  carrying the go1.25.9 standard-library advisories while the manager image was clean. All three
+  Dockerfiles now pin the same go1.25.14 builder, which is what their "same pins as the main
+  Dockerfile" comment already claimed. Neither image is scanned by CI, which is why this did not
+  show up in the baseline.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
