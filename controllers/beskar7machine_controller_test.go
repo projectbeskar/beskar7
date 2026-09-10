@@ -27,7 +27,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
@@ -71,8 +71,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 	// Describe and remain in use.
 
 	Context("When reconciling a Beskar7Machine", func() {
-		var beskar7Machine *infrastructurev1beta1.Beskar7Machine
-		var physicalHost *infrastructurev1beta1.PhysicalHost
+		var beskar7Machine *infrav1.Beskar7Machine
+		var physicalHost *infrav1.PhysicalHost
 		var credentialSecret *corev1.Secret
 		var reconciler *Beskar7MachineReconciler
 		var testNs *corev1.Namespace
@@ -100,19 +100,19 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
 			// Create available PhysicalHost
-			physicalHost = &infrastructurev1beta1.PhysicalHost{
+			physicalHost = &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-host",
 					Namespace: testNs.Name,
 				},
-				Spec: infrastructurev1beta1.PhysicalHostSpec{
-					RedfishConnection: infrastructurev1beta1.RedfishConnection{
+				Spec: infrav1.PhysicalHostSpec{
+					RedfishConnection: infrav1.RedfishConnection{
 						Address:              "https://192.168.1.100",
 						CredentialsSecretRef: credentialSecret.Name,
 					},
 				},
-				Status: infrastructurev1beta1.PhysicalHostStatus{
-					State: infrastructurev1beta1.StateAvailable,
+				Status: infrav1.PhysicalHostStatus{
+					State: infrav1.StateAvailable,
 					Ready: true,
 				},
 			}
@@ -120,12 +120,12 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
 			// Create Beskar7Machine
-			beskar7Machine = &infrastructurev1beta1.Beskar7Machine{
+			beskar7Machine = &infrav1.Beskar7Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-machine",
 					Namespace: testNs.Name,
 				},
-				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				Spec: infrav1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
@@ -168,7 +168,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			// Move status into InUse (not Available) — the failure mode this
 			// test guards against happens precisely when status.state != Available.
-			physicalHost.Status.State = infrastructurev1beta1.StateInUse
+			physicalHost.Status.State = infrav1.StateInUse
 			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
 			By("Calling findAndClaimOrGetAssociatedHost: should return our host via ConsumerRef")
@@ -202,7 +202,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			// No owner Machine → should not have claimed any host yet.
 			hostKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-			got := &infrastructurev1beta1.PhysicalHost{}
+			got := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, hostKey, got)).To(Succeed())
 			Expect(got.Spec.ConsumerRef).To(BeNil(), "no claim should happen without an owner Machine")
 		})
@@ -228,7 +228,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
 			By("Capturing PhysicalHost status before calling setInspectionRequestAnnotation")
-			before := &infrastructurev1beta1.PhysicalHost{}
+			before := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, before)).To(Succeed())
 			statusBefore := before.Status.DeepCopy()
 
@@ -245,7 +245,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(r.setInspectionRequestAnnotation(ctx, r.Log, physicalHost, "inspect")).To(Succeed())
 
 			By("Verifying PhysicalHost.Status is unchanged after annotation call")
-			after := &infrastructurev1beta1.PhysicalHost{}
+			after := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, after)).To(Succeed())
 
 			// Status must be identical — no state transition, no phase change.
@@ -278,7 +278,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// direct StateReady write.
 		It("Should signal inspect-complete via annotation when validateInspectionReport passes hardware checks", func() {
 			beskar7Machine.Namespace = testNs.Name
-			beskar7Machine.Spec.HardwareRequirements = &infrastructurev1beta1.HardwareRequirements{
+			beskar7Machine.Spec.HardwareRequirements = &infrav1.HardwareRequirements{
 				MinCPUCores: 8,
 				MinMemoryGB: 16,
 				MinDiskGB:   100,
@@ -287,14 +287,14 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			// Build a report that comfortably satisfies the requirements.
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
-			physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
-			physicalHost.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
+			physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
+			physicalHost.Status.InspectionReport = &infrav1.InspectionReport{
 				Timestamp:    metav1.Now(),
 				Manufacturer: "Dell Inc.",
 				Model:        "PowerEdge R650",
-				CPUs:         []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 18, Threads: 36}},
-				Memory:       []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "32GB"}},
-				Disks:        []infrastructurev1beta1.DiskInfo{{Name: "sda", SizeGB: 500}},
+				CPUs:         []infrav1.CPUInfo{{ID: "0", Cores: 18, Threads: 36}},
+				Memory:       []infrav1.MemoryInfo{{ID: "DIMM0", Capacity: "32GB"}},
+				Disks:        []infrav1.DiskInfo{{Name: "sda", SizeGB: 500}},
 			}
 			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
@@ -308,7 +308,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			// Annotation handoff: validateInspectionReport calls
 			// setInspectionRequestAnnotation("inspect-complete") on success.
-			updated := &infrastructurev1beta1.PhysicalHost{}
+			updated := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 			Expect(updated.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"),
 				"validateInspectionReport must signal inspect-complete via annotation; PhysicalHost owns the status transition")
@@ -352,13 +352,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			By("Creating a Beskar7Machine with ProviderID pointing at the host")
 			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
-			b7m := &infrastructurev1beta1.Beskar7Machine{
+			b7m := &infrav1.Beskar7Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "delete-test-machine",
 					Namespace:  testNs.Name,
 					Finalizers: []string{Beskar7MachineFinalizer},
 				},
-				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				Spec: infrav1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
@@ -381,7 +381,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(mockRf.PowerState).To(Equal(redfish.OffPowerState))
 
 			By("Verifying ConsumerRef is nil on the host")
-			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			hostAfter := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
 			Expect(hostAfter.Spec.ConsumerRef).To(BeNil(), "ConsumerRef must be cleared after deletion")
 
@@ -417,7 +417,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			By("Creating a Beskar7Machine with force-release annotation")
 			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
-			b7m := &infrastructurev1beta1.Beskar7Machine{
+			b7m := &infrav1.Beskar7Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "force-release-machine",
 					Namespace:  testNs.Name,
@@ -426,7 +426,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 						ForceReleaseAnnotation: "true",
 					},
 				},
-				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				Spec: infrav1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
@@ -448,7 +448,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				"SetPowerState must be skipped on force-release")
 
 			By("Verifying ConsumerRef is still cleared on the host")
-			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			hostAfter := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
 			Expect(hostAfter.Spec.ConsumerRef).To(BeNil(), "ConsumerRef must be cleared even on force-release")
 
@@ -471,13 +471,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			By("Creating a Beskar7Machine pointing at a non-existent host")
 			provID := "b7://" + testNs.Name + "/does-not-exist"
-			b7m := &infrastructurev1beta1.Beskar7Machine{
+			b7m := &infrav1.Beskar7Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "gone-host-machine",
 					Namespace:  testNs.Name,
 					Finalizers: []string{Beskar7MachineFinalizer},
 				},
-				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				Spec: infrav1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
@@ -523,13 +523,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			By("Creating a Beskar7Machine")
 			provID := "b7://" + testNs.Name + "/" + physicalHost.Name
-			b7m := &infrastructurev1beta1.Beskar7Machine{
+			b7m := &infrav1.Beskar7Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "bmc-fail-machine",
 					Namespace:  testNs.Name,
 					Finalizers: []string{Beskar7MachineFinalizer},
 				},
-				Spec: infrastructurev1beta1.Beskar7MachineSpec{
+				Spec: infrav1.Beskar7MachineSpec{
 					InspectionImageURL: "http://boot-server/inspect.ipxe",
 					TargetImageURL:     "http://boot-server/kairos.tar.gz",
 					TargetImageDigest:  bootTestDigest,
@@ -543,7 +543,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(err).NotTo(HaveOccurred(), "deletion must not be blocked by an unreachable BMC")
 
 			By("Verifying ConsumerRef was still cleared on the host")
-			hostAfter := &infrastructurev1beta1.PhysicalHost{}
+			hostAfter := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, hostAfter)).To(Succeed())
 			Expect(hostAfter.Spec.ConsumerRef).To(BeNil())
 
@@ -577,7 +577,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 			// The PhysicalHost must remain unclaimed: paused Reconcile never
 			// reaches findAndClaimOrGetAssociatedHost.
-			unchangedHost := &infrastructurev1beta1.PhysicalHost{}
+			unchangedHost := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, unchangedHost)).To(Succeed())
 			Expect(unchangedHost.Spec.ConsumerRef).To(BeNil(), "paused reconcile must not claim a host")
 		})
@@ -587,13 +587,13 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// requires a CAPI Machine owner chain that this test doesn't set up. The helper
 		// is the unit under test for BUG-8 (terminal-failure wiring).
 		Context("hardware-validation terminal failures (BUG-8)", func() {
-			buildMachine := func(reqs *infrastructurev1beta1.HardwareRequirements) *infrastructurev1beta1.Beskar7Machine {
-				return &infrastructurev1beta1.Beskar7Machine{
+			buildMachine := func(reqs *infrav1.HardwareRequirements) *infrav1.Beskar7Machine {
+				return &infrav1.Beskar7Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "validate-target",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					Spec: infrav1.Beskar7MachineSpec{
 						InspectionImageURL:   "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:       "http://boot-server/images/kairos.tar.gz",
 						TargetImageDigest:    bootTestDigest,
@@ -602,19 +602,19 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				}
 			}
 
-			buildHostWithReport := func(report *infrastructurev1beta1.InspectionReport) *infrastructurev1beta1.PhysicalHost {
-				return &infrastructurev1beta1.PhysicalHost{
+			buildHostWithReport := func(report *infrav1.InspectionReport) *infrav1.PhysicalHost {
+				return &infrav1.PhysicalHost{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "validate-host",
 						Namespace: testNs.Name,
 					},
-					Status: infrastructurev1beta1.PhysicalHostStatus{
+					Status: infrav1.PhysicalHostStatus{
 						InspectionReport: report,
 					},
 				}
 			}
 
-			expectTerminalFailure := func(b *infrastructurev1beta1.Beskar7Machine, expectedReason string) {
+			expectTerminalFailure := func(b *infrav1.Beskar7Machine, expectedReason string) {
 				Expect(b.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set on terminal failure")
 				Expect(*b.Status.FailureReason).To(Equal(expectedReason))
 				Expect(b.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be set")
@@ -622,7 +622,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(b.Status.Ready).To(BeFalse())
 				Expect(b.Status.Phase).NotTo(BeNil())
 				Expect(*b.Status.Phase).To(Equal("Failed"))
-				cond := conditions.Get(b, infrastructurev1beta1.InfrastructureReadyCondition)
+				cond := conditions.Get(b, infrav1.InfrastructureReadyCondition)
 				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
 				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
 				Expect(cond.Reason).To(Equal(expectedReason))
@@ -630,57 +630,57 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			}
 
 			It("Should mark Beskar7Machine terminally Failed when CPU cores are insufficient", func() {
-				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinCPUCores: 16})
-				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
-					CPUs: []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 4}},
+				machine := buildMachine(&infrav1.HardwareRequirements{MinCPUCores: 16})
+				host := buildHostWithReport(&infrav1.InspectionReport{
+					CPUs: []infrav1.CPUInfo{{ID: "0", Cores: 4}},
 				})
 
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error (would requeue forever)")
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
-				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("CPU cores"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("4"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
 			})
 
 			It("Should mark Beskar7Machine terminally Failed when memory is insufficient", func() {
-				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinMemoryGB: 64})
-				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
-					CPUs:   []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 32}},
-					Memory: []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "16GB"}},
+				machine := buildMachine(&infrav1.HardwareRequirements{MinMemoryGB: 64})
+				host := buildHostWithReport(&infrav1.InspectionReport{
+					CPUs:   []infrav1.CPUInfo{{ID: "0", Cores: 32}},
+					Memory: []infrav1.MemoryInfo{{ID: "DIMM0", Capacity: "16GB"}},
 				})
 
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("memory"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("16"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("64"))
 			})
 
 			It("Should mark Beskar7Machine terminally Failed when disk space is insufficient", func() {
-				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinDiskGB: 1000})
-				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
-					CPUs:   []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 32}},
-					Memory: []infrastructurev1beta1.MemoryInfo{{ID: "DIMM0", Capacity: "128GB"}},
-					Disks:  []infrastructurev1beta1.DiskInfo{{Name: "sda", SizeGB: 250}},
+				machine := buildMachine(&infrav1.HardwareRequirements{MinDiskGB: 1000})
+				host := buildHostWithReport(&infrav1.InspectionReport{
+					CPUs:   []infrav1.CPUInfo{{ID: "0", Cores: 32}},
+					Memory: []infrav1.MemoryInfo{{ID: "DIMM0", Capacity: "128GB"}},
+					Disks:  []infrav1.DiskInfo{{Name: "sda", SizeGB: 250}},
 				})
 
 				result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result).To(Equal(ctrl.Result{}))
-				expectTerminalFailure(machine, infrastructurev1beta1.HardwareRequirementsNotMetReason)
+				expectTerminalFailure(machine, infrav1.HardwareRequirementsNotMetReason)
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("disk"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("250"))
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("1000"))
 			})
 
 			It("Should NOT clear FailureReason on a subsequent reconcile (idempotent terminality)", func() {
-				machine := buildMachine(&infrastructurev1beta1.HardwareRequirements{MinCPUCores: 16})
-				host := buildHostWithReport(&infrastructurev1beta1.InspectionReport{
-					CPUs: []infrastructurev1beta1.CPUInfo{{ID: "0", Cores: 4}},
+				machine := buildMachine(&infrav1.HardwareRequirements{MinCPUCores: 16})
+				host := buildHostWithReport(&infrav1.InspectionReport{
+					CPUs: []infrav1.CPUInfo{{ID: "0", Cores: 4}},
 				})
 
 				_, err := reconciler.validateInspectionReport(ctx, reconciler.Log, machine, host)
@@ -699,25 +699,25 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 		Context("inspection timeout terminal failure (BUG-8)", func() {
 			It("Should mark Beskar7Machine terminally Failed when inspection times out", func() {
-				machine := &infrastructurev1beta1.Beskar7Machine{
+				machine := &infrav1.Beskar7Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "timeout-target",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					Spec: infrav1.Beskar7MachineSpec{
 						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
 						TargetImageDigest:  bootTestDigest,
 					},
 				}
 				// Build a host with an InspectionTimestamp older than DefaultInspectionTimeout.
-				host := &infrastructurev1beta1.PhysicalHost{
+				host := &infrav1.PhysicalHost{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "timeout-host",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.PhysicalHostSpec{
-						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Spec: infrav1.PhysicalHostSpec{
+						RedfishConnection: infrav1.RedfishConnection{
 							Address:              "https://192.168.1.100",
 							CredentialsSecretRef: credentialSecret.Name,
 						},
@@ -727,7 +727,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				// Status is a subresource — set it AFTER Create or it's dropped.
 				Expect(k8sClient.Create(ctx, host)).To(Succeed())
 				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
-				host.Status.State = infrastructurev1beta1.StateInspecting
+				host.Status.State = infrav1.StateInspecting
 				host.Status.InspectionTimestamp = &old
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
@@ -737,7 +737,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 
 				// Beskar7Machine in-memory state assertions.
 				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionTimedOutReason))
+				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionTimedOutReason))
 				Expect(machine.Status.FailureMessage).NotTo(BeNil())
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
 				Expect(machine.Status.Ready).To(BeFalse())
@@ -745,7 +745,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(*machine.Status.Phase).To(Equal("Failed"))
 
 				// PhysicalHost should have received the timeout annotation.
-				patchedHost := &infrastructurev1beta1.PhysicalHost{}
+				patchedHost := &infrav1.PhysicalHost{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
 				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("timeout"))
 			})
@@ -756,12 +756,12 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// InspectionTimedOut — success must always win over the timeout check.
 		Context("inspection Complete but InspectionTimestamp older than timeout", func() {
 			It("Should advance to validateInspectionReport and NOT mark InspectionTimedOut", func() {
-				machine := &infrastructurev1beta1.Beskar7Machine{
+				machine := &infrav1.Beskar7Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "late-complete-target",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					Spec: infrav1.Beskar7MachineSpec{
 						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
 						TargetImageDigest:  bootTestDigest,
@@ -772,23 +772,23 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				// Persist the host so setInspectionRequestAnnotation can patch it
 				// (OptimisticLock requires a server-assigned resource version).
 				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
-				host := &infrastructurev1beta1.PhysicalHost{
+				host := &infrav1.PhysicalHost{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "late-complete-host",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.PhysicalHostSpec{
-						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Spec: infrav1.PhysicalHostSpec{
+						RedfishConnection: infrav1.RedfishConnection{
 							Address:              "https://192.168.1.100",
 							CredentialsSecretRef: credentialSecret.Name,
 						},
 					},
 				}
 				Expect(k8sClient.Create(ctx, host)).To(Succeed())
-				host.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
+				host.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 				host.Status.InspectionTimestamp = &old
 				// Provide a minimal report so validateInspectionReport can proceed.
-				host.Status.InspectionReport = &infrastructurev1beta1.InspectionReport{
+				host.Status.InspectionReport = &infrav1.InspectionReport{
 					Timestamp: metav1.Now(),
 				}
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
@@ -801,7 +801,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					"Complete inspection must never be marked InspectionTimedOut, even when the timestamp is past the timeout window")
 				Expect(machine.Status.FailureMessage).To(BeNil())
 				// Confirm the success path was taken: the annotation must have been set.
-				patchedHost := &infrastructurev1beta1.PhysicalHost{}
+				patchedHost := &infrav1.PhysicalHost{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
 				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("inspect-complete"))
 				// result carries Requeue=true from the success path (not zero from a terminal failure).
@@ -813,24 +813,24 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// with InspectionFailedReason.
 		Context("inspection phase Failed terminal failure", func() {
 			It("Should mark Beskar7Machine terminally Failed when PhysicalHost inspection phase is Failed", func() {
-				machine := &infrastructurev1beta1.Beskar7Machine{
+				machine := &infrav1.Beskar7Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "failed-inspection-target",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					Spec: infrav1.Beskar7MachineSpec{
 						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
 						TargetImageDigest:  bootTestDigest,
 					},
 				}
-				host := &infrastructurev1beta1.PhysicalHost{
+				host := &infrav1.PhysicalHost{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "failed-inspection-host",
 						Namespace: testNs.Name,
 					},
-					Status: infrastructurev1beta1.PhysicalHostStatus{
-						InspectionPhase: infrastructurev1beta1.InspectionPhaseFailed,
+					Status: infrav1.PhysicalHostStatus{
+						InspectionPhase: infrav1.InspectionPhaseFailed,
 					},
 				}
 
@@ -839,17 +839,17 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
 
 				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionFailedReason))
+				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionFailedReason))
 				Expect(machine.Status.FailureMessage).NotTo(BeNil())
 				Expect(*machine.Status.FailureMessage).NotTo(BeEmpty())
 				Expect(machine.Status.Ready).To(BeFalse())
 				Expect(machine.Status.Phase).NotTo(BeNil())
 				Expect(*machine.Status.Phase).To(Equal("Failed"))
 
-				cond := conditions.Get(machine, infrastructurev1beta1.InfrastructureReadyCondition)
+				cond := conditions.Get(machine, infrav1.InfrastructureReadyCondition)
 				Expect(cond).NotTo(BeNil(), "InfrastructureReady condition must be set")
 				Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-				Expect(cond.Reason).To(Equal(infrastructurev1beta1.InspectionFailedReason))
+				Expect(cond.Reason).To(Equal(infrav1.InspectionFailedReason))
 				Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
 			})
 		})
@@ -858,25 +858,25 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// marked InspectionTimedOut (the timeout check still fires for non-terminal phases).
 		Context("inspection still in progress past timeout", func() {
 			It("Should mark Beskar7Machine terminally Failed with InspectionTimedOut when in-progress inspection times out", func() {
-				machine := &infrastructurev1beta1.Beskar7Machine{
+				machine := &infrav1.Beskar7Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "inprogress-timeout-target",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.Beskar7MachineSpec{
+					Spec: infrav1.Beskar7MachineSpec{
 						InspectionImageURL: "http://boot-server/ipxe/inspect.ipxe",
 						TargetImageURL:     "http://boot-server/images/kairos.tar.gz",
 						TargetImageDigest:  bootTestDigest,
 					},
 				}
 				old := metav1.NewTime(time.Now().Add(-2 * DefaultInspectionTimeout))
-				host := &infrastructurev1beta1.PhysicalHost{
+				host := &infrav1.PhysicalHost{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "inprogress-timeout-host",
 						Namespace: testNs.Name,
 					},
-					Spec: infrastructurev1beta1.PhysicalHostSpec{
-						RedfishConnection: infrastructurev1beta1.RedfishConnection{
+					Spec: infrav1.PhysicalHostSpec{
+						RedfishConnection: infrav1.RedfishConnection{
 							Address:              "https://192.168.1.100",
 							CredentialsSecretRef: credentialSecret.Name,
 						},
@@ -884,8 +884,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				}
 				// Persist the host so setInspectionRequestAnnotation can patch it.
 				Expect(k8sClient.Create(ctx, host)).To(Succeed())
-				host.Status.State = infrastructurev1beta1.StateInspecting
-				host.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseInProgress
+				host.Status.State = infrav1.StateInspecting
+				host.Status.InspectionPhase = infrav1.InspectionPhaseInProgress
 				host.Status.InspectionTimestamp = &old
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
@@ -894,7 +894,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Expect(result).To(Equal(ctrl.Result{}), "terminal failures must NOT requeue")
 
 				Expect(machine.Status.FailureReason).NotTo(BeNil())
-				Expect(*machine.Status.FailureReason).To(Equal(infrastructurev1beta1.InspectionTimedOutReason))
+				Expect(*machine.Status.FailureReason).To(Equal(infrav1.InspectionTimedOutReason))
 				Expect(machine.Status.FailureMessage).NotTo(BeNil())
 				Expect(*machine.Status.FailureMessage).To(ContainSubstring("Inspection did not complete"))
 				Expect(machine.Status.Ready).To(BeFalse())
@@ -974,13 +974,13 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 
 	It("Should allow exactly one machine to claim the host; the other retries or sees no host", func() {
 		By("Creating one available PhysicalHost with no ConsumerRef")
-		host := &infrastructurev1beta1.PhysicalHost{
+		host := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "race-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.100.1",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -988,21 +988,21 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		}
 		Expect(k8sClient.Create(ctx, host)).To(Succeed())
 		// Status must be set via the status subresource.
-		host.Status.State = infrastructurev1beta1.StateAvailable
+		host.Status.State = infrav1.StateAvailable
 		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
 		By("Creating two Beskar7Machines that would each want to claim the host")
-		machineA := &infrastructurev1beta1.Beskar7Machine{
+		machineA := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "machine-a", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		machineB := &infrastructurev1beta1.Beskar7Machine{
+		machineB := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "machine-b", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -1034,9 +1034,9 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 		// informer cache; Get returns NotFound until the list-watch catches up.
 		hostKey := types.NamespacedName{Name: host.Name, Namespace: testNs.Name}
 		Eventually(func(g Gomega) {
-			cachedHost := &infrastructurev1beta1.PhysicalHost{}
+			cachedHost := &infrav1.PhysicalHost{}
 			g.Expect(mgr.GetClient().Get(ctx, hostKey, cachedHost)).To(Succeed())
-			g.Expect(cachedHost.Status.State).To(Equal(infrastructurev1beta1.StateAvailable))
+			g.Expect(cachedHost.Status.State).To(Equal(infrav1.StateAvailable))
 		}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 
 		// Re-fetch machines through the cache so they have a valid UID (needed by ConsumerRef).
@@ -1081,7 +1081,7 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 
 		By("Asserting host ConsumerRef points at exactly one machine")
 		Eventually(func(g Gomega) {
-			updatedHost := &infrastructurev1beta1.PhysicalHost{}
+			updatedHost := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx, hostKey, updatedHost)).To(Succeed())
 			g.Expect(updatedHost.Spec.ConsumerRef).NotTo(BeNil(), "host must be claimed by one machine")
 			winner := "machine-a"
@@ -1112,13 +1112,13 @@ var _ = Describe("When two Beskar7Machines race for the same available host", fu
 // process.
 var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func() {
 	It("Should return no host and no error when zero PhysicalHosts are Available", func() {
-		host := &infrastructurev1beta1.PhysicalHost{
+		host := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-avail-host", Namespace: "default"},
-			Status:     infrastructurev1beta1.PhysicalHostStatus{State: infrastructurev1beta1.StateInUse},
+			Status:     infrav1.PhysicalHostStatus{State: infrav1.StateInUse},
 		}
-		machine := &infrastructurev1beta1.Beskar7Machine{
+		machine := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "no-avail-machine", Namespace: "default"},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -1130,8 +1130,8 @@ var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func
 			WithObjects(machine).
 			WithStatusSubresource(host).
 			// Same indexer SetupWithManager registers on the real cache.
-			WithIndex(&infrastructurev1beta1.PhysicalHost{}, PhysicalHostStateIndex, func(obj client.Object) []string {
-				h, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+			WithIndex(&infrav1.PhysicalHost{}, PhysicalHostStateIndex, func(obj client.Object) []string {
+				h, ok := obj.(*infrav1.PhysicalHost)
 				if !ok {
 					return nil
 				}
@@ -1166,8 +1166,8 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
-		b7machine    *infrastructurev1beta1.Beskar7Machine
+		physicalHost *infrav1.PhysicalHost
+		b7machine    *infrav1.Beskar7Machine
 		machine      *clusterv1.Machine
 		r            *Beskar7MachineReconciler
 	)
@@ -1179,28 +1179,28 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 		// Create a PhysicalHost already associated (ConsumerRef set, State=InUse).
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "bootstrap-test-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.1.200",
 					CredentialsSecretRef: "irrelevant",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
-		physicalHost.Status.State = infrastructurev1beta1.StateInUse
+		physicalHost.Status.State = infrav1.StateInUse
 		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
-		b7machine = &infrastructurev1beta1.Beskar7Machine{
+		b7machine = &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "bootstrap-test-b7machine",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -1245,13 +1245,13 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(result.RequeueAfter).To(Equal(30*time.Second),
 			"should requeue after 30s while waiting for bootstrap data secret name")
 
-		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
 		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.WaitingForBootstrapDataReason))
+		Expect(cond.Reason).To(Equal(infrav1.WaitingForBootstrapDataReason))
 
 		By("Verifying no bootstrap-url annotation was set on PhysicalHost")
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 		Expect(ph.Annotations).NotTo(HaveKey(BootstrapURLAnnotation))
 	})
@@ -1269,13 +1269,13 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(result.IsZero()).To(BeTrue(),
 			"terminal failure must not requeue")
 
-		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil(), "BootstrapDataReadyCondition must be set")
 		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.BootstrapDataUnavailableReason))
+		Expect(cond.Reason).To(Equal(infrav1.BootstrapDataUnavailableReason))
 
 		Expect(b7machine.Status.FailureReason).NotTo(BeNil(), "FailureReason must be set")
-		Expect(*b7machine.Status.FailureReason).To(Equal(infrastructurev1beta1.BootstrapDataUnavailableReason))
+		Expect(*b7machine.Status.FailureReason).To(Equal(infrav1.BootstrapDataUnavailableReason))
 		Expect(b7machine.Status.FailureMessage).NotTo(BeNil(), "FailureMessage must be non-empty")
 		Expect(*b7machine.Status.FailureMessage).NotTo(BeEmpty())
 	})
@@ -1303,12 +1303,12 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(result.IsZero()).To(BeTrue(), "should return empty result when bootstrap data is ready")
 
 		By("Verifying BootstrapDataReadyCondition=True")
-		cond := conditions.Get(b7machine, infrastructurev1beta1.BootstrapDataReadyCondition)
+		cond := conditions.Get(b7machine, infrav1.BootstrapDataReadyCondition)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(corev1.ConditionTrue))
 
 		By("Verifying the bootstrap-url annotation was set on the PhysicalHost")
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 		expectedURL := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s",
 			bootstrapURLBase, physicalHost.Namespace, physicalHost.Name)
@@ -1321,7 +1321,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 			bootstrapURLBase, physicalHost.Namespace, physicalHost.Name)
 
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
-		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{URL: expectedURL}
+		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{URL: expectedURL}
 		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
 
 		By("Creating the bootstrap secret")
@@ -1338,7 +1338,7 @@ var _ = Describe("Beskar7Machine bootstrap data secret handling", func() {
 		Expect(result.IsZero()).To(BeTrue())
 
 		By("Verifying no bootstrap-url annotation was added (already up to date)")
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 		Expect(ph.Annotations).NotTo(HaveKey(BootstrapURLAnnotation),
 			"annotation must not be re-set when Status.Bootstrap.URL already matches")
@@ -1400,8 +1400,8 @@ var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
 	})
 
 	It("Should enqueue Beskar7Machine when host has matching ConsumerRef", func() {
-		host := &infrastructurev1beta1.PhysicalHost{
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
+		host := &infrav1.PhysicalHost{
+			Spec: infrav1.PhysicalHostSpec{
 				ConsumerRef: &corev1.ObjectReference{
 					Kind:       "Beskar7Machine",
 					APIVersion: InfrastructureAPIVersion,
@@ -1416,16 +1416,16 @@ var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
 	})
 
 	It("Should not enqueue when host has no ConsumerRef", func() {
-		host := &infrastructurev1beta1.PhysicalHost{
-			Spec: infrastructurev1beta1.PhysicalHostSpec{},
+		host := &infrav1.PhysicalHost{
+			Spec: infrav1.PhysicalHostSpec{},
 		}
 		reqs := r.PhysicalHostToBeskar7Machine(context.Background(), host)
 		Expect(reqs).To(BeEmpty())
 	})
 
 	It("Should not enqueue when ConsumerRef is a different Kind", func() {
-		host := &infrastructurev1beta1.PhysicalHost{
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
+		host := &infrav1.PhysicalHost{
+			Spec: infrav1.PhysicalHostSpec{
 				ConsumerRef: &corev1.ObjectReference{
 					Kind:       "SomeOtherKind",
 					APIVersion: InfrastructureAPIVersion,
@@ -1439,8 +1439,8 @@ var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
 	})
 
 	It("Should not enqueue when ConsumerRef APIVersion does not match", func() {
-		host := &infrastructurev1beta1.PhysicalHost{
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
+		host := &infrav1.PhysicalHost{
+			Spec: infrav1.PhysicalHostSpec{
 				ConsumerRef: &corev1.ObjectReference{
 					Kind:       "Beskar7Machine",
 					APIVersion: "some.other.api/v1",
@@ -1462,7 +1462,7 @@ var _ = Describe("PhysicalHostToBeskar7Machine mapping", func() {
 var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func() {
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
+		physicalHost *infrav1.PhysicalHost
 		r            *Beskar7MachineReconciler
 	)
 
@@ -1472,13 +1472,13 @@ var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func(
 		}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "mint-token-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.42.1",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -1529,7 +1529,7 @@ var _ = Describe("Beskar7Machine mint-and-store bootstrap token (PR-5.2)", func(
 		}, time.Second*5, time.Millisecond*100).Should(Succeed())
 
 		By("Verifying the bootstrap-token annotation was set with a JSON-encoded {hash, issuedAt, expiresAt}")
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
 		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation))
 
@@ -1573,15 +1573,15 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 	})
 
 	It("returns no hash when Status.Bootstrap is nil", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(unexpiredBootstrapTokenHash(ph, now)).To(BeEmpty())
 	})
 
 	It("returns no hash when TokenHash is empty", func() {
 		exp := metav1.NewTime(now.Add(10 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "",
 					ExpiresAt: &exp,
 				},
@@ -1591,9 +1591,9 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 	})
 
 	It("returns no hash when ExpiresAt is nil", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: nil,
 				},
@@ -1604,9 +1604,9 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 
 	It("returns no hash when ExpiresAt is in the past", func() {
 		exp := metav1.NewTime(now.Add(-1 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: &exp,
 				},
@@ -1617,9 +1617,9 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 
 	It("returns no hash when ExpiresAt equals now (boundary: must re-mint)", func() {
 		exp := metav1.NewTime(now)
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: &exp,
 				},
@@ -1631,9 +1631,9 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 
 	It("returns the hash when token is still within the validity window", func() {
 		exp := metav1.NewTime(now.Add(10 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: &exp,
 				},
@@ -1656,7 +1656,7 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 			IssuedAt:  metav1.NewTime(now.Add(-30 * time.Second)),
 			ExpiresAt: exp,
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
 			},
@@ -1675,7 +1675,7 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 			IssuedAt:  metav1.NewTime(now.Add(-31 * time.Minute)),
 			ExpiresAt: exp,
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
 			},
@@ -1696,12 +1696,12 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 			IssuedAt:  metav1.NewTime(now.Add(-30 * time.Second)),
 			ExpiresAt: metav1.NewTime(now.Add(59 * time.Minute)),
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: &exp,
 				},
@@ -1717,12 +1717,12 @@ var _ = Describe("unexpiredBootstrapTokenHash (no-re-mint guard)", func() {
 			IssuedAt:  metav1.NewTime(now.Add(-61 * time.Minute)),
 			ExpiresAt: metav1.NewTime(now.Add(-1 * time.Minute)),
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootstrapTokenAnnotation: string(annoBytes)},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					TokenHash: "deadbeef",
 					ExpiresAt: &exp,
 				},
@@ -1741,15 +1741,15 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 	})
 
 	It("returns no hash when Status.Bootstrap is nil", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
 	})
 
 	It("returns no hash when BootNonceHash is empty", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "",
 					BootNonceExpiresAt: &exp,
 				},
@@ -1759,9 +1759,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 	})
 
 	It("returns no hash when BootNonceExpiresAt is nil", func() {
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "abcdef01",
 					BootNonceExpiresAt: nil,
 				},
@@ -1772,9 +1772,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 
 	It("returns no hash when BootNonceExpiresAt is in the past", func() {
 		exp := metav1.NewTime(now.Add(-1 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "abcdef01",
 					BootNonceExpiresAt: &exp,
 				},
@@ -1785,9 +1785,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 
 	It("returns no hash when BootNonceExpiresAt equals now (boundary: must re-mint)", func() {
 		exp := metav1.NewTime(now)
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "abcdef01",
 					BootNonceExpiresAt: &exp,
 				},
@@ -1800,9 +1800,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 	It("returns no hash when BootNonceConsumedAt is set (consumed nonce is never valid)", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		consumed := metav1.NewTime(now.Add(-30 * time.Second))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:       "abcdef01",
 					BootNonceExpiresAt:  &exp,
 					BootNonceConsumedAt: &consumed,
@@ -1815,9 +1815,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 
 	It("returns the hash when nonce is fresh, unexpired, and unconsumed", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
-		ph := &infrastructurev1beta1.PhysicalHost{
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:       "abcdef01",
 					BootNonceExpiresAt:  &exp,
 					BootNonceConsumedAt: nil,
@@ -1836,7 +1836,7 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			Hash:      "abcdef01",
 			ExpiresAt: exp,
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
 			},
@@ -1853,7 +1853,7 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			Hash:      "abcdef01",
 			ExpiresAt: exp,
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
 			},
@@ -1868,12 +1868,12 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			Hash:      "cafef00d",
 			ExpiresAt: metav1.NewTime(now.Add(9 * time.Minute)),
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "abcdef01",
 					BootNonceExpiresAt: &exp,
 				},
@@ -1888,12 +1888,12 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			Hash:      "cafef00d",
 			ExpiresAt: metav1.NewTime(now.Add(-1 * time.Minute)),
 		})
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{
-				Bootstrap: &infrastructurev1beta1.BootstrapStatus{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
 					BootNonceHash:      "abcdef01",
 					BootNonceExpiresAt: &exp,
 				},
@@ -1912,7 +1912,7 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
+		physicalHost *infrav1.PhysicalHost
 		r            *Beskar7MachineReconciler
 	)
 
@@ -1922,13 +1922,13 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "nonce-test-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.99.1",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -1972,7 +1972,7 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
 
 		By("Verifying BootNonceAnnotation is set on PhysicalHost with hash + expiresAt")
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
 		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation))
 		raw := ph.Annotations[BootNonceAnnotation]
@@ -2030,7 +2030,7 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, physicalHost)).To(Succeed())
 		exp := metav1.NewTime(time.Now().Add(5 * time.Minute))
 		consumed := metav1.Now()
-		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{
 			BootNonceHash:       "oldhash",
 			BootNonceExpiresAt:  &exp,
 			BootNonceConsumedAt: &consumed,
@@ -2045,7 +2045,7 @@ var _ = Describe("Beskar7Machine mint-and-store boot nonce (D-009)", func() {
 		By("Calling mintAndStoreBootNonce — should succeed and produce a new annotation")
 		Expect(r.mintAndStoreBootNonce(ctx, r.Log, physicalHost)).To(Succeed())
 
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: physicalHost.Namespace, Name: physicalHost.Name}, ph)).To(Succeed())
 		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation))
 		raw := ph.Annotations[BootNonceAnnotation]
@@ -2065,28 +2065,28 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 	// selector, and both are honoured by the fake.
 
 	hostIndex := func(obj client.Object) []string {
-		h, ok := obj.(*infrastructurev1beta1.PhysicalHost)
+		h, ok := obj.(*infrav1.PhysicalHost)
 		if !ok {
 			return nil
 		}
 		return []string{string(h.Status.State)}
 	}
-	availableHost := func(name, zone string) *infrastructurev1beta1.PhysicalHost {
-		h := &infrastructurev1beta1.PhysicalHost{
+	availableHost := func(name, zone string) *infrav1.PhysicalHost {
+		h := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{Address: "https://192.0.2.10", CredentialsSecretRef: "irrelevant"},
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{Address: "https://192.0.2.10", CredentialsSecretRef: "irrelevant"},
 			},
-			Status: infrastructurev1beta1.PhysicalHostStatus{State: infrastructurev1beta1.StateAvailable},
+			Status: infrav1.PhysicalHostStatus{State: infrav1.StateAvailable},
 		}
 		if zone != "" {
 			h.Labels = map[string]string{zoneLabelKey: zone}
 		}
 		return h
 	}
-	newClientWith := func(hosts ...*infrastructurev1beta1.PhysicalHost) client.Client {
+	newClientWith := func(hosts ...*infrav1.PhysicalHost) client.Client {
 		b := fake.NewClientBuilder().WithScheme(scheme.Scheme).
-			WithIndex(&infrastructurev1beta1.PhysicalHost{}, PhysicalHostStateIndex, hostIndex)
+			WithIndex(&infrav1.PhysicalHost{}, PhysicalHostStateIndex, hostIndex)
 		for _, h := range hosts {
 			b = b.WithStatusSubresource(h)
 		}
@@ -2097,10 +2097,10 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		}
 		return c
 	}
-	newMachine := func() *infrastructurev1beta1.Beskar7Machine {
-		return &infrastructurev1beta1.Beskar7Machine{
+	newMachine := func() *infrav1.Beskar7Machine {
+		return &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "fd-machine", Namespace: "default", Finalizers: []string{Beskar7MachineFinalizer}},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -2109,7 +2109,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 	}
 	inZone := func(zone string) labels.Selector { return labels.SelectorFromSet(labels.Set{zoneLabelKey: zone}) }
 	consumerOf := func(c client.Client, name string) *corev1.ObjectReference {
-		h := &infrastructurev1beta1.PhysicalHost{}
+		h := &infrav1.PhysicalHost{}
 		Expect(c.Get(context.Background(), types.NamespacedName{Name: name, Namespace: "default"}, h)).To(Succeed())
 		return h.Spec.ConsumerRef
 	}
@@ -2215,17 +2215,17 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(errors.Is(err, errInvalidHostSelector)).To(BeTrue())
 	})
 
-	labelledHost := func(name string, lbls map[string]string) *infrastructurev1beta1.PhysicalHost {
+	labelledHost := func(name string, lbls map[string]string) *infrav1.PhysicalHost {
 		h := availableHost(name, "")
 		h.Labels = lbls
 		return h
 	}
-	withSelector := func(sel *metav1.LabelSelector) *infrastructurev1beta1.Beskar7Machine {
+	withSelector := func(sel *metav1.LabelSelector) *infrav1.Beskar7Machine {
 		m := newMachine()
 		m.Spec.HostSelector = sel
 		return m
 	}
-	placementOf := func(b7m *infrastructurev1beta1.Beskar7Machine, fd string) labels.Selector {
+	placementOf := func(b7m *infrav1.Beskar7Machine, fd string) labels.Selector {
 		var m *clusterv1.Machine
 		if fd != "" {
 			m = &clusterv1.Machine{Spec: clusterv1.MachineSpec{FailureDomain: fd}}
@@ -2306,12 +2306,12 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(err).NotTo(HaveOccurred(), "terminal failures return nil so CAPI surfaces FailureReason/FailureMessage")
 		Expect(result.IsZero()).To(BeTrue(), "a terminal failure must not requeue")
 		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrastructurev1beta1.InvalidHostSelectorReason))
+		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.InvalidHostSelectorReason))
 		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
 		Expect(*b7m.Status.FailureMessage).To(ContainSubstring("Bogus"))
-		cond := conditions.Get(b7m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		cond := conditions.Get(b7m, infrav1.PhysicalHostAssociatedCondition)
 		Expect(cond).NotTo(BeNil())
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.InvalidHostSelectorReason))
+		Expect(cond.Reason).To(Equal(infrav1.InvalidHostSelectorReason))
 		Expect(consumerOf(c, "a-free")).To(BeNil(), "nothing may be claimed on the way to a terminal failure")
 	})
 
@@ -2329,10 +2329,10 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(Equal(time.Minute))
 
-		cond := conditions.Get(b7m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		cond := conditions.Get(b7m, infrav1.PhysicalHostAssociatedCondition)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.NoMatchingPhysicalHostReason))
+		Expect(cond.Reason).To(Equal(infrav1.NoMatchingPhysicalHostReason))
 		Expect(cond.Message).To(ContainSubstring(zoneLabelKey + "=rack-1"))
 		Expect(consumerOf(c, "a-other-zone")).To(BeNil(), "the out-of-domain host must stay unclaimed")
 
@@ -2342,7 +2342,7 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 		result, err = r2.reconcileNormal(context.Background(), r2.Log, b7m2, &clusterv1.Machine{Spec: clusterv1.MachineSpec{ClusterName: "fake-cluster"}})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result.RequeueAfter).To(Equal(time.Minute))
-		Expect(conditions.Get(b7m2, infrastructurev1beta1.PhysicalHostAssociatedCondition).Reason).To(Equal(infrastructurev1beta1.WaitingForPhysicalHostReason))
+		Expect(conditions.Get(b7m2, infrav1.PhysicalHostAssociatedCondition).Reason).To(Equal(infrav1.WaitingForPhysicalHostReason))
 	})
 })
 
@@ -2353,21 +2353,21 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 	// predicate must pass exactly that transition and the map must pick
 	// exactly the machines that are still looking for a host.
 
-	hostIn := func(state string) *infrastructurev1beta1.PhysicalHost {
-		return &infrastructurev1beta1.PhysicalHost{
+	hostIn := func(state string) *infrav1.PhysicalHost {
+		return &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "wake-host", Namespace: "default"},
-			Status:     infrastructurev1beta1.PhysicalHostStatus{State: state},
+			Status:     infrav1.PhysicalHostStatus{State: state},
 		}
 	}
-	claimedIn := func(state string) *infrastructurev1beta1.PhysicalHost {
+	claimedIn := func(state string) *infrav1.PhysicalHost {
 		h := hostIn(state)
 		h.Spec.ConsumerRef = &corev1.ObjectReference{Kind: "Beskar7Machine", Name: "someone", Namespace: "default"}
 		return h
 	}
-	machine := func(ns, name string, mutate func(*infrastructurev1beta1.Beskar7Machine)) *infrastructurev1beta1.Beskar7Machine {
-		m := &infrastructurev1beta1.Beskar7Machine{
+	machine := func(ns, name string, mutate func(*infrav1.Beskar7Machine)) *infrav1.Beskar7Machine {
+		m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Finalizers: []string{Beskar7MachineFinalizer}},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -2382,38 +2382,38 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 	It("admits only the events on which an unclaimed host enters Available", func() {
 		p := hostBecameAvailable()
 
-		Expect(p.Create(event.CreateEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "created already free")
-		Expect(p.Create(event.CreateEvent{Object: hostIn(infrastructurev1beta1.StateEnrolling)})).To(BeFalse(), "created enrolling")
-		Expect(p.Create(event.CreateEvent{Object: claimedIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "created with a consumer")
+		Expect(p.Create(event.CreateEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeTrue(), "created already free")
+		Expect(p.Create(event.CreateEvent{Object: hostIn(infrav1.StateEnrolling)})).To(BeFalse(), "created enrolling")
+		Expect(p.Create(event.CreateEvent{Object: claimedIn(infrav1.StateAvailable)})).To(BeFalse(), "created with a consumer")
 
-		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(""), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "enrolment finished")
-		Expect(p.Update(event.UpdateEvent{ObjectOld: claimedIn(infrastructurev1beta1.StateInUse), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeTrue(), "released")
-		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrastructurev1beta1.StateAvailable), ObjectNew: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "status churn on a free host")
-		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrastructurev1beta1.StateAvailable), ObjectNew: claimedIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse(), "claimed")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(""), ObjectNew: hostIn(infrav1.StateAvailable)})).To(BeTrue(), "enrolment finished")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: claimedIn(infrav1.StateInUse), ObjectNew: hostIn(infrav1.StateAvailable)})).To(BeTrue(), "released")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrav1.StateAvailable), ObjectNew: hostIn(infrav1.StateAvailable)})).To(BeFalse(), "status churn on a free host")
+		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrav1.StateAvailable), ObjectNew: claimedIn(infrav1.StateAvailable)})).To(BeFalse(), "claimed")
 
-		Expect(p.Delete(event.DeleteEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse())
-		Expect(p.Generic(event.GenericEvent{Object: hostIn(infrastructurev1beta1.StateAvailable)})).To(BeFalse())
+		Expect(p.Delete(event.DeleteEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeFalse())
+		Expect(p.Generic(event.GenericEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeFalse())
 	})
 
 	It("enqueues the machines still waiting for a host in the host's namespace and nothing else", func() {
 		never := machine("default", "never-reconciled", nil)
-		waiting := machine("default", "waiting", func(m *infrastructurev1beta1.Beskar7Machine) {
-			conditions.MarkFalse(m, infrastructurev1beta1.PhysicalHostAssociatedCondition,
-				infrastructurev1beta1.WaitingForPhysicalHostReason, clusterv1.ConditionSeverityInfo, "No available PhysicalHost found")
+		waiting := machine("default", "waiting", func(m *infrav1.Beskar7Machine) {
+			conditions.MarkFalse(m, infrav1.PhysicalHostAssociatedCondition,
+				infrav1.WaitingForPhysicalHostReason, clusterv1.ConditionSeverityInfo, "No available PhysicalHost found")
 		})
-		placed := machine("default", "no-match", func(m *infrastructurev1beta1.Beskar7Machine) {
-			conditions.MarkFalse(m, infrastructurev1beta1.PhysicalHostAssociatedCondition,
-				infrastructurev1beta1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo, "no host in rack-1")
+		placed := machine("default", "no-match", func(m *infrav1.Beskar7Machine) {
+			conditions.MarkFalse(m, infrav1.PhysicalHostAssociatedCondition,
+				infrav1.NoMatchingPhysicalHostReason, clusterv1.ConditionSeverityInfo, "no host in rack-1")
 		})
-		associated := machine("default", "associated", func(m *infrastructurev1beta1.Beskar7Machine) {
-			conditions.MarkTrue(m, infrastructurev1beta1.PhysicalHostAssociatedCondition)
+		associated := machine("default", "associated", func(m *infrav1.Beskar7Machine) {
+			conditions.MarkTrue(m, infrav1.PhysicalHostAssociatedCondition)
 		})
-		failed := machine("default", "failed", func(m *infrastructurev1beta1.Beskar7Machine) {
-			reason := infrastructurev1beta1.InvalidHostSelectorReason
+		failed := machine("default", "failed", func(m *infrav1.Beskar7Machine) {
+			reason := infrav1.InvalidHostSelectorReason
 			m.Status.FailureReason = &reason
 		})
 		now := metav1.Now()
-		deleting := machine("default", "deleting", func(m *infrastructurev1beta1.Beskar7Machine) {
+		deleting := machine("default", "deleting", func(m *infrav1.Beskar7Machine) {
 			m.DeletionTimestamp = &now
 		})
 		elsewhere := machine("other-ns", "waiting-elsewhere", nil)
@@ -2431,12 +2431,12 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 			return out
 		}
 
-		Expect(names(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrastructurev1beta1.StateAvailable)))).
+		Expect(names(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrav1.StateAvailable)))).
 			To(ConsistOf("never-reconciled", "waiting", "no-match"))
 
 		By("mapping nothing for a host that is not claimable")
-		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrastructurev1beta1.StateAvailable))).To(BeEmpty())
-		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrastructurev1beta1.StateInUse))).To(BeEmpty())
+		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrav1.StateAvailable))).To(BeEmpty())
+		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrav1.StateInUse))).To(BeEmpty())
 	})
 })
 
@@ -2456,8 +2456,8 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secret", func() {
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
-		b7machine    *infrastructurev1beta1.Beskar7Machine
+		physicalHost *infrav1.PhysicalHost
+		b7machine    *infrav1.Beskar7Machine
 		r            *Beskar7MachineReconciler
 		hostKey      types.NamespacedName
 		secretKey    types.NamespacedName
@@ -2487,10 +2487,10 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 		}
 		Expect(k8sClient.Create(ctx, creds)).To(Succeed())
 
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "reuse-host", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.77.1",
 					CredentialsSecretRef: creds.Name,
 				},
@@ -2502,7 +2502,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 
 		// triggerInspection only stamps Status.Phase on the machine; it does not
 		// need to exist in the API server.
-		b7machine = &infrastructurev1beta1.Beskar7Machine{
+		b7machine = &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "reuse-machine", Namespace: testNs.Name},
 		}
 
@@ -2524,7 +2524,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 	// seedStatus plants what the PhysicalHost reconciler would have promoted
 	// from an earlier mint's annotation, and refreshes the local copy so
 	// triggerInspection sees it.
-	seedStatus := func(bs *infrastructurev1beta1.BootstrapStatus) {
+	seedStatus := func(bs *infrav1.BootstrapStatus) {
 		Expect(k8sClient.Get(ctx, hostKey, physicalHost)).To(Succeed())
 		physicalHost.Status.Bootstrap = bs
 		Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
@@ -2543,18 +2543,18 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 		Expect(k8sClient.Get(ctx, secretKey, s)).To(Succeed())
 		return s
 	}
-	getHost := func() *infrastructurev1beta1.PhysicalHost {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+	getHost := func() *infrav1.PhysicalHost {
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, hostKey, ph)).To(Succeed())
 		return ph
 	}
-	tokenAnnotation := func(ph *infrastructurev1beta1.PhysicalHost) BootstrapTokenAnnotationValue {
+	tokenAnnotation := func(ph *infrav1.PhysicalHost) BootstrapTokenAnnotationValue {
 		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation), "a fresh token must be advertised through the annotation")
 		var v BootstrapTokenAnnotationValue
 		Expect(json.Unmarshal([]byte(ph.Annotations[BootstrapTokenAnnotation]), &v)).To(Succeed())
 		return v
 	}
-	nonceAnnotation := func(ph *infrastructurev1beta1.PhysicalHost) BootNonceAnnotationValue {
+	nonceAnnotation := func(ph *infrav1.PhysicalHost) BootNonceAnnotationValue {
 		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation), "a fresh nonce must be advertised through the annotation")
 		var v BootNonceAnnotationValue
 		Expect(json.Unmarshal([]byte(ph.Annotations[BootNonceAnnotation]), &v)).To(Succeed())
@@ -2570,7 +2570,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 			_, staleHash := mustMint()
 			strayPlaintext, _ := mustMint()
 			seedSecret(map[string][]byte{"plaintext-token": []byte(strayPlaintext)})
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
 
 			trigger()
 
@@ -2590,7 +2590,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 		It("reuses a token whose Secret plaintext hashes to the Status hash (no re-mint)", func() {
 			plaintext, hash := mustMint()
 			seedSecret(map[string][]byte{"plaintext-token": []byte(plaintext)})
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: hash, ExpiresAt: tokenExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{TokenHash: hash, ExpiresAt: tokenExpiry()})
 
 			trigger()
 
@@ -2600,7 +2600,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 
 		It("re-mints when Status advertises an unexpired hash but the Secret is missing", func() {
 			_, staleHash := mustMint()
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
 
 			trigger()
 
@@ -2620,7 +2620,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 			_, staleHash := mustMint()
 			plaintext, hash := mustMint()
 			seedSecret(map[string][]byte{"plaintext-token": []byte(plaintext)})
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{TokenHash: staleHash, ExpiresAt: tokenExpiry()})
 			issuedAt, expiresAt := auth.LifetimeFor(time.Now())
 			Expect(r.setBootstrapTokenAnnotation(ctx, r.Log, physicalHost, hash, issuedAt, expiresAt)).To(Succeed())
 
@@ -2636,7 +2636,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 			_, staleHash := mustMint()
 			strayNonce, _ := mustMint()
 			seedSecret(map[string][]byte{"plaintext-boot-nonce": []byte(strayNonce)})
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
 
 			trigger()
 
@@ -2654,7 +2654,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 		It("reuses a nonce whose Secret plaintext hashes to the Status hash (no re-mint)", func() {
 			nonce, hash := mustMint()
 			seedSecret(map[string][]byte{"plaintext-boot-nonce": []byte(nonce)})
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: hash, BootNonceExpiresAt: nonceExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{BootNonceHash: hash, BootNonceExpiresAt: nonceExpiry()})
 
 			trigger()
 
@@ -2667,7 +2667,7 @@ var _ = Describe("Beskar7Machine credential reuse is backed by the per-host Secr
 		// absent".
 		It("re-mints when Status advertises an unexpired hash but the Secret is missing", func() {
 			_, staleHash := mustMint()
-			seedStatus(&infrastructurev1beta1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
+			seedStatus(&infrav1.BootstrapStatus{BootNonceHash: staleHash, BootNonceExpiresAt: nonceExpiry()})
 
 			trigger()
 

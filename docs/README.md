@@ -1,6 +1,6 @@
 # Beskar7 Documentation
 
-This directory contains the user-facing documentation for the Beskar7 Cluster API infrastructure provider. The source of truth for everything described here is the code in `api/v1beta1/`, `controllers/`, `cmd/manager/`, and `internal/`. If a doc and the code disagree, the code wins.
+This directory contains the user-facing documentation for the Beskar7 Cluster API infrastructure provider. The source of truth for everything described here is the code in `api/v1beta2/`, `controllers/`, `cmd/manager/`, and `internal/`. If a doc and the code disagree, the code wins.
 
 ## Getting started
 
@@ -11,7 +11,7 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 
 ## API reference
 
-- [API Reference](api-reference.md) — every CRD field in `v1beta1`.
+- [API Reference](api-reference.md) — every CRD field in `v1beta2`.
 - [PhysicalHost](physicalhost.md) — operational notes for the host CRD.
 - [Beskar7Machine](beskar7machine.md) — operational notes for the machine CRD.
 - [Beskar7Cluster](beskar7cluster.md) — operational notes for the cluster CRD.

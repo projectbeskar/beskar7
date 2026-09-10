@@ -29,7 +29,7 @@ stringData:
 
 ---
 # Single PhysicalHost.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: test-host-01
@@ -42,7 +42,7 @@ spec:
 
 ---
 # Beskar7Cluster (placeholder; not paired with a CAPI Cluster in this minimal test).
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Cluster
 metadata:
   name: test-cluster
@@ -56,7 +56,7 @@ spec:
 # Single Beskar7Machine. Without an owning CAPI Machine, this won't progress
 # past the bootstrap-data check — useful for confirming the controller picks
 # up your spec but not for completing provisioning.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: test-machine-01

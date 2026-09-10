@@ -208,7 +208,7 @@ layer_2_admission() {
   # it a stable signal for layer 2.
   local out
   if out="$(kubectl apply --dry-run=server -f - 2>&1 <<EOF
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata: { name: bad, namespace: ${SMOKE_NS} }
 spec:
@@ -522,7 +522,7 @@ layer_6_isolation() {
   info "    creating an out-of-scope PhysicalHost in ${ISOLATION_NS}"
   kubectl create namespace "${ISOLATION_NS}" >/dev/null 2>&1 || true
   cat <<EOF | kubectl apply -f - >/dev/null
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: unwatched-host-01

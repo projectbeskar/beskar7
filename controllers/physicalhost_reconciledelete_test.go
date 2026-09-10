@@ -24,7 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // TestReconcileDelete_ClaimedHost_NilRecorder is a regression test for #103:
@@ -40,13 +40,13 @@ import (
 func TestReconcileDelete_ClaimedHost_NilRecorder(t *testing.T) {
 	r := &PhysicalHostReconciler{} // Recorder intentionally nil
 
-	ph := &infrastructurev1beta1.PhysicalHost{
+	ph := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "claimed-host",
 			Namespace:  "default",
 			Finalizers: []string{PhysicalHostFinalizer},
 		},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
+		Spec: infrav1.PhysicalHostSpec{
 			// A non-nil ConsumerRef is the condition that drives the
 			// Recorder.Event call that used to panic.
 			ConsumerRef: &corev1.ObjectReference{

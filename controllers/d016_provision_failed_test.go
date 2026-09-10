@@ -45,7 +45,7 @@ import (
 	conditions "sigs.k8s.io/cluster-api/util/conditions/deprecated/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
@@ -72,7 +72,7 @@ func buildProvisionFailedMux() (*http.ServeMux, *ProvisionFailedHandler) {
 var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 	var (
 		testNs     *corev1.Namespace
-		ph         *infrastructurev1beta1.PhysicalHost
+		ph         *infrav1.PhysicalHost
 		tokenPlain string
 	)
 
@@ -86,18 +86,18 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		Expect(err).NotTo(HaveOccurred())
 		_, expiresAt := auth.LifetimeFor(time.Now())
 
-		ph = &infrastructurev1beta1.PhysicalHost{
+		ph = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-pfail-http", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.210",
 					CredentialsSecretRef: "dummy-creds",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateDeploying
-		ph.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+		ph.Status.State = infrav1.StateDeploying
+		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
 			TokenHash: hash,
 			ExpiresAt: &expiresAt,
 		}
@@ -133,7 +133,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		Expect(respBody["status"]).To(Equal("accepted"))
 
 		By("Verifying ProvisionFailedRequestAnnotation was set on the PhysicalHost")
-		updated := &infrastructurev1beta1.PhysicalHost{}
+		updated := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 		Expect(updated.Annotations).To(HaveKey(ProvisionFailedRequestAnnotation))
 		val := updated.Annotations[ProvisionFailedRequestAnnotation]
@@ -218,7 +218,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 			"non-JSON body must not fail; body is advisory only")
 
 		By("Verifying annotation uses the generic reason when body is unparseable")
-		updated := &infrastructurev1beta1.PhysicalHost{}
+		updated := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 		Expect(updated.Annotations).To(HaveKeyWithValue(ProvisionFailedRequestAnnotation, provisionFailedReasonGeneric))
 	})
@@ -226,7 +226,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 	It("does NOT set annotation when host is NOT in StateDeploying", func() {
 		// Move host to a non-Deploying state (e.g. StateInspecting).
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateInspecting
+		ph.Status.State = infrav1.StateInspecting
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 
 		mux, _ := buildProvisionFailedMux()
@@ -247,7 +247,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 			"handler returns 202 even when host not in Deploying (no-op, not an error)")
 
 		By("Verifying annotation was NOT set on a non-Deploying host")
-		updated := &infrastructurev1beta1.PhysicalHost{}
+		updated := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 		Expect(updated.Annotations).NotTo(HaveKey(ProvisionFailedRequestAnnotation),
 			"must not set annotation on non-Deploying host")
@@ -270,7 +270,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 
 	It("transitions Deploying→Error and sets ErrorMessage from annotation value", func() {
 		errorMsg := provisionFailedReasonPrefix + "image digest mismatch"
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "host-pf-deploying",
 				Namespace: testNs.Name,
@@ -278,15 +278,15 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 					ProvisionFailedRequestAnnotation: errorMsg,
 				},
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.220",
 					CredentialsSecretRef: "dummy-creds",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateDeploying
+		ph.Status.State = infrav1.StateDeploying
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 
@@ -298,7 +298,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
 
 		By("Verifying State == Error")
-		Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateError))
+		Expect(ph.Status.State).To(Equal(infrav1.StateError))
 
 		By("Verifying ErrorMessage is set to the annotation value")
 		Expect(ph.Status.ErrorMessage).To(Equal(errorMsg))
@@ -312,7 +312,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 
 	It("does NOT transition when host is NOT in StateDeploying", func() {
 		errorMsg := provisionFailedReasonPrefix + "some error"
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "host-pf-notdeploying",
 				Namespace: testNs.Name,
@@ -320,15 +320,15 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 					ProvisionFailedRequestAnnotation: errorMsg,
 				},
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.221",
 					CredentialsSecretRef: "dummy-creds",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateReady // not Deploying
+		ph.Status.State = infrav1.StateReady // not Deploying
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 
@@ -340,7 +340,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
 
 		By("Verifying State remains Ready (no transition)")
-		Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateReady),
+		Expect(ph.Status.State).To(Equal(infrav1.StateReady),
 			"host not in Deploying must not be transitioned to Error")
 
 		By("Verifying annotation was cleared")
@@ -350,7 +350,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 
 	It("clears annotation idempotently when host is already in StateError", func() {
 		errorMsg := provisionFailedReasonPrefix + "already failed"
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "host-pf-already-error",
 				Namespace: testNs.Name,
@@ -358,15 +358,15 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 					ProvisionFailedRequestAnnotation: errorMsg,
 				},
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.222",
 					CredentialsSecretRef: "dummy-creds",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateError
+		ph.Status.State = infrav1.StateError
 		ph.Status.ErrorMessage = errorMsg
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
@@ -379,7 +379,7 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
 
 		By("Verifying State remains Error (no double-transition)")
-		Expect(ph.Status.State).To(Equal(infrastructurev1beta1.StateError))
+		Expect(ph.Status.State).To(Equal(infrav1.StateError))
 		Expect(ph.Status.ErrorMessage).To(Equal(errorMsg))
 
 		By("Verifying annotation was cleared")
@@ -493,24 +493,24 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 	It("marks terminal failure with DeploymentFailedReason when ErrorMessage has the inspector prefix", func() {
 		deployFailMsg := provisionFailedReasonPrefix + "COS_OEM partition not found"
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-b7m-pfail", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.230",
 					CredentialsSecretRef: "bmc-creds-d016",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateError
+		ph.Status.State = infrav1.StateError
 		ph.Status.ErrorMessage = deployFailMsg
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-pfail", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.raw",
 				TargetImageDigest:  bootTestDigest,
@@ -523,7 +523,7 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 
 		By("Verifying FailureReason == DeploymentFailedReason")
 		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrastructurev1beta1.DeploymentFailedReason))
+		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.DeploymentFailedReason))
 
 		By("Verifying FailureMessage is set and contains the error detail")
 		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
@@ -535,34 +535,34 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 		Expect(b7m.Status.Ready).To(BeFalse())
 
 		By("Verifying InfrastructureReadyCondition is False with DeploymentFailedReason")
-		cond := conditions.Get(b7m, infrastructurev1beta1.InfrastructureReadyCondition)
+		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil(), "InfrastructureReadyCondition must be set")
 		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.DeploymentFailedReason))
+		Expect(cond.Reason).To(Equal(infrav1.DeploymentFailedReason))
 	})
 
 	It("marks terminal failure with PhysicalHostErrorReason when ErrorMessage lacks the inspector prefix", func() {
 		// A Redfish/BMC error has no prefix from the inspector.
 		bmcErr := "Redfish connection failed: timeout"
 
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-b7m-bmcerr", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.231",
 					CredentialsSecretRef: "bmc-creds-d016",
 				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
-		ph.Status.State = infrastructurev1beta1.StateError
+		ph.Status.State = infrav1.StateError
 		ph.Status.ErrorMessage = bmcErr
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-bmcerr", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot/inspect.ipxe",
 				TargetImageURL:     "http://boot/kairos.raw",
 				TargetImageDigest:  bootTestDigest,
@@ -575,12 +575,12 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 
 		By("Verifying FailureReason == PhysicalHostErrorReason (not DeploymentFailed)")
 		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrastructurev1beta1.PhysicalHostErrorReason))
+		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.PhysicalHostErrorReason))
 
 		By("Verifying InfrastructureReadyCondition has PhysicalHostErrorReason")
-		cond := conditions.Get(b7m, infrastructurev1beta1.InfrastructureReadyCondition)
+		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil())
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.PhysicalHostErrorReason))
+		Expect(cond.Reason).To(Equal(infrav1.PhysicalHostErrorReason))
 	})
 })
 
@@ -588,7 +588,7 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 
 var _ = Describe("v4.1 Beskar7Machine markTerminalFailure DeploymentFailed", func() {
 	It("sets FailureReason, FailureMessage, Phase=Failed, Ready=false, and condition", func() {
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-terminal", Namespace: "default"},
 		}
 		r := &Beskar7MachineReconciler{
@@ -597,20 +597,20 @@ var _ = Describe("v4.1 Beskar7Machine markTerminalFailure DeploymentFailed", fun
 			Log:    ctrl.Log.WithName("d016-terminal-test"),
 		}
 		msg := "inspector reported deploy failure: disk write I/O error"
-		r.markTerminalFailure(b7m, infrastructurev1beta1.DeploymentFailedReason, msg)
+		r.markTerminalFailure(b7m, infrav1.DeploymentFailedReason, msg)
 
 		Expect(b7m.Status.FailureReason).NotTo(BeNil())
-		Expect(*b7m.Status.FailureReason).To(Equal(infrastructurev1beta1.DeploymentFailedReason))
+		Expect(*b7m.Status.FailureReason).To(Equal(infrav1.DeploymentFailedReason))
 		Expect(b7m.Status.FailureMessage).NotTo(BeNil())
 		Expect(*b7m.Status.FailureMessage).To(Equal(msg))
 		Expect(b7m.Status.Phase).NotTo(BeNil())
 		Expect(*b7m.Status.Phase).To(Equal("Failed"))
 		Expect(b7m.Status.Ready).To(BeFalse())
 
-		cond := conditions.Get(b7m, infrastructurev1beta1.InfrastructureReadyCondition)
+		cond := conditions.Get(b7m, infrav1.InfrastructureReadyCondition)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(corev1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrastructurev1beta1.DeploymentFailedReason))
+		Expect(cond.Reason).To(Equal(infrav1.DeploymentFailedReason))
 		Expect(cond.Severity).To(Equal(clusterv1.ConditionSeverityError))
 	})
 })

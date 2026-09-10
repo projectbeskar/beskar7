@@ -35,13 +35,13 @@ The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar
 
 ## Regenerate CRDs and RBAC
 
-Run this after any change to `api/v1beta1/` or any `+kubebuilder:` marker:
+Run this after any change to `api/v1beta2/` or any `+kubebuilder:` marker:
 
 ```bash
 make manifests
 ```
 
-This regenerates `config/crd/bases/*.yaml`, `config/rbac/role.yaml`, and `api/v1beta1/zz_generated.deepcopy.go`. Also run `make sync-chart-crds` to keep `charts/beskar7/crds/` in sync.
+This regenerates `config/crd/bases/*.yaml`, `config/rbac/role.yaml`, and `api/v1beta2/zz_generated.deepcopy.go`. Also run `make sync-chart-crds` to keep `charts/beskar7/crds/` in sync.
 
 ## Run tests
 

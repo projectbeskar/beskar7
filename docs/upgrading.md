@@ -2,9 +2,10 @@
 
 > **Audience:** Operators
 
-`v0.4.0` is the first GA release. `v1beta1` is stable and evolves additive-only
-from here, but the **alpha series leading up to it contains breaking changes** —
-read the section for your starting version before upgrading.
+`v0.4.0` was the first GA release and the `v0.4.x` line evolved additive-only.
+`v0.5.0` renames the API to `v1beta2` with no conversion — a clean break, see the
+first section below — and the **alpha series before `v0.4.0` contains breaking
+changes**. Read the section for your starting version before upgrading.
 
 ## Before you start
 
@@ -87,42 +88,55 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.4.4` → unreleased — `clusterctl move` discovers the CRDs
+## `v0.4.4` → `v0.5.0` — **breaking**: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`
 
-No schema change, no controller behaviour change, no contract change. The CRDs gain the labels
-`clusterctl move` keys on: `clusterctl.cluster.x-k8s.io` (clusterctl builds its move graph only from
-CRDs carrying it, and nothing but `clusterctl init` used to add it, so every beskar7 object was silently
-left behind on a Helm- or manifest-installed management cluster); `cluster.x-k8s.io/provider:
-infrastructure-beskar7` (the provider-contract component label, now on every beskar7 component — it
-was `beskar7` on the chart's non-CRD objects and on kustomize-installed CRDs; metadata only, never in a
-selector); and, on `PhysicalHost` only, `clusterctl.cluster.x-k8s.io/move-hierarchy` (nothing owns a
-host, so without it a move would leave every host behind). Read
-[Installation](installation.md#clusterctl-move) before moving a namespace.
+The four CRDs serve a single version, `v1beta2`. It is the `v1beta1` schema renamed — no field
+changed — but there is **no conversion webhook** and `v1beta1` is not served any more, so nothing
+carries over by itself. Cluster API **v1.11 or newer** is required: the controller reads the
+`cluster.x-k8s.io/v1beta2` API.
 
-`helm upgrade` never touches CRDs, so on a Helm install put the labels on the existing CRDs yourself —
-either re-apply the CRDs from the chart of the version you are upgrading to:
+What changes on your side:
+
+- Every manifest: `apiVersion: infrastructure.cluster.x-k8s.io/v1beta1` → `v1beta2` — the
+  `PhysicalHost`s, the `Beskar7Cluster` and its `infrastructureRef` on the `Cluster`, and the
+  `Beskar7MachineTemplate`s referenced by `KubeadmControlPlane` / `MachineDeployment` objects.
+- The webhook paths moved with the version (`…-v1beta2-beskar7cluster`); the chart and the release
+  manifest ship the matching configuration, nothing to do by hand.
+- The CRD contract label is now `cluster.x-k8s.io/v1beta2: v1beta2` on `Beskar7Cluster`,
+  `Beskar7Machine` and `Beskar7MachineTemplate`; `PhysicalHost` carries none. The v0.4.4 manual
+  `kubectl label … cluster.x-k8s.io/v1beta2-` step is moot once the CRDs are replaced.
+- The CRDs also gain clusterctl's labels — `clusterctl.cluster.x-k8s.io` (what `clusterctl move`
+  discovers CRDs by), `cluster.x-k8s.io/provider: infrastructure-beskar7` (the provider-contract
+  component label, now on every beskar7 component; it was `beskar7` on the chart's non-CRD objects;
+  metadata only, never in a selector) and, on `PhysicalHost` only,
+  `clusterctl.cluster.x-k8s.io/move-hierarchy` (nothing owns a host, so without it a move would leave
+  every host behind). Replacing the CRDs installs them; there is no relabel step. Read
+  [Installation](installation.md#clusterctl-move) before moving a namespace.
+
+### Procedure
+
+Existing `v1beta1` objects cannot be read by the new CRDs, and a plain `kubectl apply` of the new
+CRDs would fail because `v1beta1` is still a stored version. Tear down, replace, re-create:
 
 ```bash
-kubectl apply -f charts/beskar7/crds/
-```
+# 1. Tear down what beskar7 owns. Deleting the CAPI Cluster releases the hosts;
+#    wait for its Machines to disappear before deleting the hosts.
+kubectl delete cluster --all -A
+kubectl delete physicalhost --all -A
 
-or label them in place (`--overwrite` replaces the old `cluster.x-k8s.io/provider: beskar7` value on
-kustomize-installed CRDs; on Helm-installed ones the key was absent):
-
-```bash
-kubectl label crd beskar7clusters.infrastructure.cluster.x-k8s.io \
+# 2. Replace the CRDs (Helm never touches CRDs on upgrade — see "Before you start").
+kubectl delete crd beskar7clusters.infrastructure.cluster.x-k8s.io \
   beskar7machines.infrastructure.cluster.x-k8s.io \
   beskar7machinetemplates.infrastructure.cluster.x-k8s.io \
-  physicalhosts.infrastructure.cluster.x-k8s.io \
-  clusterctl.cluster.x-k8s.io= cluster.x-k8s.io/provider=infrastructure-beskar7 --overwrite
-kubectl label crd physicalhosts.infrastructure.cluster.x-k8s.io \
-  clusterctl.cluster.x-k8s.io/move-hierarchy=
+  physicalhosts.infrastructure.cluster.x-k8s.io
+# then apply the v0.5.0 CRDs (from the chart's crds/ directory or the release manifest)
+
+# 3. Upgrade the controller: `helm upgrade`, or re-apply the release manifest.
+
+# 4. Re-apply your PhysicalHosts and cluster manifests with apiVersion v1beta2.
 ```
 
-Re-applying the release manifest does the same for manifest installs and, because `kubectl apply`
-prunes labels it recorded earlier, also drops the stale `cluster.x-k8s.io/contract: v1beta1` label the
-old kustomize overlay added. Verify with
-`kubectl get crd physicalhosts.infrastructure.cluster.x-k8s.io -o jsonpath='{.metadata.labels}'`.
+No inspector or bootstrap-template change: the wire contract stays `v4.2`.
 
 ## `v0.4.3` → `v0.4.4` — contract label fix, `hostSelector`, failure-domain placement
 

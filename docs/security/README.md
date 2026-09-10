@@ -42,7 +42,7 @@ spec:
     kind: ClusterIssuer
 ---
 # 2. Reference it from the PhysicalHost.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: server-01

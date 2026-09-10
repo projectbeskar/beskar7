@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
@@ -114,7 +114,7 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	logger.Info("Starting reconciliation")
 
 	// Fetch the PhysicalHost instance
-	physicalHost := &infrastructurev1beta1.PhysicalHost{}
+	physicalHost := &infrav1.PhysicalHost{}
 	if err := r.Get(ctx, req.NamespacedName, physicalHost); err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("PhysicalHost resource not found, ignoring since object must be deleted")
@@ -174,16 +174,16 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 }
 
 // reconcileNormal handles normal (non-deletion) reconciliation.
-func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
+func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Reconciling PhysicalHost", "currentState", physicalHost.Status.State)
 
 	// Get Redfish credentials
 	username, password, err := r.getRedfishCredentials(ctx, physicalHost)
 	if err != nil {
 		logger.Error(err, "Failed to get Redfish credentials")
-		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
-			infrastructurev1beta1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
+		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
+		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
+			infrav1.MissingCredentialsReason, clusterv1.ConditionSeverityError,
 			"Failed to retrieve credentials: %v", err)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Return the error without an explicit RequeueAfter so the workqueue's
@@ -206,9 +206,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// long requeue avoids hot-looping on a misconfigured spec.
 	if err := validateRedfishTLSCombination(insecure, physicalHost.Spec.RedfishConnection.CABundleSecretRef); err != nil {
 		logger.Error(err, "Invalid Redfish TLS configuration")
-		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
-			infrastructurev1beta1.InsecureCABundleConflictReason, clusterv1.ConditionSeverityError,
+		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
+		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
+			infrav1.InsecureCABundleConflictReason, clusterv1.ConditionSeverityError,
 			"%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
@@ -218,9 +218,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	caBundle, err := fetchRedfishCABundle(ctx, r.Client, physicalHost)
 	if err != nil {
 		logger.Error(err, "Failed to fetch Redfish CA bundle")
-		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, err.Error())
-		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
-			infrastructurev1beta1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
+		r.updateStatus(physicalHost, infrav1.StateError, false, err.Error())
+		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
+			infrav1.CABundleFetchFailedReason, clusterv1.ConditionSeverityError,
 			"%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
@@ -237,9 +237,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create Redfish client")
-		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, fmt.Sprintf("Redfish connection failed: %v", err))
-		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
-			infrastructurev1beta1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
+		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Redfish connection failed: %v", err))
+		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
+			infrav1.RedfishConnectionFailedReason, clusterv1.ConditionSeverityError,
 			"Connection failed: %v", err)
 		internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed, internalmetrics.ErrorTypeConnection)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
@@ -255,9 +255,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	sysInfo, err := rfClient.GetSystemInfo(ctx)
 	if err != nil {
 		logger.Error(err, "Failed to get system info from Redfish")
-		r.updateStatus(physicalHost, infrastructurev1beta1.StateError, false, fmt.Sprintf("Failed to query system: %v", err))
-		conditions.MarkFalse(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition,
-			infrastructurev1beta1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
+		r.updateStatus(physicalHost, infrav1.StateError, false, fmt.Sprintf("Failed to query system: %v", err))
+		conditions.MarkFalse(physicalHost, infrav1.RedfishConnectionReadyCondition,
+			infrav1.RedfishQueryFailedReason, clusterv1.ConditionSeverityError,
 			"Query failed: %v", err)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeTransient)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
@@ -265,11 +265,11 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	}
 
 	// Update hardware details
-	physicalHost.Status.HardwareDetails = infrastructurev1beta1.HardwareDetails{
+	physicalHost.Status.HardwareDetails = infrav1.HardwareDetails{
 		Manufacturer: sysInfo.Manufacturer,
 		Model:        sysInfo.Model,
 		SerialNumber: sysInfo.SerialNumber,
-		Status: infrastructurev1beta1.HardwareStatus{
+		Status: infrav1.HardwareStatus{
 			Health:       string(sysInfo.Status.Health),
 			HealthRollup: string(sysInfo.Status.HealthRollup),
 			State:        string(sysInfo.Status.State),
@@ -297,7 +297,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	}
 
 	// Connection successful - mark as ready
-	conditions.MarkTrue(physicalHost, infrastructurev1beta1.RedfishConnectionReadyCondition)
+	conditions.MarkTrue(physicalHost, infrav1.RedfishConnectionReadyCondition)
 
 	// Drop anything left over from a previous provisioning run before the
 	// annotation handlers below, so a host that is claimed again starts clean.
@@ -357,18 +357,18 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	if physicalHost.Spec.ConsumerRef != nil {
 		// Host is claimed: guard transitions that must NOT overwrite the
 		// inspection/deploying/ready sub-states driven by the annotation handlers above.
-		if physicalHost.Status.State != infrastructurev1beta1.StateInUse &&
-			physicalHost.Status.State != infrastructurev1beta1.StateInspecting &&
-			physicalHost.Status.State != infrastructurev1beta1.StateDeploying &&
-			physicalHost.Status.State != infrastructurev1beta1.StateReady {
+		if physicalHost.Status.State != infrav1.StateInUse &&
+			physicalHost.Status.State != infrav1.StateInspecting &&
+			physicalHost.Status.State != infrav1.StateDeploying &&
+			physicalHost.Status.State != infrav1.StateReady {
 			logger.Info("Host claimed, transitioning to InUse", "consumer", physicalHost.Spec.ConsumerRef.Name)
-			r.updateStatus(physicalHost, infrastructurev1beta1.StateInUse, true, "")
+			r.updateStatus(physicalHost, infrav1.StateInUse, true, "")
 		}
 	} else {
-		if physicalHost.Status.State != infrastructurev1beta1.StateAvailable {
+		if physicalHost.Status.State != infrav1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")
-			r.updateStatus(physicalHost, infrastructurev1beta1.StateAvailable, true, "")
-			conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostAvailableCondition)
+			r.updateStatus(physicalHost, infrav1.StateAvailable, true, "")
+			conditions.MarkTrue(physicalHost, infrav1.HostAvailableCondition)
 		}
 	}
 
@@ -398,7 +398,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 // Token hygiene across consumers is a separate concern and needs its own change.
 //
 // Idempotent: safe to call on every reconcile of an unclaimed host.
-func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	if physicalHost.Status.InspectionTimestamp == nil &&
 		physicalHost.Status.DeployingTimestamp == nil &&
 		physicalHost.Status.InspectionPhase == "" {
@@ -414,15 +414,15 @@ func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, p
 
 	// HostInspected describes the run that just ended, not the host. Leaving it
 	// True would tell the next consumer the box had already been inspected.
-	conditions.MarkFalse(physicalHost, infrastructurev1beta1.HostInspectedCondition,
-		infrastructurev1beta1.HostReleasedReason, clusterv1.ConditionSeverityInfo,
+	conditions.MarkFalse(physicalHost, infrav1.HostInspectedCondition,
+		infrav1.HostReleasedReason, clusterv1.ConditionSeverityInfo,
 		"Host released; previous inspection no longer applies")
 }
 
 // applyInspectionRequest reads the InspectionRequestAnnotation and, when present, drives
 // Status.State and Status.InspectionPhase accordingly, then removes the annotation so it
 // is not acted on twice.
-func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	ann := physicalHost.Annotations[InspectionRequestAnnotation]
 	if ann == "" {
 		return
@@ -435,17 +435,17 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 			t := metav1.Now()
 			physicalHost.Status.InspectionTimestamp = &t
 		}
-		physicalHost.Status.State = infrastructurev1beta1.StateInspecting
-		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseBooting
+		physicalHost.Status.State = infrav1.StateInspecting
+		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseBooting
 
 	case "inspect-complete":
 		// D-015: inspection-complete transitions to StateDeploying (not StateReady).
 		// StateReady is now reached only after the provisioned callback signals that
 		// the OS image has been written and the host has rebooted successfully.
 		logger.Info("Applying inspection-request annotation: transitioning to Deploying")
-		physicalHost.Status.State = infrastructurev1beta1.StateDeploying
-		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
-		conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
+		physicalHost.Status.State = infrav1.StateDeploying
+		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
+		conditions.MarkTrue(physicalHost, infrav1.HostInspectedCondition)
 		// Record when Deploying started so Beskar7Machine can enforce the deploy timeout.
 		if physicalHost.Status.DeployingTimestamp == nil {
 			t := metav1.Now()
@@ -454,8 +454,8 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 
 	case "timeout":
 		logger.Info("Applying inspection-request annotation: recording inspection timeout")
-		physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseTimeout
-		physicalHost.Status.State = infrastructurev1beta1.StateError
+		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseTimeout
+		physicalHost.Status.State = infrav1.StateError
 		physicalHost.Status.ErrorMessage = "Inspection timed out"
 
 	default:
@@ -469,14 +469,14 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 // applyBootstrapURLAnnotation reads the BootstrapURLAnnotation and, when present,
 // persists the URL to Status.Bootstrap.URL and removes the annotation so it is
 // not acted on again. Mirrors the pattern of applyInspectionRequest.
-func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	url := physicalHost.Annotations[BootstrapURLAnnotation]
 	if url == "" {
 		return
 	}
 
 	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
 	}
 	physicalHost.Status.Bootstrap.URL = url
 	logger.Info("Applied bootstrap-url annotation to Status.Bootstrap.URL", "host", physicalHost.Name)
@@ -501,7 +501,7 @@ func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger,
 // failed status patch cannot lose the mint. Malformed JSON is logged and the
 // annotation is left in place so the next reconcile (or operator) can
 // investigate; clearing would silently drop a token-state signal.
-func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	raw := physicalHost.Annotations[BootstrapTokenAnnotation]
 	if raw == "" {
 		return
@@ -527,7 +527,7 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 	}
 
 	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
 	}
 	// Copy the hash (safe to log later — see Status.Bootstrap.TokenHash docstring).
 	physicalHost.Status.Bootstrap.TokenHash = value.Hash
@@ -552,7 +552,7 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 // or an operator can investigate; clearing would silently discard a
 // nonce-state signal. Empty hash → ignore the annotation and clear it
 // (nothing useful to persist).
-func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	raw := physicalHost.Annotations[BootNonceAnnotation]
 	if raw == "" {
 		return
@@ -578,7 +578,7 @@ func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, ph
 	}
 
 	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{}
+		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
 	}
 	// Copy the hash (safe to log — see BootNonceHash docstring in physicalhost_types.go).
 	physicalHost.Status.Bootstrap.BootNonceHash = value.Hash
@@ -599,7 +599,7 @@ func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, ph
 // reconcile's deferred patch still proceeds. The annotation is cleared only
 // after a successful read, so a missing or malformed ConfigMap doesn't strand
 // the state machine — the inspector can re-POST and replace it.
-func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	cmName := physicalHost.Annotations[InspectionResultAnnotation]
 	if cmName == "" {
 		return
@@ -631,7 +631,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 		return
 	}
 
-	report := &infrastructurev1beta1.InspectionReport{}
+	report := &infrav1.InspectionReport{}
 	if err := json.Unmarshal([]byte(raw), report); err != nil {
 		logger.Error(err, "Failed to decode inspection report from ConfigMap; deleting bad ConfigMap",
 			"configmap", cmName)
@@ -643,8 +643,8 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 	// Persist to Status. This is the SOLE place Status.InspectionReport is
 	// written by the controller — D-005 invariant.
 	physicalHost.Status.InspectionReport = report
-	physicalHost.Status.InspectionPhase = infrastructurev1beta1.InspectionPhaseComplete
-	conditions.MarkTrue(physicalHost, infrastructurev1beta1.HostInspectedCondition)
+	physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
+	conditions.MarkTrue(physicalHost, infrav1.HostInspectedCondition)
 	logger.Info("Applied inspection report to Status.InspectionReport", "host", physicalHost.Name)
 
 	// One-shot consumption: delete the ConfigMap and clear the annotation.
@@ -667,18 +667,18 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 // status. If the host is NOT in StateDeploying when the annotation fires (e.g. an
 // out-of-order delivery), we log and clear — the Beskar7Machine controller is
 // responsible for detecting unexpected states and marking a terminal failure there.
-func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	val := physicalHost.Annotations[ProvisionedRequestAnnotation]
 	if val != "provisioned" {
 		return
 	}
 
 	switch physicalHost.Status.State {
-	case infrastructurev1beta1.StateDeploying:
+	case infrav1.StateDeploying:
 		logger.Info("Applying provisioned-request annotation: transitioning Deploying→Ready")
-		physicalHost.Status.State = infrastructurev1beta1.StateReady
+		physicalHost.Status.State = infrav1.StateReady
 		physicalHost.Status.Ready = true
-	case infrastructurev1beta1.StateReady:
+	case infrav1.StateReady:
 		// Already ready (idempotent delivery). Clear annotation only.
 		logger.V(1).Info("Provisioned annotation on already-ready host; clearing idempotently", "host", physicalHost.Name)
 	default:
@@ -705,20 +705,20 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 // Idempotent: if the host is already in StateError when the annotation fires again (e.g.
 // a duplicate delivery before the first annotation is cleared), we clear the annotation
 // and return without re-writing status.
-func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	val, ok := physicalHost.Annotations[ProvisionFailedRequestAnnotation]
 	if !ok {
 		return
 	}
 
 	switch physicalHost.Status.State {
-	case infrastructurev1beta1.StateDeploying:
+	case infrav1.StateDeploying:
 		logger.Info("Applying provision-failed annotation: transitioning Deploying→Error",
 			"host", physicalHost.Name)
-		physicalHost.Status.State = infrastructurev1beta1.StateError
+		physicalHost.Status.State = infrav1.StateError
 		physicalHost.Status.Ready = false
 		physicalHost.Status.ErrorMessage = val
-	case infrastructurev1beta1.StateError:
+	case infrav1.StateError:
 		// Already in error (idempotent delivery or second annotation before first was cleared).
 		logger.V(1).Info("Provision-failed annotation on already-errored host; clearing idempotently",
 			"host", physicalHost.Name)
@@ -734,7 +734,7 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger lo
 }
 
 // reconcileDelete handles PhysicalHost deletion.
-func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, physicalHost *infrastructurev1beta1.PhysicalHost) (ctrl.Result, error) {
+func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Reconciling PhysicalHost deletion")
 
 	// If still claimed, log warning but allow deletion. Guard the Recorder:
@@ -758,7 +758,7 @@ func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger log
 }
 
 // getRedfishCredentials retrieves Redfish credentials from the referenced secret.
-func (r *PhysicalHostReconciler) getRedfishCredentials(ctx context.Context, physicalHost *infrastructurev1beta1.PhysicalHost) (string, string, error) {
+func (r *PhysicalHostReconciler) getRedfishCredentials(ctx context.Context, physicalHost *infrav1.PhysicalHost) (string, string, error) {
 	secretName := physicalHost.Spec.RedfishConnection.CredentialsSecretRef
 	if secretName == "" {
 		return "", "", fmt.Errorf("credentials secret reference is empty")
@@ -791,7 +791,7 @@ func (r *PhysicalHostReconciler) getRedfishCredentials(ctx context.Context, phys
 }
 
 // updateStatus is a helper to update PhysicalHost status fields.
-func (r *PhysicalHostReconciler) updateStatus(ph *infrastructurev1beta1.PhysicalHost, state string, ready bool, errorMsg string) {
+func (r *PhysicalHostReconciler) updateStatus(ph *infrav1.PhysicalHost, state string, ready bool, errorMsg string) {
 	ph.Status.State = state
 	ph.Status.Ready = ready
 	ph.Status.ErrorMessage = errorMsg
@@ -802,7 +802,7 @@ func (r *PhysicalHostReconciler) updateStatus(ph *infrastructurev1beta1.Physical
 // top of each Reconcile so metrics stay current even when the reconcile short-circuits.
 // Errors are logged and swallowed — a metric failure must not affect reconcile correctness.
 func (r *PhysicalHostReconciler) recomputePhysicalHostMetrics(ctx context.Context, logger logr.Logger, namespace string) {
-	list := &infrastructurev1beta1.PhysicalHostList{}
+	list := &infrav1.PhysicalHostList{}
 	if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
 		logger.V(1).Info("Failed to list PhysicalHosts for metric recompute; skipping", "err", err.Error())
 		return
@@ -811,7 +811,7 @@ func (r *PhysicalHostReconciler) recomputePhysicalHostMetrics(ctx context.Contex
 	availableCount := 0
 	for _, h := range list.Items {
 		counts[h.Status.State]++
-		if h.Status.State == infrastructurev1beta1.StateAvailable {
+		if h.Status.State == infrav1.StateAvailable {
 			availableCount++
 		}
 	}
@@ -840,7 +840,7 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrastructurev1beta1.PhysicalHost{}).
+		For(&infrav1.PhysicalHost{}).
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.SecretToPhysicalHosts),
@@ -870,7 +870,7 @@ func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj 
 	}
 
 	// Find all PhysicalHosts in the same namespace that reference this secret
-	physicalHostList := &infrastructurev1beta1.PhysicalHostList{}
+	physicalHostList := &infrav1.PhysicalHostList{}
 	if err := r.List(ctx, physicalHostList, client.InNamespace(secret.Namespace)); err != nil {
 		r.Log.Error(err, "Failed to list PhysicalHosts for Secret watch", "secret", secret.Name)
 		return nil

@@ -23,7 +23,7 @@ import (
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // Utils tests are integrated into the main controller suite
@@ -32,7 +32,7 @@ import (
 var _ = Describe("Utils", func() {
 	Describe("isPaused", func() {
 		It("should return false when no pause annotation is present", func() {
-			obj := &infrastructurev1beta1.PhysicalHost{
+			obj := &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-host",
 					Namespace: "default",
@@ -42,7 +42,7 @@ var _ = Describe("Utils", func() {
 		})
 
 		It("should return true when pause annotation is set to false", func() {
-			obj := &infrastructurev1beta1.PhysicalHost{
+			obj := &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-host",
 					Namespace: "default",
@@ -55,7 +55,7 @@ var _ = Describe("Utils", func() {
 		})
 
 		It("should return true when pause annotation is set to true", func() {
-			obj := &infrastructurev1beta1.PhysicalHost{
+			obj := &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-host",
 					Namespace: "default",
@@ -68,7 +68,7 @@ var _ = Describe("Utils", func() {
 		})
 
 		It("should return true when pause annotation has invalid value", func() {
-			obj := &infrastructurev1beta1.PhysicalHost{
+			obj := &infrav1.PhysicalHost{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-host",
 					Namespace: "default",

@@ -32,7 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
@@ -83,7 +83,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
+		physicalHost *infrav1.PhysicalHost
 		server       *httptest.Server
 	)
 
@@ -93,13 +93,13 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "insp-handler-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.1.10",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -131,11 +131,11 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 
 	setHostBootstrap := func(hash string, expiresIn time.Duration) {
 		// Re-fetch to pick up any concurrent status writes.
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
 		issuedAt := metav1.NewTime(time.Now())
 		expiresAt := metav1.NewTime(issuedAt.Add(expiresIn))
-		ph.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
 			TokenHash: hash,
 			IssuedAt:  &issuedAt,
 			ExpiresAt: &expiresAt,
@@ -260,7 +260,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 				types.NamespacedName{Namespace: physicalHost.Namespace, Name: cmName}, cm)).To(Succeed())
 			g.Expect(cm.Data).To(HaveKey(inspectionResultDataKey))
 			// Decode and check a couple of fields.
-			report := &infrastructurev1beta1.InspectionReport{}
+			report := &infrav1.InspectionReport{}
 			g.Expect(json.Unmarshal([]byte(cm.Data[inspectionResultDataKey]), report)).To(Succeed())
 			g.Expect(report.Manufacturer).To(Equal("Acme"))
 			g.Expect(report.Model).To(Equal("Test-7000"))
@@ -278,18 +278,18 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 
 		By("Verifying the inspection-result annotation was set on the PhysicalHost")
 		Eventually(func(g Gomega) {
-			got := &infrastructurev1beta1.PhysicalHost{}
+			got := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx,
 				types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, got)).To(Succeed())
 			g.Expect(got.Annotations).To(HaveKeyWithValue(InspectionResultAnnotation, cmName))
 		}, Timeout, Interval).Should(Succeed())
 
 		By("Verifying the handler did NOT write Status (D-005 invariant)")
-		got := &infrastructurev1beta1.PhysicalHost{}
+		got := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, got)).To(Succeed())
 		Expect(got.Status.InspectionReport).To(BeNil(),
 			"handler must not have populated Status.InspectionReport — that is the PhysicalHost reconciler's job")
-		Expect(got.Status.InspectionPhase).NotTo(Equal(infrastructurev1beta1.InspectionPhaseComplete),
+		Expect(got.Status.InspectionPhase).NotTo(Equal(infrav1.InspectionPhaseComplete),
 			"handler must not have transitioned InspectionPhase")
 	})
 

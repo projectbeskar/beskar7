@@ -29,7 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // Regression test for a contradiction observed on real hardware: a
@@ -51,8 +51,8 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 	var (
 		ctx        context.Context
 		testNs     *corev1.Namespace
-		host       *infrastructurev1beta1.PhysicalHost
-		b7machine  *infrastructurev1beta1.Beskar7Machine
+		host       *infrav1.PhysicalHost
+		b7machine  *infrav1.Beskar7Machine
 		machine    *clusterv1.Machine
 		reconciler *Beskar7MachineReconciler
 	)
@@ -67,10 +67,10 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 
 		// A PhysicalHost that has RECOVERED and is now Ready — the condition that
 		// previously let the machine stamp success over its terminal failure.
-		host = &infrastructurev1beta1.PhysicalHost{
+		host = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "recovered-host", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.1.100",
 					CredentialsSecretRef: "creds",
 				},
@@ -78,9 +78,9 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 		}
 		Expect(k8sClient.Create(ctx, host)).To(Succeed())
 
-		b7machine = &infrastructurev1beta1.Beskar7Machine{
+		b7machine = &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "failed-machine", Namespace: testNs.Name},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspector",
 				TargetImageURL:     "http://boot-server/images/kairos.raw",
 				TargetImageDigest:  bootTestDigest,
@@ -139,10 +139,10 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 			Kind:       "Beskar7Machine",
 			Name:       b7machine.Name,
 			Namespace:  testNs.Name,
-			APIVersion: infrastructurev1beta1.GroupVersion.String(),
+			APIVersion: infrav1.GroupVersion.String(),
 		}
 		Expect(k8sClient.Update(ctx, host)).To(Succeed())
-		host.Status.State = infrastructurev1beta1.StateReady
+		host.Status.State = infrav1.StateReady
 		host.Status.Ready = true
 		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
@@ -159,7 +159,7 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 
 	It("must not stamp success over an existing terminal failure", func() {
 		// Put the machine in the exact state markTerminalFailure leaves behind.
-		reason := infrastructurev1beta1.InspectionTimedOutReason
+		reason := infrav1.InspectionTimedOutReason
 		msg := "Inspection did not complete within 10m0s"
 		phase := "Failed"
 		b7machine.Status.FailureReason = &reason
@@ -179,7 +179,7 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 			Expect(err).NotTo(HaveOccurred())
 		}
 
-		updated := &infrastructurev1beta1.Beskar7Machine{}
+		updated := &infrav1.Beskar7Machine{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name: b7machine.Name, Namespace: testNs.Name,
 		}, updated)).To(Succeed())
@@ -203,7 +203,7 @@ var _ = Describe("Beskar7Machine terminal failure handling", func() {
 	It("still allows a terminally-failed machine to be deleted", func() {
 		// Deletion must stay reachable so the host is released and, under a
 		// MachineDeployment, CAPI can replace the failed replica.
-		reason := infrastructurev1beta1.InspectionTimedOutReason
+		reason := infrav1.InspectionTimedOutReason
 		msg := "Inspection did not complete within 10m0s"
 		b7machine.Status.FailureReason = &reason
 		b7machine.Status.FailureMessage = &msg

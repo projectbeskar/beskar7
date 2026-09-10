@@ -107,7 +107,7 @@ type nicData struct {
 // the dynamic client. Defined here so it is not re-derived on every call.
 var physicalHostGVR = schema.GroupVersionResource{
 	Group:    "infrastructure.cluster.x-k8s.io",
-	Version:  "v1beta1",
+	Version:  "v1beta2",
 	Resource: "physicalhosts",
 }
 

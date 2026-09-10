@@ -33,10 +33,10 @@ make test
 golangci-lint run --timeout=5m
 ```
 
-If you changed anything under `api/v1beta1/` or any `+kubebuilder:` marker you
+If you changed anything under `api/v1beta2/` or any `+kubebuilder:` marker you
 **must** run `make manifests` and commit the regenerated
 `config/crd/bases/*.yaml`, `config/rbac/role.yaml`, `config/webhook/manifests.yaml`
-and `api/v1beta1/zz_generated.deepcopy.go`. Then run `make sync-chart-crds` so the
+and `api/v1beta2/zz_generated.deepcopy.go`. Then run `make sync-chart-crds` so the
 chart-bundled CRDs stay byte-identical — CI fails if they drift.
 
 ## PR expectations
@@ -89,7 +89,7 @@ remediation, and cleanup paths get scrutiny in review — see
 ## Documentation changes
 
 Docs are verified against the code, not against other docs. If you document a
-field, check `api/v1beta1/*_types.go`; if you document behavior, check the
+field, check `api/v1beta2/*_types.go`; if you document behavior, check the
 controller. Several docs have drifted from the implementation in the past, so a
 plausible-looking existing sentence is not evidence.
 

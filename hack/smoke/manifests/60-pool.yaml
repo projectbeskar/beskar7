@@ -80,7 +80,7 @@ spec:
     targetPort: https
 ---
 # Host A -> the layer-3 mock BMC. Host B -> the second one above.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: pool-host-a
@@ -94,7 +94,7 @@ spec:
     credentialsSecretRef: bmc-credentials
     insecureSkipVerify: true
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: pool-host-b
@@ -128,13 +128,12 @@ stringData:
 ---
 # THE ARTEFACT UNDER TEST: one template, no per-host fields — by construction it
 # cannot carry a per-host ProviderID. Every replica is cloned from this spec.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7MachineTemplate
 metadata:
   name: pool-template
   namespace: beskar7-smoke
   labels:
-    cluster.x-k8s.io/v1beta1: v1_beta1
     cluster.x-k8s.io/cluster-name: smoke-cluster
     app.kubernetes.io/part-of: beskar7
     app.kubernetes.io/component: smoke-test
@@ -176,6 +175,6 @@ spec:
       bootstrap:
         dataSecretName: pool-bootstrap-data
       infrastructureRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: Beskar7MachineTemplate
         name: pool-template

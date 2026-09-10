@@ -113,7 +113,7 @@ stringData:
 
 ---
 # PhysicalHost — one per bare-metal server.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: <host-name>
@@ -131,7 +131,7 @@ spec:
 # Beskar7Cluster — CAPI infra-cluster.
 # controlPlaneEndpoint is the address the k3s API will be reachable at.
 # For a single-node cluster this is typically the node's provisioning-network IP.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Cluster
 metadata:
   name: <cluster-name>
@@ -157,7 +157,7 @@ spec:
     services:
       cidrBlocks: ["10.43.0.0/16"]
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Cluster
     name: <cluster-name>
 
@@ -178,7 +178,7 @@ spec:
   bootstrap:
     dataSecretName: <machine-name>-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Machine
     name: <machine-name>
 
@@ -205,7 +205,7 @@ spec:
 #   staticIP:   static-network override for DHCP-less provisioning networks.
 #               Format: <ip>::[<gw>]:<mask>[:<dns>]  (see docs/inspector-contract.md §5)
 #   hardwareRequirements: gate provisioning on minimum CPU/memory/disk.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: <machine-name>

@@ -50,28 +50,6 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   namespace's unassociated machines. The one-minute requeue stays as a
   backstop. This is also what made the integration suite's "Delete and
   release" specs flake.
-
-### Changed
-
-- **Built against Cluster API v1.13 and its `api/core/v1beta2` Go API** (was
-  v1.10.1 / `api/v1beta1`, which no longer exists in v1.13). This is the
-  mechanical half of D-023: no behaviour change and no beskar7 API change. The
-  v1beta1-shaped conditions stay for now through CAPI's deprecated helpers
-  (accessors `GetV1Beta1Conditions`/`SetV1Beta1Conditions` on all three types —
-  required, or `patch.Helper` silently drops conditions); `Machine.spec.failureDomain`
-  is a plain string; `Beskar7Cluster.status.failureDomains` is built as a sorted
-  list (CAPI v1beta2 shape) but still serialised under the v1beta1 API.
-  controller-runtime 0.23: the webhook builder is generic and
-  `ctrl.Result{Requeue: true}` is deprecated — replaced by a one-second
-  `RequeueAfter` at the six sites (finalizer add, optimistic-lock conflict,
-  post-inspection re-observe). `controlPlaneEndpoint` gains `omitzero` so an
-  endpoint-less `Beskar7Cluster` (legitimate until the control plane has an
-  address) is not rejected by v1beta2's `APIEndpoint` schema. envtest now uses
-  the real CAPI v1beta2 CRDs copied from the module (`make test-external-crds`)
-  instead of hand-written v1beta1 stubs.
-
-### Fixed
-
 - **kustomize and single-file-manifest installs could not create a
   `Beskar7Machine` or `Beskar7MachineTemplate`.** `config/webhook/manifests.yaml`
   still declared mutating and validating webhooks for both kinds
@@ -88,6 +66,39 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   removed webhook names and would have re-added them as incomplete entries),
   and `test/contract` fails if either the overlay or the chart declares a path
   with no marker behind it — or leaves a marker undeclared.
+
+### Changed
+
+- **BREAKING: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`, the only
+  served version.** `api/v1beta1` was renamed to `api/v1beta2` in place — no
+  field changed — with **no conversion webhook** (there are no `v1beta1` users to
+  migrate; D-018's "v1beta2 with conversion" is superseded). `v1beta1` CRDs and
+  objects must be deleted and re-created; `docs/upgrading.md` has the procedure.
+  The CRD contract label becomes `cluster.x-k8s.io/v1beta2: v1beta2` on the three
+  CAPI contract resources (`PhysicalHost` is not one and now carries no contract
+  label) — on CAPI v1.11+ that label is what resolves the apiVersion behind a
+  version-less `infrastructureRef`, and the v1beta2 contract reads the
+  list-shaped `failureDomains` this API already publishes. Webhook paths move to
+  `…-v1beta2-beskar7cluster`; the `PhysicalHost.spec.consumerRef` the controller
+  writes carries the new apiVersion; the Go alias is `infrav1`. Requires
+  Cluster API v1.11 or newer (already true since the module bump below; the
+  docs now say so).
+- **Built against Cluster API v1.13 and its `api/core/v1beta2` Go API** (was
+  v1.10.1 / `api/v1beta1`, which no longer exists in v1.13). This is the
+  mechanical half of D-023: no behaviour change and no beskar7 API change. The
+  v1beta1-shaped conditions stay for now through CAPI's deprecated helpers
+  (accessors `GetV1Beta1Conditions`/`SetV1Beta1Conditions` on all three types —
+  required, or `patch.Helper` silently drops conditions); `Machine.spec.failureDomain`
+  is a plain string; `Beskar7Cluster.status.failureDomains` is built as a sorted
+  list (CAPI v1beta2 shape) but still serialised under the v1beta1 API.
+  controller-runtime 0.23: the webhook builder is generic and
+  `ctrl.Result{Requeue: true}` is deprecated — replaced by a one-second
+  `RequeueAfter` at the six sites (finalizer add, optimistic-lock conflict,
+  post-inspection re-observe). `controlPlaneEndpoint` gains `omitzero` so an
+  endpoint-less `Beskar7Cluster` (legitimate until the control plane has an
+  address) is not rejected by v1beta2's `APIEndpoint` schema. envtest now uses
+  the real CAPI v1beta2 CRDs copied from the module (`make test-external-crds`)
+  instead of hand-written v1beta1 stubs.
 
 ## [v0.4.4] - 2026-09-09
 

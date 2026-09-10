@@ -545,7 +545,7 @@ spec:
         description: "Beskar7 controller error rate is {{ $value }} errors/sec"
         
     - alert: PhysicalHostStuckInspecting
-      # PhysicalHost states (api/v1beta1/physicalhost_types.go): Available, InUse,
+      # PhysicalHost states (api/v1beta2/physicalhost_types.go): Available, InUse,
       # Inspecting, Ready, Error, Enrolling, Unknown. The metric is
       # beskar7_controller_physicalhost_states_total (see docs/metrics.md).
       expr: |

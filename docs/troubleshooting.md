@@ -58,7 +58,7 @@ failed calling webhook "validation.beskar7cluster.infrastructure.cluster.x-k8s.i
 x509: certificate signed by unknown authority
 ```
 
-There is exactly one webhook in v0.4: the Beskar7Cluster validating webhook (`api/v1beta1/webhooks/beskar7cluster_webhook.go`). If your error mentions `physicalhost`, `beskar7machine`, or `beskar7machinetemplate` webhooks, those are stale `ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration` objects left over from a v0.3 install — see step 3 below.
+There is exactly one webhook in v0.4: the Beskar7Cluster validating webhook (`api/v1beta2/webhooks/beskar7cluster_webhook.go`). If your error mentions `physicalhost`, `beskar7machine`, or `beskar7machinetemplate` webhooks, those are stale `ValidatingWebhookConfiguration`/`MutatingWebhookConfiguration` objects left over from a v0.3 install — see step 3 below.
 
 **Cause:** cert-manager not installed or not ready, or webhook serving cert not issued.
 

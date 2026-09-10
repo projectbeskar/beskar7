@@ -34,7 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
@@ -62,8 +62,8 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 
 	var (
 		testNs       *corev1.Namespace
-		physicalHost *infrastructurev1beta1.PhysicalHost
-		b7machine    *infrastructurev1beta1.Beskar7Machine
+		physicalHost *infrav1.PhysicalHost
+		b7machine    *infrav1.Beskar7Machine
 		ownerMachine *clusterv1.Machine
 		server       *httptest.Server
 	)
@@ -71,11 +71,11 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 	// setHostBootstrap mints + stores a bearer-token hash on the host's
 	// Status.Bootstrap so the verifier accepts the returned plaintext.
 	setHostBootstrap := func(hash string, expiresIn time.Duration) {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
 		issuedAt := metav1.NewTime(time.Now())
 		expiresAt := metav1.NewTime(issuedAt.Add(expiresIn))
-		ph.Status.Bootstrap = &infrastructurev1beta1.BootstrapStatus{
+		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
 			TokenHash: hash,
 			IssuedAt:  &issuedAt,
 			ExpiresAt: &expiresAt,
@@ -87,7 +87,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 	// Beskar7Machine. Status writes happen through Status().Update; spec
 	// writes here go through Patch to mimic the real claim path.
 	linkConsumer := func() {
-		ph := &infrastructurev1beta1.PhysicalHost{}
+		ph := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
 		base := ph.DeepCopy()
 		ph.Spec.ConsumerRef = &corev1.ObjectReference{
@@ -103,7 +103,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 	// bindMachineOwner adds the CAPI Machine as an OwnerReference on the
 	// Beskar7Machine, which is how util.GetOwnerMachine resolves the chain.
 	bindMachineOwner := func() {
-		got := &infrastructurev1beta1.Beskar7Machine{}
+		got := &infrav1.Beskar7Machine{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: b7machine.Name, Namespace: b7machine.Namespace}, got)).To(Succeed())
 		base := got.DeepCopy()
 		got.OwnerReferences = append(got.OwnerReferences, metav1.OwnerReference{
@@ -124,13 +124,13 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 		// PhysicalHost (no ConsumerRef yet — set via linkConsumer per-spec).
-		physicalHost = &infrastructurev1beta1.PhysicalHost{
+		physicalHost = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "bootstrap-handler-host",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
-				RedfishConnection: infrastructurev1beta1.RedfishConnection{
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.77.10",
 					CredentialsSecretRef: "irrelevant",
 				},
@@ -139,12 +139,12 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
 
 		// Beskar7Machine (consumer of the host).
-		b7machine = &infrastructurev1beta1.Beskar7Machine{
+		b7machine = &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "bootstrap-handler-b7m",
 				Namespace: testNs.Name,
 			},
-			Spec: infrastructurev1beta1.Beskar7MachineSpec{
+			Spec: infrav1.Beskar7MachineSpec{
 				InspectionImageURL: "http://boot-server/inspect.ipxe",
 				TargetImageURL:     "http://boot-server/kairos.tar.gz",
 				TargetImageDigest:  bootTestDigest,
@@ -246,7 +246,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		// Delete the Beskar7Machine — ConsumerRef now dangles.
 		Expect(k8sClient.Delete(ctx, b7machine)).To(Succeed())
 		Eventually(func(g Gomega) {
-			got := &infrastructurev1beta1.Beskar7Machine{}
+			got := &infrav1.Beskar7Machine{}
 			err := k8sClient.Get(ctx, types.NamespacedName{Name: b7machine.Name, Namespace: testNs.Name}, got)
 			g.Expect(err).To(HaveOccurred())
 		}, Timeout, Interval).Should(Succeed())
@@ -326,9 +326,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		// Fake client preloaded with an over-cap Secret. We do not register any
 		// other objects: the test exercises only the size-check branch.
 		oversized := bytes.Repeat([]byte("x"), maxBootstrapDataSize+1)
-		ph := &infrastructurev1beta1.PhysicalHost{
+		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "n"},
-			Spec: infrastructurev1beta1.PhysicalHostSpec{
+			Spec: infrav1.PhysicalHostSpec{
 				ConsumerRef: &corev1.ObjectReference{
 					Kind:       "Beskar7Machine",
 					APIVersion: InfrastructureAPIVersion,
@@ -337,7 +337,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 				},
 			},
 		}
-		b7m := &infrastructurev1beta1.Beskar7Machine{
+		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "b7m",
 				Namespace: "n",

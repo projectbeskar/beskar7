@@ -37,7 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
@@ -184,7 +184,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. Get the PhysicalHost. NotFound and other errors are both opaque.
-	ph := &infrastructurev1beta1.PhysicalHost{}
+	ph := &infrav1.PhysicalHost{}
 	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
 		log.V(1).Info("boot GET: PhysicalHost lookup failed", "err", err.Error())
 		h.opaqueFailure(w)
@@ -233,7 +233,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// Conflict: the object was mutated between our Get and our Patch.
 			// Re-Get and re-evaluate.
-			fresh := &infrastructurev1beta1.PhysicalHost{}
+			fresh := &infrav1.PhysicalHost{}
 			if getErr := h.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: hostName}, fresh); getErr != nil {
 				log.V(1).Info("boot GET: re-get after conflict failed", "err", getErr.Error())
 				h.opaqueFailure(w)
@@ -296,7 +296,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //
 // Deliberately does NOT check BootNonceConsumedAt — that check belongs in the
 // consume path so the already-consumed branch can render identical content.
-func verifyBootNonce(nonce string, ph *infrastructurev1beta1.PhysicalHost) bool {
+func verifyBootNonce(nonce string, ph *infrav1.PhysicalHost) bool {
 	bs := ph.Status.Bootstrap
 	if bs == nil || bs.BootNonceHash == "" {
 		return false
@@ -481,7 +481,7 @@ func validateStaticIP(raw string) error {
 func (h *BootHandler) renderBootScript(
 	ctx context.Context,
 	log logr.Logger,
-	ph *infrastructurev1beta1.PhysicalHost,
+	ph *infrav1.PhysicalHost,
 	macParam string,
 ) (string, error) {
 	// Walk to the consuming Beskar7Machine via Spec.ConsumerRef.
@@ -489,7 +489,7 @@ func (h *BootHandler) renderBootScript(
 	if cr == nil || cr.Kind != "Beskar7Machine" || cr.APIVersion != InfrastructureAPIVersion {
 		return "", fmt.Errorf("PhysicalHost %s/%s has no Beskar7Machine consumer", ph.Namespace, ph.Name)
 	}
-	b7m := &infrastructurev1beta1.Beskar7Machine{}
+	b7m := &infrav1.Beskar7Machine{}
 	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}, b7m); err != nil {
 		return "", fmt.Errorf("get Beskar7Machine %s/%s: %w", cr.Namespace, cr.Name, err)
 	}

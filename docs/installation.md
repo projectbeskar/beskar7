@@ -7,7 +7,7 @@ This page covers installing Beskar7 into an existing Kubernetes cluster. For bui
 ## Prerequisites
 
 - Kubernetes v1.31+
-- Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
+- Cluster API v1.11+ — the controller reads the `cluster.x-k8s.io/v1beta2` API ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 - cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 - iPXE infrastructure — DHCP server + HTTP boot server accessible by bare-metal hosts ([setup guide](ipxe-setup.md))
 - `beskar7-inspector` image hosted on your boot server ([inspector repository](https://github.com/projectbeskar/beskar7-inspector))

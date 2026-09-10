@@ -2,13 +2,13 @@
 
 > **Audience:** Operators
 
-`Beskar7Cluster` is the Beskar7 CRD that implements the CAPI infrastructure-cluster contract. The reconciler that owns it is `controllers/beskar7cluster_controller.go`. It is the only Beskar7 resource with an admission webhook (`api/v1beta1/webhooks/beskar7cluster_webhook.go`).
+`Beskar7Cluster` is the Beskar7 CRD that implements the CAPI infrastructure-cluster contract. The reconciler that owns it is `controllers/beskar7cluster_controller.go`. It is the only Beskar7 resource with an admission webhook (`api/v1beta2/webhooks/beskar7cluster_webhook.go`).
 
 For the full field reference, see [API Reference: Beskar7Cluster](api-reference.md#beskar7cluster). This page covers operational behavior — what the controller derives, when it sets which condition.
 
 ## Identity
 
-- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta2`
 - **Kind:** `Beskar7Cluster`
 - **Scope:** Namespaced
 - **Categories:** `cluster-api`
@@ -64,7 +64,7 @@ There are no defaulting webhooks. The other CRDs (`PhysicalHost`, `Beskar7Machin
 ## Example
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Cluster
 metadata:
   name: production-cluster
@@ -92,7 +92,7 @@ spec:
     services:
       cidrBlocks: ["10.96.0.0/12"]
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
     kind: Beskar7Cluster
     name: production-cluster
   controlPlaneRef:

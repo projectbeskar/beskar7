@@ -17,7 +17,7 @@
 # Replace every <...> placeholder; combine with the Cluster, control plane and
 # MachineDeployment objects from examples/kairos-k3s-node.yaml or your own.
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: cp-01
@@ -30,7 +30,7 @@ spec:
     address: "https://<bmc-of-cp-01>"
     credentialsSecretRef: "bmc-credentials"
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: worker-01
@@ -45,13 +45,12 @@ spec:
 ---
 # Used by the control plane (KubeadmControlPlane / KairosControlPlane
 # machineTemplate.infrastructureRef).
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7MachineTemplate
 metadata:
   name: control-plane-template
   namespace: <namespace>
   labels:
-    cluster.x-k8s.io/v1beta1: v1_beta1
 spec:
   template:
     spec:
@@ -63,13 +62,12 @@ spec:
           node-role: control-plane
 ---
 # Used by the worker MachineDeployment (template.spec.infrastructureRef).
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7MachineTemplate
 metadata:
   name: worker-template
   namespace: <namespace>
   labels:
-    cluster.x-k8s.io/v1beta1: v1_beta1
 spec:
   template:
     spec:

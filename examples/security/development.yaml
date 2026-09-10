@@ -26,7 +26,7 @@ stringData:
 ---
 # Lab PhysicalHost: skip TLS verification because the BMC has a self-signed
 # cert. NEVER do this in production — use caBundleSecretRef instead.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: dev-server-01

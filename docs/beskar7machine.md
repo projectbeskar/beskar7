@@ -8,7 +8,7 @@ For the full field reference, see [API Reference: Beskar7Machine](api-reference.
 
 ## Identity
 
-- **API:** `infrastructure.cluster.x-k8s.io/v1beta1`
+- **API:** `infrastructure.cluster.x-k8s.io/v1beta2`
 - **Kind:** `Beskar7Machine`
 - **Scope:** Namespaced
 - **Categories:** `cluster-api`
@@ -196,7 +196,7 @@ If you skip this, the node still comes up and is `Ready`, but the CAPI `Machine`
 ## Example
 
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7Machine
 metadata:
   name: control-plane-01

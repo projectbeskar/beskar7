@@ -54,7 +54,7 @@ spec:
 
 ---
 # PhysicalHost using strict TLS verification against the bundle above.
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
   name: prod-server-01

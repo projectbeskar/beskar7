@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 // CA bundle Secret data keys, in lookup-precedence order: "ca.crt" wins if both
@@ -48,7 +48,7 @@ const (
 //
 // The Secret data is non-sensitive (a public CA bundle), but we still avoid
 // logging it; the only diagnostic we emit is the byte length, via the caller.
-func fetchRedfishCABundle(ctx context.Context, c client.Reader, host *infrastructurev1beta1.PhysicalHost) ([]byte, error) {
+func fetchRedfishCABundle(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) ([]byte, error) {
 	name := host.Spec.RedfishConnection.CABundleSecretRef
 	if name == "" {
 		return nil, nil

@@ -10,7 +10,7 @@ webhooks:
     service:
       name: beskar7-webhook-service
       namespace: beskar7-system
-      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      path: /mutate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
   failurePolicy: Fail
   matchPolicy: Equivalent
   name: defaulting.beskar7cluster.infrastructure.cluster.x-k8s.io
@@ -18,7 +18,7 @@ webhooks:
   - apiGroups:
     - infrastructure.cluster.x-k8s.io
     apiVersions:
-    - v1beta1
+    - v1beta2
     operations:
     - CREATE
     - UPDATE
@@ -37,7 +37,7 @@ webhooks:
     service:
       name: beskar7-webhook-service
       namespace: beskar7-system
-      path: /validate-infrastructure-cluster-x-k8s-io-v1beta1-beskar7cluster
+      path: /validate-infrastructure-cluster-x-k8s-io-v1beta2-beskar7cluster
   failurePolicy: Fail
   matchPolicy: Equivalent
   name: validation.beskar7cluster.infrastructure.cluster.x-k8s.io
@@ -45,7 +45,7 @@ webhooks:
   - apiGroups:
     - infrastructure.cluster.x-k8s.io
     apiVersions:
-    - v1beta1
+    - v1beta2
     operations:
     - CREATE
     - UPDATE

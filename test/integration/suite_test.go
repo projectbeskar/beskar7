@@ -61,7 +61,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	infrastructurev1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/controllers"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
@@ -89,7 +89,7 @@ var _ = BeforeSuite(func() {
 	suiteCtx, suiteCancel = context.WithCancel(context.Background())
 
 	// Register types before starting envtest so the CRD watcher knows the GVKs.
-	Expect(infrastructurev1beta1.AddToScheme(scheme.Scheme)).To(Succeed())
+	Expect(infrav1.AddToScheme(scheme.Scheme)).To(Succeed())
 	Expect(clusterv1.AddToScheme(scheme.Scheme)).To(Succeed())
 
 	// Auto-resolve envtest assets when KUBEBUILDER_ASSETS is unset. Mirrors the
@@ -310,7 +310,7 @@ func createMachine(ctx context.Context, ns, machineName, clusterName, bootstrapS
 			// v1beta2 references carry group/kind/name only; nothing in envtest
 			// resolves this one (the controllers walk OwnerReferences).
 			InfrastructureRef: clusterv1.ContractVersionedObjectReference{
-				APIGroup: infrastructurev1beta1.GroupVersion.Group,
+				APIGroup: infrav1.GroupVersion.Group,
 				Kind:     "Beskar7Machine",
 				Name:     "fixture",
 			},
@@ -325,14 +325,14 @@ func createMachine(ctx context.Context, ns, machineName, clusterName, bootstrapS
 // createPhysicalHost creates a PhysicalHost referencing the given credentials Secret.
 // The host starts with no status; the PhysicalHostReconciler will set it to Available
 // after connecting to the mock BMC.
-func createPhysicalHost(ctx context.Context, ns, hostName, credsSecretName string) *infrastructurev1beta1.PhysicalHost {
-	h := &infrastructurev1beta1.PhysicalHost{
+func createPhysicalHost(ctx context.Context, ns, hostName, credsSecretName string) *infrav1.PhysicalHost {
+	h := &infrav1.PhysicalHost{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      hostName,
 			Namespace: ns,
 		},
-		Spec: infrastructurev1beta1.PhysicalHostSpec{
-			RedfishConnection: infrastructurev1beta1.RedfishConnection{
+		Spec: infrav1.PhysicalHostSpec{
+			RedfishConnection: infrav1.RedfishConnection{
 				Address:              "https://192.168.100.1",
 				CredentialsSecretRef: credsSecretName,
 			},
@@ -345,14 +345,14 @@ func createPhysicalHost(ctx context.Context, ns, hostName, credsSecretName strin
 // createBeskar7Machine creates a Beskar7Machine with an OwnerReference pointing
 // at the given CAPI Machine. The OwnerRef is required for util.GetOwnerMachine
 // (the first gate in Beskar7MachineReconciler.Reconcile).
-func createBeskar7Machine(ctx context.Context, ns, b7mName string, ownerMachine *clusterv1.Machine) *infrastructurev1beta1.Beskar7Machine {
-	b7m := &infrastructurev1beta1.Beskar7Machine{
+func createBeskar7Machine(ctx context.Context, ns, b7mName string, ownerMachine *clusterv1.Machine) *infrav1.Beskar7Machine {
+	b7m := &infrav1.Beskar7Machine{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      b7mName,
 			Namespace: ns,
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion: "cluster.x-k8s.io/v1beta1",
+					APIVersion: "cluster.x-k8s.io/v1beta2",
 					Kind:       "Machine",
 					Name:       ownerMachine.Name,
 					UID:        ownerMachine.UID,
@@ -363,7 +363,7 @@ func createBeskar7Machine(ctx context.Context, ns, b7mName string, ownerMachine 
 				clusterv1.ClusterNameLabel: ownerMachine.Labels[clusterv1.ClusterNameLabel],
 			},
 		},
-		Spec: infrastructurev1beta1.Beskar7MachineSpec{
+		Spec: infrav1.Beskar7MachineSpec{
 			InspectionImageURL: "http://boot-server/inspect.ipxe",
 			TargetImageURL:     "http://boot-server/kairos.tar.gz",
 			TargetImageDigest:  "sha256:a3b4c5d6e7f80102030405060708090a0b0c0d0e0f101112131415161718191a",

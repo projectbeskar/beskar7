@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
-	infrav1beta1 "github.com/projectbeskar/beskar7/api/v1beta1"
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 func TestBeskar7ClusterWebhook(t *testing.T) {
@@ -28,12 +28,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 
 	Describe("ValidateCreate", func() {
 		It("should accept valid Beskar7Cluster with IP address", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "192.168.1.100",
 						Port: 6443,
@@ -47,12 +47,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should accept valid Beskar7Cluster with hostname", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						Port: 443,
@@ -66,12 +66,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should accept Beskar7Cluster without control plane endpoint", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					// No ControlPlaneEndpoint specified
 				},
 			}
@@ -82,12 +82,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should reject missing host when port is specified", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Port: 6443,
 						// Host missing
@@ -101,12 +101,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should reject missing port when host is specified", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						// Port missing
@@ -120,12 +120,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should reject invalid hostname", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "invalid..hostname",
 						Port: 6443,
@@ -140,12 +140,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should reject invalid port (too low)", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						Port: 0,
@@ -159,12 +159,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should reject invalid port (too high)", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						Port: 65536,
@@ -178,12 +178,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should accept IPv6 addresses", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "2001:db8::1",
 						Port: 6443,
@@ -197,12 +197,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should accept localhost", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "localhost",
 						Port: 6443,
@@ -218,12 +218,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 
 	Describe("Default", func() {
 		It("should set default port when host is specified", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						// Port not set
@@ -237,12 +237,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should not override existing port", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					ControlPlaneEndpoint: clusterv1.APIEndpoint{
 						Host: "api.example.com",
 						Port: 443,
@@ -256,12 +256,12 @@ var _ = Describe("Beskar7Cluster Webhook", func() {
 		})
 
 		It("should not set port when host is empty", func() {
-			cluster := &infrav1beta1.Beskar7Cluster{
+			cluster := &infrav1.Beskar7Cluster{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-cluster",
 					Namespace: "default",
 				},
-				Spec: infrav1beta1.Beskar7ClusterSpec{
+				Spec: infrav1.Beskar7ClusterSpec{
 					// No ControlPlaneEndpoint specified
 				},
 			}
