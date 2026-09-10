@@ -544,7 +544,10 @@ jobs:
         # The newest release series in metadata.yaml, patch 0, names the
         # repository version; the image tag inside the components is rewritten
         # to the kind-loaded one through clusterctl's image overrides.
-        OVERRIDE_VERSION=$(awk '/major:/{M=$2} /minor:/{m=$2; print "v" M "." m ".0"; exit}' metadata.yaml)
+        OVERRIDE_VERSION=$(awk '/major:/{M=$NF} /minor:/{m=$NF; print "v" M "." m ".0"; exit}' metadata.yaml)
+        if ! [[ "$OVERRIDE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "could not derive a semantic version from metadata.yaml: '$OVERRIDE_VERSION'"; exit 1
+        fi
         echo "OVERRIDE_VERSION=$OVERRIDE_VERSION" >> "$GITHUB_ENV"
         make clusterctl-override VERSION="$OVERRIDE_VERSION"
         cat > /tmp/clusterctl.yaml <<EOF
