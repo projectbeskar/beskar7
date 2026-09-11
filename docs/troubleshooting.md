@@ -615,11 +615,15 @@ started, or it cannot reach the control plane.
 
 Beskar7 cannot detect this: observing the workload Node requires the workload kubeconfig, which an
 infrastructure provider does not hold (see `docs/inspector-contract.md` §13). CAPI models it with
-`MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds` — **recommended `900` (15m)** — which
-remediates a machine that never produced a Node. See
-[`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml), and
-[Upgrading](upgrading.md) if you have an older `cluster.x-k8s.io/v1beta1`-shaped `MachineHealthCheck`
-to convert.
+`MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds` — **recommended `2700` (45m)** — which
+remediates a machine that never produced a Node. That clock covers provisioning as well as the
+join: until the Machine's `InfrastructureReady` turns `True`, CAPI counts from the Machine's creation
+(or the control plane's initialisation), so a value shorter than a whole provisioning run replaces
+machines that are still being inspected or deployed. See
+[`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml),
+[Beskar7Machine → Remediating with a `MachineHealthCheck`](beskar7machine.md#remediating-with-a-machinehealthcheck),
+and [Upgrading](upgrading.md) if you have an older `cluster.x-k8s.io/v1beta1`-shaped
+`MachineHealthCheck` to convert.
 
 Note that remediation is **destructive**: CAPI deletes the Machine and beskar7 re-provisions the
 host with a whole-disk overwrite. Keep `spec.remediation.triggerIf` (`unhealthyLessThanOrEqualTo` /
@@ -627,12 +631,14 @@ host with a whole-disk overwrite. Keep `spec.remediation.triggerIf` (`unhealthyL
 cannot put the whole pool into a reprovision loop.
 
 A `Beskar7Machine` that beskar7 itself marks terminally failed (see
-[Beskar7Machine → Terminal failures](beskar7machine.md#terminal-failures)) is a distinct case from
-a missing Node: it surfaces as `InfrastructureReady=False` on the owning `Machine`, and a
-`MachineHealthCheck` only remediates it if `spec.checks.unhealthyMachineConditions` names that
-condition explicitly — there is no automatic remediation from `status.phase` alone. A machine that is
-only waiting for its host's BMC ([`WaitingForBMC`](#15-beskar7machine-reports-waitingforbmc)) is not
-terminally failed but surfaces the same way, so that check's `timeoutSeconds` is what separates the two.
+[Beskar7Machine → Terminal failures](beskar7machine.md#terminal-failures)) surfaces as
+`InfrastructureReady=False` on the owning `Machine`, and one that failed while provisioning never
+produces a Node either, so `nodeStartupTimeoutSeconds` remediates it. A `MachineHealthCheck` never sees
+the reason, though: a machine that is still being inspected or deployed, or waiting for a host or for
+its BMC ([`WaitingForBMC`](#15-beskar7machine-reports-waitingforbmc)), reads exactly the same. Only
+the timeouts separate a failure from a slow run, which is why both — `nodeStartupTimeoutSeconds` and
+the `timeoutSeconds` of an `unhealthyMachineConditions` entry on `InfrastructureReady` — have to
+outlast a whole provisioning run.
 
 ### 13. k0s control plane never forms: joins hang, or a joiner became its own cluster
 
@@ -702,8 +708,12 @@ so a provisioned machine never shows this reason.
 
 **Solution:** nothing to delete. If the outage does not clear, check the path from the controller pod to
 the BMC (the checks under [PhysicalHost Stuck in "Enrolling"](#4-physicalhost-stuck-in-enrolling) → BMC
-Not Reachable apply). A `MachineHealthCheck` cannot tell this reason from a terminal one; its
-`InfrastructureReady` check's `timeoutSeconds` decides whether it waits — see
+Not Reachable apply). A `MachineHealthCheck` cannot tell this reason from a terminal one, so its
+timeouts decide whether it waits. The recommended ones
+([`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml)) wait as long as the machine
+can still finish provisioning within `nodeStartupTimeoutSeconds` (45 minutes, counted from the Machine's
+creation or the control plane's initialisation); a longer outage gets the machine replaced, which costs
+the host nothing, because this reason only appears before inspection starts. See
 [Beskar7Machine → A BMC outage is not a terminal failure](beskar7machine.md#a-bmc-outage-is-not-a-terminal-failure).
 If the BMC is gone for good, delete the machine with the `force-release` annotation
 ([State Management → Force release](state-management.md#force-release)).

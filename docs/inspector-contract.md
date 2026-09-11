@@ -914,23 +914,29 @@ not own one.
 
 ## 13. Node-join timeout
 
-**Delegated to CAPI's `MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds`. Recommended: 900
-(15 minutes). beskar7 runs no workload-cluster watch.**
+**Delegated to CAPI's `MachineHealthCheck.spec.checks.nodeStartupTimeoutSeconds`. Recommended: 2700
+(45 minutes). beskar7 runs no workload-cluster watch.**
 
 A workload Node registering with `ProviderID=b7://<ns>/<host>` is observable *only* with the
 workload kubeconfig, which an **infrastructure** provider does not and must not hold. CAPI core's
 Machine controller already performs the Node↔Machine association, and `nodeStartupTimeoutSeconds`
-already models "infrastructure provisioned, but no Node appeared in time". A beskar7-side watch would cross
-the infra/core boundary and re-implement CAPI.
+already models "no Node appeared in time". A beskar7-side watch would cross the infra/core boundary
+and re-implement CAPI.
 
-- **Recommended value: `nodeStartupTimeoutSeconds: 900`**, measured by CAPI from infrastructure-provisioned.
-  On the dome e2e a Kairos host reboots via firmware, auto-installs on first boot (recovery → reset →
-  reboot → active), then the distro starts and the kubelet registers — roughly 2–3 minutes. 15 minutes
-  leaves margin for slow POST, large-disk expansion, and a control plane that is slow to admit.
-- **Timeout envelope.** Inspection (10 min) and deploy (20 min) are beskar7-owned and in-band;
-  node-join (15 min) is CAPI-owned and happens *after* the inspector is gone, so no token is needed.
-  Worst-case provisioning envelope is ≈45 min, and the 60 min `TokenLifetime` covers the in-band
-  30 min with margin.
+- **Recommended value: `nodeStartupTimeoutSeconds: 2700`** — the inspection timeout plus the deploy
+  timeout plus 15 minutes. CAPI does not measure it from infrastructure-provisioned: it counts from the
+  latest of the Machine's creation, the control plane's initialisation and the Machine's
+  `InfrastructureReady` turning `True`, and a Beskar7Machine keeps that condition `False` until its host
+  is provisioned, so the timeout has to cover the in-band 30 minutes as well as the join. On the dome
+  e2e a Kairos host reboots via firmware, auto-installs on first boot (recovery → reset → reboot →
+  active), then the distro starts and the kubelet registers — roughly 2–3 minutes; the 15 minutes leave
+  margin for that, for slow POST, large-disk expansion and a control plane that is slow to admit, and
+  for waiting before inspection. See
+  [Beskar7Machine → Remediating with a `MachineHealthCheck`](beskar7machine.md#remediating-with-a-machinehealthcheck).
+- **Timeout envelope.** Inspection (10 min) and deploy (20 min) are beskar7-owned and in-band; the
+  node-join is CAPI-owned and happens *after* the inspector is gone, so no token is needed. Allowing
+  15 min for the join, the worst-case provisioning envelope is ≈45 min — the recommended
+  `nodeStartupTimeoutSeconds` — and the 60 min `TokenLifetime` covers the in-band 30 min with margin.
 - **If a Machine sits at `Provisioned` and never reaches `Running`,** the cause is almost always a
   ProviderID mismatch rather than a timeout — see the troubleshooting entry
   *"CAPI Machine stuck at `Provisioned`, never reaches `Running`"*.

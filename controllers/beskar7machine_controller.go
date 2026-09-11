@@ -304,6 +304,16 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	if physicalHost != nil {
 		logger.Info("Successfully associated with PhysicalHost", "physicalhost", physicalHost.Name)
 		setTrue(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociatedReason)
+		// The Ready summary skips a condition that is missing, so with
+		// PhysicalHostAssociated=True as its only input it would publish
+		// Ready=True. The state machine further down sets InfrastructureReady
+		// on a full pass; this covers every return before it (the pass that
+		// claims the host, an error on the way), including one working from a
+		// cached copy that predates the previous pass's write.
+		if !conditions.Has(b7machine, infrav1.InfrastructureReadyCondition) {
+			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason,
+				"PhysicalHost %q is claimed and not provisioned yet", physicalHost.Name)
+		}
 	} else if placement != nil {
 		// Distinct from an empty inventory: hosts may well be Available, just
 		// not where CAPI placed this Machine. Requeue, never terminal — a host in
@@ -341,6 +351,13 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 }
 
 // handlePhysicalHostState processes the PhysicalHost based on its current state.
+//
+// Every state but Ready writes InfrastructureReady=False. The Ready summary
+// skips a condition that is missing, and Cluster API mirrors that summary onto
+// the owning Machine, where a MachineHealthCheck times how long it has been
+// False. A state that left the condition alone would report the machine Ready
+// while its host was still being inspected, and restart that clock when the
+// next state set it False again.
 func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	switch physicalHost.Status.State {
 	case infrav1.StateReady:
@@ -356,13 +373,13 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	case infrav1.StateInspecting:
 		// Inspection in progress
 		logger.Info("PhysicalHost inspection in progress")
-		forgetBMCWait(b7machine)
+		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "PhysicalHost %q is being inspected", physicalHost.Name)
 		return r.handleInspectingHost(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateInUse:
 		// Host claimed, need to trigger inspection
 		logger.Info("PhysicalHost claimed, triggering inspection")
-		forgetBMCWait(b7machine)
+		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "Starting inspection of PhysicalHost %q", physicalHost.Name)
 		return r.triggerInspection(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateError:
@@ -432,16 +449,6 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 		return !strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix)
 	}
 	return false
-}
-
-// forgetBMCWait drops the WaitingForBMC mark once the host is past its outage.
-// InUse and Inspecting never write InfrastructureReady, so without this a
-// machine the outage caught before provisioning would go on reporting an
-// outage that has ended; the other states overwrite the condition anyway.
-func forgetBMCWait(b7machine *infrav1.Beskar7Machine) {
-	if conditions.GetReason(b7machine, infrav1.InfrastructureReadyCondition) == infrav1.WaitingForBMCReason {
-		conditions.Delete(b7machine, infrav1.InfrastructureReadyCondition)
-	}
 }
 
 // triggerInspection initiates the inspection phase by booting the inspection image.

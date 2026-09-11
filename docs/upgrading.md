@@ -143,21 +143,29 @@ kubectl get beskar7machine -A -o json | jq -r '
 ```
 
 **`MachineHealthCheck` remediation.** Cluster API's `MachineHealthCheck` controller on v1.11+ does
-not read `failureReason` / `failureMessage` at all — not before this release, not after. A
-`MachineHealthCheck` that relies on remediating a beskar7-failed machine must key on the mirrored
-condition explicitly:
+not read `failureReason` / `failureMessage` at all — not before this release, not after. It sees a
+beskar7-failed machine only through the mirrored `InfrastructureReady` condition and, while the
+machine has no Node, through `nodeStartupTimeoutSeconds` — in neither case with the reason, so a
+machine that is still provisioning looks exactly like a failed one. Size both timeouts to outlast a
+whole provisioning run:
 
 ```yaml
 spec:
   checks:
+    nodeStartupTimeoutSeconds: 2700   # --inspection-timeout + --deployment-timeout + 15m
     unhealthyMachineConditions:
       - type: InfrastructureReady
         status: "False"
-        timeoutSeconds: 0
+        timeoutSeconds: 5400          # twice nodeStartupTimeoutSeconds
 ```
 
-See the fully worked [`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml),
-rewritten for this release to the `cluster.x-k8s.io/v1beta2` `MachineHealthCheck` schema — CAPI
+The earlier example's `nodeStartupTimeout: 15m` is too short: until a Machine's
+`InfrastructureReady` turns `True`, Cluster API counts that timeout from the Machine's creation, so it
+replaces machines whose inspection and deployment take longer than 15 minutes. See
+[Beskar7Machine → Remediating with a `MachineHealthCheck`](beskar7machine.md#remediating-with-a-machinehealthcheck)
+for how the values are derived, and the fully worked
+[`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml), rewritten for this
+release to the `cluster.x-k8s.io/v1beta2` `MachineHealthCheck` schema — CAPI
 v1.11+ also reshaped `MachineHealthCheck` itself (`spec.nodeStartupTimeout` →
 `spec.checks.nodeStartupTimeoutSeconds`, `spec.maxUnhealthy`/`spec.unhealthyRange` →
 `spec.remediation.triggerIf.unhealthyLessThanOrEqualTo`/`unhealthyInRange`,
@@ -204,8 +212,8 @@ kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
 helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.0 --reset-then-reuse-values
 
-# 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema
-#    (see examples/machinehealthcheck.yaml).
+# 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
+#    raise its timeouts (see examples/machinehealthcheck.yaml).
 
 # 3. Grep your own scripts/dashboards for the removed fields:
 grep -rn "failureReason\|failureMessage" your-tooling/
