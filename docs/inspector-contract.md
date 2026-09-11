@@ -295,14 +295,26 @@ deployment-timeout.
 - **Success**: **`202 Accepted`** with body `{"status":"accepted"}`.
 - **Failure**: opaque `401` on expired/invalid bearer; opaque `500` on internal
   error; opaque `404` if the controller is v4 (does not implement this endpoint).
-- **Controller action**: only acts when the `PhysicalHost` is in `StateDeploying`.
-  On a valid call, patches `ProvisionFailedRequestAnnotation` carrying the
-  sanitized reason onto the `PhysicalHost` metadata. The `PhysicalHostReconciler`
-  reads this on its next pass, transitions `State` from `StateDeploying` to
+- **Controller action**: on a valid call, patches `ProvisionFailedRequestAnnotation`
+  carrying the sanitized reason onto the `PhysicalHost` metadata. The
+  `PhysicalHostReconciler` reads this on its next pass — before it contacts the
+  host's BMC, which the report does not need — transitions `State` to
   `StateError`, sets `Status.ErrorMessage`, and clears the annotation (D-005
   invariant). The `Beskar7MachineReconciler` then marks a terminal failure
   (`status.phase=Failed`, `InfrastructureReady=False` reason `DeploymentFailed`).
-  A non-`Deploying` host returns 202 but receives no state transition (no-op guard).
+  The report is honoured on a host that is:
+  - `StateDeploying`;
+  - claimed and still `StateInspecting` — the inspector enters Phase 2 as soon as
+    `/bootstrap` answers (§9.2), so a fast failure can be reported before the
+    controller has validated the inspection report. The report is kept until the
+    host reaches `StateDeploying` and applied then; it is dropped if the host
+    never gets there (the hardware fails `HardwareRequirementsNotMet`, the host is
+    released), or if it arrived before the run's inspection report;
+  - claimed and in a BMC-level `StateError` (credentials, certificate, TLS
+    configuration) that interrupted `StateDeploying`.
+
+  Any other host returns 202 but receives no state transition (no-op guard). The
+  wire behaviour is unchanged from v4.1: the inspector sees `202` either way.
 - **Inspector MUST**: call this endpoint on any Phase 2 error, then exit (do NOT
   continue to the provisioned POST or `reboot(2)` after a failure).
 - **Inspector MUST**: tolerate a `404` response (v4 controller without this

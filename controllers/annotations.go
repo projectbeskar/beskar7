@@ -94,8 +94,11 @@ const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisione
 // PhysicalHost to signal that the inspector encountered a fatal error during OS
 // deployment (image fetch, digest-verify, whole-disk write, or COS_OEM inject) and
 // the deploy cannot proceed. The PhysicalHost controller reads this annotation,
-// transitions State from Deploying to Error, sets Status.ErrorMessage to the sanitized
-// failure message, and clears the annotation so it is not acted on twice (v4.1).
+// transitions State to Error, sets Status.ErrorMessage to the sanitized failure
+// message, and clears the annotation so it is not acted on twice (v4.1). On a claimed
+// host that is still Inspecting it leaves the annotation in place until the host is
+// Deploying, and clears it without a transition if the host goes anywhere else
+// (applyProvisionFailedRequestAnnotation).
 //
 // Value: a sanitized human-readable failure reason (≤256 chars, control-chars stripped,
 // prefixed with "inspector reported deploy failure: "). The authenticated POST itself is
