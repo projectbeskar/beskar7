@@ -401,9 +401,17 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 		// Using the prefix as the discriminator keeps the distinction simple and avoids adding
 		// a new CRD field — the PhysicalHost.Status.ErrorMessage already carries the full
 		// sanitized reason that the operator needs to diagnose the failure.
+		//
+		// An inspection timeout is named here too, although this controller fails the
+		// machine itself when it writes the timeout annotation: the annotation reaches
+		// the host before that reconcile's own patch, so if the patch does not land the
+		// next reconcile finds the host's Error instead.
 		reason := infrav1.PhysicalHostErrorReason
-		if strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix) {
+		switch {
+		case strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix):
 			reason = infrav1.DeploymentFailedReason
+		case physicalHost.Status.ErrorMessage == inspectionTimedOutMessage:
+			reason = infrav1.InspectionTimedOutReason
 		}
 		msg := fmt.Sprintf("PhysicalHost %q in error state: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
 		// markTerminalFailure sets Phase=Failed, Ready=false and
@@ -432,12 +440,19 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 // of their own, ahead of the rest of status, so a host whose BMC has just
 // answered again is published once with the condition True and State still
 // Error; failing the machine on that version would bring the outage's damage
-// back through a race. The Error that legitimately coexists with a healthy
-// connection is the inspector's /provision-failed report, set after the
-// connection succeeded, and it stays terminal.
+// back through a race.
+//
+// An Error the provisioning run reported — the inspector's /provision-failed
+// report, or the inspection timeout — stays terminal whatever the condition
+// says (provisioningRunFailed). The host sets it after a successful
+// connection, so it normally reads True, and keeps it through a later outage,
+// which turns the condition False with BMCUnreachable.
 //
 // Without the condition the class is unknown, and the Error stays terminal.
 func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
+	if provisioningRunFailed(physicalHost) {
+		return false
+	}
 	cond := conditions.Get(physicalHost, infrav1.RedfishConnectionReadyCondition)
 	if cond == nil {
 		return false
@@ -446,7 +461,7 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 	case metav1.ConditionFalse:
 		return cond.Reason == infrav1.BMCUnreachableReason
 	case metav1.ConditionTrue:
-		return !strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix)
+		return true
 	}
 	return false
 }
