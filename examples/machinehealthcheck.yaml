@@ -22,10 +22,10 @@
 #      InfrastructureReady condition False with a reason (InspectionTimedOut,
 #      DeploymentFailed, HardwareRequirementsNotMet, ...; see
 #      docs/beskar7machine.md#terminal-failures for the full list). Cluster API
-#      mirrors that into the owning Machine's own InfrastructureReady condition,
-#      which is what spec.checks.unhealthyMachineConditions below keys on.
-#      MachineHealthCheck does NOT remediate a terminal Beskar7Machine failure
-#      automatically — nothing does, unless this condition is listed here.
+#      mirrors that into the owning Machine's own InfrastructureReady condition.
+#      A machine that fails while provisioning never gets a Node, so
+#      nodeStartupTimeoutSeconds replaces it; spec.checks.unhealthyMachineConditions
+#      below covers one that fails after its Node joined.
 #
 #   2. "Provisioned but never joined" — beskar7 wrote the disk and reported
 #      success, but no Node ever registered. nodeStartupTimeoutSeconds catches it.
@@ -34,6 +34,14 @@
 #
 #   3. A Node that joined and later went unhealthy — the standard Ready=False /
 #      Unknown Node conditions below.
+#
+# Cluster API never sees why a condition is False, only for how long, and a
+# Beskar7Machine reports InfrastructureReady=False for the whole of provisioning:
+# while it waits for a free PhysicalHost or for bootstrap data, while its host is
+# inspected and deployed, and while it waits out a BMC outage (WaitingForBMC).
+# Both timeouts below therefore have to outlast a whole provisioning run, not
+# react quickly to a failure. See
+# docs/beskar7machine.md#remediating-with-a-machinehealthcheck.
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: MachineHealthCheck
 metadata:
@@ -49,23 +57,33 @@ spec:
       cluster.x-k8s.io/deployment-name: my-worker-pool
 
   checks:
-    # How long CAPI waits, from "infrastructure provisioned", for a Node carrying
-    # the matching ProviderID to appear. 900s (15m) is the recommended starting
-    # value (docs/inspector-contract.md §13): a Kairos host reboots via firmware,
-    # auto-installs on first boot, then the kubelet registers — ~2-3 minutes
-    # observed on real hardware. The rest is margin for slow POST, large-disk
-    # expansion, and a control plane that is slow to admit.
-    nodeStartupTimeoutSeconds: 900
+    # Cases 1 and 2 above: how long CAPI waits for a Node carrying the matching
+    # ProviderID to appear. The clock does not start at "infrastructure
+    # provisioned": until the Machine's InfrastructureReady turns True, CAPI
+    # counts from the Machine's creation or from the control plane's
+    # initialisation, whichever is later, so it spans beskar7's whole
+    # provisioning run. 2700s (45m) is --inspection-timeout (10m) +
+    # --deployment-timeout (20m) + 15m for waiting before inspection and, once
+    # provisioned, for the Node to register (a Kairos host reboots, auto-installs
+    # on first boot and registers in ~2-3 minutes on real hardware;
+    # docs/inspector-contract.md §13). Raise it with those flags. CAPI's
+    # default, 600s, replaces machines that are still deploying.
+    nodeStartupTimeoutSeconds: 2700
 
-    # Case 1 above: a terminal Beskar7Machine failure, mirrored onto the Machine's
-    # own InfrastructureReady condition. timeoutSeconds: 0 is deliberate — unlike a
-    # Node condition, this one never flaps and never clears on its own (beskar7
-    # does not heal a failed machine back to health; see
-    # docs/beskar7machine.md#terminal-failures), so there is nothing to wait out.
+    # Case 1 above, for a machine that fails after its Node joined: one that
+    # fails while provisioning is replaced by nodeStartupTimeoutSeconds first.
+    # This clock starts when the Machine's InfrastructureReady turns False,
+    # which for a new Machine is when it is created, and it cannot tell a
+    # terminal reason from a machine that is still provisioning or waiting for
+    # a host, bootstrap data or its BMC. 5400s is twice nodeStartupTimeoutSeconds
+    # because a worker created together with its cluster waits for its bootstrap
+    # data through the control plane's provisioning run before its own starts.
+    # Never 0: that replaces every machine the first time the check sees it,
+    # before it can finish provisioning.
     unhealthyMachineConditions:
       - type: InfrastructureReady
         status: "False"
-        timeoutSeconds: 0
+        timeoutSeconds: 5400
 
     # Case 3 above: a Node that registered and then stopped reporting Ready.
     unhealthyNodeConditions:

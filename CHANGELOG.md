@@ -114,6 +114,33 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   inspector's `/provision-failed` report stay terminal, exactly as before. `WaitingForBMC` is
   still `InfrastructureReady=False` on the owning `Machine`, so a `MachineHealthCheck` whose
   `InfrastructureReady` check has `timeoutSeconds: 0` remediates a waiting machine at once.
+- **A `Beskar7Machine` no longer reports `Ready=True` before its host is provisioned.** The `InUse`
+  and `Inspecting` phases never wrote `InfrastructureReady`, and neither did a pass that associated
+  a host and returned early — the one that claims it, or one that hit a conflict signalling the
+  bootstrap URL to it — while the `Ready` summary skips a condition that is missing. A fresh machine
+  therefore read `Ready=True` (mirrored onto its `Machine` as `InfrastructureReady=True`) from the
+  claim through inspection, then flipped to `False` when deployment began. Or, depending on the
+  order events arrived, it caught its host still `Available` just after the claim and carried that
+  stale `PhysicalHostNotReady` ("is in state: Available") through inspection. `InUse` and
+  `Inspecting` now set `InfrastructureReady=False` with reason `PhysicalHostNotReady`, and a machine
+  holding a host is never without the condition, so it stays `False` without a break from the claim
+  until the host is provisioned, which is what a `MachineHealthCheck` times. A machine back from a
+  BMC outage reports `PhysicalHostNotReady` rather than dropping the condition.
+- **The recommended `MachineHealthCheck` no longer replaces machines that are still provisioning.**
+  `examples/machinehealthcheck.yaml` keyed an `unhealthyMachineConditions` entry on
+  `InfrastructureReady=False` with `timeoutSeconds: 0`, on the premise that the condition is only
+  `False` for a terminal failure. It is `False` for all of provisioning — waiting for a host or for
+  bootstrap data, inspection, deployment, `WaitingForBMC` — and a `MachineHealthCheck` sees neither
+  the reason nor the phase, so the check replaced machines as soon as it saw them. Its
+  `nodeStartupTimeoutSeconds: 900` (the `nodeStartupTimeout: 15m` of earlier releases) did the same
+  more slowly: until `InfrastructureReady` turns `True`, Cluster API counts that timeout from the
+  Machine's creation (or the control plane's initialisation), not from "infrastructure provisioned",
+  so it replaced machines whose inspection and deployment took longer than 15 minutes — half the 30
+  minutes beskar7's own timeouts allow. The example now sets `nodeStartupTimeoutSeconds: 2700` (the
+  inspection and deployment timeouts plus 15 minutes) and `timeoutSeconds: 5400` on the
+  `InfrastructureReady` entry. `docs/beskar7machine.md` gains a section on how the two clocks run and
+  what each one catches, and `docs/troubleshooting.md`, `docs/upgrading.md` and
+  `docs/inspector-contract.md` §13 follow it.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
@@ -148,9 +175,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   terminal failure is now `status.phase: Failed` (unchanged marker) plus the `InfrastructureReady`
   condition `False` with the same reason strings as before, which Cluster API mirrors into the
   owning `Machine`'s own `InfrastructureReady` condition. `MachineHealthCheck` on Cluster API
-  v1.11+ never read `failureReason`/`failureMessage` — remediating a beskar7-failed machine now
-  requires an explicit `spec.checks.unhealthyMachineConditions` entry keyed on `InfrastructureReady`;
-  see the rewritten `examples/machinehealthcheck.yaml` and `docs/upgrading.md`.
+  v1.11+ never read `failureReason`/`failureMessage`; it sees a beskar7-failed machine through that
+  condition (a `spec.checks.unhealthyMachineConditions` entry) or, while the machine has no Node,
+  through `nodeStartupTimeoutSeconds` — see the rewritten `examples/machinehealthcheck.yaml` and
+  `docs/upgrading.md`.
 
 ## [v0.5.0] - 2026-09-10
 
