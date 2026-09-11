@@ -630,7 +630,9 @@ A `Beskar7Machine` that beskar7 itself marks terminally failed (see
 [Beskar7Machine → Terminal failures](beskar7machine.md#terminal-failures)) is a distinct case from
 a missing Node: it surfaces as `InfrastructureReady=False` on the owning `Machine`, and a
 `MachineHealthCheck` only remediates it if `spec.checks.unhealthyMachineConditions` names that
-condition explicitly — there is no automatic remediation from `status.phase` alone.
+condition explicitly — there is no automatic remediation from `status.phase` alone. A machine that is
+only waiting for its host's BMC ([`WaitingForBMC`](#15-beskar7machine-reports-waitingforbmc)) is not
+terminally failed but surfaces the same way, so that check's `timeoutSeconds` is what separates the two.
 
 ### 13. k0s control plane never forms: joins hang, or a joiner became its own cluster
 
@@ -684,6 +686,27 @@ the lease in.
 the conflicts stop as soon as it comes back. Give both instances the same `--bootstrap-url-base`: the
 in-cluster controller writes that value into `PhysicalHost.Status.Bootstrap.URL` and the callback-only
 instance renders it into the iPXE cmdline.
+
+### 15. Beskar7Machine reports `WaitingForBMC`
+
+**Symptom:** the `Beskar7Machine` has `InfrastructureReady=False` with reason `WaitingForBMC`, and its
+`PhysicalHost` is in `Error` with `RedfishConnectionReady=False`, reason `BMCUnreachable`, message
+`BMC unreachable (connection refused); retrying every 15s` or similar.
+
+**Cause:** the controller cannot reach the host's BMC at the network level — a refused or reset
+connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still starting.
+This is not a terminal failure: `status.phase` is not `Failed`, the host retries every 15 seconds, and
+the machine carries on by itself on the first attempt that connects. A host that was already
+`Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes),
+so a provisioned machine never shows this reason.
+
+**Solution:** nothing to delete. If the outage does not clear, check the path from the controller pod to
+the BMC (the checks under [PhysicalHost Stuck in "Enrolling"](#4-physicalhost-stuck-in-enrolling) → BMC
+Not Reachable apply). A `MachineHealthCheck` cannot tell this reason from a terminal one; its
+`InfrastructureReady` check's `timeoutSeconds` decides whether it waits — see
+[Beskar7Machine → A BMC outage is not a terminal failure](beskar7machine.md#a-bmc-outage-is-not-a-terminal-failure).
+If the BMC is gone for good, delete the machine with the `force-release` annotation
+([State Management → Force release](state-management.md#force-release)).
 
 ## Getting Help
 

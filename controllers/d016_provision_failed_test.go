@@ -534,8 +534,10 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 	})
 
 	It("marks terminal failure with PhysicalHostErrorReason when ErrorMessage lacks the inspector prefix", func() {
-		// A Redfish/BMC error has no prefix from the inspector.
-		bmcErr := "Redfish connection failed: timeout"
+		// A Redfish/BMC error has no prefix from the inspector. It is one that
+		// needs a change to clear: an unreachable BMC publishes BMCUnreachable
+		// and is waited out instead (bmc_outage_test.go).
+		bmcErr := "Redfish connection failed: x509: certificate signed by unknown authority"
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-b7m-bmcerr", Namespace: testNs.Name},

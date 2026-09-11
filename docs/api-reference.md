@@ -142,7 +142,7 @@ Per-host bootstrap fetch coordinates and the hashed bearer token used to authent
 
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|
-| `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `BMCUnreachable` (the BMC cannot be reached at the network level — retried every 15 s, clears by itself, and the one reason a consuming `Beskar7Machine` waits out), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host — `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`). |
 | `HostInspected` | `PhysicalHost` | `HostInspected` | `HostReleased` (the host went back to `Available`; the prior inspection describes a run that ended, not the hardware). |
 
@@ -232,7 +232,7 @@ There is no `status.failureReason` or `status.failureMessage` — both were remo
 | Type | Set by | True reason | False / other reasons |
 |---|---|---|---|
 | `Ready` | `Beskar7Machine` (summary) | Derived from the summarized conditions; carries the reason of the one that isn't `True` when only one is at fault. | Same, `False`/`Unknown`. |
-| `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
+| `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForBMC` (the host cannot reach its BMC; not terminal — the machine carries on once the host does); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
 | `PhysicalHostAssociated` | `Beskar7Machine` | `PhysicalHostAssociated` | `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
 | `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |

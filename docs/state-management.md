@@ -18,7 +18,7 @@ The state constants are defined in `api/v1beta2/physicalhost_types.go`. The tran
 | `StateInspecting` | `"Inspecting"` | The inspection image is booting / running on the host. |
 | `StateDeploying` | `"Deploying"` | Hardware inspection passed and the inspector is writing the OS image to disk. Entered when the inspection report is accepted; exited when the inspector POSTs the provisioned callback or the deployment-timeout fires. |
 | `StateReady` | `"Ready"` | OS deployment complete (the inspector's provisioned callback was received). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are set at this point. |
-| `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. |
+| `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. An unreachable BMC (`RedfishConnectionReady` reason `BMCUnreachable`) is the kind that clears by itself. |
 
 The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code previously kept deprecated alias constants (`StateClaimed = "InUse"`, etc.); those aliases have been removed. Code that imported them must switch to the canonical state constants above.
 
@@ -64,8 +64,9 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
 | `Inspecting` | `Error` | Inspection timeout (`--inspection-timeout`, default 10 min) — Beskar7Machine writes `inspection-request: timeout`. | `beskar7machine_controller.go:handleInspectingHost` |
 | `Deploying` | `Ready` | Inspector POSTs `POST /api/v1/provisioned/{ns}/{host}` (§4.4 of `docs/inspector-contract.md`). The provisioned handler patches `ProvisionedRequestAnnotation`; the PhysicalHost reconciler transitions to `Ready` and clears the annotation. | `controllers/provisioned_handler.go`, `physicalhost_controller.go` |
 | `Deploying` | `Error` | Deployment timeout (`--deployment-timeout`, default 20 min, measured from `Status.DeployingTimestamp`). | `beskar7machine_controller.go:handleDeployingHost` |
-| any | `Error` | BMC unreachable, credentials missing, TLS-config conflict, Redfish query failed. | `physicalhost_controller.go:reconcileNormal` |
-| `Error` | `Available` | The underlying error clears (BMC reachable again, secret fixed, TLS config fixed). | `physicalhost_controller.go:reconcileNormal` |
+| any | `Error` | Credentials missing, TLS-config conflict, Redfish connection or query failed — and an unreachable BMC, except on the claimed states in the next row. | `physicalhost_controller.go:reconcileNormal` |
+| `Inspecting` / `Deploying` / `Ready` (claimed) | unchanged | BMC unreachable. The host keeps its state — the inspector and the installed OS do not need the BMC — and `RedfishConnectionReady=False (BMCUnreachable)` reports the outage until the BMC answers. | `physicalhost_controller.go:retryTransientRedfishFailure` |
+| `Error` | `Available`, or `InUse` if claimed | The underlying error clears (BMC reachable again, secret fixed, TLS config fixed). | `physicalhost_controller.go:reconcileNormal` |
 | `InUse` / `Inspecting` / `Deploying` / `Ready` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
 
 ## Atomic claim
@@ -103,9 +104,9 @@ The reconciler is unable to complete the first BMC handshake.
 kubectl describe physicalhost <name>
 ```
 
-Look at the `RedfishConnectionReady` condition reason — it is one of `MissingCredentials`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, or `RedfishQueryFailed`. Fix the credentials Secret or the BMC address; the next reconcile transitions to `Available`.
+Look at the `RedfishConnectionReady` condition reason — it is one of `BMCUnreachable`, `MissingCredentials`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, or `RedfishQueryFailed`. Fix the credentials Secret or the BMC address; the next reconcile transitions to `Available`.
 
-Two retry cadences sit behind that. A host whose BMC is simply unreachable — the message reads `BMC unreachable (connection refused)` or similar, covering a refused or reset connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still booting — is retried every 15 seconds, flat, and enrols on the first attempt after the BMC answers. Nothing has to be fixed for that to clear. Every other Redfish failure needs a change to the spec, the Secret or the BMC itself, so it backs off exponentially (5s, 10s, 20s, … capped at 30 minutes) and a host that has been failing for a while can take a few minutes to notice the fix. Editing the `PhysicalHost` or its credentials Secret wakes the controller immediately.
+Two retry cadences sit behind that. A host whose BMC is simply unreachable — reason `BMCUnreachable`, message `BMC unreachable (connection refused)` or similar, covering a refused or reset connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still booting — is retried every 15 seconds, flat, and enrols on the first attempt after the BMC answers. Nothing has to be fixed for that to clear, and a `Beskar7Machine` holding the host waits for it instead of failing (see [Beskar7Machine → A BMC outage is not a terminal failure](beskar7machine.md#a-bmc-outage-is-not-a-terminal-failure)). Every other Redfish failure needs a change to the spec, the Secret or the BMC itself, so it backs off exponentially (5s, 10s, 20s, … capped at 30 minutes) and a host that has been failing for a while can take a few minutes to notice the fix. Editing the `PhysicalHost` or its credentials Secret wakes the controller immediately.
 
 ### Stuck in `Inspecting`
 
@@ -140,6 +141,7 @@ To recover, delete and recreate the `Beskar7Machine`. This clears `ConsumerRef`,
 
 - `redfishConnection.insecureSkipVerify=true is mutually exclusive with caBundleSecretRef`: edit the spec — pick one. The reconciler resumes once the spec is valid.
 - `failed to get credentials secret`: the named Secret does not exist or is missing `username`/`password`. Create or fix it.
+- `BMC unreachable (…); retrying every 15s`: nothing to fix on the object. The host retries and leaves `Error` on the first attempt that connects; check the network path from the controller to the BMC if it does not. A `Beskar7Machine` holding the host reports `InfrastructureReady=False (WaitingForBMC)` meanwhile and carries on afterwards — it is not failed and does not need replacing.
 - `Inspection timed out`: see above.
 
 ### Force release
@@ -168,7 +170,7 @@ kubectl patch physicalhost <name> --type=merge -p '{"metadata":{"finalizers":[]}
 
 `kubectl describe physicalhost <name>` shows the conditions list — native `metav1.Condition`, no `severity` field, every condition (including `True`) carries a `reason`. Key types:
 
-- `RedfishConnectionReady` — BMC connectivity. True reason `RedfishConnected`.
+- `RedfishConnectionReady` — BMC connectivity. True reason `RedfishConnected`; `False (BMCUnreachable)` while the BMC cannot be reached, the one `False` reason that clears by itself.
 - `HostAvailable` — no consumer holds the host. True reason `HostAvailable`; `False (HostClaimed)` while `spec.consumerRef` is set.
 - `HostInspected` — inspection report has been persisted. True reason `HostInspected`; `False (HostReleased)` when a host returns to `Available` after a run.
 

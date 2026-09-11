@@ -426,16 +426,42 @@ func (r *PhysicalHostReconciler) transientRetryInterval() time.Duration {
 // With a stable message the second failed attempt is a no-op patch — no
 // event — and the host is next visited by the timer. The raw error is logged.
 //
-// The state is Error whether or not the host is claimed, as before: the
-// Beskar7Machine controller decides what an unreachable BMC means for its
-// machine, this controller only reports it.
+// The class is published as RedfishConnectionReady=False with
+// BMCUnreachableReason, which no other path sets. The Beskar7Machine controller
+// decides what an unreachable BMC means for its machine, and it reads that
+// reason rather than the prose in ErrorMessage.
+//
+// The state is Error, except on a claimed host that is Inspecting, Deploying or
+// Ready. Those states are driven by the annotation handlers, and once
+// overwritten they cannot be rebuilt: the claimed-host branch of
+// reconcileNormal only knows how to put the host back at InUse, and a machine
+// that then saw InUse would boot the inspector again on a host it is
+// provisioning or has already provisioned. Neither the inspector nor the
+// installed OS needs the BMC, so such a host keeps its state and only the
+// condition reports the outage.
 func (r *PhysicalHostReconciler) retryTransientRedfishFailure(logger logr.Logger, physicalHost *infrav1.PhysicalHost, err error) ctrl.Result {
 	retry := r.transientRetryInterval()
 	msg := fmt.Sprintf("BMC unreachable (%s); retrying every %s", internalredfish.DescribeTransientConnectionError(err), retry)
-	r.updateStatus(physicalHost, infrav1.StateError, false, msg)
-	setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "%s", msg)
+	if !inProvisioningSubState(physicalHost) {
+		r.updateStatus(physicalHost, infrav1.StateError, false, msg)
+	}
+	setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.BMCUnreachableReason, "%s", msg)
 	logger.Info("BMC unreachable, will retry", "retryAfter", retry, "cause", err.Error())
 	return ctrl.Result{RequeueAfter: retry}
+}
+
+// inProvisioningSubState reports whether a claimed host is Inspecting,
+// Deploying or Ready: the states the claimed-host branch of reconcileNormal
+// leaves alone because the annotation handlers drive them.
+func inProvisioningSubState(physicalHost *infrav1.PhysicalHost) bool {
+	if physicalHost.Spec.ConsumerRef == nil {
+		return false
+	}
+	switch physicalHost.Status.State {
+	case infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady:
+		return true
+	}
+	return false
 }
 
 // clearProvisioningRunState drops the status that belongs to one provisioning
