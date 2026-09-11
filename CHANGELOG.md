@@ -93,7 +93,27 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   Failures that need something to change before a retry can succeed — a malformed address, a
   rejected certificate, refused credentials, a Redfish tree with no `ComputerSystem` — still
   return the error and keep the exponential backoff. `status.state` is `Error` throughout, as
-  before.
+  before, except on a claimed host part-way through provisioning (see the next entry).
+- **A BMC outage no longer terminally fails the `Beskar7Machine` holding the host.** When a
+  claimed `PhysicalHost` could not reach its BMC it went to `Error`, and the machine controller —
+  which told a BMC error from the inspector's deploy-failure report by string-matching
+  `status.errorMessage` — marked the machine `Failed` (`PhysicalHostError`) and never looked at it
+  again, although the host recovered by itself on its next retry. Getting out meant deleting the
+  machine, which on bare metal means wiping and reprovisioning a host that was never broken. The
+  host now publishes the class: `RedfishConnectionReady=False` with the new reason
+  `BMCUnreachable`, set only for the network-level failures it retries on the flat interval above.
+  A machine whose host reports it waits instead — `InfrastructureReady=False` with the new,
+  non-terminal reason `WaitingForBMC`, re-checked every 30 seconds and at once when the host
+  changes — and carries on once the host is back. A claimed host that is `Inspecting`,
+  `Deploying` or `Ready` now keeps that state through an outage, and only the condition reports
+  it: an outage used to overwrite it with `Error`, and the recovery could only restore `InUse`,
+  from which a machine that was no longer failed would have booted the inspector again on a host
+  it had already provisioned. A provisioned machine is therefore untouched by a BMC outage. Host
+  errors that need a change to clear — missing or refused credentials, a rejected certificate, a
+  malformed address, a BMC with no `ComputerSystem`, the TLS-config conflict — and the
+  inspector's `/provision-failed` report stay terminal, exactly as before. `WaitingForBMC` is
+  still `InfrastructureReady=False` on the owning `Machine`, so a `MachineHealthCheck` whose
+  `InfrastructureReady` check has `timeoutSeconds: 0` remediates a waiting machine at once.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,

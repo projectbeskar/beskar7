@@ -43,7 +43,8 @@ Inspecting → Deploying                         (inspection report consumed fro
 Deploying → Ready                              (inspector POSTs /api/v1/provisioned; see contract §4.4)
 Deploying → Error                              (deployment timeout, default 20 min)
 any → Error                                    (BMC unreachable, TLS conflict, inspection timeout)
-Error → Available                              (operator fixes spec, BMC recovers)
+Inspecting/Deploying/Ready → unchanged         (claimed, BMC unreachable: only RedfishConnectionReady reports it)
+Error → Available, or InUse if claimed         (operator fixes spec, BMC recovers)
 InUse/Inspecting/Deploying/Ready → Available   (Beskar7Machine deletion clears consumerRef)
 ```
 
@@ -70,7 +71,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 
 | Type | Meaning | True reason | Other reasons |
 |---|---|---|---|
-| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `BMCUnreachable` (the BMC cannot be reached at the network level; retried every 15 s and clears by itself, so a `Beskar7Machine` holding the host waits for it), `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only — BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released). |
 | `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
 

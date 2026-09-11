@@ -215,7 +215,8 @@ var _ = Describe("PhysicalHost reconcile when the BMC is unreachable", func() {
 		cond := conditions.Get(fetched, infrav1.RedfishConnectionReadyCondition)
 		Expect(cond).NotTo(BeNil())
 		Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		Expect(cond.Reason).To(Equal(infrav1.RedfishConnectionFailedReason))
+		Expect(cond.Reason).To(Equal(infrav1.BMCUnreachableReason),
+			"the reason is how the Beskar7Machine controller tells a BMC outage from a failure that needs a change")
 		Expect(cond.Message).To(ContainSubstring("BMC unreachable"))
 	})
 

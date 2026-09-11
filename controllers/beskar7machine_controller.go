@@ -356,14 +356,27 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	case infrav1.StateInspecting:
 		// Inspection in progress
 		logger.Info("PhysicalHost inspection in progress")
+		forgetBMCWait(b7machine)
 		return r.handleInspectingHost(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateInUse:
 		// Host claimed, need to trigger inspection
 		logger.Info("PhysicalHost claimed, triggering inspection")
+		forgetBMCWait(b7machine)
 		return r.triggerInspection(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateError:
+		if hostWaitingForBMC(physicalHost) {
+			// An unreachable BMC is a fact about the world, not about this
+			// machine, and it usually clears by itself. Failing the machine for
+			// it would have its replacement wipe and reprovision a host that was
+			// never broken. The host's recovery wakes this machine through the
+			// PhysicalHost watch; the requeue is only a backstop.
+			logger.Info("PhysicalHost cannot reach its BMC; waiting for it to recover", "errorMessage", physicalHost.Status.ErrorMessage)
+			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.WaitingForBMCReason,
+				"Waiting for PhysicalHost %q: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		logger.Error(nil, "PhysicalHost is in error state", "errorMessage", physicalHost.Status.ErrorMessage)
 		// Distinguish a deploy-reported failure (inspector POST /provision-failed, v4.1) from
 		// a Redfish/BMC-level error. The provision-failed handler prefixes ErrorMessage with
@@ -387,6 +400,47 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 		phase := "Pending"
 		b7machine.Status.Phase = &phase
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+}
+
+// hostWaitingForBMC reports whether a PhysicalHost in StateError is there only
+// because it cannot reach its BMC: the one Error the host clears by itself,
+// retrying on a flat interval until the BMC answers.
+//
+// The host publishes that class on its RedfishConnectionReady condition —
+// False with BMCUnreachableReason, which only retryTransientRedfishFailure
+// sets — so this does not have to guess from the error message.
+//
+// True counts as waiting as well. The patch helper writes conditions in a call
+// of their own, ahead of the rest of status, so a host whose BMC has just
+// answered again is published once with the condition True and State still
+// Error; failing the machine on that version would bring the outage's damage
+// back through a race. The Error that legitimately coexists with a healthy
+// connection is the inspector's /provision-failed report, set after the
+// connection succeeded, and it stays terminal.
+//
+// Without the condition the class is unknown, and the Error stays terminal.
+func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
+	cond := conditions.Get(physicalHost, infrav1.RedfishConnectionReadyCondition)
+	if cond == nil {
+		return false
+	}
+	switch cond.Status {
+	case metav1.ConditionFalse:
+		return cond.Reason == infrav1.BMCUnreachableReason
+	case metav1.ConditionTrue:
+		return !strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix)
+	}
+	return false
+}
+
+// forgetBMCWait drops the WaitingForBMC mark once the host is past its outage.
+// InUse and Inspecting never write InfrastructureReady, so without this a
+// machine the outage caught before provisioning would go on reporting an
+// outage that has ended; the other states overwrite the condition anyway.
+func forgetBMCWait(b7machine *infrav1.Beskar7Machine) {
+	if conditions.GetReason(b7machine, infrav1.InfrastructureReadyCondition) == infrav1.WaitingForBMCReason {
+		conditions.Delete(b7machine, infrav1.InfrastructureReadyCondition)
 	}
 }
 

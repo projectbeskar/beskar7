@@ -514,11 +514,16 @@ If the inspection report doesn't meet `hardwareRequirements`:
 
 ### Redfish Connection Failure
 
-If BMC connection fails:
+If the BMC cannot be reached at the network level (connection refused or reset, no route, DNS, timeout, a 502/503/504 from a BMC that is still starting):
+1. `RedfishConnectionReady` condition set to `False` with reason `BMCUnreachable`; `PhysicalHost.status.state` set to `Error`, unless the host is claimed and `Inspecting`, `Deploying` or `Ready`, which it keeps
+2. Retried every 15 seconds, flat; the host recovers on the first attempt that connects
+3. The `Beskar7Machine` holding the host waits (`InfrastructureReady=False`, reason `WaitingForBMC`) instead of failing, and carries on once the host does
+
+Any other Redfish failure (refused credentials, a rejected certificate, a malformed address, no `ComputerSystem`):
 1. PhysicalHost.status.state set to `Error`
 2. `RedfishConnectionReady` condition set to `False` with a reason (`RedfishConnectionFailed`, `RedfishQueryFailed`, `MissingCredentials`, …) and the error in the message
 3. Retry with exponential backoff
-4. If persistent, requires manual intervention
+4. The `Beskar7Machine` holding the host fails terminally (`PhysicalHostError`); fix the cause and replace the machine
 
 ## Security Considerations
 

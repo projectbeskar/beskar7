@@ -423,6 +423,15 @@ const (
 	// CABundleFetchFailedReason is set when the CA bundle Secret cannot be
 	// retrieved or does not contain a usable "ca.crt"/"tls.crt" data key.
 	CABundleFetchFailedReason string = "CABundleFetchFailed"
+	// BMCUnreachableReason marks RedfishConnectionReady=False when the BMC
+	// could not be reached at the network level: a refused or reset
+	// connection, no route, a DNS failure, a timeout, or a 502/503/504 from a
+	// BMC that is still starting. It is the one reason that clears by itself —
+	// the controller retries on a flat interval and the condition returns to
+	// True on the first attempt that connects — so the Beskar7Machine holding
+	// the host waits it out instead of failing. Every other False reason needs
+	// a change to the spec, the credentials Secret or the BMC.
+	BMCUnreachableReason string = "BMCUnreachable"
 )
 
 // +kubebuilder:object:root=true
