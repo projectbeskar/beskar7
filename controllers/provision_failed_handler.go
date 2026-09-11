@@ -52,8 +52,10 @@ const (
 	provisionFailedReasonPrefix = "inspector reported deploy failure: "
 
 	// provisionFailedReasonGeneric is used when the inspector does not supply a reason or
-	// the reason is empty after sanitization.
-	provisionFailedReasonGeneric = "inspector reported deploy failure (no details provided)"
+	// the reason is empty after sanitization. It carries the prefix like every other
+	// reason, because the prefix is what marks the host's Error as the run's
+	// (provisioningRunFailed) and names the Beskar7Machine's failure DeploymentFailed.
+	provisionFailedReasonGeneric = provisionFailedReasonPrefix + "no details provided"
 )
 
 // ProvisionFailedHandler handles POST /api/v1/provision-failed/{namespace}/{hostName}

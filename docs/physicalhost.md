@@ -41,11 +41,13 @@ Available → InUse                              (Beskar7Machine claims via spec
 InUse → Inspecting                             (Beskar7Machine sets the inspection-request annotation)
 Inspecting → Deploying                         (inspection report consumed from ConfigMap, validated)
 Deploying → Ready                              (inspector POSTs /api/v1/provisioned; see contract §4.4)
-Deploying → Error                              (deployment timeout, default 20 min)
-any → Error                                    (BMC unreachable, TLS conflict, inspection timeout)
+Deploying → Error                              (inspector POSTs /api/v1/provision-failed; see contract §4.5)
+Inspecting → Error                             (inspection timeout, default 10 min)
+any → Error                                    (BMC unreachable, TLS conflict, missing credentials)
 Inspecting/Deploying/Ready → unchanged         (claimed, BMC unreachable: only RedfishConnectionReady reports it)
 Error → Available, or InUse if claimed         (operator fixes spec, BMC recovers)
-InUse/Inspecting/Deploying/Ready → Available   (Beskar7Machine deletion clears consumerRef)
+Error of a failed run (claimed) → unchanged    (the two run failures above: kept until release, whatever the BMC does)
+any claimed state → Available                  (Beskar7Machine deletion clears consumerRef)
 ```
 
 For the diagram and the full transition table, see [State Management](state-management.md).

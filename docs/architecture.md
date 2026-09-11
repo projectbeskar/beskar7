@@ -500,7 +500,7 @@ Beskar7Machine      PhysicalHost       BMC        Inspection Image      Inspecti
 
 If no inspection report is received within the inspection timeout (default 10 minutes; `--inspection-timeout`):
 1. The Beskar7Machine controller writes the `inspection-request: timeout` annotation on the `PhysicalHost`.
-2. `PhysicalHost.status.state` transitions to `Error` (a later reconcile of the underlying error condition can still move it back to `Available`).
+2. `PhysicalHost.status.state` transitions to `Error` (`Inspection timed out`) and stays there, whatever its BMC does, until the host is released.
 3. `Beskar7Machine` is marked terminally failed: `status.phase=Failed`, `InfrastructureReady=False` with reason `InspectionTimedOut`.
 
 The controller does not power the host off on this path — it is left in whatever state the BMC reports. There is no automatic retry: the operator deletes and recreates the `Beskar7Machine`.
@@ -515,12 +515,12 @@ If the inspection report doesn't meet `hardwareRequirements`:
 ### Redfish Connection Failure
 
 If the BMC cannot be reached at the network level (connection refused or reset, no route, DNS, timeout, a 502/503/504 from a BMC that is still starting):
-1. `RedfishConnectionReady` condition set to `False` with reason `BMCUnreachable`; `PhysicalHost.status.state` set to `Error`, unless the host is claimed and `Inspecting`, `Deploying` or `Ready`, which it keeps
+1. `RedfishConnectionReady` condition set to `False` with reason `BMCUnreachable`; `PhysicalHost.status.state` set to `Error`, unless the host is claimed and `Inspecting`, `Deploying` or `Ready`, or already in `Error` because its run failed, which it keeps
 2. Retried every 15 seconds, flat; the host recovers on the first attempt that connects
-3. The `Beskar7Machine` holding the host waits (`InfrastructureReady=False`, reason `WaitingForBMC`) instead of failing, and carries on once the host does
+3. The `Beskar7Machine` holding the host waits (`InfrastructureReady=False`, reason `WaitingForBMC`) instead of failing, and carries on once the host does; if the host's run has already failed, the machine fails with the run's reason instead
 
 Any other Redfish failure (refused credentials, a rejected certificate, a malformed address, no `ComputerSystem`):
-1. PhysicalHost.status.state set to `Error`
+1. PhysicalHost.status.state set to `Error` (a claimed host whose run failed keeps that `Error` and its message)
 2. `RedfishConnectionReady` condition set to `False` with a reason (`RedfishConnectionFailed`, `RedfishQueryFailed`, `MissingCredentials`, …) and the error in the message
 3. Retry with exponential backoff
 4. The `Beskar7Machine` holding the host fails terminally (`PhysicalHostError`); fix the cause and replace the machine

@@ -141,6 +141,26 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `InfrastructureReady` entry. `docs/beskar7machine.md` gains a section on how the two clocks run and
   what each one catches, and `docs/troubleshooting.md`, `docs/upgrading.md` and
   `docs/inspector-contract.md` §13 follow it.
+- **The inspector's `/provision-failed` report now reaches the `Beskar7Machine`, which fails with
+  `DeploymentFailed`.** The `PhysicalHost` reconciler applied the report (`Deploying` → `Error` with
+  the inspector's reason) and then, in the same pass, its claimed-host branch put every claimed host
+  that was not `InUse`, `Inspecting`, `Deploying` or `Ready` back at `InUse` with an empty
+  `status.errorMessage`, so only `InUse` was ever persisted. The machine never saw the reason. On
+  `InUse` it booted the inspector again on the host whose deployment had just failed: it set the PXE
+  boot override, powered the host on if it was off and requested a new inspection, and the run ended
+  in `InspectionTimedOut` instead. The inspection timeout's own `Error` (`Inspection timed out`) was
+  erased the same way. A claimed host now keeps an `Error` its provisioning run reported until it is
+  released. A later BMC failure, whether an outage or one that needs a fix, is reported by
+  `RedfishConnectionReady` alone and no longer overwrites the run's message, and the BMC's recovery
+  no longer resets the host to `InUse`. The machine treats that `Error` as terminal whatever the
+  condition says (during an outage it would have read as `WaitingForBMC`), and names a persisted
+  inspection timeout `InspectionTimedOut`. The report for a failure the inspector gave no reason for
+  now carries the prefix like every other, `inspector reported deploy failure: no details provided`
+  (was `inspector reported deploy failure (no details provided)`); without it the machine did not
+  recognise the report as a deploy failure. The reconciler adds the prefix itself to a report that
+  arrives without it, so a callback-only instance still on the previous release is handled too. An
+  `Error` about the BMC itself still clears to `InUse` once the BMC answers, and a released host
+  still returns to `Available`.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,

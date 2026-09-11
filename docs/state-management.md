@@ -16,9 +16,9 @@ The state constants are defined in `api/v1beta2/physicalhost_types.go`. The tran
 | `StateAvailable` | `"Available"` | BMC reachable; no consumer claim. Eligible for a Beskar7Machine to claim. |
 | `StateInUse` | `"InUse"` | A Beskar7Machine has claimed the host (`Spec.ConsumerRef` is set). |
 | `StateInspecting` | `"Inspecting"` | The inspection image is booting / running on the host. |
-| `StateDeploying` | `"Deploying"` | Hardware inspection passed and the inspector is writing the OS image to disk. Entered when the inspection report is accepted; exited when the inspector POSTs the provisioned callback or the deployment-timeout fires. |
+| `StateDeploying` | `"Deploying"` | Hardware inspection passed and the inspector is writing the OS image to disk. Entered when the inspection report is accepted; left through the inspector's provisioned or provision-failed callback. The deployment timeout fails only the Beskar7Machine and does not signal the host. |
 | `StateReady` | `"Ready"` | OS deployment complete (the inspector's provisioned callback was received). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are set at this point. |
-| `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. An unreachable BMC (`RedfishConnectionReady` reason `BMCUnreachable`) is the kind that clears by itself. |
+| `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. An unreachable BMC (`RedfishConnectionReady` reason `BMCUnreachable`) is the kind that clears by itself. A failed provisioning run — the inspector's `/provision-failed` report or an inspection timeout — is the kind that does not: a claimed host keeps that `Error` until it is released. |
 
 The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code previously kept deprecated alias constants (`StateClaimed = "InUse"`, etc.); those aliases have been removed. Code that imported them must switch to the canonical state constants above.
 
@@ -37,12 +37,12 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
                   │                                              │
    Beskar7Machine │ patches inspection-request="inspect"         │
                   ▼                                              │
-              Inspecting                                         │
+              Inspecting ── inspection timeout ──► Error ¹       │
                   │                                              │
    PhysicalHost   │ inspection-result ConfigMap consumed,        │
    controller     │ report validated (inspection-complete signal)│
                   ▼                                              │
-              Deploying  ── deployment-timeout ──► Error         │
+              Deploying  ── POST /provision-failed ──► Error ¹   │
                   │                                              │
    inspector      │ POSTs /api/v1/provisioned (202)              │
                   ▼                                              │
@@ -51,6 +51,9 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
               ┌───────────────────────────┐
               │   Error  (any state)      │  recovers when the underlying
               └───────────────────────────┘  problem clears (e.g. BMC reachable)
+
+   ¹ The run failed. A claimed host keeps this Error, through any later BMC
+     failure, until Beskar7Machine deletion releases it.
 ```
 
 ## What drives each transition
@@ -61,13 +64,15 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
 | `Available` | `InUse` | A Beskar7Machine writes `Spec.ConsumerRef`. | `beskar7machine_controller.go:findAndClaimOrGetAssociatedHost` |
 | `InUse` | `Inspecting` | Beskar7Machine writes `inspection-request: inspect` annotation. | `beskar7machine_controller.go:triggerInspection` |
 | `Inspecting` | `Deploying` | PhysicalHost controller consumes the inspection-result ConfigMap, validates the report, and advances the phase. Beskar7Machine then drives the state forward via `inspection-request: inspect-complete`. | `physicalhost_controller.go:applyInspectionResultAnnotation`, `beskar7machine_controller.go:validateInspectionReport` |
-| `Inspecting` | `Error` | Inspection timeout (`--inspection-timeout`, default 10 min) — Beskar7Machine writes `inspection-request: timeout`. | `beskar7machine_controller.go:handleInspectingHost` |
+| `Inspecting` | `Error` | Inspection timeout (`--inspection-timeout`, default 10 min) — Beskar7Machine writes `inspection-request: timeout`, and the host records `Inspection timed out`. The run has failed: the host keeps this `Error` until it is released. | `beskar7machine_controller.go:handleInspectingHost`, `physicalhost_controller.go:applyInspectionRequest` |
 | `Deploying` | `Ready` | Inspector POSTs `POST /api/v1/provisioned/{ns}/{host}` (§4.4 of `docs/inspector-contract.md`). The provisioned handler patches `ProvisionedRequestAnnotation`; the PhysicalHost reconciler transitions to `Ready` and clears the annotation. | `controllers/provisioned_handler.go`, `physicalhost_controller.go` |
-| `Deploying` | `Error` | Deployment timeout (`--deployment-timeout`, default 20 min, measured from `Status.DeployingTimestamp`). | `beskar7machine_controller.go:handleDeployingHost` |
-| any | `Error` | Credentials missing, TLS-config conflict, Redfish connection or query failed — and an unreachable BMC, except on the claimed states in the next row. | `physicalhost_controller.go:reconcileNormal` |
+| `Deploying` | `Error` | Inspector POSTs `POST /api/v1/provision-failed/{ns}/{host}` (§4.5 of `docs/inspector-contract.md`). The provision-failed handler patches `ProvisionFailedRequestAnnotation`; the PhysicalHost reconciler transitions to `Error` with the inspector's sanitized reason in `Status.ErrorMessage` and clears the annotation. The run has failed: the host keeps this `Error` until it is released. | `controllers/provision_failed_handler.go`, `physicalhost_controller.go:applyProvisionFailedRequestAnnotation` |
+| `Deploying` | unchanged | Deployment timeout (`--deployment-timeout`, default 20 min, measured from `Status.DeployingTimestamp`). Only the Beskar7Machine fails (`DeploymentTimedOut`); the timeout does not signal the host. | `beskar7machine_controller.go:handleDeployingHost` |
+| any | `Error` | Credentials missing, TLS-config conflict, Redfish connection or query failed — and an unreachable BMC, except on the claimed states in the next two rows. | `physicalhost_controller.go:reconcileNormal` |
 | `Inspecting` / `Deploying` / `Ready` (claimed) | unchanged | BMC unreachable. The host keeps its state — the inspector and the installed OS do not need the BMC — and `RedfishConnectionReady=False (BMCUnreachable)` reports the outage until the BMC answers. | `physicalhost_controller.go:retryTransientRedfishFailure` |
-| `Error` | `Available`, or `InUse` if claimed | The underlying error clears (BMC reachable again, secret fixed, TLS config fixed). | `physicalhost_controller.go:reconcileNormal` |
-| `InUse` / `Inspecting` / `Deploying` / `Ready` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
+| `Error` from a failed run (claimed) | unchanged | Any BMC failure, and the BMC's recovery. `RedfishConnectionReady` reports the BMC; `Status.ErrorMessage` keeps the run's reason. | `physicalhost_controller.go:provisioningRunFailed` |
+| `Error` | `Available`, or `InUse` if claimed | The underlying error clears (BMC reachable again, secret fixed, TLS config fixed). Not the `Error` of a failed run, which a claimed host keeps until it is released. | `physicalhost_controller.go:reconcileNormal` |
+| `InUse` / `Inspecting` / `Deploying` / `Ready` / `Error` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
 
 ## Atomic claim
 
@@ -93,6 +98,7 @@ Annotations consumed by the `PhysicalHost` reconciler:
 | `infrastructure.cluster.x-k8s.io/bootstrap-token` | `Beskar7Machine` controller | Persist hash + lifetime to `Status.Bootstrap.{TokenHash,IssuedAt,ExpiresAt}`. |
 | `infrastructure.cluster.x-k8s.io/inspection-result-ref` | Inspection HTTP handler | Read referenced ConfigMap, persist the `InspectionReport`, mark `HostInspected=True`, delete the ConfigMap. |
 | `infrastructure.cluster.x-k8s.io/provisioned-request` | `ProvisionedHandler` (HTTP) | Transition `Status.State` from `Deploying` to `Ready` (D-015). Value: `"provisioned"`. Clear after action. |
+| `infrastructure.cluster.x-k8s.io/provision-failed-request` | `ProvisionFailedHandler` (HTTP) | Transition `Status.State` from `Deploying` to `Error` and persist the value — the sanitized reason, prefixed `inspector reported deploy failure: ` — to `Status.ErrorMessage` (contract v4.1). Clear after action. |
 
 ## Recovery
 
@@ -117,7 +123,7 @@ kubectl get physicalhost <name> -o jsonpath='{.status.inspectionPhase}'
 kubectl get physicalhost <name> -o jsonpath='{.status.inspectionTimestamp}'
 ```
 
-If `inspectionTimestamp` is more than 10 minutes ago, the Beskar7Machine controller will mark `InspectionTimedOut` (terminal) and write `inspection-request: timeout`, which moves the host to `Error`. To recover, fix the underlying iPXE / inspection-image / network issue, then delete-and-recreate the `Beskar7Machine` (which deletes the BMC token Secret, clears `ConsumerRef`, and lets the host return to `Available`).
+If `inspectionTimestamp` is more than 10 minutes ago, the Beskar7Machine controller will mark `InspectionTimedOut` (terminal) and write `inspection-request: timeout`, which moves the host to `Error` for as long as it stays claimed. To recover, fix the underlying iPXE / inspection-image / network issue, then delete-and-recreate the `Beskar7Machine` (which deletes the BMC token Secret, clears `ConsumerRef`, and lets the host return to `Available`).
 
 ### Stuck in `Deploying`
 
@@ -127,7 +133,7 @@ The host entered `Deploying` (inspection passed and the inspector is writing the
 kubectl get physicalhost <name> -o jsonpath='{.status.deployingTimestamp}'
 ```
 
-If the timestamp is older than the `--deployment-timeout` (default 20 min), the Beskar7Machine controller marks the `Beskar7Machine` terminally failed: `status.phase=Failed` and `InfrastructureReady=False` with reason `DeploymentTimedOut`. Common causes:
+If the timestamp is older than the `--deployment-timeout` (default 20 min), the Beskar7Machine controller marks the `Beskar7Machine` terminally failed: `status.phase=Failed` and `InfrastructureReady=False` with reason `DeploymentTimedOut`. The timeout does not signal the host. An inspector that can still report a failure calls `/provision-failed` instead, which moves the host to `Error` at once (see [Stuck in `Error`](#stuck-in-error)). Common causes of a timeout:
 
 - The OS image download is slow or stalled — check network reachability from the host to `Beskar7Machine.Spec.TargetImageURL`.
 - The inspector's TLS verification failed for the provisioned-callback endpoint — check that `beskar7.api` is externally reachable and that the certificate uses a two-tier PKI (CA cert distinct from the server cert; see the TLS note in `docs/inspector-contract.md` §8).
@@ -142,7 +148,8 @@ To recover, delete and recreate the `Beskar7Machine`. This clears `ConsumerRef`,
 - `redfishConnection.insecureSkipVerify=true is mutually exclusive with caBundleSecretRef`: edit the spec — pick one. The reconciler resumes once the spec is valid.
 - `failed to get credentials secret`: the named Secret does not exist or is missing `username`/`password`. Create or fix it.
 - `BMC unreachable (…); retrying every 15s`: nothing to fix on the object. The host retries and leaves `Error` on the first attempt that connects; check the network path from the controller to the BMC if it does not. A `Beskar7Machine` holding the host reports `InfrastructureReady=False (WaitingForBMC)` meanwhile and carries on afterwards — it is not failed and does not need replacing.
-- `Inspection timed out`: see above.
+- `inspector reported deploy failure: …`: the inspector's `/provision-failed` report, with its reason after the colon (`no details provided` when it sent none). The run failed, and the `Beskar7Machine` is failed with `DeploymentFailed`, quoting the message. The host keeps this `Error` while it is claimed — a later BMC failure or recovery changes only `RedfishConnectionReady` — and returns to `Available` once the `Beskar7Machine` is deleted and releases it.
+- `Inspection timed out`: see above. Kept the same way until the host is released.
 
 ### Force release
 
