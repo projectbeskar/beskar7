@@ -42,6 +42,8 @@ InUse → Inspecting                             (Beskar7Machine sets the inspec
 Inspecting → Deploying                         (inspection report consumed from ConfigMap, validated)
 Deploying → Ready                              (inspector POSTs /api/v1/provisioned; see contract §4.4)
 Deploying → Error                              (inspector POSTs /api/v1/provision-failed; see contract §4.5)
+Inspecting → unchanged, then Error             (claimed; /provision-failed before Deploying: kept until Deploying)
+Error about the BMC → Error of a failed run    (claimed; /provision-failed after a BMC error overwrote Deploying)
 Inspecting → Error                             (inspection timeout, default 10 min)
 any → Error                                    (BMC unreachable, TLS conflict, missing credentials)
 Inspecting/Deploying/Ready → unchanged         (claimed, BMC unreachable: only RedfishConnectionReady reports it)

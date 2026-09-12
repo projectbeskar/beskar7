@@ -69,9 +69,10 @@ const (
 // Signal: the handler extracts and sanitizes the "reason" field from the advisory JSON
 // body, then patches ProvisionFailedRequestAnnotation carrying the sanitized message
 // onto the PhysicalHost metadata. The PhysicalHostReconciler reads this on its next
-// pass, transitions State from Deploying to Error, sets Status.ErrorMessage, and clears
-// the annotation (v4.1 / D-005 pattern). This handler does NOT write
-// PhysicalHost.Status directly.
+// pass, transitions State to Error, sets Status.ErrorMessage, and clears the annotation
+// (v4.1 / D-005 pattern) — at once for a host that is Deploying, and only once it is
+// Deploying for a host that is still Inspecting (see signalProvisionFailed). This
+// handler does NOT write PhysicalHost.Status directly.
 //
 // The reason is attacker-influenceable (it rides the inspector→controller wire under
 // the host's own token, but the inspector is on an untrusted provisioning network).
@@ -183,13 +184,29 @@ func sanitizeFailureReason(reason string) string {
 }
 
 // signalProvisionFailed fetches the PhysicalHost and patches the
-// ProvisionFailedRequestAnnotation so the PhysicalHostReconciler can drive the
-// Deploying→Error transition. It does NOT write PhysicalHost.Status (D-005 invariant).
+// ProvisionFailedRequestAnnotation for the PhysicalHostReconciler, which decides what
+// becomes of the report (applyProvisionFailedRequestAnnotation). It does NOT write
+// PhysicalHost.Status (D-005 invariant).
 //
-// Guard: only act when the host is in StateDeploying. If the host is in Error already
-// (idempotent delivery) or in another state, log and return nil — we do not force a
-// non-Deploying host into Error. The Beskar7Machine controller will observe the
-// ErrorMessage on its next reconcile regardless of which path set it.
+// The annotation is set on a host the report can be about:
+//   - Deploying: the expected case.
+//   - Claimed and still Inspecting. The inspector starts Phase 2 as soon as it has
+//     posted its inspection report (contract §9.2), so a fast failure reports before
+//     the Beskar7Machine has validated that report and the host is Deploying; the
+//     reconciler keeps the report until then. Any inspection phase is accepted: this
+//     read may come from a cache that predates the inspection report, while the
+//     reconciler reads the annotation from a copy of the host at least as new as the
+//     annotation and tells a report that followed this run's inspection report from
+//     one that did not.
+//   - Claimed and in an Error about its BMC that overwrote the deployment
+//     (deployInterruptedByBMCError): the inspector does not need the BMC and carried
+//     on deploying.
+//
+// On a host already in another Error — the run's own, or one about the BMC that did
+// not interrupt a deployment — the call is an idempotent no-op that clears any stale
+// annotation. Any other state is logged and ignored; we do not force such a host into
+// Error. The Beskar7Machine controller will observe the ErrorMessage on its next
+// reconcile regardless of which path set it.
 func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log logr.Logger, namespace, hostName, sanitizedReason string) error {
 	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
@@ -200,11 +217,18 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		return fmt.Errorf("failed to get PhysicalHost: %w", err)
 	}
 
-	switch ph.Status.State {
-	case infrav1.StateDeploying:
+	switch state := ph.Status.State; {
+	case state == infrav1.StateDeploying:
 		// Expected path: host is mid-deploy; set the failure annotation.
-	case infrav1.StateError:
-		// Already in error (idempotent delivery or a second POST after reconcile acted).
+	case state == infrav1.StateInspecting && ph.Spec.ConsumerRef != nil:
+		log.Info("Provision-failed callback on a host still Inspecting; the reconciler keeps it until the host is Deploying",
+			"host", hostName, "inspectionPhase", ph.Status.InspectionPhase)
+	case deployInterruptedByBMCError(ph):
+		log.Info("Provision-failed callback on a host whose BMC failed during deployment; setting the failure annotation",
+			"host", hostName, "errorMessage", ph.Status.ErrorMessage)
+	case state == infrav1.StateError:
+		// Already in an Error the report cannot change (idempotent delivery, a second
+		// POST after reconcile acted, or a BMC failure before the host was deploying).
 		// Clear any stale annotation so the reconciler doesn't double-process, then return.
 		log.V(1).Info("Provision-failed callback on already-errored host; clearing annotation idempotently", "host", hostName)
 		if _, ok := ph.Annotations[ProvisionFailedRequestAnnotation]; ok {
@@ -216,9 +240,10 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		}
 		return nil
 	default:
-		// Unexpected state — cannot safely force-error a host not in Deploying.
-		log.Info("Provision-failed callback received but host is not in Deploying state; ignoring",
-			"host", hostName, "state", ph.Status.State)
+		// Unexpected state — a host that is not being provisioned for a consumer, or is
+		// already Ready: cannot safely force it into Error.
+		log.Info("Provision-failed callback received but host is not deploying; ignoring",
+			"host", hostName, "state", ph.Status.State, "claimed", ph.Spec.ConsumerRef != nil)
 		return nil
 	}
 

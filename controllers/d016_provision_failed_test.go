@@ -19,7 +19,9 @@ limitations under the License.
 //   - POST /api/v1/provision-failed: valid bearer + StateDeploying → 202 + annotation set
 //   - POST /api/v1/provision-failed: missing / wrong bearer → 401
 //   - POST /api/v1/provision-failed: oversized / garbage body → still 202 (body advisory)
-//   - POST /api/v1/provision-failed: host NOT in StateDeploying → no transition
+//   - POST /api/v1/provision-failed: unclaimed host NOT in StateDeploying → no annotation
+//   - POST /api/v1/provision-failed: claimed host still Inspecting → annotation, which the
+//     reconciler keeps until the host is Deploying (provision_failed_delivery_test.go)
 //   - PhysicalHost: ProvisionFailedRequestAnnotation → StateError + sanitized ErrorMessage
 //   - sanitizeFailureReason: control chars/newlines stripped, length-capped, empty→generic
 //   - Beskar7Machine StateError (deploy-failure path): terminal failure, DeploymentFailed reason
@@ -222,8 +224,9 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		Expect(updated.Annotations).To(HaveKeyWithValue(ProvisionFailedRequestAnnotation, provisionFailedReasonGeneric))
 	})
 
-	It("does NOT set annotation when host is NOT in StateDeploying", func() {
-		// Move host to a non-Deploying state (e.g. StateInspecting).
+	It("does NOT set annotation on an unclaimed host that is NOT in StateDeploying", func() {
+		// Move host to a non-Deploying state (e.g. StateInspecting). Unclaimed, it has
+		// no deployment for the report to be about.
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateInspecting
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
@@ -250,6 +253,42 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 		Expect(updated.Annotations).NotTo(HaveKey(ProvisionFailedRequestAnnotation),
 			"must not set annotation on non-Deploying host")
+	})
+
+	It("sets the annotation on a claimed host that is still Inspecting", func() {
+		// The inspector starts Phase 2 as soon as it has posted its inspection
+		// report, so a fast failure can arrive before the host is Deploying.
+		key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
+		Expect(k8sClient.Get(ctx, key, ph)).To(Succeed())
+		ph.Spec.ConsumerRef = &corev1.ObjectReference{
+			Kind: "Beskar7Machine", Name: "b7m-pfail-http", Namespace: testNs.Name,
+			APIVersion: infrav1.GroupVersion.String(),
+		}
+		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
+		ph.Status.State = infrav1.StateInspecting
+		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
+		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+
+		mux, _ := buildProvisionFailedMux()
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/api/v1/provision-failed/"+testNs.Name+"/"+ph.Name,
+			bytes.NewBufferString(`{"reason":"image fetch failed: 404 Not Found"}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer "+tokenPlain)
+
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = resp.Body.Close() }()
+		Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
+
+		updated := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
+		Expect(updated.Annotations).To(HaveKeyWithValue(ProvisionFailedRequestAnnotation,
+			provisionFailedReasonPrefix+"image fetch failed: 404 Not Found"))
+		Expect(updated.Status.State).To(Equal(infrav1.StateInspecting), "the handler never writes status")
 	})
 })
 
@@ -281,6 +320,12 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.168.2.220",
 					CredentialsSecretRef: "dummy-creds",
+				},
+				// Claimed: a released host drops the report, since the claim it was
+				// about has ended.
+				ConsumerRef: &corev1.ObjectReference{
+					Kind: "Beskar7Machine", Name: "b7m-pf-deploying", Namespace: testNs.Name,
+					APIVersion: infrav1.GroupVersion.String(),
 				},
 			},
 		}

@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -194,6 +195,14 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 // reconcileNormal handles normal (non-deletion) reconciliation.
 func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Reconciling PhysicalHost", "currentState", physicalHost.Status.State)
+
+	// The inspector's /provision-failed report goes first, before the BMC is
+	// tried. It needs nothing from the BMC, and every connection failure below
+	// returns before the other annotation handlers run: left until after them, a
+	// report waited out an outage in Deploying, and a failure that needs a fix
+	// wrote its own Error over Deploying first. Applied here, the run's Error
+	// outlasts whatever the connection does next.
+	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
 
 	// Get Redfish credentials
 	username, password, err := r.getRedfishCredentials(ctx, physicalHost)
@@ -367,11 +376,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// controller can complete provisioning.
 	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
-	// Consume the provision-failed-request annotation (v4.1): the provision-failed
-	// HTTP handler sets it when the inspector signals a fatal deploy failure. We
-	// transition State from Deploying to Error and set Status.ErrorMessage so the
-	// Beskar7Machine controller can mark a terminal failure promptly.
-	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
+	// The provision-failed-request annotation (v4.1) was handled at the top of
+	// this function, ahead of the BMC.
 
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
@@ -478,15 +484,44 @@ func inProvisioningSubState(physicalHost *infrav1.PhysicalHost) bool {
 // provisioningRunFailed reports whether a claimed host is in an Error its
 // provisioning run reported, rather than one about its BMC: the inspector's
 // /provision-failed report (the message carries provisionFailedReasonPrefix) or
-// the Beskar7Machine's inspection timeout. The annotation handlers apply both
-// after a successful connection, and no later connection result can undo
-// either, so the host keeps such an Error until it is released.
+// the Beskar7Machine's inspection timeout. No later connection result undoes
+// either (setConnectionError, retryTransientRedfishFailure), and neither does a
+// later inspection request (applyInspectionRequest), so the host keeps such an
+// Error until it is released.
 func provisioningRunFailed(physicalHost *infrav1.PhysicalHost) bool {
 	if physicalHost.Spec.ConsumerRef == nil || physicalHost.Status.State != infrav1.StateError {
 		return false
 	}
 	return strings.HasPrefix(physicalHost.Status.ErrorMessage, provisionFailedReasonPrefix) ||
 		physicalHost.Status.ErrorMessage == inspectionTimedOutMessage
+}
+
+// deployInterruptedByBMCError reports whether a claimed host is in an Error
+// about its BMC that setConnectionError wrote over a deployment: the host got
+// as far as Deploying (DeployingTimestamp is set then and cleared only when the
+// host is released), and the Error is not the run's own. The inspector does
+// not need the BMC and carries on deploying, so its /provision-failed report
+// still applies to such a host. The host does not record whether it was
+// Deploying or already Ready when the BMC failed; the inspector reports a
+// failure only while it deploys.
+func deployInterruptedByBMCError(physicalHost *infrav1.PhysicalHost) bool {
+	return physicalHost.Spec.ConsumerRef != nil &&
+		physicalHost.Status.State == infrav1.StateError &&
+		physicalHost.Status.DeployingTimestamp != nil &&
+		!provisioningRunFailed(physicalHost)
+}
+
+// inspectionReportReceived reports whether the host has received the
+// inspection report of its current run, read (InspectionPhase Complete,
+// HostInspected True) or still waiting to be read (InspectionResultAnnotation).
+// It checks all three because the pass that reads the report publishes the
+// condition first, then drops the annotation, then writes the phase (CAPI's
+// patch.Helper), and a version in between must not read as "no report yet".
+// Releasing the host sets HostInspected False, so a new claim starts without it.
+func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
+	return physicalHost.Status.InspectionPhase == infrav1.InspectionPhaseComplete ||
+		conditions.IsTrue(physicalHost, infrav1.HostInspectedCondition) ||
+		physicalHost.Annotations[InspectionResultAnnotation] != ""
 }
 
 // setConnectionError puts the host in Error for a BMC it cannot reach or use.
@@ -549,6 +584,20 @@ func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, p
 func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	ann := physicalHost.Annotations[InspectionRequestAnnotation]
 	if ann == "" {
+		return
+	}
+
+	// A failed run's Error ends only when the host is released
+	// (provisioningRunFailed), so no request may start another step of the run.
+	// The Beskar7Machine sends inspect-complete again whenever it reads the host
+	// before its first one has been applied, and with an inspector that fails
+	// fast that second request can land after the report has moved the host to
+	// Error. Applied, it would put the host back in Deploying, and the machine
+	// would wait out the deployment timeout instead of failing with
+	// DeploymentFailed.
+	if provisioningRunFailed(physicalHost) {
+		logger.Info("Ignoring inspection-request annotation: the host's provisioning run has failed", "value", ann)
+		delete(physicalHost.Annotations, InspectionRequestAnnotation)
 		return
 	}
 
@@ -820,31 +869,45 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 	delete(physicalHost.Annotations, ProvisionedRequestAnnotation)
 }
 
-// applyProvisionFailedRequestAnnotation reads the ProvisionFailedRequestAnnotation and,
-// when present on a host in StateDeploying, transitions Status.State to StateError and
-// sets Status.ErrorMessage to the sanitized failure reason carried in the annotation
-// value (v4.1). The provision-failed HTTP handler is the sole writer of this annotation.
-// A claimed host keeps that Error until it is released (provisioningRunFailed), which
-// is what lets the Beskar7Machine controller see the reason and fail with
-// DeploymentFailed.
+// applyProvisionFailedRequestAnnotation acts on the ProvisionFailedRequestAnnotation:
+// the inspector's /provision-failed report, as the provision-failed HTTP handler (its
+// sole writer) stored it, the sanitized failure reason (v4.1). Applying the report
+// moves the host to StateError with that reason in Status.ErrorMessage. A claimed host
+// keeps that Error until it is released (provisioningRunFailed), which is what lets
+// the Beskar7Machine controller see the reason and fail with DeploymentFailed.
 //
-// Guard: only acts when the host is in StateDeploying. An annotation on a host in any
-// other state is cleared without transition — the Beskar7Machine controller detects the
-// unexpected state on its next reconcile.
+// reconcileNormal calls it before it tries the BMC, so a connection failure cannot
+// get in first; what becomes of the report depends on the host:
 //
-// Idempotent: if the host is already in StateError when the annotation fires again (e.g.
-// a duplicate delivery before the first annotation is cleared), we clear the annotation
-// and return without re-writing status.
+//   - Deploying, or claimed and in an Error about its BMC that overwrote the
+//     deployment (deployInterruptedByBMCError): applied.
+//   - Claimed, still Inspecting, and in possession of this run's inspection report
+//     (inspectionReportReceived): kept, and applied once the host is Deploying. The
+//     inspector starts Phase 2 as soon as it has posted the inspection report
+//     (contract §9.2), so a fast failure — a target image URL that answers 404 —
+//     reports before the Beskar7Machine has validated the inspection report and
+//     sent inspect-complete. A machine that rejects the hardware
+//     (HardwareRequirementsNotMet) never sends it, so a kept report is never applied
+//     over that verdict.
+//   - Anything else is cleared without a transition: a released host (the claim the
+//     report was about has ended, and the host cannot be claimed again before a pass
+//     that clears it), a run that has already failed (the first failure stands), a
+//     host that is InUse or Ready, an Error that did not interrupt a deployment, and
+//     a report that came before this run's inspection report, which is not about
+//     this run's deployment.
 func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	val, ok := physicalHost.Annotations[ProvisionFailedRequestAnnotation]
 	if !ok {
 		return
 	}
 
-	switch physicalHost.Status.State {
-	case infrav1.StateDeploying:
-		logger.Info("Applying provision-failed annotation: transitioning Deploying→Error",
-			"host", physicalHost.Name)
+	switch state := physicalHost.Status.State; {
+	case physicalHost.Spec.ConsumerRef == nil:
+		logger.Info("Provision-failed annotation on a released host; clearing without transition",
+			"host", physicalHost.Name, "state", state)
+	case state == infrav1.StateDeploying || deployInterruptedByBMCError(physicalHost):
+		logger.Info("Applying provision-failed annotation: transitioning to Error",
+			"host", physicalHost.Name, "state", state)
 		// The handler stores the reason sanitized and prefixed. A value without
 		// the prefix comes from a hand edit or from a callback-only instance
 		// older than this controller, whose generic report lacked it; the prefix
@@ -855,16 +918,17 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger lo
 		physicalHost.Status.State = infrav1.StateError
 		physicalHost.Status.Ready = false
 		physicalHost.Status.ErrorMessage = val
-	case infrav1.StateError:
-		// Already in error (idempotent delivery or second annotation before first was cleared).
-		logger.V(1).Info("Provision-failed annotation on already-errored host; clearing idempotently",
+	case state == infrav1.StateInspecting && inspectionReportReceived(physicalHost):
+		logger.Info("Keeping provision-failed annotation until the host is Deploying",
+			"host", physicalHost.Name, "inspectionPhase", physicalHost.Status.InspectionPhase)
+		return
+	case provisioningRunFailed(physicalHost):
+		// Duplicate delivery, or a second report before the first was cleared.
+		logger.V(1).Info("Provision-failed annotation on a host whose run already failed; clearing idempotently",
 			"host", physicalHost.Name)
 	default:
-		// Unexpected state: the host received a provision-failed signal while not in
-		// Deploying. Log at Info (operator-visible) and clear the annotation; the
-		// Beskar7Machine controller will detect the unexpected state on its next reconcile.
 		logger.Info("Provision-failed annotation on host in unexpected state; clearing without transition",
-			"host", physicalHost.Name, "state", physicalHost.Status.State)
+			"host", physicalHost.Name, "state", state, "inspectionPhase", physicalHost.Status.InspectionPhase)
 	}
 
 	delete(physicalHost.Annotations, ProvisionFailedRequestAnnotation)

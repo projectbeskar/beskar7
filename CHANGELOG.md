@@ -161,6 +161,30 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   arrives without it, so a callback-only instance still on the previous release is handled too. An
   `Error` about the BMC itself still clears to `InUse` once the BMC answers, and a released host
   still returns to `Available`.
+- **The inspector's `/provision-failed` report is no longer lost when it races the host's state.**
+  Two windows dropped it before it was applied. *A BMC failure first:* the `PhysicalHost`
+  reconciler applied the report only after a successful BMC connection, so a failure that needs a
+  fix — the credentials `Secret` gone, a certificate the BMC changed after a firmware reset, the
+  TLS-config conflict, a missing CA bundle, no `ComputerSystem` — wrote its own `Error` over
+  `Deploying` first. The machine failed with `PhysicalHostError` and the inspector's reason was
+  lost. Once the BMC answered, the host treated the pending report as a duplicate, dropped it and
+  went back to `InUse`, where a machine that had missed the `Error` booted the inspector again on
+  the failed host. A report that arrived while the host sat in that `Error` was dropped by the
+  handler, and during an outage the report waited for the BMC, long enough for the deployment
+  timeout to fail the machine first. The host now applies the report before it tries the BMC, and
+  it takes a report for a claimed host whose BMC error interrupted its deployment. *A fast
+  failure:* the inspector starts Phase 2 as soon as it has posted its inspection report, so a
+  failure such as a target image URL that answers 404 could be reported while the host was still
+  `Inspecting`, before the `Beskar7Machine` had validated that report. The handler ignored it,
+  and the machine waited out `--deployment-timeout` and failed with `DeploymentTimedOut` instead
+  of `DeploymentFailed`. A claimed host that is still `Inspecting` now keeps the report and applies
+  it once the machine's `inspect-complete` has moved it to `Deploying`. It drops the report without
+  a transition if the host goes anywhere else: the machine rejects the hardware
+  (`HardwareRequirementsNotMet` stands), the host is released, or the report arrived before the
+  run's inspection report. So a report never outlives the claim it was about. A failed run's
+  `Error` no longer yields to an inspection request either: an `inspect-complete` the machine sent
+  again, having read the host before its first one was applied, used to put a host whose deployment
+  had just been reported failed back in `Deploying`. The inspector sees `202` exactly as before.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
