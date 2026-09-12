@@ -1164,6 +1164,47 @@ var _ = Describe("applyBootNonceAnnotation", func() {
 		Expect(ph.Status.Bootstrap.BootNonceConsumedAt.Time.Equal(consumed.Time)).To(BeTrue())
 	})
 
+	// Status.Bootstrap outlives a claim, so a re-claimed host's fresh nonce is
+	// promoted next to the record of the nonce before it. The record stays the
+	// handler's to write; it is its hash that keeps the fresh nonce unconsumed.
+	It("leaves an earlier nonce's consume record in place, and the nonce it promotes counts as unconsumed", func() {
+		earlierHash := "9988776655443322110099887766554433221100998877665544332211009988"
+		freshHash := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+		consumed := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+		earlierExpiry := metav1.NewTime(time.Now().Add(-50 * time.Minute).Truncate(time.Second))
+		freshExpiry := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
+		encoded, err := json.Marshal(BootNonceAnnotationValue{Hash: freshHash, ExpiresAt: freshExpiry})
+		Expect(err).NotTo(HaveOccurred())
+
+		ph := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
+			},
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					BootNonceHash:         earlierHash,
+					BootNonceExpiresAt:    &earlierExpiry,
+					BootNonceConsumedAt:   &consumed,
+					BootNonceConsumedHash: earlierHash,
+				},
+			},
+		}
+
+		for pass := 1; pass <= 2; pass++ {
+			By(fmt.Sprintf("pass %d", pass))
+			r.applyBootNonceAnnotation(r.Log, ph)
+			Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(freshHash))
+			Expect(ph.Status.Bootstrap.BootNonceConsumedAt.Time.Equal(consumed.Time)).To(BeTrue(),
+				"the consume record is the /boot handler's to write")
+			Expect(ph.Status.Bootstrap.BootNonceConsumedHash).To(Equal(earlierHash))
+			Expect(bootNonceConsumed(ph.Status.Bootstrap)).To(BeFalse(),
+				"the record names the earlier nonce, not the one just promoted")
+			Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(freshHash),
+				"the Beskar7Machine may reuse the promoted nonce until it is fetched")
+		}
+		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation))
+	})
+
 	It("leaves annotation in place when JSON is malformed", func() {
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{

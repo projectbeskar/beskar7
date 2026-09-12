@@ -134,7 +134,8 @@ Per-host bootstrap fetch coordinates and the hashed bearer token used to authent
 | `expiresAt` | `*metav1.Time` | When the current token stops being accepted. Defaults to `issuedAt + 60m` (`auth.TokenLifetime`, SEC-D015-1). |
 | `bootNonceHash` | string | Hex-encoded SHA-256 of the per-host boot nonce minted at inspection time (D-009). Gates `GET /api/v1/boot/{ns}/{host}/{nonce}`. The plaintext nonce is never stored here — it lives in a per-host Secret under key `plaintext-boot-nonce`. |
 | `bootNonceExpiresAt` | `*metav1.Time` | When the current boot nonce stops being accepted. Defaults to mint time `+ 10m` (`auth.BootNonceLifetime`, D-009) — intentionally shorter than the bearer-token lifetime because the nonce is single-use. |
-| `bootNonceConsumedAt` | `*metav1.Time` | Timestamp at which the boot nonce was single-use consumed by the `/boot` handler (D-010). Nil until first boot; once set it is never cleared — a new nonce is minted on the next re-provision cycle. |
+| `bootNonceConsumedAt` | `*metav1.Time` | Timestamp at which the `/boot` handler consumed the boot nonce named by `bootNonceConsumedHash` (D-010). Nil until first boot, and never cleared: a nonce minted later has a different hash, so the record does not apply to it, and that nonce's first fetch records its own consume over it. A consumed nonce is never reused — a new nonce is minted on the next re-provision cycle. |
+| `bootNonceConsumedHash` | string | The `bootNonceHash` of the nonce `bootNonceConsumedAt` records. The advertised nonce has been consumed only while the two hashes match. Written with `bootNonceConsumedAt` by the `/boot` handler. Empty next to a `bootNonceConsumedAt` recorded by a release before this field existed: `/boot` then records the advertised nonce's consume afresh, and the controller does not reuse that nonce. |
 
 #### Conditions
 

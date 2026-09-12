@@ -1913,7 +1913,9 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			"now.Before(expiresAt) is false at equality — boundary must re-mint")
 	})
 
-	It("returns no hash when BootNonceConsumedAt is set (consumed nonce is never valid)", func() {
+	// A record from a /boot handler that did not yet name the nonce's hash may
+	// describe this nonce, so it is never reused.
+	It("returns no hash when BootNonceConsumedAt is set without a hash (consumed nonce is never valid)", func() {
 		exp := metav1.NewTime(now.Add(5 * time.Minute))
 		consumed := metav1.NewTime(now.Add(-30 * time.Second))
 		ph := &infrav1.PhysicalHost{
@@ -1927,6 +1929,41 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 		}
 		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty(),
 			"consumed nonce (BootNonceConsumedAt != nil) must never be considered valid")
+	})
+
+	It("returns no hash when the consume record names this nonce", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		consumed := metav1.NewTime(now.Add(-30 * time.Second))
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					BootNonceHash:         "abcdef01",
+					BootNonceExpiresAt:    &exp,
+					BootNonceConsumedAt:   &consumed,
+					BootNonceConsumedHash: "abcdef01",
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty())
+	})
+
+	// Status.Bootstrap outlives a claim: a re-claimed host's fresh nonce sits
+	// next to the record of the nonce the previous claim booted with.
+	It("returns the hash when the consume record names an earlier nonce", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		consumed := metav1.NewTime(now.Add(-time.Hour))
+		ph := &infrav1.PhysicalHost{
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					BootNonceHash:         "abcdef01",
+					BootNonceExpiresAt:    &exp,
+					BootNonceConsumedAt:   &consumed,
+					BootNonceConsumedHash: "0badf00d",
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("abcdef01"),
+			"an earlier nonce's consume record must not spend the fresh nonce")
 	})
 
 	It("returns the hash when nonce is fresh, unexpired, and unconsumed", func() {
@@ -2016,6 +2053,60 @@ var _ = Describe("unexpiredBootNonceHash", func() {
 			},
 		}
 		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("abcdef01"))
+	})
+
+	// The mint-race guard still holds next to a consumed earlier nonce: the
+	// pending mint is newer than anything Status says.
+	It("prefers a pending annotation over a consumed Status hash", func() {
+		exp := metav1.NewTime(now.Add(5 * time.Minute))
+		consumed := metav1.NewTime(now.Add(-2 * time.Minute))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{
+			Hash:      "cafef00d",
+			ExpiresAt: metav1.NewTime(now.Add(9 * time.Minute)),
+		})
+		ph := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					BootNonceHash:         "abcdef01",
+					BootNonceExpiresAt:    &exp,
+					BootNonceConsumedAt:   &consumed,
+					BootNonceConsumedHash: "abcdef01",
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("cafef00d"))
+	})
+
+	// The PhysicalHost controller clears the annotation one pass after it
+	// promotes the hash, and the /boot handler can consume the nonce in
+	// between. From promotion on, Status is what knows whether it was.
+	It("returns no hash for a pending annotation whose nonce Status has promoted and the handler consumed", func() {
+		exp := metav1.NewTime(now.Add(9 * time.Minute))
+		consumed := metav1.NewTime(now.Add(-10 * time.Second))
+		annoBytes, _ := json.Marshal(BootNonceAnnotationValue{Hash: "cafef00d", ExpiresAt: exp})
+		ph := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{BootNonceAnnotation: string(annoBytes)},
+			},
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					BootNonceHash:         "cafef00d",
+					BootNonceExpiresAt:    &exp,
+					BootNonceConsumedAt:   &consumed,
+					BootNonceConsumedHash: "cafef00d",
+				},
+			},
+		}
+		Expect(unexpiredBootNonceHash(ph, now)).To(BeEmpty(),
+			"a consumed nonce must not be reused because its annotation has not been cleared yet")
+
+		By("and returns it while the promoted nonce is still unconsumed")
+		ph.Status.Bootstrap.BootNonceConsumedAt = nil
+		ph.Status.Bootstrap.BootNonceConsumedHash = ""
+		Expect(unexpiredBootNonceHash(ph, now)).To(Equal("cafef00d"))
 	})
 })
 
