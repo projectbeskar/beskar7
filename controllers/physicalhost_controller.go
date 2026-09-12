@@ -197,18 +197,21 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	logger.Info("Reconciling PhysicalHost", "currentState", physicalHost.Status.State)
 
 	// The inspector's reports go first, before the BMC is tried. They need
-	// nothing from the BMC, and every connection failure below returns before
-	// the other annotation handlers run, so a report left until after them
-	// waited out an outage; a claimed host keeps Ready through one, as it keeps
-	// Deploying. A /provision-failed report also came too late once a failure
-	// that needs a fix had written its own Error over Deploying. Applied here,
-	// the run's Error outlasts whatever the connection does next.
+	// nothing from the BMC, and a connection failure that needs a fix returns
+	// below without acting on any other annotation (applyRunAnnotations): a
+	// /provision-failed report left until then came too late once that failure
+	// had written its own Error over Deploying. Applied here, the run's Error
+	// outlasts whatever the connection does next.
 	//
-	// The failure report goes ahead of the success report, so it is the one
-	// applied when both are waiting: the inspector posts /provision-failed after
-	// a /provisioned it saw fail, once it has removed the join config from the
-	// disk (contract §9.1 step 8), and the handler may have taken that
-	// /provisioned all the same.
+	// The success report goes right after the failure report, ahead of the
+	// machine's requests as well, so the two are always weighed against the same
+	// state and the failure report is the one applied when both are waiting: the
+	// inspector posts /provision-failed after a /provisioned it saw fail, once it
+	// has removed the join config from the disk (contract §9.1 step 8), and the
+	// handler may have taken that /provisioned all the same. Weighed after
+	// inspect-complete, a success report kept while the host was Inspecting
+	// would be applied in the pass that moves the host to Deploying, one pass
+	// ahead of a failure report kept with it.
 	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
 	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
@@ -269,6 +272,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		internalmetrics.RecordRedfishConnection(physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed, internalmetrics.ErrorTypeConnection)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
 		if internalredfish.IsTransientConnectionError(err) {
+			r.applyRunAnnotations(ctx, logger, physicalHost)
 			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
 		}
 		r.setConnectionError(physicalHost, fmt.Sprintf("Redfish connection failed: %v", err))
@@ -293,6 +297,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		// BMC (the connection was refused or dropped between the two calls):
 		// the same network-level failure as above, retried the same way.
 		if internalredfish.IsTransientConnectionError(err) {
+			r.applyRunAnnotations(ctx, logger, physicalHost)
 			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
 		}
 		r.setConnectionError(physicalHost, fmt.Sprintf("Failed to query system: %v", err))
@@ -336,51 +341,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// Connection successful - mark as ready
 	setTrue(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectedReason)
 
-	// Drop anything left over from a previous provisioning run before the
-	// annotation handlers below, so a host that is claimed again starts clean.
-	//
-	// Deliberately BEFORE the handlers, not after: they legitimately write
-	// inspection state onto an unclaimed host (the Beskar7Machine controller
-	// signals through annotations, and consumption is not gated on ConsumerRef).
-	// Clearing afterwards would erase what they just wrote.
-	if physicalHost.Spec.ConsumerRef == nil {
-		r.clearProvisioningRunState(logger, physicalHost)
-	}
-
-	// Act on inspection-request annotation set by Beskar7Machine controller.
-	// The Beskar7Machine controller writes only to PhysicalHost.Spec.Annotations (a spec
-	// write via MergeFrom patch); we read it here and drive the Status transition ourselves,
-	// keeping status ownership inside this controller.
-	r.applyInspectionRequest(ctx, logger, physicalHost)
-
-	// Consume the bootstrap-url annotation set by the Beskar7Machine controller and
-	// persist the value to Status.Bootstrap.URL. This keeps status ownership inside
-	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
-	r.applyBootstrapURLAnnotation(logger, physicalHost)
-
-	// Consume the bootstrap-token annotation (PR-5.2 / D-004): the Beskar7Machine
-	// controller signals the freshly minted token's hash + lifetime here; we
-	// persist them to Status.Bootstrap so the inspection HTTPS handler can verify
-	// bearer tokens against the stored hash.
-	r.applyBootstrapTokenAnnotation(logger, physicalHost)
-
-	// Consume the boot-nonce annotation (D-009): the Beskar7Machine controller
-	// signals the hash + expiry of the freshly minted per-host boot nonce; we
-	// persist them to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}.
-	// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
-	// touched here — it is the /boot handler's (D-010). Same idempotent
-	// annotation-in/status-out pattern as the token.
-	r.applyBootNonceAnnotation(logger, physicalHost)
-
-	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
-	// HTTP handler stored the validated InspectionReport on a ConfigMap and
-	// pointed at it via this annotation. We persist the report to Status, mark
-	// HostInspectedCondition, transition state to Deploying (D-015), then delete
-	// the ConfigMap and clear the annotation so we don't act on it twice.
-	r.applyInspectionResultAnnotation(ctx, logger, physicalHost)
-
-	// The provisioned-request (D-015) and provision-failed-request (v4.1)
-	// annotations were handled at the top of this function, ahead of the BMC.
+	r.applyRunAnnotations(ctx, logger, physicalHost)
 
 	// Determine state based on ConsumerRef
 	if physicalHost.Spec.ConsumerRef != nil {
@@ -457,7 +418,10 @@ func (r *PhysicalHostReconciler) transientRetryInterval() time.Duration {
 // A failed run's message is also the reason its machine fails with, and the
 // outage's message in its place would read to the machine as a wait.
 // Neither the inspector nor the installed OS needs the BMC, so such a host
-// keeps its state and only the condition reports the outage.
+// keeps its state and only the condition reports the outage. Its run goes on:
+// reconcileNormal acts on the run's annotations before it calls this
+// (applyRunAnnotations), so the state weighed here is the one they produced,
+// and a host its machine has just asked to inspect is kept Inspecting.
 func (r *PhysicalHostReconciler) retryTransientRedfishFailure(logger logr.Logger, physicalHost *infrav1.PhysicalHost, err error) ctrl.Result {
 	retry := r.transientRetryInterval()
 	msg := fmt.Sprintf("BMC unreachable (%s); retrying every %s", internalredfish.DescribeTransientConnectionError(err), retry)
@@ -525,6 +489,74 @@ func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 	return physicalHost.Status.InspectionPhase == infrav1.InspectionPhaseComplete ||
 		conditions.IsTrue(physicalHost, infrav1.HostInspectedCondition) ||
 		physicalHost.Annotations[InspectionResultAnnotation] != ""
+}
+
+// applyRunAnnotations acts on the annotations through which the Beskar7Machine
+// controller and the inspection handler drive a provisioning run: the
+// inspection requests, the bootstrap URL, bearer token and boot nonce, and the
+// inspection report. The inspector's /provision-failed and /provisioned reports
+// are applied at the top of reconcileNormal instead.
+//
+// reconcileNormal calls it once the BMC has answered, and also when the BMC
+// cannot be reached at the network level, before retryTransientRedfishFailure.
+// Nothing here needs the BMC, and a claimed host keeps its provisioning state
+// through such an outage, so its run goes on. Left for the BMC, the host read
+// no inspection report, so a machine whose inspection timeout ran out
+// meanwhile failed with InspectionTimedOut on a host that went on to deploy; a
+// waiting inspect-complete left the machine Inspecting until a
+// MachineHealthCheck replaced it; and an inspector the machine had just powered
+// on could not fetch /boot, its nonce not yet in status.
+//
+// It is not called when the connection fails in a way that needs a fix. That
+// failure writes its own Error over the host's state in the same pass
+// (setConnectionError), so a request applied then would go with the state it
+// produced, and the host would come back InUse once the connection worked,
+// where its machine boots the inspector again. Left in place, the requests are
+// applied in the pass that connects, ahead of the claimed-host branch, which
+// keeps the state they produce.
+func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	// Drop anything left over from a previous provisioning run before the
+	// handlers below, so a host that is claimed again starts clean.
+	//
+	// Deliberately BEFORE the handlers, not after: they legitimately write
+	// inspection state onto an unclaimed host (the Beskar7Machine controller
+	// signals through annotations, and consumption is not gated on ConsumerRef).
+	// Clearing afterwards would erase what they just wrote.
+	if physicalHost.Spec.ConsumerRef == nil {
+		r.clearProvisioningRunState(logger, physicalHost)
+	}
+
+	// Act on inspection-request annotation set by Beskar7Machine controller.
+	// The Beskar7Machine controller writes only to PhysicalHost.Spec.Annotations (a spec
+	// write via MergeFrom patch); we read it here and drive the Status transition ourselves,
+	// keeping status ownership inside this controller.
+	r.applyInspectionRequest(ctx, logger, physicalHost)
+
+	// Consume the bootstrap-url annotation set by the Beskar7Machine controller and
+	// persist the value to Status.Bootstrap.URL. This keeps status ownership inside
+	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
+	r.applyBootstrapURLAnnotation(logger, physicalHost)
+
+	// Consume the bootstrap-token annotation (PR-5.2 / D-004): the Beskar7Machine
+	// controller signals the freshly minted token's hash + lifetime here; we
+	// persist them to Status.Bootstrap so the inspection HTTPS handler can verify
+	// bearer tokens against the stored hash.
+	r.applyBootstrapTokenAnnotation(logger, physicalHost)
+
+	// Consume the boot-nonce annotation (D-009): the Beskar7Machine controller
+	// signals the hash + expiry of the freshly minted per-host boot nonce; we
+	// persist them to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}.
+	// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
+	// touched here — it is the /boot handler's (D-010). Same idempotent
+	// annotation-in/status-out pattern as the token.
+	r.applyBootNonceAnnotation(logger, physicalHost)
+
+	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
+	// HTTP handler stored the validated InspectionReport on a ConfigMap and
+	// pointed at it via this annotation. We persist the report to Status, mark
+	// HostInspectedCondition and InspectionPhase Complete, then delete the
+	// ConfigMap and clear the annotation so we don't act on it twice.
+	r.applyInspectionResultAnnotation(ctx, logger, physicalHost)
 }
 
 // setConnectionError puts the host in Error for a BMC it cannot reach or use.
@@ -872,8 +904,9 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 //   - Claimed, still Inspecting, and in possession of this run's inspection report
 //     (inspectionReportReceived): kept, and applied once the host is Deploying. The
 //     inspector deploys as soon as /bootstrap answers (contract §9.2) and does not wait
-//     for the host, which goes to Deploying only when it applies the Beskar7Machine's
-//     inspect-complete, after reaching its BMC: during an outage the whole deployment
+//     for the host, which goes to Deploying only once the Beskar7Machine has validated
+//     the inspection report and sent inspect-complete: when the controllers were away
+//     while a callback-only instance kept answering the inspector, the whole deployment
 //     can finish first. A machine that rejects the hardware (HardwareRequirementsNotMet)
 //     never sends inspect-complete, so a kept report is never applied over that verdict.
 //   - Anything else is cleared without a transition: a released host (the claim the

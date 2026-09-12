@@ -105,10 +105,11 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //   - Deploying: the expected case.
 //   - Ready: a duplicate, which the reconciler clears.
 //   - Claimed and still Inspecting. The inspector deploys as soon as /bootstrap answers
-//     (contract §9.2) and does not wait for the host, which goes to Deploying only when
-//     it has applied the Beskar7Machine's inspect-complete, after reaching its BMC:
-//     during a BMC outage the whole deployment can finish first. The reconciler keeps
-//     the report until the host is Deploying. Any inspection phase is accepted: this
+//     (contract §9.2) and does not wait for the host, which goes to Deploying only once
+//     the Beskar7Machine has validated the inspection report: when the controllers were
+//     away while a callback-only instance kept answering the inspector, the whole
+//     deployment can finish first. The reconciler keeps the report until the host is
+//     Deploying. Any inspection phase is accepted: this
 //     read may come from a cache that predates the inspection report, while the
 //     reconciler reads the annotation from a copy of the host at least as new as the
 //     annotation and tells a report that followed this run's inspection report from one

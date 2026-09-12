@@ -47,7 +47,7 @@ Inspecting → unchanged, then Error             (claimed; /provision-failed bef
 Error about the BMC → Error of a failed run    (claimed; /provision-failed after a BMC error overwrote Deploying)
 Inspecting → Error                             (inspection timeout, default 10 min)
 any → Error                                    (BMC unreachable, TLS conflict, missing credentials)
-Inspecting/Deploying/Ready → unchanged         (claimed, BMC unreachable: only RedfishConnectionReady reports it)
+Inspecting/Deploying/Ready → unchanged         (claimed, BMC unreachable: only RedfishConnectionReady reports it, and the run goes on)
 Error → Available, or InUse if claimed         (operator fixes spec, BMC recovers)
 Error of a failed run (claimed) → unchanged    (the two run failures above: kept until release, whatever the BMC does)
 any claimed state → Available                  (Beskar7Machine deletion clears consumerRef)

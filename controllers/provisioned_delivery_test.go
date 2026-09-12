@@ -50,12 +50,15 @@ import (
 //     The inspector does not wait for the host (contract §9.2): it deploys as
 //     soon as /bootstrap answers and posts /provisioned once the image is on
 //     the disk. The host goes to Deploying only when it applies the machine's
-//     inspect-complete, which it does only after reaching its BMC, so a BMC that
-//     stops answering at the wrong moment leaves the host Inspecting until the
-//     deployment is over. The report was dropped, the host went to Deploying
-//     once the BMC answered, and its machine waited out --deployment-timeout and
-//     failed with DeploymentTimedOut; a MachineHealthCheck then replaced a host
-//     that had deployed fine.
+//     inspect-complete, which it then did only after reaching its BMC, so a BMC
+//     that stopped answering at the wrong moment left the host Inspecting until
+//     the deployment was over. The report was dropped, the host went to
+//     Deploying once the BMC answered, and its machine waited out
+//     --deployment-timeout and failed with DeploymentTimedOut; a
+//     MachineHealthCheck then replaced a host that had deployed fine. The host
+//     now applies inspect-complete during an outage too
+//     (run_during_bmc_outage_test.go); a report can still come in before the
+//     machine has validated the inspection report.
 //   - The host applied the report only after a successful BMC connection, so a
 //     Deploying host kept it through an outage, long enough for the deployment
 //     timeout to fail the machine first.
@@ -131,42 +134,6 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 		return host
 	}
 
-	It("keeps a report that arrives while the host waits for its BMC to apply inspect-complete, and provisions the machine once it has", func() {
-		key := provisioningHost(ns.Name, "held-host", "held-machine", infrav1.StateInspecting, nil)
-		postInspectionReport(key)
-		inspected := settlePhysicalHost(hostReconciler, key)
-		Expect(inspected.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete))
-
-		By("the machine asking for the deployment to start, and the BMC going away before the host applies it")
-		validateOnMachine(inspected, nil)
-		gate.setReachable(false)
-		waiting := reconcileInOutage(key)
-		Expect(waiting.Status.State).To(Equal(infrav1.StateInspecting), "the host keeps its state through an outage")
-		Expect(waiting.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"))
-
-		By("the inspector finishing its deployment while the host is still Inspecting")
-		reportProvisioned(key)
-		Expect(getPhysicalHost(key).Annotations).To(HaveKeyWithValue(ProvisionedRequestAnnotation, "provisioned"),
-			"the handler takes the report: the inspector does not wait for the host's state")
-		held := reconcileInOutage(key)
-		Expect(held.Status.State).To(Equal(infrav1.StateInspecting))
-		Expect(held.Annotations).To(HaveKeyWithValue(ProvisionedRequestAnnotation, "provisioned"),
-			"kept until inspect-complete has moved the host to Deploying")
-		Expect(isTerminallyFailed(validateOnMachine(held, nil))).To(BeFalse(), "the machine waits with its host")
-
-		By("letting the BMC answer again")
-		gate.setReachable(true)
-		provisioned := settlePhysicalHost(hostReconciler, key)
-		Expect(provisioned.Status.State).To(Equal(infrav1.StateReady),
-			"not Deploying, where the machine would wait out --deployment-timeout for a deployment that is over")
-		Expect(provisioned.Status.Ready).To(BeTrue())
-		Expect(provisioned.Status.DeployingTimestamp).NotTo(BeNil())
-		Expect(provisioned.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation))
-		Expect(provisioned.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
-
-		expectProvisioned(provisionOnMachine(provisioned, gate.factory()), provisioned)
-	})
-
 	It("applies a report to a Deploying host without waiting for its BMC", func() {
 		key := provisioningHost(ns.Name, "deploying-host", "deploying-machine", infrav1.StateDeploying, nil)
 		gate.setReachable(false)
@@ -192,11 +159,13 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 		Expect(conditions.IsTrue(recovered, infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
 	})
 
-	// A callback-only instance keeps answering the inspector while the
-	// controllers are away (a restart, a leader election), so the report can
-	// also come in before the machine has looked at the inspection report.
+	// The inspector does not wait for the host, and a callback-only instance
+	// keeps answering it while the controllers are away (a restart, a leader
+	// election), so the report can come in before the machine has looked at the
+	// inspection report, with the host's BMC answering or not.
 	DescribeTable("a report that arrives before the machine has validated the inspection report",
-		func(readFirst bool) {
+		func(readFirst, bmcDown bool) {
+			gate.setReachable(!bmcDown)
 			key := provisioningHost(ns.Name, "early-host", "early-machine", infrav1.StateInspecting, nil)
 			postInspectionReport(key)
 			if readFirst {
@@ -219,10 +188,16 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 			Expect(provisioned.Status.DeployingTimestamp).NotTo(BeNil())
 			Expect(provisioned.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation))
 			Expect(provisioned.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+			if bmcDown {
+				Expect(conditions.GetReason(provisioned, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.BMCUnreachableReason),
+					"the whole run went through without the BMC")
+			}
 			expectProvisioned(provisionOnMachine(provisioned, gate.factory()), provisioned)
 		},
-		Entry("when it arrives before the host has read the inspection report", false),
-		Entry("when it arrives after the host has read the inspection report", true),
+		Entry("when it arrives before the host has read the inspection report", false, false),
+		Entry("when it arrives after the host has read the inspection report", true, false),
+		Entry("when it arrives before the host has read the inspection report, while its BMC is down", false, true),
+		Entry("when it arrives after the host has read the inspection report, while its BMC is down", true, true),
 	)
 
 	// The inspector posts /provision-failed after any non-202 from
@@ -237,9 +212,8 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 			}
 			key := provisioningHost(ns.Name, "both-reports-host", "both-reports-machine", state, nil)
 			if inspecting {
-				postInspectionReport(key)
-				validateOnMachine(settlePhysicalHost(hostReconciler, key), nil)
 				gate.setReachable(false)
+				postInspectionReport(key)
 				reconcileInOutage(key)
 			}
 
@@ -251,7 +225,9 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 				Expect(held.Status.State).To(Equal(infrav1.StateInspecting))
 				Expect(held.Annotations).To(HaveKey(ProvisionedRequestAnnotation))
 				Expect(held.Annotations).To(HaveKey(ProvisionFailedRequestAnnotation))
-				gate.setReachable(true)
+
+				By("the machine validating the inspection report, so the host starts deploying")
+				validateOnMachine(held, nil)
 			}
 
 			failed := settlePhysicalHost(hostReconciler, key)
@@ -266,7 +242,7 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 			Expect(conditions.GetReason(machine, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.DeploymentFailedReason))
 		},
 		Entry("on a Deploying host", false),
-		Entry("on a host still Inspecting while its BMC is down", true),
+		Entry("on a host still Inspecting, which keeps both until it is Deploying, while its BMC is down", true),
 	)
 
 	// The machine asks for inspect-complete whenever it reads its host as
@@ -397,11 +373,14 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 })
 
 // The specs above call the reconcilers by hand. This one runs both under a
-// manager, where the host's recovery reaches the machine only through the
-// PhysicalHost watch, and the machine reads every version the host publishes on
-// its way from Inspecting to Ready.
-var _ = Describe("A deployment reported during a BMC outage, with both controllers under a running manager", func() {
-	It("provisions the machine once the BMC answers, and it stays provisioned", func() {
+// manager, starting where a callback-only instance leaves a host while the
+// controllers are away: the inspector's inspection report and its /provisioned
+// report are both in, and the host's BMC is down when the controllers come
+// back. The host's progress reaches the machine only through the PhysicalHost
+// watch, and the machine reads every version the host publishes on its way from
+// Inspecting to Ready.
+var _ = Describe("A deployment reported while the controllers were away, with both under a running manager and the BMC down", func() {
+	It("provisions the machine without the BMC, and it stays provisioned", func() {
 		testNs := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "provisioned-race-mgr-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 		defer func() { Expect(k8sClient.Delete(ctx, testNs)).To(Succeed()) }()
@@ -452,21 +431,16 @@ var _ = Describe("A deployment reported during a BMC outage, with both controlle
 		Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
 		machineKey := client.ObjectKeyFromObject(b7m)
 
-		// The host has read its inspection report, and the machine has validated
-		// it and asked for the deployment to start: the BMC went away before the
-		// host applied that.
-		hostKey := provisioningHost(ns, "outage-deploy-host", b7m.Name, infrav1.StateInspecting,
-			map[string]string{InspectionRequestAnnotation: "inspect-complete"})
+		hostKey := provisioningHost(ns, "outage-deploy-host", b7m.Name, infrav1.StateInspecting, nil)
 		host := getPhysicalHost(hostKey)
-		host.Status.InspectionPhase = infrav1.InspectionPhaseComplete
-		host.Status.InspectionReport = buildInspectionReport(InspectionReportRequest{
-			Manufacturer: "Acme", Model: "Fast-1000", CPUs: []CPUData{{ID: "cpu0", Cores: 8}},
-		})
 		host.Status.Bootstrap = &infrav1.BootstrapStatus{
 			URL: bootstrapURLBase + "/api/v1/bootstrap/" + ns + "/" + hostKey.Name,
 		}
-		setTrue(host, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
 		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+
+		By("the inspector posting its inspection report and, once deployed, /provisioned, with no controller running")
+		postInspectionReport(hostKey)
+		reportProvisioned(hostKey)
 
 		gate := &bmcGate{reachable: false}
 		skipNameValidation := true
@@ -504,30 +478,7 @@ var _ = Describe("A deployment reported during a BMC outage, with both controlle
 		}()
 		Expect(mgr.GetCache().WaitForCacheSync(mgrCtx)).To(BeTrue())
 
-		By("waiting for the host to report its BMC unreachable")
-		Eventually(func(g Gomega) {
-			h := &infrav1.PhysicalHost{}
-			g.Expect(k8sClient.Get(ctx, hostKey, h)).To(Succeed())
-			g.Expect(conditions.GetReason(h, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.BMCUnreachableReason))
-			g.Expect(h.Status.State).To(Equal(infrav1.StateInspecting))
-		}, 30*time.Second, 200*time.Millisecond).Should(Succeed())
-
-		By("the inspector posting /provisioned while the host is still Inspecting")
-		reportProvisioned(hostKey)
-
-		By("checking the host keeps the report through the outage, and the machine waits")
-		Consistently(func(g Gomega) {
-			h := &infrav1.PhysicalHost{}
-			g.Expect(k8sClient.Get(ctx, hostKey, h)).To(Succeed())
-			g.Expect(h.Status.State).To(Equal(infrav1.StateInspecting))
-			g.Expect(h.Annotations).To(HaveKeyWithValue(ProvisionedRequestAnnotation, "provisioned"))
-			got := &infrav1.Beskar7Machine{}
-			g.Expect(k8sClient.Get(ctx, machineKey, got)).To(Succeed())
-			g.Expect(isTerminallyFailed(got)).To(BeFalse())
-		}, 3*time.Second, 200*time.Millisecond).Should(Succeed())
-
-		By("letting the BMC answer again, and waiting for the machine to be provisioned")
-		gate.setReachable(true)
+		By("waiting for the machine to be provisioned while the BMC is still down")
 		Eventually(func(g Gomega) {
 			got := &infrav1.Beskar7Machine{}
 			g.Expect(k8sClient.Get(ctx, machineKey, got)).To(Succeed())
@@ -536,6 +487,7 @@ var _ = Describe("A deployment reported during a BMC outage, with both controlle
 			h := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx, hostKey, h)).To(Succeed())
 			g.Expect(h.Status.State).To(Equal(infrav1.StateReady))
+			g.Expect(conditions.GetReason(h, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.BMCUnreachableReason))
 			g.Expect(h.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation))
 			// Including an inspect-complete the machine sent again from a copy of
 			// the host that was still Inspecting.
