@@ -17,6 +17,8 @@ limitations under the License.
 // Tests for the D-015 contract-v4 provisioning-complete flow:
 //   - inspect-complete → StateDeploying (not StateReady)
 //   - provisioned callback → StateReady → Beskar7Machine Ready + ProviderID
+//   - provisioned callback on a claimed host still Inspecting → annotation, which the
+//     reconciler keeps until the host is Deploying (provisioned_delivery_test.go)
 //   - ClearBootSourceOverride called on first provisioning
 //   - deploy-timeout: terminal failure when host stuck in Deploying
 
@@ -208,12 +210,24 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 			ph.Annotations = map[string]string{}
 		}
 		ph.Annotations[ProvisionedRequestAnnotation] = "provisioned"
+		// Claimed: a released host drops the report, since the claim it was about
+		// has ended.
+		ph.Spec.ConsumerRef = &corev1.ObjectReference{
+			Kind: "Beskar7Machine", Name: "b7m-deploying", Namespace: testNs.Name,
+			APIVersion: infrav1.GroupVersion.String(),
+		}
 		phR.applyProvisionedRequestAnnotation(phR.Log, ph)
 
 		Expect(ph.Status.State).To(Equal(infrav1.StateReady),
 			"provisioned signal must drive Deploying→Ready")
+		Expect(ph.Status.Ready).To(BeTrue())
+		Expect(ph.Annotations).To(HaveKey(ProvisionedRequestAnnotation),
+			"the annotation stays until a pass finds the status write carrying Ready has landed")
+
+		phR.applyProvisionedRequestAnnotation(phR.Log, ph)
+		Expect(ph.Status.State).To(Equal(infrav1.StateReady))
 		Expect(ph.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation),
-			"annotation must be cleared after consumption")
+			"annotation must be cleared once status shows it")
 	})
 
 	It("handleReadyHost: sets ProviderID, Ready=true, Initialization.Provisioned=true, calls ClearBootSourceOverride", func() {
@@ -486,6 +500,67 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
+
+	// postProvisioned makes the inspector's POST with the host's bearer token.
+	postProvisioned := func() {
+		mux, _ := buildProvisionedMux()
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		req, err := http.NewRequest(http.MethodPost,
+			srv.URL+"/api/v1/provisioned/"+testNs.Name+"/"+ph.Name,
+			bytes.NewBufferString(`{"status":"provisioned"}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Authorization", "Bearer "+tokenPlain)
+
+		resp, err := http.DefaultClient.Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { _ = resp.Body.Close() }()
+		Expect(resp.StatusCode).To(Equal(http.StatusAccepted), "the inspector gets 202 whatever the host's state")
+	}
+
+	// moveHost gives the host a consumer (or none) and a state.
+	moveHost := func(consumer, state string) types.NamespacedName {
+		key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
+		Expect(k8sClient.Get(ctx, key, ph)).To(Succeed())
+		if consumer != "" {
+			ph.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind: "Beskar7Machine", Name: consumer, Namespace: testNs.Name,
+				APIVersion: infrav1.GroupVersion.String(),
+			}
+			Expect(k8sClient.Update(ctx, ph)).To(Succeed())
+		}
+		ph.Status.State = state
+		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
+		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+		return key
+	}
+
+	It("sets the annotation on a claimed host that is still Inspecting", func() {
+		// The inspector deploys without waiting for the host, which reaches
+		// Deploying only once it has applied the machine's inspect-complete.
+		key := moveHost("b7m-provisioned-http", infrav1.StateInspecting)
+		postProvisioned()
+
+		updated := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
+		Expect(updated.Annotations).To(HaveKeyWithValue(ProvisionedRequestAnnotation, "provisioned"))
+		Expect(updated.Status.State).To(Equal(infrav1.StateInspecting), "the handler never writes status")
+	})
+
+	DescribeTable("does NOT set the annotation on a host the report cannot be about",
+		func(consumer, state string) {
+			key := moveHost(consumer, state)
+			postProvisioned()
+
+			updated := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
+			Expect(updated.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation))
+		},
+		Entry("an unclaimed host that is Inspecting", "", infrav1.StateInspecting),
+		Entry("a claimed host that is InUse", "b7m-provisioned-http", infrav1.StateInUse),
+		Entry("a claimed host in Error", "b7m-provisioned-http", infrav1.StateError),
+	)
 
 	It("accepts an oversized body and still returns 202 for valid bearer", func() {
 		mux, _ := buildProvisionedMux()

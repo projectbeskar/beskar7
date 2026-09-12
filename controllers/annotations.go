@@ -84,7 +84,10 @@ const BootNonceAnnotation = "infrastructure.cluster.x-k8s.io/boot-nonce"
 // ProvisionedRequestAnnotation is set by the provisioned HTTP handler on a PhysicalHost
 // to signal that the inspector has completed OS deployment and the host is ready.
 // The PhysicalHost controller reads this annotation, transitions State from Deploying
-// to Ready, and clears the annotation so it is not acted on twice (D-015).
+// to Ready, and clears the annotation once status shows Ready, so it is not acted on
+// twice (D-015). On a claimed host that is still Inspecting it leaves the annotation in
+// place until the host is Deploying, and clears it without a transition if the host goes
+// anywhere else (applyProvisionedRequestAnnotation).
 //
 // Value: "provisioned" — a fixed string, no data payload.
 // The authenticated POST itself is the signal; the body is advisory only (D-015).

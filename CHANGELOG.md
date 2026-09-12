@@ -208,6 +208,30 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   advertised nonce's consume afresh, and the `Beskar7Machine` does not reuse a nonce such a record
   might describe, so hosts provisioned before the upgrade need nothing, and a callback-only instance
   still on the previous release keeps the old behaviour until it is upgraded.
+- **The inspector's `/provisioned` report is no longer lost when it races the host's state, and a
+  machine whose host deployed fine no longer fails with `DeploymentTimedOut` after a BMC outage.**
+  The inspector deploys as soon as `/bootstrap` answers and does not wait for the host, which goes
+  to `Deploying` only when it applies the `Beskar7Machine`'s `inspect-complete` — something the
+  `PhysicalHost` reconciler did only after a successful BMC connection. A BMC outage that began
+  after the machine had validated the inspection report therefore kept the host `Inspecting` while
+  the deployment finished, and the handler, which took the report only from a `Deploying` or
+  `Ready` host, dropped it. Once the BMC answered, the host went to `Deploying` for a deployment
+  that was already over, the machine waited out `--deployment-timeout` and failed with
+  `DeploymentTimedOut`, and a `MachineHealthCheck` replaced a host that had deployed fine. A
+  report that reached a `Deploying` host during an outage waited for the BMC, long enough for the
+  same timeout to fail the machine first. The host now applies the report before it tries the BMC,
+  and a claimed host that is still `Inspecting` keeps it and applies it once `inspect-complete` has
+  moved the host to `Deploying`. As with `/provision-failed`, the host drops the report without a
+  transition if it goes anywhere else (`HardwareRequirementsNotMet` stands, the host is released)
+  or if the report arrived before the run's inspection report. A `/provision-failed` report waiting
+  on the same host is applied instead: the inspector sends it after a `/provisioned` it saw fail,
+  having removed the join config from the disk. The annotation is now cleared on the pass after the
+  host is `Ready` rather than in the same one, because the reconciler's patch writes metadata before
+  status, and a status write that failed lost the report. A claimed `Ready` host now ignores an
+  inspection request: the machine can send `inspect-complete` a second time from a stale read, and
+  with a kept report applied one pass after the host goes to `Deploying`, that request could reach
+  the host once it was `Ready` and take it back to `Deploying`. The inspector sees `202` exactly as
+  before.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
