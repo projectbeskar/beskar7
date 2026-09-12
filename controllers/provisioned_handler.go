@@ -49,7 +49,9 @@ const (
 // Signal: the handler patches ProvisionedRequestAnnotation="provisioned" onto the
 // PhysicalHost metadata. The PhysicalHostReconciler reads this on its next pass,
 // transitions State from Deploying to Ready, and clears the annotation (D-015 / D-005
-// pattern). This handler does NOT write PhysicalHost.Status directly.
+// pattern) — at once for a host that is Deploying, and only once it is Deploying for a
+// host that is still Inspecting (see signalProvisioned). This handler does NOT write
+// PhysicalHost.Status directly.
 type ProvisionedHandler struct {
 	Client client.Client
 	Log    logr.Logger
@@ -95,8 +97,24 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // signalProvisioned fetches the PhysicalHost and patches the ProvisionedRequestAnnotation
-// so the PhysicalHostReconciler can drive the Deploying→Ready transition. It does NOT
-// write PhysicalHost.Status (D-005 / BUG-1 invariant).
+// for the PhysicalHostReconciler, which decides what becomes of the report
+// (applyProvisionedRequestAnnotation). It does NOT write PhysicalHost.Status (D-005 /
+// BUG-1 invariant).
+//
+// The annotation is set on a host the report can be about:
+//   - Deploying: the expected case.
+//   - Ready: a duplicate, which the reconciler clears.
+//   - Claimed and still Inspecting. The inspector deploys as soon as /bootstrap answers
+//     (contract §9.2) and does not wait for the host, which goes to Deploying only when
+//     it has applied the Beskar7Machine's inspect-complete, after reaching its BMC:
+//     during a BMC outage the whole deployment can finish first. The reconciler keeps
+//     the report until the host is Deploying. Any inspection phase is accepted: this
+//     read may come from a cache that predates the inspection report, while the
+//     reconciler reads the annotation from a copy of the host at least as new as the
+//     annotation and tells a report that followed this run's inspection report from one
+//     that did not.
+//
+// Any other state is logged and ignored; the inspector still gets its 202.
 func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Logger, namespace, hostName string) error {
 	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
@@ -107,12 +125,15 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 		return fmt.Errorf("failed to get PhysicalHost: %w", err)
 	}
 
-	// Guard: only signal if the host is in Deploying. If it is already Ready
-	// (idempotent duplicate POST) or in an unexpected state, log and return 202
-	// without patching — the reconciler will handle it.
-	if ph.Status.State != infrav1.StateDeploying && ph.Status.State != infrav1.StateReady {
-		log.Info("Provisioned callback received but host is not in Deploying state; ignoring",
-			"host", hostName, "state", ph.Status.State)
+	switch state := ph.Status.State; {
+	case state == infrav1.StateDeploying, state == infrav1.StateReady:
+		// Expected path, or a duplicate of it.
+	case state == infrav1.StateInspecting && ph.Spec.ConsumerRef != nil:
+		log.Info("Provisioned callback on a host still Inspecting; the reconciler keeps it until the host is Deploying",
+			"host", hostName, "inspectionPhase", ph.Status.InspectionPhase)
+	default:
+		log.Info("Provisioned callback received but host is not deploying; ignoring",
+			"host", hostName, "state", state, "claimed", ph.Spec.ConsumerRef != nil)
 		return nil
 	}
 

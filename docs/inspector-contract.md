@@ -267,10 +267,30 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   response as a failure that **propagates as an error** (not silently continues to
   reboot); a `401`/`403` means the token expired during a long deploy and the
   controller must re-drive the host.
-- **Controller action**: patches `ProvisionedRequestAnnotation="provisioned"` onto
-  the `PhysicalHost` metadata. The `PhysicalHostReconciler` reads this, transitions
-  `State` from `StateDeploying` to `StateReady`, and clears the annotation. This
-  handler does NOT write `PhysicalHost.Status` directly (D-005 invariant).
+- **Controller action**: on a valid call, patches
+  `ProvisionedRequestAnnotation="provisioned"` onto the `PhysicalHost` metadata. The
+  `PhysicalHostReconciler` reads this on its next pass — before it contacts the
+  host's BMC, which the report does not need — transitions `State` from
+  `StateDeploying` to `StateReady`, and clears the annotation once status shows
+  `StateReady`. This handler does NOT write `PhysicalHost.Status` directly (D-005
+  invariant). The report is honoured on a host that is:
+  - `StateDeploying` (or already `StateReady`: a duplicate);
+  - claimed and still `StateInspecting` — the inspector does not wait for the host
+    (§9.2), and the host reaches `StateDeploying` only once the controller has
+    validated the inspection report and recorded that on the host, a step that waits
+    for the host's BMC: during a BMC outage the whole deployment can finish first. The
+    report is kept until the host reaches `StateDeploying` and applied then; it is
+    dropped if the host never gets there (the hardware fails
+    `HardwareRequirementsNotMet`, the host is released), or if it arrived before the
+    run's inspection report.
+
+  A `/provision-failed` report (§4.5) waiting on the same host is applied instead:
+  after a non-`202` here the inspector removes the join config and reports the
+  failure (§9.1 step 8), and the controller may have taken this report all the same.
+  A `/provision-failed` that arrives once the host has applied this report is not
+  honoured. Any other host returns 202 but receives no state transition (no-op
+  guard). The wire behaviour is unchanged from v4: the inspector sees `202` either
+  way.
 
 The inspector MUST call this endpoint after zeroing the in-memory user-data buffer
 and before `reboot(2)`. After the reboot the inspector is gone; a silent reboot
