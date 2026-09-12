@@ -18,6 +18,8 @@ package controllers
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,11 +33,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -263,13 +267,15 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(providerIDIdx).To(BeNumerically("<", caIdx),
 			"beskar7.provider-id must precede beskar7.ca")
 
-		By("asserting BootNonceConsumedAt is set")
+		By("asserting BootNonceConsumedAt is set, for this nonce")
 		Eventually(func(g Gomega) {
 			got := &infrav1.PhysicalHost{}
 			g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
 			g.Expect(got.Status.Bootstrap).NotTo(BeNil())
 			g.Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
 				"BootNonceConsumedAt must be set after first /boot fetch")
+			g.Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(ph.Status.Bootstrap.BootNonceHash),
+				"the consume record must name the nonce it consumed")
 		}, Timeout, Interval).Should(Succeed())
 	})
 
@@ -369,11 +375,12 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	It("already-consumed: identical render, no second patch, ConsumedAt value unchanged", func() {
 		ph, b7m, _, nonce := bootTestFixture(testNs.Name)
 
-		By("pre-consuming the nonce")
+		By("pre-consuming the nonce: a record naming this nonce's hash")
 		consumedAt := metav1.NewTime(time.Now().Add(-1 * time.Second))
 		freshPH := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
 		freshPH.Status.Bootstrap.BootNonceConsumedAt = &consumedAt
+		freshPH.Status.Bootstrap.BootNonceConsumedHash = freshPH.Status.Bootstrap.BootNonceHash
 		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
 
 		By("issuing a /boot fetch against an already-consumed nonce")
@@ -393,6 +400,147 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(got.Status.Bootstrap.BootNonceConsumedAt.Truncate(time.Second)).To(
 			BeTemporally("==", consumedAt.Truncate(time.Second)),
 			"ConsumedAt must not be advanced by a second /boot fetch")
+		Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(got.Status.Bootstrap.BootNonceHash))
+	})
+
+	// ── 3b. A consume record that does not name this nonce ─────────────────
+	//
+	// Status.Bootstrap outlives a claim, so a re-claimed host's fresh nonce is
+	// promoted next to the consume record an earlier nonce left. That record must
+	// not make the fresh nonce look consumed, or its first fetch would record
+	// nothing (boot_nonce_cycles_test.go runs the whole re-claim). A record from
+	// a handler that did not yet name the hash is not attributed to this nonce
+	// either; the Beskar7Machine reads that one the safe way for reuse.
+
+	for _, tc := range []struct {
+		name      string
+		namesHash bool
+	}{
+		{name: "an earlier nonce's consume record", namesHash: true},
+		{name: "a consume record that names no nonce", namesHash: false},
+	} {
+		It("fresh nonce next to "+tc.name+" → 200, and the fetch records this nonce's consume", func() {
+			ph, _, _, nonce := bootTestFixture(testNs.Name)
+			key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
+
+			By("leaving the record in Status, as a re-claimed host carries it")
+			earlier := metav1.NewTime(time.Now().Add(-time.Hour))
+			freshPH := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, key, freshPH)).To(Succeed())
+			freshPH.Status.Bootstrap.BootNonceConsumedAt = &earlier
+			if tc.namesHash {
+				_, earlierHash, err := auth.MintToken()
+				Expect(err).NotTo(HaveOccurred())
+				freshPH.Status.Bootstrap.BootNonceConsumedHash = earlierHash
+			}
+			Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
+
+			resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+			body := readBody(resp)
+			Expect(resp.StatusCode).To(Equal(http.StatusOK), body)
+
+			got := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+			Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(got.Status.Bootstrap.BootNonceHash),
+				"the record must name the nonce this fetch consumed")
+			Expect(got.Status.Bootstrap.BootNonceConsumedAt.Time).To(BeTemporally(">", earlier.Time),
+				"the record must be this fetch's, not the earlier one")
+		})
+	}
+
+	// ── 3c. The nonce is superseded while the consume is in flight ─────────
+	//
+	// The consume patch conflicts whenever the host changed after the handler
+	// read it, and a newer nonce being promoted is one such change. The host
+	// read back then carries that nonce's hash, and maybe its consume record,
+	// so the handler must verify its own nonce again before it takes a record
+	// as a lost race: the script is only ever served for the advertised nonce.
+	It("conflict re-get: nonce superseded by a newer, consumed one before the consume lands → opaque 404", func() {
+		noncePlaintext, nonceHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		_, newerHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		_, tokenHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
+		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
+
+		ph := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "h-superseded", Namespace: "n"},
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{Address: "https://192.168.1.1", CredentialsSecretRef: "x"},
+				ConsumerRef: &corev1.ObjectReference{
+					Kind: "Beskar7Machine", APIVersion: InfrastructureAPIVersion, Name: "b7m-superseded", Namespace: "n",
+				},
+			},
+			Status: infrav1.PhysicalHostStatus{
+				Bootstrap: &infrav1.BootstrapStatus{
+					TokenHash:          tokenHash,
+					ExpiresAt:          &tokenExpiresAt,
+					BootNonceHash:      nonceHash,
+					BootNonceExpiresAt: &nonceExpiresAt,
+				},
+			},
+		}
+		b7m := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "b7m-superseded", Namespace: "n"},
+			Spec: infrav1.Beskar7MachineSpec{
+				InspectionImageURL: "https://boot.example.com/inspect",
+				TargetImageURL:     "https://boot.example.com/kairos.raw",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+		tokenSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName(ph.Name), Namespace: "n"},
+			Data:       map[string][]byte{bootstrapTokenSecretKey: []byte("superseded-token")},
+		}
+
+		// The first consume patch finds the newer nonce promoted and consumed.
+		// Setup errors are kept rather than returned: the handler would turn
+		// them into the very 404 this spec expects.
+		var superseded bool
+		var supersedeErr error
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(k8sClient.Scheme()).
+			WithObjects(b7m, tokenSecret).
+			WithStatusSubresource(ph).
+			WithObjects(ph).
+			WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, c client.Client, subResource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					if superseded {
+						return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
+					}
+					superseded = true
+					current := &infrav1.PhysicalHost{}
+					if supersedeErr = c.Get(ctx, client.ObjectKeyFromObject(obj), current); supersedeErr != nil {
+						return supersedeErr
+					}
+					consumedAt := metav1.Now()
+					current.Status.Bootstrap.BootNonceHash = newerHash
+					current.Status.Bootstrap.BootNonceConsumedAt = &consumedAt
+					current.Status.Bootstrap.BootNonceConsumedHash = newerHash
+					if supersedeErr = c.Status().Update(ctx, current); supersedeErr != nil {
+						return supersedeErr
+					}
+					return apierrors.NewConflict(infrav1.GroupVersion.WithResource("physicalhosts").GroupResource(),
+						obj.GetName(), errors.New("the object has been modified"))
+				},
+			}).
+			Build()
+
+		handler := &BootHandler{Client: fakeClient, Log: ctrl.Log.WithName("boot-superseded-test"), Config: bootTestConfig()}
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/boot/n/h-superseded/"+noncePlaintext, nil)
+		req.SetPathValue("namespace", "n")
+		req.SetPathValue("hostName", ph.Name)
+		req.SetPathValue("nonce", noncePlaintext)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		Expect(superseded).To(BeTrue(), "the handler must have tried to record the consume")
+		Expect(supersedeErr).NotTo(HaveOccurred())
+		Expect(w.Code).To(Equal(http.StatusNotFound),
+			"a nonce the host no longer advertises must not be served the script: %s", w.Body.String())
+		Expect(w.Body.String()).NotTo(ContainSubstring("superseded-token"))
 	})
 
 	// ── 4. Opaque failures ─────────────────────────────────────────────────

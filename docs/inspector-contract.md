@@ -156,15 +156,15 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 ### 4.1 `GET /api/v1/boot/{namespace}/{hostName}/{nonce}` — boot-param rendering
 
 - **Auth**: the `{nonce}` path segment, verified constant-time against
-  `Status.Bootstrap.BootNonceHash`, within TTL, and **not yet consumed**
-  (`Status.Bootstrap.BootNonceConsumedAt == nil`). NOT bearer-gated.
-- **On success**: marks the nonce consumed (single-use, see §7) and returns the
-  rendered iPXE script / kernel cmdline carrying the parameters in §5. A second
-  successful fetch within the window (e.g. a NIC retry) MUST return **identical**
-  content for the same host.
-- **Failure**: opaque response identical for "no such host", "wrong nonce",
-  "expired", and "already consumed" — no oracle. The nonce, the URL, and the
-  `{nonce}` path value MUST NOT be logged (the nonce hash MAY be).
+  `Status.Bootstrap.BootNonceHash`, and within TTL. NOT bearer-gated.
+- **On success**: marks the nonce consumed unless it already is (single-use, see
+  §7) and returns the rendered iPXE script / kernel cmdline carrying the
+  parameters in §5. A second successful fetch within the window (e.g. a NIC
+  retry) MUST return **identical** content for the same host.
+- **Failure**: opaque response identical for "no such host", "wrong nonce"
+  (including a nonce a newer mint has replaced), and "expired" — no oracle. The
+  nonce, the URL, and the `{nonce}` path value MUST NOT be logged (the nonce hash
+  MAY be).
 - **Rate limiting**: this route is ungated; it MUST be rate-limited per source IP
   (and SHOULD be per `{namespace}/{hostName}`).
 
@@ -411,14 +411,28 @@ evaluate correctly:
 ## 7. Single-use semantics (boot nonce)
 
 - The nonce is consumed on first successful `/boot` fetch by setting
-  `Status.Bootstrap.BootNonceConsumedAt`. The consume MUST be atomic
-  (optimistic-locked) so two concurrent fetches cannot both treat the nonce as
-  fresh. Note: the existing inspection/bootstrap annotation writes deliberately
-  drop optimistic locking (single unique writer); the consume is the opposite
-  situation — a Conflict is the desired outcome and MUST be enforced.
+  `Status.Bootstrap.BootNonceConsumedAt` together with
+  `Status.Bootstrap.BootNonceConsumedHash`, the hash of the nonce consumed. The
+  consume MUST be atomic (optimistic-locked) so two concurrent fetches cannot both
+  treat the nonce as fresh. Note: the existing inspection/bootstrap annotation
+  writes deliberately drop optimistic locking (single unique writer); the consume
+  is the opposite situation — a Conflict is the desired outcome and MUST be
+  enforced.
+- The consume record describes one nonce: the advertised nonce is consumed only
+  while `BootNonceConsumedHash` equals `BootNonceHash`. `Status.Bootstrap`
+  outlives a claim, so a re-claimed host's fresh nonce is promoted next to the
+  record of the nonce before it, and that record MUST NOT count for the fresh
+  nonce — otherwise `/boot` records nothing for it and the controller treats it
+  as spent before anything has fetched it. Nothing clears the record (a
+  reconciler clearing it without an optimistic lock could erase a consume
+  `/boot` had already recorded); the fresh nonce's first fetch replaces it. A
+  record with no `BootNonceConsumedHash`, written before the field existed, is
+  read the safe way by each side: `/boot` records the advertised nonce's consume
+  afresh, and the controller never reuses a nonce such a record might describe.
 - A double-fetch to the **same host** (race loser, or a legitimate retry) is
-  benign and MUST return identical content (§4.1). A second fetch for a
-  **different** host's nonce is impossible by construction (per-host nonce).
+  benign and MUST return identical content (§4.1), until the nonce expires or a
+  newer mint replaces it. A second fetch for a **different** host's nonce is
+  impossible by construction (per-host nonce).
 - Re-provision (reboot, inspection-timeout retry, delete-and-recreate) MUST mint
   a **fresh** nonce (and fresh bearer token) — there is no "un-consume" path.
 - If the consume is routed through the D-005 annotation→reconciler handoff rather

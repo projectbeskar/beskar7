@@ -549,9 +549,9 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 
 	// Mint a fresh boot nonce (D-009) unless the existing one is still valid,
 	// unconsumed and backed by the Secret. The nonce has a shorter lifetime
-	// (10 min) than the bearer token (60 min) and is single-use: once
-	// BootNonceConsumedAt is set by the /boot handler (D-010) it is never
-	// reused — we always mint fresh on the next triggerInspection. The Secret
+	// (10 min) than the bearer token (60 min) and is single-use: once the /boot
+	// handler has recorded its consume (D-010) it is never reused — we always
+	// mint fresh on the next triggerInspection. The Secret
 	// cross-check matters here as much as for the token: the operator's boot
 	// service reads the nonce out of the Secret (docs/ipxe-setup.md), and a
 	// nonce that does not hash to Status.BootNonceHash fails every /boot
@@ -729,8 +729,13 @@ func (r *Beskar7MachineReconciler) bootstrapTokenReusable(
 //   - BootNonceHash is non-empty (a nonce was minted and the PhysicalHost
 //     reconciler has promoted the BootNonceAnnotation into Status), AND
 //   - BootNonceExpiresAt is set and strictly after now, AND
-//   - BootNonceConsumedAt is nil — a consumed nonce is never valid; force a
-//     fresh mint on the next triggerInspection call (re-provision path).
+//   - it has not been consumed — a consumed nonce is never valid; force a
+//     fresh mint on the next triggerInspection call (re-provision path). The
+//     consume record counts only when it names this nonce's hash
+//     (bootNonceConsumed): Status.Bootstrap outlives a claim, and the record of
+//     an earlier cycle's nonce must not spend the fresh one next to it. A record
+//     that names no hash might describe this nonce, so it counts as well
+//     (bootNonceConsumeUnattributed).
 //
 // Like unexpiredBootstrapTokenHash, a pending BootNonceAnnotation that has not
 // yet been promoted to Status also counts, and wins over Status: mint-race
@@ -742,27 +747,32 @@ func unexpiredBootNonceHash(physicalHost *infrav1.PhysicalHost, now time.Time) s
 	if physicalHost == nil {
 		return ""
 	}
+	bs := physicalHost.Status.Bootstrap
 	// (1) Pending-annotation check: a previous reconcile already minted and
 	// signalled via BootNonceAnnotation; the PhysicalHost controller has not
-	// yet promoted it to Status. The annotation does not carry ConsumedAt —
-	// once a nonce is consumed the handler writes Status directly (D-010) —
-	// but the /boot handler verifies against Status, so a nonce can only be
-	// consumed after promotion, by which time the annotation is gone and (2)
-	// below sees ConsumedAt.
+	// yet promoted it to Status. The annotation carries no consume record —
+	// the /boot handler writes that to Status directly (D-010), and it
+	// verifies against Status, so a nonce can only be consumed after
+	// promotion. Promotion does not remove the annotation, though: the
+	// PhysicalHost controller clears it one pass later, and a nonce fetched in
+	// between is consumed while its annotation is still pending. Once Status
+	// carries the annotation's hash, (2) below decides.
 	if raw, ok := physicalHost.Annotations[BootNonceAnnotation]; ok && raw != "" {
 		var v BootNonceAnnotationValue
 		if err := json.Unmarshal([]byte(raw), &v); err == nil &&
 			v.Hash != "" &&
-			now.Before(v.ExpiresAt.Time) {
+			now.Before(v.ExpiresAt.Time) &&
+			(bs == nil || bs.BootNonceHash != v.Hash) {
 			return v.Hash
 		}
 	}
 	// (2) Steady-state check from Status.Bootstrap.
-	if bs := physicalHost.Status.Bootstrap; bs != nil &&
+	if bs != nil &&
 		bs.BootNonceHash != "" &&
 		bs.BootNonceExpiresAt != nil &&
 		now.Before(bs.BootNonceExpiresAt.Time) &&
-		bs.BootNonceConsumedAt == nil {
+		!bootNonceConsumed(bs) &&
+		!bootNonceConsumeUnattributed(bs) {
 		return bs.BootNonceHash
 	}
 	return ""

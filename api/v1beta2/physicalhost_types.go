@@ -368,20 +368,31 @@ type BootstrapStatus struct {
 	// BootNonceExpiresAt is the time the current boot nonce stops being
 	// accepted. Defaults to mint time + 10 min (BootNonceLifetime, D-009).
 	// A shorter window than the bearer-token lifetime is intentional: the
-	// nonce is single-use and consumed at first boot, so a long window only
-	// widens the race window for a co-located attacker.
+	// nonce is consumed at first boot and never reused for another boot, but
+	// /boot serves a retry of it until it expires (contract §4.1), so a long
+	// window only widens the race window for a co-located attacker.
 	// +optional
 	BootNonceExpiresAt *metav1.Time `json:"bootNonceExpiresAt,omitempty"`
 
-	// BootNonceConsumedAt is the timestamp at which the boot nonce was
-	// single-use consumed by the GET /api/v1/boot handler (D-010). Nil
-	// until that handler fires. Once set, the nonce is permanently spent:
-	// no controller in this PR clears or re-uses it. A new nonce is minted
-	// on every re-provision cycle (triggerInspection detects ConsumedAt != nil
-	// and forces a fresh mint). Written exclusively by the /boot handler
-	// (D-010) — nothing in this PR writes this field.
+	// BootNonceConsumedAt is the timestamp at which the GET /api/v1/boot
+	// handler consumed the boot nonce named by BootNonceConsumedHash (D-010).
+	// Nil until that handler first fires. Neither field is ever cleared: a
+	// nonce minted afterwards has a different hash, so the record does not
+	// apply to it, and the handler records that nonce's consume over it on
+	// its first fetch. A consumed nonce is never reused: triggerInspection
+	// mints a fresh one. Written exclusively by the /boot handler (D-010).
 	// +optional
 	BootNonceConsumedAt *metav1.Time `json:"bootNonceConsumedAt,omitempty"`
+
+	// BootNonceConsumedHash is the BootNonceHash of the nonce that
+	// BootNonceConsumedAt records the consume of. The advertised nonce has
+	// been consumed only while the two hashes match. Written by the /boot
+	// handler in the same patch as BootNonceConsumedAt (D-010). Empty
+	// alongside a set BootNonceConsumedAt when a handler from before this
+	// field existed wrote the record; which nonce it describes is then
+	// unknown.
+	// +optional
+	BootNonceConsumedHash string `json:"bootNonceConsumedHash,omitempty"`
 }
 
 // Redfish conditions and reasons - simplified for power management only

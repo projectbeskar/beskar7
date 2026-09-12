@@ -117,21 +117,22 @@ type ipEntry struct {
 // BootHandler serves the per-host iPXE boot script.
 //
 // Auth: the {nonce} path segment is verified constant-time against
-// Status.Bootstrap.BootNonceHash, within TTL, and not yet consumed. NOT
-// bearer-gated — the booting host has no bearer token yet; that token is
-// delivered by this endpoint in the rendered cmdline.
+// Status.Bootstrap.BootNonceHash, within TTL. NOT bearer-gated — the booting
+// host has no bearer token yet; that token is delivered by this endpoint in the
+// rendered cmdline.
 //
-// On success: marks the nonce consumed (D-010, single-use) and returns the
-// rendered iPXE script. A second fetch for the same host (race loser or NIC
-// retry) returns identical content (§4.1).
+// On success: records the nonce consumed if it is not yet (D-010) and returns
+// the rendered iPXE script. A second fetch with the same nonce (race loser or
+// NIC retry) returns identical content and records nothing (§4.1).
 //
 // Every failure returns the same opaque response so callers cannot distinguish
-// "host not found" from "wrong nonce" from "expired" from "consumed" (§4.1).
+// "host not found" from "wrong nonce" from "expired" (§4.1).
 //
-// Status ownership exception: this handler writes exactly one field,
-// PhysicalHost.Status.Bootstrap.BootNonceConsumedAt, via an optimistic-locked
-// Status().Patch. This is the sole audited exception to the D-005 invariant.
-// See D-010 in PROJECT_CONTEXT.md for the rationale.
+// Status ownership exception: this handler writes exactly one thing, the
+// consume record PhysicalHost.Status.Bootstrap.{BootNonceConsumedAt,
+// BootNonceConsumedHash}, via a single optimistic-locked Status().Patch. This
+// is the sole audited exception to the D-005 invariant. See D-010 in
+// PROJECT_CONTEXT.md for the rationale.
 //
 // INVARIANT (D-005 amendment): grep "client.Status().Update" controllers/*_handler.go
 // must remain empty. Only the single audited Status().Patch below is permitted.
@@ -202,21 +203,25 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Consume the nonce (D-010 — atomic single-use under optimistic lock).
 	//
-	// If already consumed (BootNonceConsumedAt != nil), this is a race loser or
-	// a legitimate NIC retry. Skip the patch and fall through to render identical
-	// content (§4.1 guarantees same response for same host regardless of order).
+	// If this nonce is already consumed, this is a race loser or a legitimate
+	// NIC retry. Skip the patch and fall through to render identical content
+	// (§4.1 guarantees same response for same host regardless of order). The
+	// record must name this nonce: Status.Bootstrap outlives a claim, and the
+	// record an earlier nonce left says nothing about one minted after it.
 	//
 	// D-010: this Status().Patch is the sole audited exception to D-005.
-	// The field written (BootNonceConsumedAt) is owned exclusively by this
-	// handler; no reconciler writes it, so the BUG-1 last-write-wins hazard
+	// The fields written (the consume record) are owned exclusively by this
+	// handler; no reconciler writes them, so the BUG-1 last-write-wins hazard
 	// does not apply. A Conflict is the desired outcome (the winner consumed;
 	// the loser confirms it and renders identically).
-	if ph.Status.Bootstrap.BootNonceConsumedAt == nil {
+	if !bootNonceConsumed(ph.Status.Bootstrap) {
 		var consumeOK bool
 		for attempt := 0; attempt < bootNonceConsumeMaxRetries; attempt++ {
 			base := ph.DeepCopy()
 			now := metav1.NewTime(time.Now())
 			ph.Status.Bootstrap.BootNonceConsumedAt = &now
+			// verifyBootNonce has matched the nonce to this hash.
+			ph.Status.Bootstrap.BootNonceConsumedHash = ph.Status.Bootstrap.BootNonceHash
 
 			// Status().Update is FORBIDDEN in handler files (D-005).
 			// This single Status().Patch is the audited D-010 exception.
@@ -241,18 +246,20 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			ph = fresh
 
-			// If the fresh object is already consumed, we lost the race; render
-			// identical content below.
-			if ph.Status.Bootstrap != nil && ph.Status.Bootstrap.BootNonceConsumedAt != nil {
-				consumeOK = true
-				break
-			}
-			// If the nonce is no longer valid in the fresh copy (e.g. the
-			// PhysicalHost reconciler cleared the hash), treat as opaque failure.
+			// The nonce must still be the one the host advertises before
+			// anything else is judged: the conflict may be a newer mint being
+			// promoted over it (or the hash cleared), and the fresh consume
+			// record would then describe that nonce, not this one.
 			if !verifyBootNonce(nonce, ph) {
 				log.V(1).Info("boot GET: nonce no longer valid after conflict re-get")
 				h.opaqueFailure(w)
 				return
+			}
+			// Still this nonce, and a concurrent fetch consumed it first: we
+			// lost the race; render identical content below.
+			if bootNonceConsumed(ph.Status.Bootstrap) {
+				consumeOK = true
+				break
 			}
 		}
 		if !consumeOK {
@@ -294,7 +301,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // in the future, and auth.Verify constant-time match. Pulled out so it can be
 // re-evaluated after an optimistic-lock conflict without duplicating logic.
 //
-// Deliberately does NOT check BootNonceConsumedAt — that check belongs in the
+// Deliberately does NOT check the consume record — that check belongs in the
 // consume path so the already-consumed branch can render identical content.
 func verifyBootNonce(nonce string, ph *infrav1.PhysicalHost) bool {
 	bs := ph.Status.Bootstrap
@@ -305,6 +312,35 @@ func verifyBootNonce(nonce string, ph *infrav1.PhysicalHost) bool {
 		return false
 	}
 	return auth.Verify(nonce, bs.BootNonceHash)
+}
+
+// bootNonceConsumed reports whether the consume record in bs names the boot
+// nonce bs currently advertises (D-010).
+//
+// The record is never cleared: Status.Bootstrap outlives a claim, and the
+// nonce the next claim mints is promoted next to the record of the one before.
+// Telling the two apart by hash is what keeps that new nonce unconsumed until
+// its own first fetch. Clearing the record when a new hash is promoted is not
+// an option: the PhysicalHost reconciler's status patch carries no
+// resourceVersion, so a pass computed from a stale cache would clear a consume
+// the handler had already recorded for the new nonce.
+//
+// A record without a hash, written by a handler from before the record named
+// one, is not attributed to the current nonce here, so the next fetch records
+// its consume afresh. The Beskar7Machine reads such a record the other way
+// (bootNonceConsumeUnattributed): it never reuses a nonce the record might
+// describe.
+func bootNonceConsumed(bs *infrav1.BootstrapStatus) bool {
+	return bs != nil && bs.BootNonceConsumedAt != nil &&
+		bs.BootNonceHash != "" && bs.BootNonceConsumedHash == bs.BootNonceHash
+}
+
+// bootNonceConsumeUnattributed reports whether bs carries a consume record that
+// does not say which nonce it consumed: one written by a /boot handler from
+// before BootNonceConsumedHash existed, which may describe the current nonce or
+// an earlier one.
+func bootNonceConsumeUnattributed(bs *infrav1.BootstrapStatus) bool {
+	return bs != nil && bs.BootNonceConsumedAt != nil && bs.BootNonceConsumedHash == ""
 }
 
 // validateBootURL rejects values that could break out of a single

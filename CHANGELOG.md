@@ -185,6 +185,29 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `Error` no longer yields to an inspection request either: an `inspect-complete` the machine sent
   again, having read the host before its first one was applied, used to put a host whose deployment
   had just been reported failed back in `Deploying`. The inspector sees `202` exactly as before.
+- **A re-claimed host's boot nonce is consumed like its first one.** `/boot` records a nonce's
+  consume in `status.bootstrap.bootNonceConsumedAt`, which nothing clears, and a released host keeps
+  `status.bootstrap` for its next claim. From a host's second provisioning cycle on — a re-claim
+  after release, a `MachineHealthCheck` replacement — every fresh nonce inherited the record its
+  first boot left. `/boot` took the fresh nonce for one it had already consumed and served it
+  without recording anything, so the optimistic-locked single-use write never happened for it and
+  the record kept the first boot's time. The `Beskar7Machine` counted the fresh nonce spent as soon
+  as the host had taken it up, so triggering inspection again in that cycle minted over a nonce the
+  operator's boot service may already have handed out. The record now names the nonce it describes,
+  in the new `status.bootstrap.bootNonceConsumedHash`, and counts only while that matches
+  `bootNonceHash`. `/boot` is still its only writer (D-010), in the same patch. Clearing the record
+  when a new nonce is promoted was the alternative, and was rejected: the `PhysicalHost`
+  reconciler's status patch carries no `resourceVersion`, so a pass working from a stale cache could
+  erase a consume `/boot` had just recorded and leave a used nonce reusable. A retry with the same
+  nonce inside its 10-minute lifetime still gets the same script, on the first cycle and every later
+  one (contract §4.1). Two related fixes: after a conflict on its consume patch, `/boot` verifies
+  the nonce again before it takes the record it reads back as a lost race, so it never serves a
+  nonce a newer mint has replaced; and the `Beskar7Machine` no longer takes a consumed nonce for
+  reusable while the host has yet to clear its `boot-nonce` annotation, which it does one pass after
+  promoting the hash. A record written by an earlier release has no hash. `/boot` records the
+  advertised nonce's consume afresh, and the `Beskar7Machine` does not reuse a nonce such a record
+  might describe, so hosts provisioned before the upgrade need nothing, and a callback-only instance
+  still on the previous release keeps the old behaviour until it is upgraded.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,

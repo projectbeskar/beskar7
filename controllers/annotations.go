@@ -112,8 +112,9 @@ const ProvisionFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provis
 // The nonce plaintext never appears here — only the hash (safe to log per the
 // same reasoning as BootstrapTokenAnnotationValue.Hash) and the expiry instant.
 // No IssuedAt field: the nonce lifecycle check only needs to know whether it
-// is expired and whether it has been consumed (BootNonceConsumedAt, written by
-// the /boot handler in D-010 — not present here).
+// is expired and whether it has been consumed (the BootNonceConsumedAt /
+// BootNonceConsumedHash record, written by the /boot handler in D-010 — not
+// present here).
 type BootNonceAnnotationValue struct {
 	// Hash is the hex-encoded SHA-256 of the plaintext boot nonce (64 chars).
 	Hash string `json:"hash"`

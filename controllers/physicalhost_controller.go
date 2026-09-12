@@ -359,8 +359,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// Consume the boot-nonce annotation (D-009): the Beskar7Machine controller
 	// signals the hash + expiry of the freshly minted per-host boot nonce; we
 	// persist them to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}.
-	// BootNonceConsumedAt is NOT touched here — it is the /boot handler's field
-	// (D-010). Same idempotent annotation-in/status-out pattern as the token.
+	// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
+	// touched here — it is the /boot handler's (D-010). Same idempotent
+	// annotation-in/status-out pattern as the token.
 	r.applyBootNonceAnnotation(logger, physicalHost)
 
 	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
@@ -716,10 +717,14 @@ func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logge
 
 // applyBootNonceAnnotation reads the BootNonceAnnotation, JSON-decodes the
 // {hash, expiresAt} payload, and persists those values to Status.Bootstrap.
-// BootNonceConsumedAt is NOT written here — it is exclusively written by the
-// /boot handler (D-010). Any code path that reads ConsumedAt after this call
-// will see only whatever value was already in Status before the annotation was
-// applied (nil until the handler fires).
+// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
+// written here — it is exclusively written by the /boot handler (D-010). A
+// record left by an earlier nonce therefore stays in Status next to the newly
+// promoted hash; it names that earlier nonce's hash, so the new nonce counts as
+// unconsumed until its own first fetch (bootNonceConsumed). Clearing the record
+// here instead would race the handler: this reconciler's status patch carries
+// no resourceVersion, and a pass computed from a stale cache would erase a
+// consume already recorded for the new nonce.
 //
 // Same two-phase handoff as applyBootstrapTokenAnnotation: status first, the
 // annotation is cleared on the following pass once status shows the same
@@ -760,8 +765,8 @@ func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, ph
 	physicalHost.Status.Bootstrap.BootNonceHash = value.Hash
 	expiresAt := value.ExpiresAt
 	physicalHost.Status.Bootstrap.BootNonceExpiresAt = &expiresAt
-	// Intentionally do NOT touch BootNonceConsumedAt — that field belongs to
-	// the /boot handler (D-010). This controller must not clear or overwrite it.
+	// Intentionally do NOT touch the consume record — it belongs to the /boot
+	// handler (D-010). This controller must not clear or overwrite it.
 	logger.Info("Applied boot-nonce annotation to Status.Bootstrap", "host", physicalHost.Name)
 }
 
