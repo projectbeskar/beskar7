@@ -232,6 +232,25 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   with a kept report applied one pass after the host goes to `Deploying`, that request could reach
   the host once it was `Ready` and take it back to `Deploying`. The inspector sees `202` exactly as
   before.
+- **A claimed host's provisioning no longer stops while its BMC is unreachable.** A `PhysicalHost`
+  part-way through provisioning keeps its state through a network-level BMC outage, because
+  neither the inspector nor the installed OS needs the BMC, but apart from the inspector's two
+  reports it acted on its annotations only after a successful BMC connection. During an outage it
+  read no inspection report, applied none of the `Beskar7Machine`'s inspection requests and
+  published no bootstrap token or boot nonce the machine had just minted. A machine whose
+  `--inspection-timeout` ran out meanwhile failed with `InspectionTimedOut` although the inspector
+  had reported and went on to deploy the host; one whose `inspect-complete` waited stayed
+  `Inspecting` until a `MachineHealthCheck` replaced it; and an inspector the machine had just
+  powered on could not fetch `/boot`, because its nonce was not in the host's status yet. The host
+  now also acts on those annotations when the BMC cannot be reached at the network level: it reads
+  the inspection report, applies `inspect`, `inspect-complete` and `timeout`, and publishes the
+  credentials, so a host that is inspected and deployed during an outage provisions its machine
+  during it. A host whose machine had already powered it on into the inspector goes to
+  `Inspecting` rather than `Error`, and the machine follows it instead of reporting
+  `WaitingForBMC`. A BMC failure that needs a fix — missing or refused credentials, a rejected
+  certificate, the TLS-config conflict, no `ComputerSystem` — still leaves the annotations in place
+  until the connection works: that failure writes its own `Error` over the host's state in the same
+  pass, and a request applied then would be lost with that state.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,
