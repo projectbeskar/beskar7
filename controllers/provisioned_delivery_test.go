@@ -200,10 +200,9 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 		Entry("when it arrives after the host has read the inspection report, while its BMC is down", true, true),
 	)
 
-	// The inspector posts /provision-failed after any non-202 from
-	// /provisioned, having removed the join config from COS_OEM (contract §9.1
-	// step 8), and a response lost on the way back is a non-202 to it although
-	// the handler took the report.
+	// One inspector run never sends both reports: it reports a failure only for a
+	// deploy step, before it would post /provisioned (contract §9.1). When both
+	// are waiting anyway, the host takes the conservative one.
 	DescribeTable("a failure report that follows the success report before the host has applied either",
 		func(inspecting bool) {
 			state := infrav1.StateDeploying
@@ -218,7 +217,7 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 			}
 
 			reportProvisioned(key)
-			report := sanitizeFailureReason("provisioned callback failed; removed 99_beskar7.yaml")
+			report := sanitizeFailureReason("COS_OEM inject failed")
 			reportDeployFailure(key, report)
 			if inspecting {
 				held := reconcileInOutage(key)
@@ -231,7 +230,7 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 			}
 
 			failed := settlePhysicalHost(hostReconciler, key)
-			Expect(failed.Status.State).To(Equal(infrav1.StateError), "the failure wins: the disk no longer has its join config")
+			Expect(failed.Status.State).To(Equal(infrav1.StateError), "the failure wins")
 			Expect(failed.Status.ErrorMessage).To(Equal(report))
 			Expect(failed.Status.Ready).To(BeFalse())
 			Expect(failed.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation))
