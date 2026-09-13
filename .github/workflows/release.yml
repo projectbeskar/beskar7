@@ -231,25 +231,41 @@ jobs:
         cosign sign --yes "${image}@${DIGEST}"
         echo "signed ${image}@${DIGEST}"
 
-  # Job 4: Security Scan Released Image
+  # Job 4: Security Scan Released Images
+  #
+  # Every image this release publishes, not just the manager. mock-redfish and
+  # mock-inspector are pushed by the jobs above and were never scanned, which is
+  # how they came to ship a stale Go builder while the manager image was clean.
+  # OSV-Scanner takes one image per archive, so this is a matrix.
   security-scan:
-    name: Security Scan Released Image
+    name: Security Scan (${{ matrix.image.name }})
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: [build-and-push, build-and-push-mock-redfish, build-and-push-mock-inspector]
     permissions:
       actions: read
       contents: read
       security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: manager
+            repo: beskar7
+          - name: mock-redfish
+            repo: mock-redfish
+          - name: mock-inspector
+            repo: mock-inspector
     steps:
-    # OSV-Scanner runs as a container action without access to the Docker
+    # The scanner runs as a container action with no access to the Docker
     # daemon, so the released image is pulled and handed over as an archive.
-    - name: Pull and export the released image
+    - name: Pull and export ${{ matrix.image.name }}
       run: |
-        image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
+        image="${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image.repo }}:${{ github.ref_name }}"
         docker pull "${image}"
         docker save -o osv-image.tar "${image}"
+        echo "IMAGE_REF=${image}" >> "$GITHUB_ENV"
 
-    - name: Scan the released image with OSV-Scanner
+    - name: Scan ${{ matrix.image.name }} with OSV-Scanner
       uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
       continue-on-error: true # exits 1 on findings; the report is the deliverable
       with:
@@ -261,7 +277,7 @@ jobs:
           --format=json
           --output=osv-image-results.json
 
-    - name: Convert the scan to SARIF
+    - name: Convert the ${{ matrix.image.name }} scan to SARIF
       uses: google/osv-scanner-action/osv-reporter-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
       with:
         scan-args: |-
@@ -270,13 +286,13 @@ jobs:
           --gh-annotations=false
           --fail-on-vuln=false
 
-    - name: Upload scan results to the Security tab
+    - name: Upload the ${{ matrix.image.name }} scan to the Security tab
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: osv-image-results.sarif
-        category: osv-scanner-release-image
+        category: osv-scanner-release-${{ matrix.image.name }}
 
-    - name: Write the human-readable vulnerability report
+    - name: Write the human-readable ${{ matrix.image.name }} report
       uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
       continue-on-error: true
       with:
@@ -286,13 +302,21 @@ jobs:
           --archive
           osv-image.tar
           --format=table
-          --output=osv-scanner-report.txt
+          --output=report-body.txt
 
-    - name: Upload vulnerability report
+    - name: Label the report with the image it covers
+      run: |
+        {
+          echo "=== ${IMAGE_REF} ==="
+          cat report-body.txt 2>/dev/null || echo "(scan produced no output)"
+          echo
+        } > "osv-scanner-report-${{ matrix.image.name }}.txt"
+
+    - name: Upload the ${{ matrix.image.name }} vulnerability report
       uses: actions/upload-artifact@v4
       with:
-        name: vulnerability-report
-        path: osv-scanner-report.txt
+        name: vulnerability-report-${{ matrix.image.name }}
+        path: osv-scanner-report-${{ matrix.image.name }}.txt
 
   # Job 5: Generate Release Artifacts
   generate-artifacts:
@@ -414,6 +438,14 @@ jobs:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
       
+    - name: Combine the per-image vulnerability reports into the release asset
+      run: |
+        : > osv-scanner-report.txt
+        for f in vulnerability-report-*/osv-scanner-report-*.txt; do
+          [ -f "$f" ] && cat "$f" >> osv-scanner-report.txt
+        done
+        wc -l osv-scanner-report.txt
+
     - name: Generate release notes
       id: release-notes
       run: |
@@ -509,7 +541,7 @@ jobs:
           release-artifacts/metadata.yaml
           release-artifacts/checksums.txt
           sbom/sbom.spdx.json
-          vulnerability-report/osv-scanner-report.txt
+          osv-scanner-report.txt
         token: ${{ secrets.GITHUB_TOKEN }}
 
   # Job 7: Update Documentation

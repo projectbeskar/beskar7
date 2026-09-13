@@ -76,6 +76,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   so the lint job would crash rather than report. v2.13.2 carries v0.8.1 and reports cleanly.
   `go mod tidy` under 1.27 regroups the `require` blocks; no dependency version changed.
 
+- **Every published image is scanned, not just the manager.** `mock-redfish` and `mock-inspector`
+  are pushed by the release workflow but nothing ever scanned them, which is how they came to ship a
+  four-month-stale Go builder while the manager image was clean — the cleared baseline only covered
+  one image. CI now runs `Image Scan (manager|mock-redfish|mock-inspector)` on every pull request and
+  the release workflow repeats it against the pushed tags, each with its own SARIF category. The
+  release asset `osv-scanner-report.txt` keeps its name and gains a section per image.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
