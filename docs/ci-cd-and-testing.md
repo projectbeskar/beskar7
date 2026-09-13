@@ -216,6 +216,12 @@ routinely, so anything that changes a contract stays a human decision:
 | `docker` | digest refreshes for the pinned `golang` and `distroless` images in all three Dockerfiles | the Go minor version, which has to move with `go`/`toolchain` in `go.mod` and CI's `go-version` |
 | `github-actions` | minor and patch updates, including the commit-pinned actions | majors, since several of these actions carry the release assets and images |
 
+Image scanning covers **every image the repository publishes**, not just the manager: `Image Scan
+(manager)`, `Image Scan (mock-redfish)` and `Image Scan (mock-inspector)` run on each pull request,
+and the release workflow repeats them against the pushed tags. OSV-Scanner takes one image per
+archive, so each is a separate matrix leg with its own SARIF category. The release attaches a single
+`osv-scanner-report.txt` with a section per image.
+
 ```bash
 # Run the same scans locally
 go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
