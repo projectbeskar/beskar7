@@ -236,7 +236,8 @@ gatewayed winner on a multi-NIC host (§8.2).
 - **Success**: **`202 Accepted`** with body `{"status":"accepted"}`. The 202 (not
   200) is deliberate — the report is stored and the reconciler signalled, but
   `Status.InspectionReport`/`InspectionPhase` are written asynchronously by the
-  PhysicalHost reconciler (D-005). The inspector MUST treat **202** as success.
+  PhysicalHost reconciler (D-005), which does so whether or not it can reach the
+  host's BMC at the network level. The inspector MUST treat **202** as success.
 - `namespace`/`hostName` come from the URL path. The JSON body MAY also carry
   `namespace`/`hostName` for legacy compatibility but they are ignored.
 
@@ -277,10 +278,10 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   - `StateDeploying` (or already `StateReady`: a duplicate);
   - claimed and still `StateInspecting` — the inspector does not wait for the host
     (§9.2), and the host reaches `StateDeploying` only once the controller has
-    validated the inspection report and recorded that on the host, a step that waits
-    for the host's BMC: during a BMC outage the whole deployment can finish first. The
-    report is kept until the host reaches `StateDeploying` and applied then; it is
-    dropped if the host never gets there (the hardware fails
+    validated the inspection report, which can come after the whole deployment when
+    the controllers were unavailable while a callback-only instance kept answering
+    the inspector. The report is kept until the host reaches `StateDeploying` and
+    applied then; it is dropped if the host never gets there (the hardware fails
     `HardwareRequirementsNotMet`, the host is released), or if it arrived before the
     run's inspection report.
 

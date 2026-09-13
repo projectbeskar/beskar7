@@ -703,8 +703,8 @@ instance renders it into the iPXE cmdline.
 connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still starting.
 This is not a terminal failure: `status.phase` is not `Failed`, the host retries every 15 seconds, and
 the machine carries on by itself on the first attempt that connects. A host that was already
-`Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes),
-so a provisioned machine never shows this reason.
+`Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes)
+and goes on with its provisioning, so a machine whose host got that far never shows this reason.
 
 **Solution:** nothing to delete. If the outage does not clear, check the path from the controller pod to
 the BMC (the checks under [PhysicalHost Stuck in "Enrolling"](#4-physicalhost-stuck-in-enrolling) → BMC
