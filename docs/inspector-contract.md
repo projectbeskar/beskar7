@@ -264,10 +264,15 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   controller reads and discards the body (capped at 64 KiB). A missing or
   non-JSON body does not cause a rejection.
 - **Success**: **`202 Accepted`** with body `{"status":"accepted"}`.
-- **Failure**: opaque `500` on internal error. The inspector MUST treat a non-202
-  response as a failure that **propagates as an error** (not silently continues to
-  reboot); a `401`/`403` means the token expired during a long deploy and the
-  controller must re-drive the host.
+- **Failure**: opaque `401` on an expired or invalid bearer; opaque `500` on internal
+  error. The call is idempotent — the controller takes a repeat for a host it has
+  already moved to `StateReady` — so the inspector SHOULD retry a transport-level
+  failure or a transient status (`408`, `429`, `5xx`) with bounded backoff, as for
+  §4.2: a response lost after the controller took the call must not stop a host that
+  deployed. Any other status, or a call still failing once the retries are exhausted,
+  is a failure that **propagates as an error**, and the inspector MUST NOT continue to
+  `reboot(2)` (§9.1 step 6). A `401`/`403` means the token expired during a long
+  deploy.
 - **Controller action**: on a valid call, patches
   `ProvisionedRequestAnnotation="provisioned"` onto the `PhysicalHost` metadata. The
   `PhysicalHostReconciler` reads this on its next pass — before it contacts the
@@ -285,11 +290,11 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
     `HardwareRequirementsNotMet`, the host is released), or if it arrived before the
     run's inspection report.
 
-  A `/provision-failed` report (§4.5) waiting on the same host is applied instead:
-  after a non-`202` here the inspector removes the join config and reports the
-  failure (§9.1 step 8), and the controller may have taken this report all the same.
-  A `/provision-failed` that arrives once the host has applied this report is not
-  honoured. Any other host returns 202 but receives no state transition (no-op
+  A `/provision-failed` report (§4.5) waiting on the same host is applied instead.
+  One inspector run does not send both — it reports a failure only for a deploy
+  step, before it makes this call (§9.1 steps 5–6) — so when both are present the
+  controller takes the conservative one. A `/provision-failed` that arrives once the
+  host has applied this report is not honoured. Any other host returns 202 but receives no state transition (no-op
   guard). The wire behaviour is unchanged from v4: the inspector sees `202` either
   way.
 
@@ -336,8 +341,13 @@ deployment-timeout.
 
   Any other host returns 202 but receives no state transition (no-op guard). The
   wire behaviour is unchanged from v4.1: the inspector sees `202` either way.
-- **Inspector MUST**: call this endpoint on any Phase 2 error, then exit (do NOT
-  continue to the provisioned POST or `reboot(2)` after a failure).
+- **Inspector MUST**: call this endpoint on any Phase 2 deploy-step error (image
+  fetch, digest verify, disk write, `COS_OEM` mount/inject), then exit (do NOT
+  continue to the provisioned POST or `reboot(2)` after a failure). The inspector
+  SHOULD retry transient failures of this call as for §4.4. A provisioned callback
+  that fails is not a deploy-step error: the disk is complete by then, and the
+  controller may have taken the call (§9.1 step 6), so the inspector does not call
+  this endpoint for it.
 - **Inspector MUST**: tolerate a `404` response (v4 controller without this
   endpoint). Treat `404` as "endpoint unavailable" — the failure is still visible
   to the operator via the deployment-timeout; do not retry as an error.
@@ -715,23 +725,35 @@ The inspector MUST:
       zeroed before the provisioned callback fires.
    6. `POST` the provisioning-complete callback to
       `{api}/api/v1/provisioned/{ns}/{host}` with the same bearer token over
-      verified TLS (§4.4). Treat **202** as success; treat any other response as a
-      fatal error that MUST NOT proceed to `reboot(2)`. A retry loop SHOULD NOT be
-      used here: the deploy is already committed at this point and the only question
-      is whether the controller was informed. A non-202 typically means the token
-      has expired (§3) or the controller is unreachable; both require the controller
-      to re-drive the host rather than an automatic retry.
+      verified TLS (§4.4). Treat **202** (any `2xx`) as success. The deploy is already
+      committed at this point, so the only question is whether the controller has
+      been told, and the call is idempotent (§4.4): the inspector SHOULD retry a
+      transport-level failure or a transient status (`408`, `429`, `5xx`) with
+      bounded backoff (the reference inspector makes 5 attempts of up to 30 s each,
+      0.5 s, 1 s, 2 s and 4 s apart — about 2.5 minutes at worst). Any other status,
+      such as a `401`/`403` from a token that expired during a long deploy (§3), or a
+      call still failing once the retries are exhausted, is fatal: the inspector MUST
+      NOT proceed to `reboot(2)`, and it stops with the disk as it is (step 8 does not
+      apply). The controller then fails the machine with `DeploymentTimedOut`, or, if
+      it took a call whose responses were all lost, has marked the machine provisioned
+      for a host that never boots, which the `MachineHealthCheck`'s
+      `nodeStartupTimeoutSeconds` replaces (§13).
    7. `reboot(2)`. The `COS_OEM` partition MUST be unmounted before `reboot(2)` on
       every path. The host firmware boots the provisioned OS; Kairos applies the
       injected config on first boot. (`kexec` is an optional future speed
       optimization — see §11 — not a contract requirement.)
-   8. **Failure cleanup.** If any step *after* mounting `COS_OEM` fails (write,
-      `fsync`, or the provisioned callback, or a later abort), the inspector MUST
+   8. **Failure cleanup.** If a step fails while `COS_OEM` is mounted (the
+      `99_beskar7.yaml` write, the `provider-id` write, `fsync`), the inspector MUST
       remove the partial `99_beskar7.yaml` (and, if written, the partial
-      `provider-id` file) and unmount `COS_OEM` before dropping to the debug shell
-      or rebooting — it MUST NOT leave the join secret on a mounted-then-abandoned
-      partition or in the partial file. The user-data buffer
-      MUST still be zeroed on this path.
+      `provider-id` file) and unmount `COS_OEM` before it stops or drops to the debug
+      shell — it MUST NOT leave the join secret on a mounted-then-abandoned partition
+      or in the partial file. The user-data buffer MUST still be zeroed on this path.
+      A failed provisioned callback (step 6) is not a cleanup trigger: by then both
+      files are complete and `COS_OEM` is unmounted (step 5), and the controller may
+      have taken the call, so the inspector leaves the disk as it is and does not call
+      `/provision-failed` (§4.5). The join secret stays on the disk until the host is
+      re-provisioned, as it does after any release (`SECURITY.md`, no disk
+      sanitization on host release).
 7. Never log the bearer token, the nonce, the cmdline, or the bootstrap/user-data
    bytes. The inspector MUST NOT let the bearer token or the user-data/join secret
    reach swap or any durable medium: the ramdisk MUST run swapless, or the inspector
@@ -767,7 +789,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   the controller observes as an inspection/provisioning timeout (it re-mints a
   fresh nonce + token on the next attempt, §7).
 - A `401`/`403` is **not** retryable the same way — it indicates an expired or
-  wrong bearer token (the 30-min token lifetime, §3); the inspector MUST abort
+  wrong bearer token (the 60-min token lifetime, §3); the inspector MUST abort
   rather than spin (the controller must re-provision with a fresh token).
 - The inspector holds no durable state between attempts: a timed-out host is
   re-driven by the controller (re-PXE → fresh nonce/token → re-inspect), not by
@@ -906,9 +928,12 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   digest-mismatch abort, and v4 adds a `--deployment-timeout` (default 20 min,
   measured from `PhysicalHost.Status.DeployingTimestamp`) that converts a silent
   deploy abort into a terminal `DeploymentTimedOut` on the `Beskar7Machine`. An
-  inspector that fails after the disk write but before the provisioned callback —
-  `COS_OEM` mount/inject failure, network partition, provisioned-POST failure —
-  will time out at the controller and be re-driven (re-PXE, fresh nonce/token, §7).
+  inspector that fails after the disk write — a `COS_OEM` mount/inject failure it
+  could not report, a network partition, a provisioned callback still failing after
+  its retries — will time out at the controller and be re-driven (re-PXE, fresh
+  nonce/token, §7). A provisioned callback the controller took but whose every
+  response was lost leaves the machine provisioned on a host that never boots;
+  `nodeStartupTimeoutSeconds` remediates it (§13, §9.1 step 6).
   An image that writes and injects cleanly but never boots into a joining Kubernetes
   node is still a timeout at the CAPI level (the `Machine` stays `Pending` until
   the node registers with `ProviderID=b7://...`). **Resolved in v4.2:** the retry

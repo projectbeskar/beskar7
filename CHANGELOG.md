@@ -224,8 +224,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   moved the host to `Deploying`. As with `/provision-failed`, the host drops the report without a
   transition if it goes anywhere else (`HardwareRequirementsNotMet` stands, the host is released)
   or if the report arrived before the run's inspection report. A `/provision-failed` report waiting
-  on the same host is applied instead: the inspector sends it after a `/provisioned` it saw fail,
-  having removed the join config from the disk. The annotation is now cleared on the pass after the
+  on the same host is applied instead, the conservative choice when both are present (one inspector
+  run never sends both). The annotation is now cleared on the pass after the
   host is `Ready` rather than in the same one, because the reconciler's patch writes metadata before
   status, and a status write that failed lost the report. A claimed `Ready` host now ignores an
   inspection request: the machine can send `inspect-complete` a second time from a stale read, and
@@ -251,6 +251,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   certificate, the TLS-config conflict, no `ComputerSystem` — still leaves the annotations in place
   until the connection works: that failure writes its own `Error` over the host's state in the same
   pass, and a request applied then would be lost with that state.
+- **The inspector contract now describes what the inspector does when its provisioned callback
+  fails.** §9.1 step 6 said a retry loop SHOULD NOT be used, and step 8 required the inspector to
+  remove the join config after a failed callback — neither matched the reference inspector, and step
+  8 could not be followed, because step 5 unmounts `COS_OEM` before the callback. The inspector
+  retries the call on transport errors and transient statuses (the call is idempotent: the controller
+  takes a repeat for a host that is already `Ready`), and when the retries run out it stops without
+  rebooting, removing nothing and reporting no failure, since the controller may have taken the call.
+  §4.4, §4.5, §9.1 and §11 now say so, and `docs/troubleshooting.md` covers the host left parked that
+  way: `PhysicalHost` `Ready`, machine `Provisioned`, no Node. Documentation only.
 - **`hack/smoke/run.sh` no longer creates a `PhysicalHost` against a mock BMC that cannot yet
   answer.** Layer 3 applied the mock manifest, then patched the image with `kubectl set image`,
   which starts a second rollout; `kubectl rollout status` returns as soon as the new pod is Ready,

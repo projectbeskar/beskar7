@@ -205,13 +205,14 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	//
 	// The success report goes right after the failure report, ahead of the
 	// machine's requests as well, so the two are always weighed against the same
-	// state and the failure report is the one applied when both are waiting: the
-	// inspector posts /provision-failed after a /provisioned it saw fail, once it
-	// has removed the join config from the disk (contract §9.1 step 8), and the
-	// handler may have taken that /provisioned all the same. Weighed after
-	// inspect-complete, a success report kept while the host was Inspecting
-	// would be applied in the pass that moves the host to Deploying, one pass
-	// ahead of a failure report kept with it.
+	// state and the failure report is the one applied when both are waiting. One
+	// inspector run never sends both — it reports a failure only for a deploy
+	// step, before it would post /provisioned (contract §9.1) — so both waiting
+	// means something is off, and the failure is the conservative reading: a
+	// machine failed in error is replaced, while one provisioned on a disk that
+	// was reported broken would stay. Weighed after inspect-complete, a success
+	// report kept while the host was Inspecting would be applied in the pass that
+	// moves the host to Deploying, one pass ahead of a failure report kept with it.
 	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
 	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
@@ -911,8 +912,8 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 //     never sends inspect-complete, so a kept report is never applied over that verdict.
 //   - Anything else is cleared without a transition: a released host (the claim the
 //     report was about has ended, and the host cannot be claimed again before a pass
-//     that clears it), a run that has failed (the failure stands, including one the
-//     inspector reported after this report), a host that is InUse or in an Error about
+//     that clears it), a run that has failed (the failure stands, including one
+//     reported while this report was waiting), a host that is InUse or in an Error about
 //     its BMC, and a report that came before this run's inspection report, which is not
 //     about this run's deployment.
 func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {

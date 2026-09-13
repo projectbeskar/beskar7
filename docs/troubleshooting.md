@@ -607,6 +607,29 @@ For k0s there is no working kubelet-flag route — the Kairos k0s provider drops
 > `Provisioned`. Check with `cat /oem/beskar7/provider-id` on the host; when the stage has run it
 > also leaves `/oem/.beskar7-providerid-applied`.
 
+### If no Node appears because the host never left the inspector
+
+**Symptom:** the `Beskar7Machine` is `Provisioned` and its `PhysicalHost` is `Ready`, but no Node ever
+registers, and the host's console (serial or BMC KVM) still shows the inspector. After
+`beskar7-inspector: bootstrap data received, provisioning` it ends with
+`beskar7-inspector: run failed: exhausted retries; last error: …` (or `callback returned HTTP …`),
+and there is no `provisioned-complete callback accepted` line.
+
+**Cause:** the inspector reboots into the deployed OS only once the controller has acknowledged
+`POST /api/v1/provisioned` ([contract §9.1 step 6](inspector-contract.md#91-required-steps)), and it
+retries that call for about 2.5 minutes. Here the call reached the controller — that is why the host is
+`Ready` — but no response got back within those retries, because of a network partition or a callback
+server that went away right after it took the report. The inspector stopped without rebooting. The disk
+is complete, join config included, and nothing boots it.
+
+**Solution:** a `MachineHealthCheck` replaces the machine by itself: `nodeStartupTimeoutSeconds` counts
+from when the machine went `Provisioned` (45 minutes with the recommended value), and the replacement
+re-provisions the host. To keep the deployment instead, power-cycle the host through its BMC. It boots
+the deployed OS from the disk and the node joins as it would have; if the host network-boots instead,
+clear its one-time boot override on the BMC and power-cycle it again. Do this only while the
+`PhysicalHost` is `Ready`: on a host still `Deploying` the controller never recorded the call, and the
+node that boots would have no provisioned `Machine` behind it.
+
 ### If the ProviderID matches and the Node still never appears
 
 A mismatch is the common cause, but if `Node.spec.providerID` is correct and the Machine still
