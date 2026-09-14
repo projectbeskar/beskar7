@@ -5,9 +5,12 @@
 `v0.4.0` was the first GA release and the `v0.4.x` line evolved additive-only.
 `v0.5.0` renames the API to `v1beta2` with no conversion, and `v0.6.0` moves
 `status.conditions` to native `metav1.Condition` and removes `failureReason` /
-`failureMessage` — both breaking, see the first two sections below — and the
+`failureMessage` — both breaking, see the sections below — and the
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
+
+**Target `v0.6.1`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+`v0.5.0` and freezes their status; `v0.6.1` is the same release with that fixed.
 
 ## Before you start
 
@@ -58,6 +61,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.6.1` | `v4.2` **frozen** |
 | `v0.6.0` | `v4.2` **frozen** |
 | `v0.5.0` | `v4.2` **frozen** |
 | `v0.4.3` | `v4.2` **frozen** |
@@ -92,7 +96,44 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.5.0` → `v0.6.0` — **breaking**: native `metav1.Condition`, `failureReason`/`failureMessage` removed
+## `v0.6.0` → `v0.6.1` — unfreezes objects `v0.6.0` could not patch
+
+No API, CRD or contract change. Upgrade the controller image (or `helm upgrade` to chart `0.6.1`)
+and you are done.
+
+`v0.6.0` cannot patch objects that `v0.5.0` wrote. Up to `v0.5.0` the controller used Cluster API's
+deprecated condition type, where `reason` is optional, and it stored `True` conditions with none.
+`v0.6.0`'s CRDs require a `reason` of at least one character, so the API server rejects every status
+patch that carries those conditions forward:
+
+```
+status.conditions[0].reason: Invalid value: "": conditions[0].reason in body should be at least 1 chars long
+```
+
+The object then freezes with whatever status the old controller last wrote. This is easy to miss,
+because it still reads healthy under `kubectl get` — nothing is rewriting it. What you will see is
+the manager logging `Reconciler error` and `failed to patch ...` on every pass. Measured on real
+hardware: every `Beskar7Machine`, `Beskar7Cluster` and `PhysicalHost` in the namespace, ~140 errors
+in four minutes.
+
+`v0.6.1` repairs such a condition in place before its first status patch, so the objects start
+reconciling again on their own. A condition that is already valid is left untouched, including its
+`lastTransitionTime`.
+
+### Unfreezing them without upgrading
+
+Clear the stale conditions and even the `v0.6.0` controller rewrites them correctly within a
+reconcile — they are derived state, so nothing is lost:
+
+```bash
+for kind in beskar7machine beskar7cluster physicalhost; do
+  for obj in $(kubectl get "$kind" -n <namespace> -o name); do
+    kubectl patch "$obj" -n <namespace> --subresource=status --type=merge -p '{"status":{"conditions":[]}}'
+  done
+done
+```
+
+## `v0.5.0` → `v0.6.x` — **breaking**: native `metav1.Condition`, `failureReason`/`failureMessage` removed
 
 The API stays `infrastructure.cluster.x-k8s.io/v1beta2` — same group, version and served/storage
 status, no tear-down needed — but the `status` schema of all four CRDs changed. Apply the new CRDs
@@ -208,9 +249,9 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 
 ```bash
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.0/beskar7-manifests-v0.6.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.1/beskar7-manifests-v0.6.1.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.1 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).
@@ -223,35 +264,12 @@ No inspector upgrade needed. A machine already `phase: Failed` before the upgrad
 (it is never reconciled again either way — see `docs/beskar7machine.md#terminal-failures`), it just
 no longer grows new `failureReason` values.
 
-### If you are upgrading to exactly `v0.6.0`, read this
+### Install `v0.6.1`, not `v0.6.0`
 
-`v0.6.0` cannot patch objects that `v0.5.0` wrote, and **`v0.6.1` fixes it** — upgrade straight to
-`v0.6.1` and there is nothing to do.
-
-Up to `v0.5.0` the controller used Cluster API's deprecated condition type, where `reason` is
-optional, and it stored `True` conditions with none. `v0.6.0`'s CRDs require a `reason` of at least
-one character, so the API server rejects every status patch that carries those conditions forward:
-
-```
-status.conditions[0].reason: Invalid value: "": conditions[0].reason in body should be at least 1 chars long
-```
-
-The object then freezes with whatever status the old controller last wrote. This is easy to miss,
-because it still reads healthy under `kubectl get` — nothing is rewriting it. What you will see is
-the manager logging `Reconciler error` and `failed to patch ...` on every pass. Measured on real
-hardware: every `Beskar7Machine`, `Beskar7Cluster` and `PhysicalHost` in the namespace, ~140 errors
-in four minutes.
-
-If you are already on `v0.6.0`, clear the stale conditions and the controller rewrites them
-correctly within a reconcile — they are derived state, so nothing is lost:
-
-```bash
-for kind in beskar7machine beskar7cluster physicalhost; do
-  for obj in $(kubectl get "$kind" -n <namespace> -o name); do
-    kubectl patch "$obj" -n <namespace> --subresource=status --type=merge -p '{"status":{"conditions":[]}}'
-  done
-done
-```
+`v0.6.0` cannot patch objects that `v0.5.0` wrote, so every one of them freezes with stale status
+the moment you upgrade. `v0.6.1` fixes it, and the procedure above already installs `v0.6.1` — if
+you follow it there is nothing extra to do. If you already deployed `v0.6.0`, see
+`v0.6.0` → `v0.6.1` above.
 
 ## `v0.4.4` → `v0.5.0` — **breaking**: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`
 
@@ -591,5 +609,6 @@ older release tag first.
 | CRs rejected on CRD apply | fix the CRs before upgrading (see the breaking changes above) |
 | Hosts provision but Machines stay `Provisioned` | ProviderID mismatch — see [troubleshooting](troubleshooting.md) entry 12 |
 | Inspector never posts a report | inspector/controller contract mismatch — check `contract-version.txt` |
-| `.status.failureReason` / `.status.failureMessage` read as empty/absent | Expected on `v0.6.0`+ — read `.status.phase` and the `InfrastructureReady` condition instead (see `v0.5.0` → `v0.6.0` above) |
-| `MachineHealthCheck` stopped remediating failed `Beskar7Machine`s | Its `unhealthyConditions`/`maxUnhealthy` are v1beta1 fields Cluster API v1.11+ ignores — convert to `spec.checks.unhealthyMachineConditions` / `spec.remediation.triggerIf` (see `v0.5.0` → `v0.6.0` above and `examples/machinehealthcheck.yaml`) |
+| `conditions[0].reason in body should be at least 1 chars long`, or status frozen after upgrading | `v0.6.0` cannot patch conditions `v0.5.0` wrote — upgrade to `v0.6.1` (see `v0.6.0` → `v0.6.1` above) |
+| `.status.failureReason` / `.status.failureMessage` read as empty/absent | Expected on `v0.6.0`+ — read `.status.phase` and the `InfrastructureReady` condition instead (see `v0.5.0` → `v0.6.x` above) |
+| `MachineHealthCheck` stopped remediating failed `Beskar7Machine`s | Its `unhealthyConditions`/`maxUnhealthy` are v1beta1 fields Cluster API v1.11+ ignores — convert to `spec.checks.unhealthyMachineConditions` / `spec.remediation.triggerIf` (see `v0.5.0` → `v0.6.x` above and `examples/machinehealthcheck.yaml`) |

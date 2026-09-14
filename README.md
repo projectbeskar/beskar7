@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.6.0 — native Cluster API v1beta2 status: `metav1.Condition` throughout, `Cluster.spec.paused` honoured, and `failureReason`/`failureMessage` replaced by `phase` plus conditions (breaking — see [upgrading](docs/upgrading.md))  
+**Version:** v0.6.1 — native Cluster API v1beta2 status: `metav1.Condition` throughout, `Cluster.spec.paused` honoured, and `failureReason`/`failureMessage` replaced by `phase` plus conditions (breaking — see [upgrading](docs/upgrading.md)). Upgrade from `v0.5.0` straight to `v0.6.1`; `v0.6.0` cannot patch objects `v0.5.0` wrote.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
