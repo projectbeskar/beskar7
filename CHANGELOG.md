@@ -83,6 +83,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   the release workflow repeats it against the pushed tags, each with its own SARIF category. The
   release asset `osv-scanner-report.txt` keeps its name and gains a section per image.
 
+- **The k0s ProviderID stage now works on worker nodes.**
+  `examples/kairos-k0s-providerid-stage.yaml` called `k0s kubectl` with no kubeconfig, which resolves
+  `/var/lib/k0s/pki/admin.conf` — a file only a controller has. On a worker every poll failed, the
+  stage gave up after 300s, and the Node came up `Ready` with no `providerID`, so its Machine stalled
+  at `Provisioned` with no `nodeRef` while the control planes were fine. It now falls back to the
+  node's own `/var/lib/k0s/kubelet.conf`, which is sufficient because the Node authorizer lets a
+  kubelet set its own `providerID` while it is still empty. The unit also ordered only after
+  `k0scontroller.service`, which a worker never runs; it now orders after `k0sworker.service` too.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**

@@ -62,11 +62,32 @@ stages:
 
             NODE="$(hostname)"
 
-            # k0s kubectl resolves the local admin kubeconfig; the Hadron k0s image
-            # ships no standalone kubectl binary.
+            # Pick the kubeconfig this node actually has. `k0s kubectl` with no
+            # argument resolves /var/lib/k0s/pki/admin.conf, which only a
+            # CONTROLLER ever has; the Hadron k0s image ships no standalone
+            # kubectl binary either. A worker has just its kubelet credentials,
+            # and those are enough: the Node authorizer and NodeRestriction let
+            # a kubelet set its OWN providerID while it is still empty.
+            #
+            # Without this the worker path polls for the full 300s, gives up,
+            # and leaves the Node with no providerID — so its CAPI Machine
+            # stalls at Provisioned with no nodeRef while control planes, which
+            # do have admin.conf, work fine. Measured on bare metal, 2026-09-14.
+            KC=(k0s kubectl)
+            for i in $(seq 1 60); do
+              if [ -f /var/lib/k0s/pki/admin.conf ]; then
+                break                     # controller: k0s kubectl finds it itself
+              fi
+              if [ -f /var/lib/k0s/kubelet.conf ]; then
+                KC+=(--kubeconfig /var/lib/k0s/kubelet.conf)
+                break
+              fi
+              sleep 5
+            done
+
             registered=false
             for i in $(seq 1 60); do
-              if k0s kubectl get node "${NODE}" >/dev/null 2>&1; then
+              if "${KC[@]}" get node "${NODE}" >/dev/null 2>&1; then
                 registered=true
                 break
               fi
@@ -77,14 +98,14 @@ stages:
               exit 0
             fi
 
-            cur="$(k0s kubectl get node "${NODE}" -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
+            cur="$("${KC[@]}" get node "${NODE}" -o jsonpath='{.spec.providerID}' 2>/dev/null || true)"
             if [ -n "${cur}" ]; then
               echo "beskar7: providerID already set to ${cur}; leaving it alone"
               exit 0
             fi
 
             for i in $(seq 1 30); do
-              if k0s kubectl patch node "${NODE}" --type=merge \
+              if "${KC[@]}" patch node "${NODE}" --type=merge \
                    -p "{\"spec\":{\"providerID\":\"${PID}\"}}" >/dev/null 2>&1; then
                 echo "beskar7: set providerID=${PID} on node ${NODE}"
                 exit 0
@@ -102,8 +123,11 @@ stages:
           content: |
             [Unit]
             Description=beskar7 per-host ProviderID (k0s)
-            After=k0scontroller.service
-            Wants=k0scontroller.service
+            # A worker runs k0sworker.service and never k0scontroller.service,
+            # so order after whichever this node has. systemd ignores a unit
+            # named in After=/Wants= that does not exist.
+            After=k0scontroller.service k0sworker.service
+            Wants=k0scontroller.service k0sworker.service
 
             [Service]
             Type=oneshot

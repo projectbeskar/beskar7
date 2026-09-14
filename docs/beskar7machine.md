@@ -233,12 +233,26 @@ Verified end to end on Kairos v4.1.2 (hadron) with k3s v1.34.8: `Node.spec.provi
 there is no working kubelet-flag route on k0s. The Kairos k0s provider drops `--kubelet-extra-args`
 when it turns `k0s.args` into the systemd override, so the k0s stage patches `Node.spec.providerID`
 from `/oem/beskar7/provider-id` right after the node registers — permitted, because immutability
-only guards a non-empty value. A k0s image also needs
+only guards a non-empty value.
+
+The stage picks the kubeconfig the node actually has, and that detail decides whether workers work
+at all. `k0s kubectl` with no argument resolves `/var/lib/k0s/pki/admin.conf`, which only a
+**controller** ever has; a **worker** has `/var/lib/k0s/kubelet.conf` and nothing else. Those
+kubelet credentials are sufficient, because the Node authorizer and `NodeRestriction` let a kubelet
+set its *own* `providerID` while it is still empty. An earlier version of the stage assumed the
+admin kubeconfig, so on a worker every poll failed, it gave up after 300s with
+`node <name> never registered within 300s`, and the Node came up `Ready` with no `providerID` — its
+Machine then stalled at `Provisioned` with no `nodeRef` while the control planes were fine.
+
+A k0s image also needs
 [`examples/kairos-k0s-start-gate.yaml`](../examples/kairos-k0s-start-gate.yaml): not for the
 ProviderID, but because without it a k0s control plane does not form on beskar7 at all
-([Building a target image → k0s: the start gate](building-images.md#k0s-the-start-gate)). Verified
-on Kairos v4.1.2 + k0s v1.34.8+k0s.0 with cluster-api-provider-kairos: all four nodes registered
-`b7://<namespace>/<host>` and their Machines reached `Running`.
+([Building a target image → k0s: the start gate](building-images.md#k0s-the-start-gate)).
+
+Verified on bare metal with Kairos v4.1.2 + k0s v1.34.8+k0s.0 and cluster-api-provider-kairos:
+three control planes registered `b7://<namespace>/<host>` and reached `Running`, and a worker
+rolled onto the fixed stage logged `beskar7: set providerID=b7://<ns>/<host> on node <name>` on a
+node with **no** `admin.conf`, then reached `Running` with its `nodeRef` — no manual patch.
 
 **Plain kubelet / other distros:** set the kubelet `--provider-id` flag to the same value via your
 distro's kubelet-args mechanism, before the kubelet first registers.
