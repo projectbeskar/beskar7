@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [v0.6.0] - 2026-09-14
 
 ### Added
 
@@ -1573,6 +1573,7 @@ For detailed implementation information, see the examples directory and document
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
 [Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.6.0]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...v0.5.0
 [v0.4.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...v0.4.4
 [v0.4.3]: https://github.com/projectbeskar/beskar7/compare/v0.4.2...v0.4.3
