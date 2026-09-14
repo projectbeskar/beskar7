@@ -72,10 +72,14 @@ const LegacyConditionReason = "Migrated"
 // Beskar7Cluster and PhysicalHost in the namespace, ~140 reconcile errors in
 // four minutes, until the stale conditions were cleared by hand.
 //
-// `lastTransitionTime` is required too, and `message` is required but may be
-// empty, so both are filled in where a legacy entry lacks them. A condition
-// that is already valid is left exactly as it is, including its transition
-// time — this only ever repairs what would otherwise be rejected.
+// `lastTransitionTime` is required as well, and is filled in where a legacy
+// entry lacks one. `message` needs nothing: it is required but carries no
+// minLength, and metav1.Condition serialises it without omitempty, so the
+// empty string satisfies the schema. Every reason v0.5.0 could write is
+// CamelCase and matches the generated pattern, so an absent reason is the only
+// way a legacy condition fails validation. A condition that is already valid is
+// left exactly as it is, including its transition time — this only ever repairs
+// what would otherwise be rejected.
 //
 // Call this AFTER patch.NewHelper: the helper diffs against the object as it
 // was when the helper was made, so a repair applied before it would not be
