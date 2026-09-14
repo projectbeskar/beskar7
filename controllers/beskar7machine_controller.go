@@ -224,6 +224,11 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Objects written before v0.6.0 carry conditions with no reason, which the
+	// metav1.Condition schema rejects on write. Repair them here, after the
+	// helper has snapshotted the object, so the fix is seen as a change.
+	repairLegacyConditions(b7machine, log)
+
 	// Always patch on exit
 	defer func() {
 		setReadySummary(b7machine, log, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostAssociatedCondition, infrav1.BootstrapDataReadyCondition)

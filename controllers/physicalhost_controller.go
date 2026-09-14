@@ -165,6 +165,11 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to init patch helper for PhysicalHost: %w", err)
 	}
+
+	// Objects written before v0.6.0 carry conditions with no reason, which the
+	// metav1.Condition schema rejects on write. Repair them here, after the
+	// helper has snapshotted the object, so the fix is seen as a change.
+	repairLegacyConditions(physicalHost, logger)
 	defer func() {
 		if perr := patchHelper.Patch(ctx, physicalHost,
 			patch.WithStatusObservedGeneration{},

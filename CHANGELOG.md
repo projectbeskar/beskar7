@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.6.1] - 2026-09-14
+
+### Fixed
+
+- **`v0.6.0` could not patch objects that `v0.5.0` wrote.** Up to `v0.5.0` the controller used
+  Cluster API's deprecated condition type, where `reason` is optional, and stored `True` conditions
+  with none. `v0.6.0`'s CRDs require a `reason` of at least one character, so the API server
+  rejected every status patch carrying those conditions forward
+  (`status.conditions[0].reason: Invalid value: ""`), and the object froze with whatever status the
+  old controller last wrote — while still reading healthy under `kubectl get`, because nothing was
+  rewriting it. Measured on real hardware upgrading `v0.5.0` → `v0.6.0`: every `Beskar7Machine`,
+  `Beskar7Cluster` and `PhysicalHost` in the namespace, ~140 reconcile errors in four minutes. All
+  three reconcilers now repair such conditions before their first status patch; a condition that is
+  already valid is left untouched, including its `lastTransitionTime`. `docs/upgrading.md` carries
+  the manual remedy for anyone who already upgraded to `v0.6.0`.
+
 ## [v0.6.0] - 2026-09-14
 
 ### Added
@@ -1573,6 +1589,7 @@ For detailed implementation information, see the examples directory and document
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
 [Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.6.1]: https://github.com/projectbeskar/beskar7/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...v0.5.0
 [v0.4.4]: https://github.com/projectbeskar/beskar7/compare/v0.4.3...v0.4.4
