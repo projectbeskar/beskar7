@@ -4,6 +4,25 @@
 
 This guide helps you diagnose and resolve common Beskar7 issues.
 
+## A Machine fails with `InspectionTimedOut` and the host is powered off
+
+Look at the host's power state and its boot override:
+
+```bash
+kubectl get physicalhost <host> -n <ns> -o jsonpath='{.status.state}/{.status.inspectionPhase}/{.status.observedPowerState}{"\n"}'
+```
+
+`InUse/Timeout/Off` with the BMC showing `boot: Pxe` means the host was told to PXE boot but never
+powered on, so the inspector never ran. This used to happen when a host was re-claimed immediately
+after being released: the power-on decision was made from a reading taken while the previous
+consumer's shutdown was still in flight, so it returned `On` and the power-on was skipped.
+
+The controller now notices this: once an inspection is more than two minutes old and the host reads
+`Off`, it confirms over Redfish and powers the host back on. If you are on an older version, or the
+BMC is genuinely unreachable, delete the `Machine` and let its `MachineSet` or control-plane
+provider create a replacement — by then the host has settled and the fresh claim powers it on
+correctly.
+
 ## Quick Diagnosis
 
 ```bash

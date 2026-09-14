@@ -74,6 +74,13 @@ const (
 	// or very small images may lower it; operators with slow links should raise it.
 	DefaultDeploymentTimeout = 20 * time.Minute
 
+	// InspectionPowerRecheckDelay is how long into an inspection the controller
+	// waits before it will believe a report that the host is powered off.
+	// A freshly powered-on host can still be advertising a stale Off for a short
+	// while, so reacting immediately would power-cycle healthy hosts; ten minutes
+	// of silence is far too long to wait, so the check sits between the two.
+	InspectionPowerRecheckDelay = 2 * time.Minute
+
 	// DeploymentTimedOutReason is the terminal reason set when a host stays in
 	// StateDeploying longer than the configured deployment timeout (D-015).
 	DeploymentTimedOutReason = "DeploymentTimedOut"
@@ -1036,7 +1043,27 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 		return ctrl.Result{}, nil
 	}
 
-	// 3. Still in progress — check for timeout. Inspection timeout is terminal:
+	// 3. A host that is powered off cannot be running the inspector, so waiting
+	// out the full timeout only delays a failure that is already certain — and
+	// the cause is usually recoverable. It happens when the power-on decision
+	// at claim time was made from a reading taken while the previous consumer's
+	// release shutdown was still in flight: the read returns On, the power-on
+	// is skipped, and the host powers itself off moments later (measured on
+	// bare metal: the reads said On at 08:44:46-47, the console printed
+	// "reboot: Power down" at 08:44:49). Confirm over Redfish rather than
+	// trusting the cached reading, then power it back on and let the timeout
+	// below still apply if it never comes up.
+	if physicalHost.Status.InspectionTimestamp != nil &&
+		time.Since(physicalHost.Status.InspectionTimestamp.Time) > InspectionPowerRecheckDelay &&
+		physicalHost.Status.ObservedPowerState == string(redfish.OffPowerState) {
+		if err := r.ensureHostPoweredOnForInspection(ctx, logger, physicalHost); err != nil {
+			// Non-fatal: the timeout below is the backstop, and a BMC that is
+			// unreachable right now is not a reason to fail the machine here.
+			logger.Error(err, "Failed to power the host back on during inspection")
+		}
+	}
+
+	// 4. Still in progress — check for timeout. Inspection timeout is terminal:
 	// we cannot recover automatically — the operator must investigate (likely an
 	// iPXE misconfiguration or unreachable callback endpoint) and either
 	// delete-and-recreate the Beskar7Machine or fix the iPXE setup.
@@ -1060,6 +1087,38 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 	phase := "Inspecting"
 	b7machine.Status.Phase = &phase
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+// ensureHostPoweredOnForInspection powers a host back on if it really is off
+// while its inspection is supposed to be running.
+//
+// PhysicalHost.Status.ObservedPowerState is what makes the caller suspicious,
+// but it is maintained by the other reconciler on its own cadence and can be
+// stale, so this confirms over Redfish before acting. When the host is already
+// on there is nothing to do and no call is made.
+func (r *Beskar7MachineReconciler) ensureHostPoweredOnForInspection(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) error {
+	rfClient, err := r.getRedfishClientForHost(ctx, logger, physicalHost)
+	if err != nil {
+		return err
+	}
+	defer rfClient.Close(ctx)
+
+	state, err := rfClient.GetPowerState(ctx)
+	if err != nil {
+		return err
+	}
+	if state == redfish.OnPowerState {
+		// The cached reading was stale; nothing to correct.
+		return nil
+	}
+
+	if err := rfClient.SetPowerState(ctx, redfish.OnPowerState); err != nil {
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
+		return err
+	}
+	internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
+	logger.Info("Host was powered off while its inspection was pending; powered it back on", "host", physicalHost.Name)
+	return nil
 }
 
 // handleDeployingHost monitors the Deploying phase (D-015).

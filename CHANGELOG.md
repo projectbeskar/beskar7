@@ -92,6 +92,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   kubelet set its own `providerID` while it is still empty. The unit also ordered only after
   `k0scontroller.service`, which a worker never runs; it now orders after `k0sworker.service` too.
 
+- **A host that powers off during inspection is powered back on instead of failing the machine.**
+  When a host is re-claimed straight after a release, the power-on decision at claim time can be made
+  from a Redfish reading taken while the previous consumer's shutdown is still in flight: the read
+  returns `On`, the power-on is skipped, and the host powers itself off moments later. The controller
+  then monitored an inspection that could never start and failed the `Beskar7Machine` terminally with
+  `InspectionTimedOut` ten minutes later. Once an inspection is more than
+  `InspectionPowerRecheckDelay` (2m) old and the host advertises `Off`, the controller now confirms
+  over Redfish — the cached reading can be stale — and powers it back on. The inspection timeout is
+  unchanged and still the backstop for a host that never comes up.
+
 ### Fixed
 
 - **A BMC that is briefly unreachable no longer strands its `PhysicalHost` in `Error` for minutes.**
