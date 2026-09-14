@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.5.0` (latest) | ✅ |
+| `v0.6.0` (latest) | ✅ |
+| `v0.5.0` | ✅ |
 | `v0.4.4` | ✅ |
 | `v0.4.3` | ✅ |
 | `v0.4.2` | ⚠️ upgrade — a released host cannot be provisioned again ([CHANGELOG](CHANGELOG.md)) |
