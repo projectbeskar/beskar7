@@ -90,12 +90,12 @@ Variables the components accept (set them in the environment or in the clusterct
 
 A clusterctl install is the kustomize-based install: the `capb7-system` namespace, a `ClusterIP` Service `capb7-controller-manager` for the callback server on `:8082`, and a cert-manager `Certificate` whose SANs cover the webhook and callback Service names. Bare-metal hosts reach the callback server while PXE-booting, so for real hardware either expose that Service (patch it to `LoadBalancer` / `NodePort`, or front it with an Ingress) and set `BESKAR7_BOOTSTRAP_URL_BASE` to the external address before `clusterctl init`, or run a [callback-only manager](ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance) on the provisioning network. The external name must also appear in the serving certificate: edit the `Certificate` `capb7-serving-cert` in `capb7-system` (`spec.dnsNames` / `spec.ipAddresses`) after the install, the way the chart's `callback.externalNames` does it.
 
-To install a build of the current tree instead of a release, publish it into a clusterctl local repository first: `make clusterctl-override VERSION=v0.6.0` writes `~/.cluster-api/overrides/infrastructure-beskar7/v0.5.0/`, and `clusterctl init --infrastructure beskar7:v0.5.0` uses it without touching the network. CI does exactly that on every pull request and runs the smoke suite against the result.
+To install a build of the current tree instead of a release, publish it into a clusterctl local repository first: `make clusterctl-override VERSION=v0.6.1` writes `~/.cluster-api/overrides/infrastructure-beskar7/v0.5.0/`, and `clusterctl init --infrastructure beskar7:v0.5.0` uses it without touching the network. CI does exactly that on every pull request and runs the smoke suite against the result.
 
 ## Install via release manifests
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.0/beskar7-manifests-v0.6.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.1/beskar7-manifests-v0.6.1.yaml
 ```
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `capb7-system` namespace and the default `bootstrap.urlBase`. It is the clusterctl components file with the variables above resolved to their defaults; do not `kubectl apply` `infrastructure-components.yaml` itself — it keeps the `${…}` placeholders for `clusterctl init` to fill in.

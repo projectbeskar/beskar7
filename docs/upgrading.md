@@ -219,10 +219,39 @@ helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.0 --reset-the
 grep -rn "failureReason\|failureMessage" your-tooling/
 ```
 
-No inspector upgrade, no `Beskar7Machine`/`Beskar7Cluster`/`PhysicalHost` data migration — existing
-objects keep reconciling once the controller restarts; a machine already `phase: Failed` before the
-upgrade stays `Failed` (it is never reconciled again either way — see
-`docs/beskar7machine.md#terminal-failures`), it just no longer grows new `failureReason` values.
+No inspector upgrade needed. A machine already `phase: Failed` before the upgrade stays `Failed`
+(it is never reconciled again either way — see `docs/beskar7machine.md#terminal-failures`), it just
+no longer grows new `failureReason` values.
+
+### If you are upgrading to exactly `v0.6.0`, read this
+
+`v0.6.0` cannot patch objects that `v0.5.0` wrote, and **`v0.6.1` fixes it** — upgrade straight to
+`v0.6.1` and there is nothing to do.
+
+Up to `v0.5.0` the controller used Cluster API's deprecated condition type, where `reason` is
+optional, and it stored `True` conditions with none. `v0.6.0`'s CRDs require a `reason` of at least
+one character, so the API server rejects every status patch that carries those conditions forward:
+
+```
+status.conditions[0].reason: Invalid value: "": conditions[0].reason in body should be at least 1 chars long
+```
+
+The object then freezes with whatever status the old controller last wrote. This is easy to miss,
+because it still reads healthy under `kubectl get` — nothing is rewriting it. What you will see is
+the manager logging `Reconciler error` and `failed to patch ...` on every pass. Measured on real
+hardware: every `Beskar7Machine`, `Beskar7Cluster` and `PhysicalHost` in the namespace, ~140 errors
+in four minutes.
+
+If you are already on `v0.6.0`, clear the stale conditions and the controller rewrites them
+correctly within a reconcile — they are derived state, so nothing is lost:
+
+```bash
+for kind in beskar7machine beskar7cluster physicalhost; do
+  for obj in $(kubectl get "$kind" -n <namespace> -o name); do
+    kubectl patch "$obj" -n <namespace> --subresource=status --type=merge -p '{"status":{"conditions":[]}}'
+  done
+done
+```
 
 ## `v0.4.4` → `v0.5.0` — **breaking**: the API is now `infrastructure.cluster.x-k8s.io/v1beta2`
 

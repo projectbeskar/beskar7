@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.6.0` (latest) | ✅ |
+| `v0.6.1` (latest) | ✅ |
+| `v0.6.0` | ⚠️ upgrade — cannot patch objects written by `v0.5.0` ([CHANGELOG](CHANGELOG.md)) |
 | `v0.5.0` | ✅ |
 | `v0.4.4` | ✅ |
 | `v0.4.3` | ✅ |

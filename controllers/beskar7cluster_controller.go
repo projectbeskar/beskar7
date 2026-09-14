@@ -144,6 +144,11 @@ func (r *Beskar7ClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	// Objects written before v0.6.0 carry conditions with no reason, which the
+	// metav1.Condition schema rejects on write. Repair them here, after the
+	// helper has snapshotted the object, so the fix is seen as a change.
+	repairLegacyConditions(b7cluster, logger)
+
 	// Always attempt to Patch the Beskar7Cluster object and status after reconciliation.
 	defer func() {
 		// Set the summary condition based on ControlPlaneEndpointReady

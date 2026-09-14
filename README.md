@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.0/beskar7-manifests-v0.6.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.1/beskar7-manifests-v0.6.1.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
