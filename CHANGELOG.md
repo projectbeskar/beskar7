@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.6.2] - 2026-09-15
+
+### Fixed
+
+- **A Helm install could not serve authenticated metrics.** The manager runs with
+  `--secure-metrics=true` by default, so every scrape is authenticated through the
+  kube-apiserver — which needs the manager's own ServiceAccount to create `TokenReviews`
+  and `SubjectAccessReviews`. The kustomize install has shipped those rules since the
+  metrics endpoint existed; the chart shipped none of them, so a Helm-installed manager
+  listened on `:8443` and rejected every scraper, with the failure reading as a scraper
+  misconfiguration rather than as missing RBAC. The chart now renders
+  `capb7-metrics-auth-role`, its binding, and `capb7-metrics-reader`, byte-identical to
+  their kustomize counterparts, with a drift guard so the two paths cannot separate again.
+  Note neither install path ships a `Service` for `:8443` — that is deliberate and shared.
+- **The `Deploying` state was never reported.** `beskar7_controller_physicalhost_states_total`
+  emits only the states named in an internal list, and `Deploying` was missing from it — so
+  a host writing its OS image was not counted as zero, it was absent from the metric
+  entirely. Added, with a test pinning the list against the API's own state constants.
+
+### Changed
+
+- **Documentation accuracy pass over all 27 docs**, checked against the types, controllers,
+  handlers and the frozen contract fixtures rather than read for sense. The corrections that
+  change what a reader would do:
+  - `docs/README.md` claimed four physical BMC vendors were `Tested: Yes`. None has been
+    validated on real hardware, which `docs/hardware-compatibility.md` already said plainly.
+  - The "production" Helm values example used keys the chart does not define, and Helm
+    ignores unknown keys silently — so it rendered every default while appearing to
+    configure a hardened 3-replica deployment.
+  - The "production" RBAC example was missing four rule blocks, including the
+    `coordination.k8s.io` leases without which leader election never starts.
+  - `beskar7.provider-id` was missing from every rendered kernel-cmdline listing; the
+    callback server was described as three or four endpoints rather than five; the token
+    lifetime was documented as the pre-v4 30 minutes rather than 60.
+  - Several commands could not work as written — the wrong pod-label value, ClusterRole
+    names missing the `capb7-` prefix, a `-v=5` flag that would crash the container, a
+    port-forward to a Service that does not exist, and `cat`/`du` against a distroless image.
+  - Claims of having verified behaviour "on bare metal" now say what was actually used: a
+    libvirt + sushy-tools lab.
+
 ## [v0.6.1] - 2026-09-14
 
 ### Fixed
@@ -1589,6 +1629,7 @@ For detailed implementation information, see the examples directory and document
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
 [Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.6.2]: https://github.com/projectbeskar/beskar7/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/projectbeskar/beskar7/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...v0.6.0
 [v0.5.0]: https://github.com/projectbeskar/beskar7/compare/v0.4.4...v0.5.0
