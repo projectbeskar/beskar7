@@ -30,8 +30,9 @@ spec:
 The controller derives the endpoint by:
 
 1. Listing CAPI `Machine` objects with the `cluster.x-k8s.io/cluster-name=<this-cluster>` label and the `cluster.x-k8s.io/control-plane` label.
-2. Picking a `Machine` whose `InfrastructureRef` points at a Beskar7Machine and whose status reports an `InternalIP` (with `ExternalIP` as fallback).
-3. Writing that address to `Status.ControlPlaneEndpoint`.
+2. Skipping any `Machine` whose `InfrastructureReady` condition is not `True`, or that has no `status.addresses` yet.
+3. From the rest, taking the first `InternalIP` — or, if there is none, the first address of any type (which may be a hostname or DNS name, not necessarily an `ExternalIP`).
+4. Writing that address to `Status.ControlPlaneEndpoint`.
 
 If `Spec.ControlPlaneEndpoint.Host` is non-empty, the controller honors it authoritatively and skips discovery. If only `Spec.ControlPlaneEndpoint.Port` is set, discovery still finds the host but the user's port wins. The default port when neither is supplied is `6443`.
 
@@ -67,7 +68,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 
 `Beskar7Cluster` has a validating webhook that checks `controlPlaneEndpoint.host` (IP or hostname) and `port` (1–65535). The webhook ships with `failurePolicy: Fail`, so a Pods/Beskar7Cluster admission attempt without a healthy webhook service is rejected.
 
-There are no defaulting webhooks. The other CRDs (`PhysicalHost`, `Beskar7Machine`, `Beskar7MachineTemplate`) have no webhooks at all.
+There is also a defaulting (mutating) webhook: when `controlPlaneEndpoint.host` is set but `port` is `0`, it sets `port` to `6443`. The other CRDs (`PhysicalHost`, `Beskar7Machine`, `Beskar7MachineTemplate`) have no webhooks at all.
 
 ## Example
 

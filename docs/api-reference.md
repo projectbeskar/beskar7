@@ -189,7 +189,7 @@ kind: Beskar7Machine
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `providerID` | string | no | Set by the controller when the host is claimed. Format: `b7://<namespace>/<name>`. Do not set manually. Omitted (not an empty string) until then. |
+| `providerID` | string | no | Set by the controller once the host finishes provisioning and reaches `Ready` — after both inspection and the OS write, not at claim time. Format: `b7://<namespace>/<name>`. Do not set manually. Omitted (not an empty string) until then. |
 | `inspectionImageURL` | string | yes | Base URL serving the inspection image's boot artifacts. The controller renders an iPXE script that boots `<inspectionImageURL>/vmlinuz` with `<inspectionImageURL>/initrd.img` as the initrd. Validated against `^https?://[^\s]+$`. |
 | `targetImageURL` | string | yes | URL of the Kairos whole-disk raw image the inspector writes to the target disk during provisioning. Served over plain HTTP or HTTPS; integrity is verified against `targetImageDigest`, not TLS (contract §8.1). Validated against `^https?://[^\s]+$`. |
 | `targetImageDigest` | string | yes | Expected SHA-256 digest of the bytes at `targetImageURL`, formatted `sha256:<64-lowercase-hex>`. Validated against `^sha256:[a-f0-9]{64}$`. The inspector refuses to mount, inject user-data, or reboot on a mismatch — this is the sole integrity/authenticity anchor for the OS image. |
@@ -358,7 +358,7 @@ kind: Beskar7Cluster
 
 ### Webhooks
 
-`Beskar7Cluster` is the only resource with an admission webhook. The webhook is in `api/v1beta2/webhooks/beskar7cluster_webhook.go`; it validates `controlPlaneEndpoint.host` and `port`. The webhook ships with `failurePolicy: Fail`.
+`Beskar7Cluster` is the only resource with admission webhooks — a validating one and a defaulting (mutating) one, both in `api/v1beta2/webhooks/beskar7cluster_webhook.go`. The validating webhook validates `controlPlaneEndpoint.host` and `port`. The webhook ships with `failurePolicy: Fail`.
 
 There are **no** webhooks for `PhysicalHost`, `Beskar7Machine`, or `Beskar7MachineTemplate`. Validation for those resources is performed by the controllers themselves and via OpenAPI schema validation.
 

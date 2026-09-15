@@ -28,7 +28,7 @@ spec:
   hostSelector:                                                         # optional; see "Steering the claim"
     matchLabels:
       node-role: control-plane
-  # providerID is set by the controller on claim — do not set manually
+  # providerID is set by the controller once the host is fully provisioned — do not set manually
 ```
 
 `inspectionImageURL` and `targetImageURL` must match `^https?://[^\s]+$`; `targetImageDigest` is required and must match `^sha256:[a-f0-9]{64}$` — the inspector refuses to mount, inject user-data, or reboot on a digest mismatch (`docs/inspector-contract.md` §8.1). There is no `osFamily`, `imageURL`, `bootMode`, `provisioningMode`, `configURL` (removed v0.3 fields), or `configurationURL` (a dead, never-wired v0.4 field removed before GA).
@@ -66,14 +66,15 @@ When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssoc
 The reconciler runs through these phases. Each phase corresponds to a state of the claimed `PhysicalHost`.
 
 1. **Wait for owner Machine.** If the owning CAPI `Machine` does not have an `OwnerReference` to this Beskar7Machine yet, requeue.
-2. **Bootstrap data check.** Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and mark the machine terminally failed (terminal).
-3. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
+2. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
     1. If `Spec.ProviderID` is set (only after inspection completes), `Get` the host directly by the encoded `<ns>/<name>` and return it.
     2. List PhysicalHosts in the namespace and return the one whose `Spec.ConsumerRef.Name` matches this Beskar7Machine — covers the window between claim and `ProviderID` assignment. Without this branch the controller would forget its own claim after the first reconcile (the host has transitioned to `InUse` so the next branch's `Available` filter skips it).
     3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available` — and by the machine's placement constraint: `spec.hostSelector` when set, ANDed with the label `topology.kubernetes.io/zone=<domain>` when CAPI has placed the owning `Machine` into a failure domain (`Machine.spec.failureDomain`; the same label `Beskar7Cluster` derives its failure domains from). The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. If hosts are `Available` but none is in the Machine's failure domain, the condition `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (as opposed to `WaitingForPhysicalHost` for an empty inventory) and the machine requeues; it never claims a host outside its domain. Placement applies only to a fresh claim — lookups 1 and 2 return the host the machine already holds.
 
     See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
-4. **Signal the bootstrap URL.** Compute the URL deterministically as `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and patch `infrastructure.cluster.x-k8s.io/bootstrap-url` onto the host's annotations. The host reconciler persists it to `Status.Bootstrap.URL`.
+3. **Bootstrap data check and URL signal.** Both happen in one call, `ensureBootstrapDataReady`, and only *after* a host is claimed — it takes the `PhysicalHost` as an argument, so it cannot run earlier. A host is taken from the pool regardless of whether the bootstrap Secret is ready yet.
+    - Read `Machine.Spec.Bootstrap.DataSecretName`. If unset, mark `BootstrapDataReady=False (WaitingForBootstrapData)` and requeue. If set but the Secret is not found, mark `BootstrapDataReady=False (BootstrapDataUnavailable)` and mark the machine terminally failed (terminal).
+    - Compute the bootstrap URL deterministically as `<--bootstrap-url-base>/api/v1/bootstrap/<ns>/<host>` and patch `infrastructure.cluster.x-k8s.io/bootstrap-url` onto the host's annotations. The host reconciler persists it to `Status.Bootstrap.URL`.
 5. **Trigger inspection.** When the host transitions to `InUse`:
     - Open a Redfish client with the host's credentials.
     - `SetBootSourcePXE` then `SetPowerState(On)` if not already powered on.
@@ -164,7 +165,7 @@ Raise both whenever you raise either flag. What they mean in practice:
 
 `reconcileDelete` runs:
 
-1. If a `ProviderID` is set and the parsed host exists with `ConsumerRef.Name == this.Name`:
+1. Locate the claimed host. **`ConsumerRef` ownership is the source of truth**, not `ProviderID`: a machine deleted before inspection completes holds a claimed host but has no `ProviderID` yet, so a ProviderID-only lookup would miss it and strand the host (#107). `ProviderID`, when set and parseable, is used as a fast-path `Get` to avoid a list in the common provisioned case; when it is unset, malformed, or points at a host this machine does not own, the controller scans the namespace for a `PhysicalHost` whose `Spec.ConsumerRef.Name` matches. Once found:
     - Best-effort: open the Redfish client and call `ClearBootSourceOverride` then `SetPowerState(Off)` (graceful). All errors are logged and swallowed so a dead BMC cannot strand the finalizer.
     - Patch `ConsumerRef = nil` on the host with optimistic locking.
 2. Remove the finalizer (`beskar7machine.infrastructure.cluster.x-k8s.io`).
@@ -249,7 +250,7 @@ A k0s image also needs
 ProviderID, but because without it a k0s control plane does not form on beskar7 at all
 ([Building a target image → k0s: the start gate](building-images.md#k0s-the-start-gate)).
 
-Verified on bare metal with Kairos v4.1.2 + k0s v1.34.8+k0s.0 and cluster-api-provider-kairos:
+Verified on the libvirt + sushy-tools lab with Kairos v4.1.2 + k0s v1.34.8+k0s.0 and cluster-api-provider-kairos:
 three control planes registered `b7://<namespace>/<host>` and reached `Running`, and a worker
 rolled onto the fixed stage logged `beskar7: set providerID=b7://<ns>/<host> on node <name>` on a
 node with **no** `admin.conf`, then reached `Running` with its `nodeRef` — no manual patch.

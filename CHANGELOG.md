@@ -14,7 +14,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   rejected every status patch carrying those conditions forward
   (`status.conditions[0].reason: Invalid value: ""`), and the object froze with whatever status the
   old controller last wrote — while still reading healthy under `kubectl get`, because nothing was
-  rewriting it. Measured on real hardware upgrading `v0.5.0` → `v0.6.0`: every `Beskar7Machine`,
+  rewriting it. Measured on the libvirt + sushy-tools lab upgrading `v0.5.0` → `v0.6.0`: every `Beskar7Machine`,
   `Beskar7Cluster` and `PhysicalHost` in the namespace, ~140 reconcile errors in four minutes. All
   three reconcilers now repair such conditions before their first status patch; a condition that is
   already valid is left untouched, including its `lastTransitionTime`. `docs/upgrading.md` carries
@@ -623,7 +623,7 @@ Fixes host reuse. No API, CRD or contract (`v4.2`) change; no manual upgrade ste
   also heals a host released uncleanly (a manager restart mid-release, or a
   `consumerRef` cleared by hand). `InspectionPhase` is reset and `HostInspected`
   flipped to False with a new `HostReleased` reason, since both describe the run
-  that ended rather than the hardware. Verified on bare metal: a host carrying a
+  that ended rather than the hardware. Verified on the libvirt + sushy-tools lab: a host carrying a
   stale timestamp was released, cleared, re-claimed, and provisioned again to
   `Ready` with the node coming up as `b7://<namespace>/<host>`. (#154)
 

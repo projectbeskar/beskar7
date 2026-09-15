@@ -68,7 +68,7 @@ const LegacyConditionReason = "Migrated"
 //
 // The object then freezes with whatever status the old controller last wrote —
 // and it still reads healthy under `kubectl get`, because nothing rewrites it.
-// Measured on bare metal upgrading v0.5.0 to v0.6.0: every Beskar7Machine,
+// Measured on the libvirt + sushy-tools lab upgrading v0.5.0 to v0.6.0: every Beskar7Machine,
 // Beskar7Cluster and PhysicalHost in the namespace, ~140 reconcile errors in
 // four minutes, until the stale conditions were cleared by hand.
 //

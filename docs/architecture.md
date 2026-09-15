@@ -152,7 +152,7 @@ graph TD
 **Derives the Control Plane Endpoint:**
 1. Lists CAPI `Machine` resources with control plane label (`cluster.x-k8s.io/control-plane`)
 2. Finds a `Machine` marked as `InfrastructureReady`
-3. Extracts IP address from `Machine`'s `status.addresses` (preferring `InternalIP`, fallback to `ExternalIP`)
+3. Extracts the address from `Machine`'s `status.addresses` — preferring `InternalIP`, otherwise falling back to the first address of any type
 4. Populates `Beskar7Cluster`'s `status.controlPlaneEndpoint` field
 
 **Discovers Failure Domains:**
@@ -173,11 +173,12 @@ graph TD
 **Responsibilities:**
 - Receives hardware inspection reports from inspection images
 - Validates report structure
-- Updates corresponding PhysicalHost resource with:
-  - Inspection report data (CPUs, Memory, Disks, NICs, System info)
-  - Inspection phase (`Complete` or `Failed`)
-  - Inspection timestamp
-- Triggers Beskar7Machine controller to continue provisioning
+- Writes the validated report to a per-host ConfigMap and patches an
+  `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the PhysicalHost
+- Does **not** write `PhysicalHost.Status` itself. The `PhysicalHostReconciler` consumes the
+  annotation and is the sole writer of `Status.InspectionReport`, `Status.InspectionPhase`
+  and the inspection timestamp (D-005)
+- That status change is what lets the Beskar7Machine controller continue provisioning
 
 **Authentication:** Token-based (token passed via kernel parameters during iPXE boot)
 
@@ -196,6 +197,8 @@ type Client interface {
     SetBootSourcePXE(ctx context.Context) error
     Reset(ctx context.Context) error
     GetNetworkAddresses(ctx context.Context) ([]NetworkAddress, error)
+    ForcePowerOff(ctx context.Context) error
+    ClearBootSourceOverride(ctx context.Context) error
 }
 ```
 
@@ -238,7 +241,7 @@ The inspection workflow is the core innovation in Beskar7. It provides reliable 
 4. The controller's /boot handler consumes the nonce (single-use) and
    renders the inspector's kernel cmdline: beskar7.api, beskar7.namespace,
    beskar7.host, beskar7.token, beskar7.target, beskar7.target-digest,
-   beskar7.ca (docs/inspector-contract.md §5)
+   beskar7.provider-id, beskar7.ca (docs/inspector-contract.md §5)
    |
    v
 5. iPXE boots the inspector image (beskar7-inspector, a static Rust/musl
@@ -323,6 +326,7 @@ beskar7.host=server-01
 beskar7.token=<plaintext-bearer-token>
 beskar7.target=http://<image-server>/kairos-k3s.raw
 beskar7.target-digest=sha256:<64-hex-digest>
+beskar7.provider-id=b7://default/server-01
 beskar7.ca=<base64-encoded-callback-CA>
 ```
 

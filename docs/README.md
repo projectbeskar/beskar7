@@ -77,13 +77,17 @@ If you are operating an existing install:
 
 Beskar7 uses only the universally-supported portions of Redfish (power state, one-time PXE boot source, system info, network interface enumeration). It does not require vendor-specific extensions and does not ship vendor-specific code paths.
 
-| Vendor | BMC product | Tested | Notes |
+| Vendor | BMC product | Validated on real hardware | Notes |
 |---|---|---|---|
-| Dell EMC | iDRAC 8/9 | Yes | Redfish must be enabled in iDRAC settings. |
-| HPE | iLO 5 | Yes | Requires an iLO Advanced license for some power operations. |
-| Lenovo | XCC | Yes | – |
-| Supermicro | BMC | Yes | Redfish API enable in Configuration → Redfish API. |
-| Other Redfish-compliant BMCs | – | – | Should work; please report results. |
+| Dell EMC | iDRAC 8/9 | Not yet | Redfish must be enabled in iDRAC settings. |
+| HPE | iLO 5 | Not yet | Requires an iLO Advanced license for some power operations. |
+| Lenovo | XCC | Not yet | – |
+| Supermicro | BMC | Not yet | Redfish API enable in Configuration → Redfish API. |
+| Other Redfish-compliant BMCs | – | Not yet | Should work; please report results. |
+
+No physical vendor BMC has been validated. Testing to date is against
+`internal/redfishmock`, the DMTF `public-rackmount1` reference mockup, and
+sushy-tools — see [Hardware compatibility](hardware-compatibility.md#what-has-actually-been-validated).
 
 For BMC-specific configuration tips, see [Hardware Compatibility](hardware-compatibility.md).
 

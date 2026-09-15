@@ -149,7 +149,7 @@ and in host memory. See `internal/auth/token.go` for the primitives.
 
 ## 4. Endpoints
 
-All four endpoints are served by the controller's callback server on a single
+All five endpoints are served by the controller's callback server on a single
 HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 `SetupCallbackServer`). TLS is mandatory on all of them.
 
@@ -475,7 +475,7 @@ evaluate correctly:
 
 ## 8. TLS and reachability
 
-- **All four endpoints are HTTPS-only.** The inspector MUST verify the callback
+- **All five endpoints are HTTPS-only.** The inspector MUST verify the callback
   server's certificate against the CA delivered inline via `beskar7.ca`.
   The inspector MUST NOT offer or use an insecure-skip-verify option for the
   inspection POST or bootstrap GET — those carry/return cluster join secrets and a
