@@ -1,0 +1,115 @@
+# ClusterClass with Beskar7 as the infrastructure provider (issue #209).
+#
+# What this shows is the *Beskar7* half of a ClusterClass: the
+# Beskar7ClusterTemplate the class points at, and the Beskar7MachineTemplates its
+# control-plane and worker classes use. The control-plane and bootstrap halves are
+# whatever providers you run — Kubeadm is used below because it is the portable
+# illustration; if you run cluster-api-provider-kairos, substitute its templates
+# and check that it supports ClusterClass before relying on this.
+#
+# Apply order: the templates, then the ClusterClass, then the Cluster.
+#
+# Prerequisites, same as any Beskar7 cluster: PhysicalHost objects registered and
+# Available, with the node-role labels the machine templates select on. See
+# examples/host-pools.yaml.
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: Beskar7ClusterTemplate
+metadata:
+  name: beskar7-cluster-template
+  namespace: default
+spec:
+  template:
+    # spec is deliberately empty. Beskar7ClusterSpec's only field is
+    # controlPlaneEndpoint, which must NOT be templated — every cluster needs its
+    # own, and the Beskar7Cluster controller discovers one from the control-plane
+    # Machines when it is unset. See docs/beskar7clustertemplate.md.
+    spec: {}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: Beskar7MachineTemplate
+metadata:
+  name: beskar7-controlplane-template
+  namespace: default
+spec:
+  template:
+    spec:
+      hostSelector:
+        matchLabels:
+          node-role: control-plane
+      inspectionImageURL: http://boot.example.invalid:8090
+      targetImageURL: http://boot.example.invalid:8090/kairos-k3s.raw
+      targetImageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: Beskar7MachineTemplate
+metadata:
+  name: beskar7-worker-template
+  namespace: default
+spec:
+  template:
+    spec:
+      hostSelector:
+        matchLabels:
+          node-role: worker
+      inspectionImageURL: http://boot.example.invalid:8090
+      targetImageURL: http://boot.example.invalid:8090/kairos-k3s.raw
+      targetImageDigest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: ClusterClass
+metadata:
+  name: beskar7-cluster-class
+  namespace: default
+spec:
+  infrastructure:
+    templateRef:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+      kind: Beskar7ClusterTemplate
+      name: beskar7-cluster-template
+  controlPlane:
+    templateRef:
+      apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+      kind: KubeadmControlPlaneTemplate
+      name: beskar7-controlplane
+    machineInfrastructure:
+      templateRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        kind: Beskar7MachineTemplate
+        name: beskar7-controlplane-template
+  workers:
+    machineDeployments:
+    - class: beskar7-worker
+      bootstrap:
+        templateRef:
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+          kind: KubeadmConfigTemplate
+          name: beskar7-worker-bootstrap
+      infrastructure:
+        templateRef:
+          apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+          kind: Beskar7MachineTemplate
+          name: beskar7-worker-template
+---
+# The Cluster names the class instead of carrying an infrastructureRef of its own.
+# Cluster API's topology controller creates the Beskar7Cluster from the template.
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: beskar7-topology-cluster
+  namespace: default
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: ["192.168.0.0/16"]
+  topology:
+    classRef:
+      name: beskar7-cluster-class
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: beskar7-worker
+        name: md-0
+        replicas: 2

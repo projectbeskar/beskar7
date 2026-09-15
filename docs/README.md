@@ -15,6 +15,7 @@ This directory contains the user-facing documentation for the Beskar7 Cluster AP
 - [PhysicalHost](physicalhost.md) — operational notes for the host CRD.
 - [Beskar7Machine](beskar7machine.md) — operational notes for the machine CRD.
 - [Beskar7Cluster](beskar7cluster.md) — operational notes for the cluster CRD.
+- [Beskar7ClusterTemplate](beskar7clustertemplate.md) — template schema for `ClusterClass` topology-managed clusters.
 - [Beskar7MachineTemplate](beskar7machinetemplate.md) — template schema; consumed by KubeadmControlPlane / MachineDeployment.
 
 ## Operations
