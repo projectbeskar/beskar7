@@ -172,9 +172,10 @@ spec:
     matchLabels:
       app.kubernetes.io/name: beskar7
   endpoints:
-    # The Helm chart ships no metrics Service, so there is no port name to match
-    # and this selector finds nothing as written. Either install via kustomize,
-    # or create a Service of your own targeting the pod's 8443 and name its port.
+    # Neither install path ships a Service for :8443 — create one targeting the
+    # manager pod's 8443 and name its port `https-metrics`, or drop the selector
+    # and scrape the pod directly. The RBAC that lets the manager authenticate
+    # your scraper (capb7-metrics-auth-role) ships with both Helm and kustomize.
     - port: https-metrics
       scheme: https
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
