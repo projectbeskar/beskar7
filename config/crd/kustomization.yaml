@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/infrastructure.cluster.x-k8s.io_beskar7clusters.yaml
+- bases/infrastructure.cluster.x-k8s.io_beskar7clustertemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_beskar7machines.yaml
 - bases/infrastructure.cluster.x-k8s.io_beskar7machinetemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_physicalhosts.yaml
@@ -12,6 +13,7 @@ patches:
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
 - path: patches/webhook_in_beskar7clusters.yaml
+- path: patches/webhook_in_beskar7clustertemplates.yaml
 - path: patches/webhook_in_beskar7machines.yaml
 - path: patches/webhook_in_beskar7machinetemplates.yaml
 - path: patches/webhook_in_physicalhosts.yaml
@@ -20,6 +22,7 @@ patches:
 # [CERTMANAGER] To enable cert-manager, uncomment all the sections with [CERTMANAGER] prefix.
 # patches here are for enabling the CA injection for each CRD
 - path: patches/cainjection_in_beskar7clusters.yaml
+- path: patches/cainjection_in_beskar7clustertemplates.yaml
 - path: patches/cainjection_in_beskar7machines.yaml
 - path: patches/cainjection_in_beskar7machinetemplates.yaml
 - path: patches/cainjection_in_physicalhosts.yaml
