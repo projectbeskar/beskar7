@@ -61,9 +61,9 @@ no kind is registered for the type v1beta1.Machine
 clusterctl init
 
 # Or manually:
-kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.10.0/cluster-api-components.yaml
-kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.10.0/bootstrap-components.yaml
-kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.10.0/control-plane-components.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.11.0/cluster-api-components.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.11.0/bootstrap-components.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.11.0/control-plane-components.yaml
 
 # Restart Beskar7
 kubectl rollout restart deployment/capb7-controller-manager -n capb7-system
@@ -388,7 +388,7 @@ spec:
   - name: manager
     args:
     - --leader-elect
-    - -v=5  # Add this line (1-10, higher = more verbose)
+    - --zap-log-level=debug  # Add this line (debug|info|error, or an integer for finer levels)
 ```
 
 ### Watch Events
@@ -836,7 +836,7 @@ kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 A: A Redfish failure that needs something to change — a wrong address, wrong credentials, a rejected certificate — backs off exponentially, up to 30 minutes between attempts, so the host keeps the error for a while after you fix it. Edit the `PhysicalHost` or its credentials Secret to wake the controller at once. A BMC that is merely unreachable is different: it is retried every 15 seconds and enrols on the first attempt that connects.
 
 **Q: Inspection keeps timing out, can I increase the timeout?**
-A: Currently hardcoded to 10 minutes. If hardware is slow, consider filing an issue for configurable timeout.
+A: Yes — the manager's `--inspection-timeout` flag (default `10m`). Raise it for hardware with a slow POST. `--deployment-timeout` covers the image-write phase separately.
 
 **Q: Can I manually trigger inspection again?**
 A: Delete and recreate the Beskar7Machine to trigger new inspection.
@@ -845,7 +845,7 @@ A: Delete and recreate the Beskar7Machine to trigger new inspection.
 A: Delete the Beskar7Machine that claimed it, and it will return to Available state.
 
 **Q: Controller logs are too verbose, how do I reduce them?**
-A: Remove the `-v=X` flag or set to `-v=1` for minimal logging.
+A: Remove the `--zap-log-level` override, or set it back to `info`.
 
 ---
 

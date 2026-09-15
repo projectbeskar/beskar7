@@ -262,7 +262,7 @@ func RecordError(controller string, namespace string, errorType ErrorType) {
 // PhysicalHost.Status.State. Enumerating them here lets UpdatePhysicalHostStateCounts
 // zero-out states that have dropped to zero rather than leaving stale gauge series.
 var physicalHostCanonicalStates = []string{
-	"", "Unknown", "Enrolling", "Available", "InUse", "Inspecting", "Ready", "Error",
+	"", "Unknown", "Enrolling", "Available", "InUse", "Inspecting", "Deploying", "Ready", "Error",
 }
 
 // beskar7MachineCanonicalPhases lists every phase string that can appear in

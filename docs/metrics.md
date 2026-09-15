@@ -6,7 +6,7 @@ Beskar7 exposes Prometheus metrics for the controllers and the host-callback end
 
 ## Overview
 
-The manager serves `/metrics` on `:8443` (HTTPS, authenticated via TokenReview/SubjectAccessReview delegated to the kube-apiserver — see [Security Configuration](security/configuration.md)). Scrapers must authenticate as a SA bound to the `metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
+The manager serves `/metrics` on `:8443` (HTTPS, authenticated via TokenReview/SubjectAccessReview delegated to the kube-apiserver — see [Security Configuration](security/configuration.md)). Scrapers must authenticate as a SA bound to the `capb7-metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
 
 The metrics provide insights into:
 
@@ -61,10 +61,11 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 **Labels:** `state`, `namespace`  
 **Description:** Number of PhysicalHosts in each state.
 
-**States** (match the `Status.State` strings — see `api/v1beta2/physicalhost_types.go:10-26`):
+**States** (match the `Status.State` strings — see `api/v1beta2/physicalhost_types.go:10-33`):
 - `Available`
 - `InUse`
 - `Inspecting`
+- `Deploying`
 - `Ready`
 - `Error`
 - `Enrolling`
@@ -125,6 +126,16 @@ These metrics track cluster-level operations and failure domain discovery.
 **Labels:** `outcome`, `namespace`  
 **Description:** Total number of failure domain discovery operations.
 
+#### `beskar7_host_claim_attempts_total`
+**Type:** Counter  
+**Labels:** `namespace`, `outcome`, `conflict_reason`  
+**Description:** Host claim attempts. `conflict_reason` distinguishes a lost optimistic-locking race from an empty pool or a failure-domain mismatch, so a cluster starved of hosts looks different from one where two machines raced for the same host.
+
+#### `beskar7_host_claim_duration_seconds`
+**Type:** Histogram (default buckets)  
+**Labels:** `namespace`, `outcome`  
+**Description:** How long a host claim took, from the start of `findAndClaimOrGetAssociatedHost` to the claim patch landing or failing.
+
 ## Setting Up Monitoring
 
 ### Prerequisites
@@ -135,7 +146,7 @@ These metrics track cluster-level operations and failure domain discovery.
 
 ### Prometheus Configuration
 
-Metrics are HTTPS-only and require a Kubernetes-authenticated bearer token. The simplest path is via the Prometheus Operator's `ServiceMonitor` with a SA bound to `metrics-reader`:
+Metrics are HTTPS-only and require a Kubernetes-authenticated bearer token. The simplest path is via the Prometheus Operator's `ServiceMonitor` with a SA bound to `capb7-metrics-reader`:
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -148,7 +159,7 @@ subjects:
   namespace: monitoring
 roleRef:
   kind: ClusterRole
-  name: metrics-reader
+  name: capb7-metrics-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: monitoring.coreos.com/v1
@@ -161,7 +172,10 @@ spec:
     matchLabels:
       app.kubernetes.io/name: beskar7
   endpoints:
-    - port: https-metrics            # match the chart's Service port name
+    # The Helm chart ships no metrics Service, so there is no port name to match
+    # and this selector finds nothing as written. Either install via kustomize,
+    # or create a Service of your own targeting the pod's 8443 and name its port.
+    - port: https-metrics
       scheme: https
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
       tlsConfig:

@@ -9,7 +9,7 @@ Beskar7 provisions bare-metal Kubernetes nodes via Redfish power management, iPX
 ## Prerequisites
 
 - Kubernetes v1.31+ ([docs](https://kubernetes.io/docs/setup/))
-- Cluster API v1.10+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
+- Cluster API v1.11+ ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 - cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/)) — **recommended but optional** (see TLS section below)
 
 ### TLS certificates
@@ -75,7 +75,7 @@ All configurable values with their defaults:
 | `controllerManager.env` | `[]` | Additional environment variables for the manager container. |
 | `imagePullSecrets` | `[]` | Image pull secrets for the manager pod. |
 | `nameOverride` | `""` | Override the chart name component of generated resource names. |
-| `fullnameOverride` | `""` | Override the full generated resource name prefix. |
+| `fullnameOverride` | `"capb7"` | Override the full generated resource name prefix. |
 | `serviceAccount.create` | `true` | Create a ServiceAccount for the manager. |
 | `serviceAccount.annotations` | `{}` | Annotations to add to the ServiceAccount. |
 | `serviceAccount.name` | `""` | ServiceAccount name; generated from fullname template if empty. |
@@ -108,8 +108,8 @@ All configurable values with their defaults:
 | `rbac.create` | `true` | Create RBAC resources for the manager. With `watchNamespaces` empty, renders a cluster-scoped ClusterRole + ClusterRoleBinding. With `watchNamespaces` set, renders a minimal ClusterRole + per-namespace Role/RoleBinding pairs (see `watchNamespaces`). |
 | `watchNamespaces` | `[]` | Namespaces the controller watches. Empty (default) = all namespaces, cluster-scoped RBAC. Non-empty list scopes both the cache (`--watch-namespaces` flag on the manager) and the RBAC (per-namespace Role/RoleBinding in each listed namespace + leader-election Role in the operator's own namespace). Beskar7 CRs outside the listed namespaces are ignored. |
 | `networkPolicy.enabled` | `false` | Deploy NetworkPolicy rules for the manager pod. |
-| `monitoring.enabled` | `true` | Enable the metrics server on `:8443` (HTTPS, TokenReview/SAR auth). |
-| `monitoring.serviceMonitor.enabled` | `false` | Create a Prometheus Operator `ServiceMonitor`. |
+| `monitoring.enabled` | `true` | Informational only — toggles one line in the post-install notes. The metrics server on `:8443` always runs; `--metrics-bind-address` is hardcoded in the Deployment. |
+| `monitoring.serviceMonitor.enabled` | `false` | **Not wired to any template** — the chart ships no `ServiceMonitor`, so this has no effect. Apply one yourself; `docs/metrics.md` has a working example. |
 | `monitoring.serviceMonitor.namespace` | `""` | Namespace for the ServiceMonitor (defaults to release namespace). |
 | `monitoring.serviceMonitor.labels` | `{}` | Additional labels for the ServiceMonitor. |
 | `nodeSelector` | `{}` | Node selector for the manager pod. |

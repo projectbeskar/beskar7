@@ -160,10 +160,10 @@ See `config/rbac/namespace-scoped/README.md` for the worked example.
 
 Backward-compatible in-place migration:
 
-1. Apply the namespace-scoped RBAC alongside the existing cluster-wide RBAC (i.e. don't delete `manager-role` / `manager-rolebinding` yet). The controller's ServiceAccount is now bound by both — no permission is lost.
+1. Apply the namespace-scoped RBAC alongside the existing cluster-wide RBAC (i.e. don't delete `capb7-manager-role` / `capb7-manager-rolebinding` yet). The controller's ServiceAccount is now bound by both — no permission is lost.
 2. Set `--watch-namespaces=<csv>` on the manager Deployment. The cache scopes to those namespaces; Beskar7 CRs elsewhere stop being reconciled.
 3. Verify reconciles in the watched namespaces still work. Look for `Scoping informers to namespaces` in the manager log.
-4. Delete the old cluster-wide `ClusterRole` (`manager-role`) and `ClusterRoleBinding` (`manager-rolebinding`).
+4. Delete the old cluster-wide `ClusterRole` (`capb7-manager-role`) and `ClusterRoleBinding` (`capb7-manager-rolebinding`).
 
 The manager pod does not need to be restarted between steps 2 and 4 — Kubernetes RBAC evaluations are stateless per-request.
 
@@ -207,8 +207,8 @@ After install, confirm the deployed RBAC matches your chosen topology.
 kubectl get clusterrole -l app.kubernetes.io/name=beskar7 -o yaml
 
 # Kustomize install:
-kubectl get clusterrole manager-role -o yaml
-kubectl get clusterrolebinding manager-rolebinding -o yaml
+kubectl get clusterrole capb7-manager-role -o yaml
+kubectl get clusterrolebinding capb7-manager-rolebinding -o yaml
 ```
 
 **Namespace-scoped topology:**

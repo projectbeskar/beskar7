@@ -560,7 +560,7 @@ Recommended network topology:
 
 ### Metrics
 
-Prometheus metrics exposed on `:8443` (HTTPS, authenticated). For the full surface, see [Metrics](metrics.md). The metrics endpoint authenticates requests via TokenReview/SubjectAccessReview delegated to the kube-apiserver; scrapers need the `metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
+Prometheus metrics exposed on `:8443` (HTTPS, authenticated). For the full surface, see [Metrics](metrics.md). The metrics endpoint authenticates requests via TokenReview/SubjectAccessReview delegated to the kube-apiserver; scrapers need the `capb7-metrics-reader` ClusterRole. For local development, set the manager flag `--secure-metrics=false`.
 
 ### Logs
 

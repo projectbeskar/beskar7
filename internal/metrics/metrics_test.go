@@ -21,6 +21,8 @@ import (
 	"time"
 
 	dto "github.com/prometheus/client_model/go"
+
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 func TestInit(t *testing.T) {
@@ -237,5 +239,34 @@ func TestRecordError(t *testing.T) {
 	}
 	if validationMetric.GetCounter().GetValue() != 1 {
 		t.Errorf("Expected validation error counter to be 1, got %v", validationMetric.GetCounter().GetValue())
+	}
+}
+
+// TestPhysicalHostCanonicalStatesCoversEveryAPIState pins the gauge's state list
+// against the API's own constants. The list claims to enumerate "every state
+// string that can appear in PhysicalHost.Status.State", and zero-resets only the
+// states it names — so a state missing from it is never emitted at all. Deploying
+// was missing, which made every host writing its OS image invisible in
+// beskar7_controller_physicalhost_states_total.
+func TestPhysicalHostCanonicalStatesCoversEveryAPIState(t *testing.T) {
+	apiStates := []string{
+		infrav1.StateNone,
+		infrav1.StateUnknown,
+		infrav1.StateEnrolling,
+		infrav1.StateAvailable,
+		infrav1.StateInUse,
+		infrav1.StateInspecting,
+		infrav1.StateDeploying,
+		infrav1.StateReady,
+		infrav1.StateError,
+	}
+	listed := make(map[string]bool, len(physicalHostCanonicalStates))
+	for _, s := range physicalHostCanonicalStates {
+		listed[s] = true
+	}
+	for _, s := range apiStates {
+		if !listed[s] {
+			t.Errorf("state %q is set by the controllers but missing from physicalHostCanonicalStates, so the gauge never emits it", s)
+		}
 	}
 }

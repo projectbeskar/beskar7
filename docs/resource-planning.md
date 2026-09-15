@@ -214,13 +214,13 @@ Adjust health check timings for different deployment sizes:
 livenessProbe:
   initialDelaySeconds: 15
   periodSeconds: 20
-  timeoutSeconds: 5
+  # timeoutSeconds is not set by the chart; Kubernetes defaults it to 1
   failureThreshold: 3
 
 readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10
-  timeoutSeconds: 5
+  # timeoutSeconds is not set by the chart; Kubernetes defaults it to 1
   failureThreshold: 3
 ```
 
@@ -414,7 +414,7 @@ spec:
 
 ```bash
 # Check memory usage patterns
-kubectl top pod -l control-plane=capb7-controller-manager -n capb7-system
+kubectl top pod -l control-plane=controller-manager -n capb7-system
 
 # Review resource events
 kubectl get events -n capb7-system --field-selector reason=OOMKilling
@@ -427,8 +427,10 @@ kubectl patch deployment capb7-controller-manager -n capb7-system \
 ### CPU Throttling
 
 ```bash
-# Check CPU throttling metrics
-kubectl exec -it deployment/capb7-controller-manager -n capb7-system -- cat /sys/fs/cgroup/cpu/cpu.stat
+# The manager image is distroless/static:nonroot — no shell and no coreutils, so
+# `kubectl exec ... -- cat` cannot work. Read throttling from the metrics endpoint
+# or from the node instead:
+kubectl top pod -l control-plane=controller-manager -n capb7-system
 
 # Increase CPU limits
 kubectl patch deployment capb7-controller-manager -n capb7-system \
@@ -439,10 +441,11 @@ kubectl patch deployment capb7-controller-manager -n capb7-system \
 
 ```bash
 # Check ephemeral storage usage
-kubectl describe pod -l control-plane=capb7-controller-manager -n capb7-system
+kubectl describe pod -l control-plane=controller-manager -n capb7-system
 
-# Clean up temporary files
-kubectl exec -it deployment/capb7-controller-manager -n capb7-system -- du -sh /tmp/*
+# Same constraint as above: no `du` in the image. Ephemeral-storage pressure shows
+# up as an evicted pod, so read it from the pod events:
+kubectl describe pod -l control-plane=controller-manager -n capb7-system | grep -A5 Events
 
 # Increase storage limits
 kubectl patch deployment capb7-controller-manager -n capb7-system \
