@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.6.1 — native Cluster API v1beta2 status: `metav1.Condition` throughout, `Cluster.spec.paused` honoured, and `failureReason`/`failureMessage` replaced by `phase` plus conditions (breaking — see [upgrading](docs/upgrading.md)). Upgrade from `v0.5.0` straight to `v0.6.1`; `v0.6.0` cannot patch objects `v0.5.0` wrote.  
+**Version:** v0.6.2 — native Cluster API v1beta2 status: `metav1.Condition` throughout, `Cluster.spec.paused` honoured, and `failureReason`/`failureMessage` replaced by `phase` plus conditions (breaking — see [upgrading](docs/upgrading.md)). Upgrade from `v0.5.0` straight to `v0.6.2`; `v0.6.0` cannot patch objects `v0.5.0` wrote.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.1/beskar7-manifests-v0.6.1.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.2/beskar7-manifests-v0.6.2.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

@@ -9,8 +9,9 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.6.1`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
-`v0.5.0` and freezes their status; `v0.6.1` is the same release with that fixed.
+**Target `v0.6.2`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+`v0.5.0` and freezes their status; `v0.6.1` fixed that, and `v0.6.2` is the
+current release of the same line.
 
 ## Before you start
 
@@ -61,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.6.2` | `v4.2` **frozen** |
 | `v0.6.1` | `v4.2` **frozen** |
 | `v0.6.0` | `v4.2` **frozen** |
 | `v0.5.0` | `v4.2` **frozen** |
@@ -249,9 +251,9 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 
 ```bash
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.1/beskar7-manifests-v0.6.1.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.2/beskar7-manifests-v0.6.2.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.1 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.2 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).
@@ -264,10 +266,10 @@ No inspector upgrade needed. A machine already `phase: Failed` before the upgrad
 (it is never reconciled again either way — see `docs/beskar7machine.md#terminal-failures`), it just
 no longer grows new `failureReason` values.
 
-### Install `v0.6.1`, not `v0.6.0`
+### Install the current `v0.6.x`, not `v0.6.0`
 
 `v0.6.0` cannot patch objects that `v0.5.0` wrote, so every one of them freezes with stale status
-the moment you upgrade. `v0.6.1` fixes it, and the procedure above already installs `v0.6.1` — if
+the moment you upgrade. `v0.6.1` fixed it and later `v0.6.x` carry the fix, so the procedure above — which installs the current release — is all you need; if
 you follow it there is nothing extra to do. If you already deployed `v0.6.0`, see
 `v0.6.0` → `v0.6.1` above.
 
