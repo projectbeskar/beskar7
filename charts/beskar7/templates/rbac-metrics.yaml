@@ -1,0 +1,62 @@
+{{- if .Values.rbac.create }}
+# The metrics endpoint runs with --secure-metrics=true (the manager's default),
+# which authenticates every scraper through the kube-apiserver. That requires the
+# manager's own ServiceAccount to be allowed to create TokenReviews and
+# SubjectAccessReviews — without these two rules every scrape is rejected and the
+# failure looks like a scraper misconfiguration rather than missing RBAC.
+#
+# The kustomize install has shipped these since the metrics endpoint was added
+# (config/rbac/metrics_auth_role*.yaml); the chart did not, so Helm installs could
+# not serve authenticated metrics at all. Keep the two in step.
+#
+# Note neither install path ships a Service for :8443 — you bring your own, or
+# scrape the pod directly. See docs/metrics.md.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "beskar7.fullname" . }}-metrics-auth-role
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "beskar7.fullname" . }}-metrics-auth-rolebinding
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "beskar7.fullname" . }}-metrics-auth-role
+subjects:
+- kind: ServiceAccount
+  name: {{ include "beskar7.serviceAccountName" . }}
+  namespace: {{ include "beskar7.namespace" . }}
+---
+# Grant this to whatever identity scrapes /metrics (a Prometheus ServiceAccount,
+# say). Nothing is bound to it by default — binding it is the operator's call.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "beskar7.fullname" . }}-metrics-reader
+  labels:
+    {{- include "beskar7.labels" . | nindent 4 }}
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+{{- end }}

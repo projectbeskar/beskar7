@@ -42,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -571,6 +572,16 @@ func assertBindingsWireRolesToSA(
 
 	// Unbound roles, multiply-bound roles, and subject correctness.
 	for target := range targets {
+		// *-metrics-reader is deliberately unbound. It grants get on /metrics and
+		// exists to be bound by the OPERATOR to whatever identity scrapes — a
+		// Prometheus ServiceAccount, say — not to the manager's own SA. Binding it
+		// ourselves would hand the manager a permission it never uses. The kustomize
+		// install ships it unbound for the same reason; this check only noticed once
+		// the chart gained it, because the kustomize test feeds in role.yaml +
+		// role_binding.yaml rather than the whole directory.
+		if strings.HasSuffix(target.Name, "-metrics-reader") {
+			continue
+		}
 		bs := boundBy[target]
 		switch len(bs) {
 		case 0:
@@ -679,4 +690,54 @@ func TestHelmChartRBACBindingsWireToManagerSA(t *testing.T) {
 		sa := findServiceAccount(t, rendered, "Helm chart render (watchNamespaces=[rbac-driftguard-test-ns])")
 		assertBindingsWireRolesToSA(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns])", crs, roles, rbs, crbs, sa)
 	})
+}
+
+// TestHelmChartShipsMetricsAuthRBAC pins the chart against the three metrics RBAC
+// objects the kustomize install has always carried
+// (config/rbac/metrics_auth_role*.yaml, metrics_reader_role.yaml).
+//
+// The chart shipped none of them until 2026-09-15. Because the manager runs with
+// --secure-metrics=true by default, every scrape is authenticated through the
+// kube-apiserver, which needs the manager's ServiceAccount to create TokenReviews
+// and SubjectAccessReviews. Without those rules a Helm install serves :8443 but
+// rejects every scraper, and the failure reads as a scraper misconfiguration
+// rather than as missing RBAC on our side.
+//
+// Neither install path ships a Service for :8443 — that is deliberate and shared,
+// so it is not checked here.
+func TestHelmChartShipsMetricsAuthRBAC(t *testing.T) {
+	if !helmAvailable() {
+		t.Skip("helm not found on PATH; skipping chart metrics-RBAC drift check")
+	}
+	root := repoRoot(t)
+	crs, _ := collectRoles(t, renderHelmTemplate(t, root))
+
+	authRole := findClusterRoleBySuffix(t, crs, "-metrics-auth-role")
+	want := map[string][]string{
+		"authentication.k8s.io": {"tokenreviews"},
+		"authorization.k8s.io":  {"subjectaccessreviews"},
+	}
+	got := map[string][]string{}
+	for _, r := range authRole.Rules {
+		for _, g := range r.APIGroups {
+			got[g] = append(got[g], r.Resources...)
+		}
+		if len(r.Verbs) != 1 || r.Verbs[0] != "create" {
+			t.Errorf("%s: rule for %v has verbs %v, want [create]", authRole.Name, r.APIGroups, r.Verbs)
+		}
+	}
+	for group, resources := range want {
+		if !reflect.DeepEqual(got[group], resources) {
+			t.Errorf("%s: apiGroup %q has resources %v, want %v — authenticated metrics scraping cannot work without it",
+				authRole.Name, group, got[group], resources)
+		}
+	}
+
+	// The reader role is what an operator binds to their scraper's identity.
+	reader := findClusterRoleBySuffix(t, crs, "-metrics-reader")
+	if len(reader.Rules) != 1 ||
+		!reflect.DeepEqual(reader.Rules[0].NonResourceURLs, []string{"/metrics"}) ||
+		!reflect.DeepEqual(reader.Rules[0].Verbs, []string{"get"}) {
+		t.Errorf("%s: want a single rule granting get on /metrics, got %+v", reader.Name, reader.Rules)
+	}
 }
