@@ -128,10 +128,10 @@ See the comprehensive [Resource Planning Guide](resource-planning.md) for detail
 **Install cert-manager:**
 ```bash
 # Install cert-manager CRDs
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.crds.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.crds.yaml
 
 # Install cert-manager
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
 
 # Verify installation
 kubectl get pods -n cert-manager
@@ -156,103 +156,84 @@ kubectl create namespace capb7-system
 ```
 
 **Configure RBAC (production):**
-```yaml
-# config/rbac/role.yaml - Minimal permissions
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: capb7-manager-role
-rules:
-# Physical Host management
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["physicalhosts"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["physicalhosts/status"]
-  verbs: ["get", "update", "patch"]
-# Beskar7Machine management
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["beskar7machines"]
-  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-- apiGroups: ["infrastructure.cluster.x-k8s.io"]
-  resources: ["beskar7machines/status"]
-  verbs: ["get", "update", "patch"]
-# Secret access for credentials
-- apiGroups: [""]
-  resources: ["secrets"]
-  verbs: ["get", "list", "watch"]
-# Events for status reporting
-- apiGroups: [""]
-  resources: ["events"]
-  verbs: ["create", "patch"]
+
+Apply the generated role — do not hand-write a "minimal" one. `config/rbac/role.yaml`
+(or `charts/beskar7/templates/rbac.yaml`) is produced from the `+kubebuilder:rbac`
+markers on the controllers, so it stays in step with the code; a hand-maintained copy
+drifts silently and the failures are obscure.
+
+```bash
+kubectl apply -f config/rbac/role.yaml
 ```
+
+An earlier version of this page carried a six-rule "minimal" example. It was missing
+four rule blocks the controllers genuinely need, and each omission fails in a way that
+is hard to trace back to RBAC:
+
+| Missing | What breaks |
+|---|---|
+| `coordination.k8s.io` leases | Leader election cannot start — the manager never becomes active. |
+| `beskar7clusters`, `/status`, `/finalizers` | The Beskar7Cluster reconciler has no permissions at all. |
+| `configmaps` (full write) | The inspection-result handoff (D-005) cannot write its ConfigMap, so no report is ever persisted. |
+| `cluster.x-k8s.io` clusters/machines reads | Owner and pause resolution fail. |
+
+It also understated `secrets` to read-only. The manager writes per-host bootstrap-token
+Secrets, so it needs `create`, `update`, `patch` and `delete` as well.
+
+If you want to narrow the *scope* rather than the verbs, use the namespace-scoped
+overlay in `config/rbac/namespace-scoped/` — see
+[RBAC hardening](security/rbac-hardening.md), whose cluster-wide topology block is
+checked against `config/rbac/role.yaml` rule for rule.
 
 ### 3. Configuration Management
 
 **Production Values (Helm):**
+
+> Helm silently ignores keys the chart does not define, so a values file with the
+> wrong paths installs cleanly and gives you chart defaults. Every key below is a
+> real one — check `charts/beskar7/values.yaml` before adding others.
+
 ```yaml
 # values-production.yaml
-replicaCount: 3
+controllerManager:
+  replicas: 3
+  image:
+    repository: ghcr.io/projectbeskar/beskar7/beskar7
+    tag: "${VERSION}"
+    pullPolicy: IfNotPresent
+  resources:
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
 
-image:
-  repository: ghcr.io/projectbeskar/beskar7/beskar7
-  tag: "${VERSION}"
-  pullPolicy: IfNotPresent
-
-resources:
-  limits:
-    cpu: 2000m
-    memory: 2Gi
-  requests:
-    cpu: 500m
-    memory: 512Mi
-
-# Enable leader election for HA
-leaderElection:
-  enabled: true
-  leaseDuration: 15s
-  renewDeadline: 10s
-  retryPeriod: 2s
-
-# Security context
+# Container-level security context.
 securityContext:
   runAsNonRoot: true
   runAsUser: 65532
-  seccompProfile:
-    type: RuntimeDefault
   capabilities:
     drop:
     - ALL
 
-# Pod security context
+# Pod-level. seccompProfile belongs here, not under securityContext.
 podSecurityContext:
   fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 
-# Network policies
+# A boolean only. The policy's rules are fixed in templates/networkpolicy.yaml
+# and are not configurable from values.
 networkPolicy:
   enabled: true
-  ingress:
-    - from:
-      - namespaceSelector:
-          matchLabels:
-            name: cert-manager
-      ports:
-      - protocol: TCP
-        port: 9443
 
-# Monitoring (metrics are HTTPS on :8443; see docs/metrics.md)
-metrics:
-  enabled: true
-  port: 8443
-  
-# Webhook configuration
 webhook:
   enabled: true
-  port: 9443
-  certManager:
-    enabled: true
 
-# Node affinity for control plane nodes
+certManager:
+  enabled: true
+
 nodeSelector:
   node-role.kubernetes.io/control-plane: ""
 
@@ -260,12 +241,19 @@ tolerations:
 - key: node-role.kubernetes.io/control-plane
   operator: Exists
   effect: NoSchedule
-
-# Pod disruption budget
-podDisruptionBudget:
-  enabled: true
-  minAvailable: 1
 ```
+
+**Not settable through this chart**, despite appearing in older copies of this page:
+
+| Wanted | Reality |
+|---|---|
+| `replicaCount`, `image`, `resources` at top level | They live under `controllerManager`. |
+| `leaderElection.*` | Not a chart value. Leader election is on by default; tune it with the manager's `--leader-elect-*` flags via `controllerManager.env` or a patch. |
+| `metrics.enabled` / `metrics.port` | `--metrics-bind-address=:8443` is hardcoded in the Deployment. `monitoring.enabled` only toggles a line in the post-install notes. |
+| `webhook.port` | Hardcoded `--webhook-port=9443`. `webhook.service.port` / `webhook.service.targetPort` are the real knobs. |
+| `webhook.certManager.enabled` | Top-level `certManager.enabled`. |
+| `networkPolicy.ingress` | The rules are not templated. |
+| `podDisruptionBudget.*`, `monitoring.serviceMonitor.*` | The chart ships neither template. Apply a PDB or ServiceMonitor separately. |
 
 ### 4. Installation Commands
 
@@ -343,7 +331,7 @@ metadata:
 spec:
   podSelector:
     matchLabels:
-      control-plane: capb7-controller-manager
+      control-plane: controller-manager
   policyTypes:
   - Ingress
   - Egress
@@ -441,7 +429,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      control-plane: capb7-controller-manager
+      control-plane: controller-manager
   endpoints:
   - port: metrics
     interval: 30s
@@ -647,7 +635,7 @@ kubectl patch deployment capb7-controller-manager \
 ```bash
 # Check controller status
 kubectl get pods -n capb7-system
-kubectl logs -n capb7-system -l control-plane=capb7-controller-manager
+kubectl logs -n capb7-system -l control-plane=controller-manager
 
 # Check webhook status
 kubectl get validatingwebhookconfiguration
@@ -663,7 +651,8 @@ kubectl describe physicalhost HOSTNAME
 
 # Check metrics (HTTPS on 8443; for plain-HTTP local debugging, restart the
 # manager with --secure-metrics=false). See docs/metrics.md.
-kubectl port-forward -n capb7-system svc/capb7-controller-manager-metrics-service 8443:8443
+# There is no metrics Service; port-forward the Deployment directly.
+kubectl port-forward -n capb7-system deployment/capb7-controller-manager 8443:8443
 TOKEN=$(kubectl create token -n monitoring prometheus)
 curl -k -H "Authorization: Bearer $TOKEN" https://localhost:8443/metrics
 ```

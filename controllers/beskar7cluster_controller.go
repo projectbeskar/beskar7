@@ -396,7 +396,8 @@ func (r *Beskar7ClusterReconciler) findControlPlaneEndpoint(ctx context.Context,
 			continue
 		}
 
-		// Select the first available address (prefer internal IP, then external)
+		// Prefer an InternalIP; otherwise take the first address of whatever type,
+		// which may be a Hostname or DNS name rather than an ExternalIP.
 		var selectedAddress string
 		for _, addr := range machine.Status.Addresses {
 			if addr.Type == clusterv1.MachineInternalIP {

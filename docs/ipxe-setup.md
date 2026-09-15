@@ -60,7 +60,7 @@ Understanding the flow is essential before configuring any component.
 
 When `Beskar7MachineReconciler` claims a `PhysicalHost`, `triggerInspection`:
 
-1. Mints a **bearer token** (32-byte random, 30-minute lifetime). Its SHA-256 is
+1. Mints a **bearer token** (32-byte random, 60-minute lifetime). Its SHA-256 is
    stored in `PhysicalHost.Status.Bootstrap.TokenHash`; the plaintext is stored in
    the Secret `<hostName>-bootstrap-token`, data key `plaintext-token`.
 2. Mints a **boot nonce** (256-bit random, ~10-minute lifetime). Its SHA-256 is
@@ -119,7 +119,7 @@ renders them all. The script the controller returns looks like:
 
 ```ipxe
 #!ipxe
-kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.ca={base64CA} [beskar7.disk={disk}] [BOOTIF={01-mac}]
+kernel {InspectionImageURL}/vmlinuz beskar7.api={api} beskar7.namespace={ns} beskar7.host={host} beskar7.token={token} beskar7.target={target} beskar7.target-digest={digest} beskar7.provider-id={providerID} beskar7.ca={base64CA} [beskar7.disk={disk}] [BOOTIF={01-mac}]
 initrd {InspectionImageURL}/initrd.img
 boot
 ```
@@ -845,10 +845,12 @@ sudo ufw allow 8080/tcp
 The manager listens on:
 
 - `:8443` — Prometheus metrics (HTTPS, authenticated; see [Security](security/README.md)).
-- `:8082` — host callback endpoint (HTTPS); three routes:
+- `:8082` — host callback endpoint (HTTPS); five routes:
   - `GET /api/v1/boot/{ns}/{host}/{nonce}` — nonce-gated, not bearer-gated
   - `POST /api/v1/inspection/{ns}/{host}` — bearer-gated
   - `GET /api/v1/bootstrap/{ns}/{host}` — bearer-gated
+  - `POST /api/v1/provisioned/{ns}/{host}` — bearer-gated
+  - `POST /api/v1/provision-failed/{ns}/{host}` — bearer-gated
 - `:9443` — Beskar7Cluster webhook (when `--enable-webhook=true`).
 
 If the boot network is segregated from the cluster network, ensure the provisioning

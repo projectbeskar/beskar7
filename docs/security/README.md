@@ -84,7 +84,7 @@ Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 
 - 32 bytes from `crypto/rand`, encoded as `base64.RawURLEncoding` (43 chars), suitable for an iPXE kernel cmdline.
 - SHA-256 hash (64 hex chars) is persisted to `PhysicalHost.Status.Bootstrap.TokenHash`.
-- Lifetime: 30 minutes (`auth.TokenLifetime`). Above the 10-minute `DefaultInspectionTimeout`, with headroom for slow BIOS POST + first-boot inspector.
+- Lifetime: 60 minutes (`auth.TokenLifetime`). Above the 10-minute `DefaultInspectionTimeout`, with headroom for slow BIOS POST + first-boot inspector.
 
 The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decision D-006.
 
@@ -152,12 +152,12 @@ The Dockerfile uses a multi-stage build with `CGO_ENABLED=0` and a distroless `n
 ```Dockerfile
 FROM golang:1.27@sha256:f44f6e88636cfb311f9ebace870ded69d943f227bb3cb27d32ffd84ea18c43ea as builder
 ...
-FROM gcr.io/distroless/static:nonroot@sha256:e3f945647ffb95b5839c07038d64f9811adf17308b9121d8a2b87b6a22a80a39
+FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 ```
 
 ### 9. Authenticated metrics on `:8443`
 
-The manager serves `/metrics` over HTTPS on `:8443` directly (no `kube-rbac-proxy` sidecar — removed in PR-11.1). Authentication and authorization are delegated to the kube-apiserver via TokenReview/SubjectAccessReview (`controller-runtime`'s `filters.WithAuthenticationAndAuthorization`). To scrape, your Prometheus ServiceAccount needs the `metrics_reader` ClusterRole (see `config/rbac/metrics_reader_role.yaml`). For local development you can opt out with `--secure-metrics=false`.
+The manager serves `/metrics` over HTTPS on `:8443` directly (no `kube-rbac-proxy` sidecar — removed in PR-11.1). Authentication and authorization are delegated to the kube-apiserver via TokenReview/SubjectAccessReview (`controller-runtime`'s `filters.WithAuthenticationAndAuthorization`). To scrape, your Prometheus ServiceAccount needs the `capb7-metrics-reader` ClusterRole (see `config/rbac/metrics_reader_role.yaml`). For local development you can opt out with `--secure-metrics=false`.
 
 Source: `cmd/manager/main.go:135-145`.
 

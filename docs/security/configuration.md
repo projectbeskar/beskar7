@@ -119,7 +119,7 @@ This is automatic — the operator does not configure it directly. Per host:
 3. The SHA-256 hash is signalled to the PhysicalHost via the `infrastructure.cluster.x-k8s.io/bootstrap-token` annotation, then persisted to `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}`.
 4. The iPXE infrastructure renders the plaintext into the kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](../ipxe-setup.md).
 5. The inspector and target OS present `Authorization: Bearer <token>` on every call to `:8082`.
-6. After 30 minutes, or on Beskar7Machine deletion, the token Secret is GC'd.
+6. After 60 minutes, or on Beskar7Machine deletion, the token Secret is GC'd.
 
 The plaintext is never logged at any verbosity. The hash on Status is safe to log — it cannot be used to forge a valid bearer header.
 
@@ -152,8 +152,8 @@ kubectl get clusterrolebinding -l app.kubernetes.io/name=beskar7 -o yaml
 Or, if you installed via the kustomize overlay:
 
 ```bash
-kubectl get clusterrole manager-role -o yaml
-kubectl get clusterrolebinding manager-rolebinding -o yaml
+kubectl get clusterrole capb7-manager-role -o yaml
+kubectl get clusterrolebinding capb7-manager-rolebinding -o yaml
 ```
 
 There is no Helm value or operator flag to relax the ClusterRole at install time. To extend it (e.g. to add a custom resource the controller needs to read), edit `config/rbac/role.yaml` or the chart's `templates/rbac.yaml` directly and re-deploy.

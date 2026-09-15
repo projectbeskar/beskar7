@@ -104,12 +104,12 @@ If the missing permission is for one of the resources the controller legitimatel
 
 ### Symptom: metrics scraping returns 401/403
 
-`/metrics` on `:8443` requires a Kubernetes-authenticated request. Your Prometheus ServiceAccount needs the `metrics_reader` ClusterRole:
+`/metrics` on `:8443` requires a Kubernetes-authenticated request. Your Prometheus ServiceAccount needs the `capb7-metrics-reader` ClusterRole:
 
 ```bash
-kubectl get clusterrole metrics-reader -o yaml
+kubectl get clusterrole capb7-metrics-reader -o yaml
 kubectl create clusterrolebinding prometheus-metrics-reader \
-  --clusterrole=metrics-reader \
+  --clusterrole=capb7-metrics-reader \
   --serviceaccount=monitoring:prometheus
 ```
 

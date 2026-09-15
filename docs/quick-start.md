@@ -26,7 +26,7 @@ Edit the file first to set your BMC address, credentials Secret name, inspection
 ## Watch the provisioning flow
 
 ```bash
-# Host should transition Available → Inspecting → InUse
+# Host should transition Available → InUse → Inspecting → Deploying → Ready
 kubectl get physicalhost test-server -w
 
 # Machine should reach Ready=true
@@ -38,7 +38,7 @@ Check for errors:
 ```bash
 kubectl describe physicalhost test-server
 kubectl describe beskar7machine test-machine
-kubectl logs -n capb7-system -l control-plane=capb7-controller-manager
+kubectl logs -n capb7-system -l control-plane=controller-manager
 ```
 
 ## Next steps
