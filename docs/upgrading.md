@@ -9,9 +9,9 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.6.2`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
-`v0.5.0` and freezes their status; `v0.6.1` fixed that, and `v0.6.2` is the
-current release of the same line.
+**Target `v0.7.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+`v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
+carries the fix.
 
 ## Before you start
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.7.0` | `v4.2` **frozen** |
 | `v0.6.2` | `v4.2` **frozen** |
 | `v0.6.1` | `v4.2` **frozen** |
 | `v0.6.0` | `v4.2` **frozen** |
@@ -97,6 +98,26 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.6.x` → `v0.7.0` — additive; adds `Beskar7ClusterTemplate`
+
+Nothing to do beyond applying the new CRDs. No API change, no schema change to any existing
+resource, no contract change (still `v4.2`, so the inspector is unaffected). No existing object is
+touched, and nothing needs converting.
+
+What is new is one CRD, `Beskar7ClusterTemplate`, which lets a Cluster API
+[`ClusterClass`](beskar7clustertemplate.md) use Beskar7 as its infrastructure provider. If you do
+not use `ClusterClass`, the CRD simply sits there unused.
+
+```bash
+# CRDs first, as always — Helm does not upgrade CRDs on `helm upgrade`.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.7.0/beskar7-manifests-v0.7.0.yaml
+# or, for a chart install: apply charts/beskar7/crds/*.yaml, then
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.7.0 --reset-then-reuse-values
+```
+
+If you skip the CRD apply, the controller runs fine and only `ClusterClass` use is unavailable —
+creating a `ClusterClass` that names `Beskar7ClusterTemplate` fails until the CRD exists.
 
 ## `v0.6.0` → `v0.6.1` — unfreezes objects `v0.6.0` could not patch
 
@@ -251,9 +272,9 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 
 ```bash
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.6.2/beskar7-manifests-v0.6.2.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.7.0/beskar7-manifests-v0.7.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.6.2 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.7.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).
