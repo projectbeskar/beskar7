@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.7.0] - 2026-09-16
+
+### Added
+
+- **`Beskar7ClusterTemplate`, so Beskar7 can be used from a Cluster API `ClusterClass`** (#209,
+  raised by @SorteFatale). A `ClusterClass` points `spec.infrastructure.templateRef` at one, and
+  CAPI's topology controller creates a `Beskar7Cluster` per `Cluster` from it. Without the CRD a
+  `ClusterClass` naming Beskar7 could not be created at all.
+
+  Shaped to CAPI's `InfrastructureClusterTemplate` contract: `spec.template.spec` is a
+  `Beskar7ClusterSpec`, and `spec.template.metadata` carries labels and annotations propagated onto
+  each generated cluster. Like `Beskar7MachineTemplate` it has no controller and no webhook —
+  templates are inert.
+
+  **`spec.template.spec` is normally `{}`, and that is correct.** `Beskar7ClusterSpec`'s only field
+  is `controlPlaneEndpoint`, which is precisely the field that must not be templated: every cluster
+  needs its own, and the controller discovers one from the control-plane `Machine` objects when it
+  is unset. Templating it would give every cluster in the class the same endpoint.
+
+  `examples/clusterclass.yaml` has a complete, applyable class plus the topology `Cluster` that
+  consumes it; `docs/beskar7clustertemplate.md` is the reference.
+
+**Upgrading from `v0.6.x` is additive** — no API change, no CRD-schema change to existing resources,
+no contract change (still `v4.2`). Apply the new CRDs as usual so the `Beskar7ClusterTemplate` CRD
+is present; nothing else is required and no existing object is touched.
+
 ## [v0.6.2] - 2026-09-15
 
 ### Fixed
@@ -1629,6 +1655,7 @@ For detailed implementation information, see the examples directory and document
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
 [Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.7.0]: https://github.com/projectbeskar/beskar7/compare/v0.6.2...v0.7.0
 [v0.6.2]: https://github.com/projectbeskar/beskar7/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/projectbeskar/beskar7/compare/v0.6.0...v0.6.1
 [v0.6.0]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...v0.6.0
