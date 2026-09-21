@@ -286,6 +286,7 @@ kind: Beskar7MachineTemplate
 
 | Field | Type | Description |
 |---|---|---|
+| `template.metadata` | `clusterv1.ObjectMeta` | Optional. Labels and annotations propagated onto each generated `Beskar7Machine`. Only labels and annotations survive the clone — name, namespace, UID and finalizers are overwritten by Cluster API. |
 | `template.spec` | `Beskar7MachineSpec` | Identical schema to a `Beskar7Machine`'s spec. See [Beskar7Machine.spec](#spec-1). |
 
 ### Example
