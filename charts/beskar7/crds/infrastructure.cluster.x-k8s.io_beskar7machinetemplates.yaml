@@ -36,6 +36,18 @@ spec:
             properties:
               template:
                 properties:
+                  metadata:
+                    minProperties: 1
+                    properties:
+                      annotations:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        type: object
+                    type: object
                   spec:
                     properties:
                       hardwareRequirements:

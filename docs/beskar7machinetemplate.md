@@ -17,7 +17,13 @@ There is **no** Beskar7MachineTemplate controller, **no** validating or defaulti
 
 ## Spec
 
-The spec wraps a `Beskar7MachineSpec` exactly:
+`spec.template.metadata` is optional and carries labels and annotations to propagate onto each generated
+`Beskar7Machine`. Cluster API clones a template by lifting the whole `spec.template` map and making it the new
+object, so what you put there becomes the machine's own metadata, with the labels CAPI adds (`cluster.x-k8s.io/cluster-name`,
+the cloned-from annotations) merged on top. Only labels and annotations survive that clone — name, namespace, UID,
+resourceVersion and finalizers are all overwritten or cleared.
+
+`spec.template.spec` wraps a `Beskar7MachineSpec` exactly:
 
 ```yaml
 spec:

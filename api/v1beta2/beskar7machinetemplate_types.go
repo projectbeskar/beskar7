@@ -18,6 +18,7 @@ package v1beta2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
 // Beskar7MachineTemplateSpec defines the desired state of Beskar7MachineTemplate
@@ -29,6 +30,18 @@ type Beskar7MachineTemplateSpec struct {
 // Beskar7MachineTemplateResource defines the template resource for Beskar7Machine
 // +kubebuilder:object:generate=true
 type Beskar7MachineTemplateResource struct {
+	// ObjectMeta carries labels and annotations to propagate onto each
+	// Beskar7Machine created from this template.
+	//
+	// Cluster API clones a template by lifting the whole `spec.template` map and
+	// making it the new object (controllers/external.GenerateTemplate), so what
+	// is written here becomes the generated Beskar7Machine's own metadata, with
+	// the labels and annotations CAPI adds — cluster-name, cloned-from — merged
+	// on top. Only labels and annotations survive that clone: name, namespace,
+	// UID, resourceVersion and finalizers are all overwritten or cleared.
+	// +optional
+	ObjectMeta clusterv1.ObjectMeta `json:"metadata,omitempty,omitzero"`
+
 	// Spec is the specification of the desired behavior of the machine.
 	Spec Beskar7MachineSpec `json:"spec"`
 }
