@@ -123,11 +123,18 @@ stages:
           content: |
             [Unit]
             Description=beskar7 per-host ProviderID (k0s)
-            # A worker runs k0sworker.service and never k0scontroller.service,
-            # so order after whichever this node has. systemd ignores a unit
-            # named in After=/Wants= that does not exist.
+            # Order after whichever k0s unit this node runs — and never Wants=
+            # them. The Kairos k0s image ships k0scontroller.service AND
+            # k0sworker.service on every node, merely disabling the one a node
+            # does not run, and Wants= starts a disabled unit. On a worker that
+            # brought up a stand-alone `k0s controller`, which took k0s's
+            # runtime lock and left k0sworker crash-looping ("another k0s
+            # process is still running"): the node never rejoined after a
+            # reboot. On first boot only the start gate's marker, landing
+            # milliseconds later, kept it out — and a worker that loses that
+            # race gets a CA of its own and can never join. Starting k0s is
+            # the bootstrap provider's job; this unit only orders after it.
             After=k0scontroller.service k0sworker.service
-            Wants=k0scontroller.service k0sworker.service
 
             [Service]
             Type=oneshot
