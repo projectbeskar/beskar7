@@ -760,6 +760,37 @@ the host nothing, because this reason only appears before inspection starts. See
 If the BMC is gone for good, delete the machine with the `force-release` annotation
 ([State Management → Force release](state-management.md#force-release)).
 
+### 16. k0s worker goes `NotReady` after a reboot and never rejoins: `another k0s process is still running`
+
+**Symptom:** a k0s worker that joined normally at provisioning is `NotReady` after its first reboot
+and stays that way. On the host, `k0sworker` restarts every few seconds and its journal repeats
+`failed to initialize runtime config: another k0s process is still running`, while
+`systemctl is-active k0scontroller` prints `active` on what is a worker, and `/run/k0s/` holds a
+controller's `etcd.pid` and `kube-apiserver.pid`. Control-plane nodes come back normally.
+
+**Cause:** the image was built with [`examples/kairos-k0s-providerid-stage.yaml`](../examples/kairos-k0s-providerid-stage.yaml)
+from beskar7 v0.4.4 through v0.7.0 — every release that shipped it — whose
+`beskar7-k0s-providerid.service` carried `Wants=k0scontroller.service`. The Kairos k0s image ships
+both k0s unit files on every node and only *disables* the one a node does not run, and `Wants=`
+starts a disabled unit. On a worker that brings up a stand-alone `k0s controller`, which takes k0s's
+runtime lock before `k0sworker` can. On the first boot the [start gate](#13-k0s-control-plane-never-forms-joins-hang-or-a-joiner-became-its-own-cluster)
+skips it, because `/etc/k0s/.capi-args-ready` is not written yet — by milliseconds. Kairos keeps
+`/etc/k0s` across reboots, so from the second boot on the marker is already there and the controller
+starts.
+
+**Solution:** rebuild the image with the current stage, which orders after the k0s units with
+`After=` and never pulls them in, and re-provision. To bring a running worker back without
+re-imaging, stop the stray controller — `sudo systemctl stop k0scontroller` — and `k0sworker`'s own
+restart takes the lock and rejoins within seconds. That lasts until the next reboot. To fix a node in
+place, replace `/oem/10_beskar7_providerid.yaml` **and** delete the `Wants=` line from
+`/etc/systemd/system/beskar7-k0s-providerid.service`: `/etc/systemd` persists too, and the next boot
+starts the unit it finds there before the stage rewrites it, so fixing `/oem` alone costs one more
+failed boot.
+
+**Verify on the host after a reboot:** `systemctl show k0scontroller -p WantedBy` is empty,
+`journalctl -b -u k0scontroller` has no lines at all, `k0sworker` is `active`, and
+`/run/k0s/etcd.pid` does not exist.
+
 ## Getting Help
 
 If you can't resolve your issue:
