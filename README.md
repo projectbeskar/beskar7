@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.7.0 — adds `Beskar7ClusterTemplate`, so Beskar7 can be used from a Cluster API [`ClusterClass`](docs/beskar7clustertemplate.md). Additive: no API, CRD-schema or contract change, and nothing to do on upgrade from `v0.6.x`. Coming from `v0.5.0` or earlier, read [upgrading](docs/upgrading.md) — `v0.6.0` was breaking.  
+**Version:** v0.8.0 — fixes a Redfish incompatibility that broke **every** read against BMCs returning `OperatingSystem` as a link ([#218](https://github.com/projectbeskar/beskar7/issues/218)), affecting every release before this one, and corrects the shipped k0s ProviderID example that left workers unable to rejoin after a reboot. Adds `spec.template.metadata` to `Beskar7MachineTemplate`. No CRD-schema change to existing resources and no contract change (still `v4.2`). Coming from `v0.5.0` or earlier, read [upgrading](docs/upgrading.md) — `v0.6.0` was breaking.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.7.0/beskar7-manifests-v0.7.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.8.0/beskar7-manifests-v0.8.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

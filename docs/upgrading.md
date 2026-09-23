@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.7.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.8.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.8.0` | `v4.2` **frozen** |
 | `v0.7.0` | `v4.2` **frozen** |
 | `v0.6.2` | `v4.2` **frozen** |
 | `v0.6.1` | `v4.2` **frozen** |
@@ -98,6 +99,41 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.7.0` → `v0.8.0` — additive; fixes a Redfish incompatibility, and a k0s image fix you must apply yourself
+
+Nothing to do for the controller beyond applying the new CRDs. No API change, no schema change to any
+existing resource, no contract change (still `v4.2`, so the inspector is unaffected), and no existing
+object is touched. `Beskar7MachineTemplate` gains one optional field, `spec.template.metadata`, for
+labels and annotations to propagate onto the machines it creates; templates that omit it validate
+exactly as before.
+
+```bash
+# CRDs first, as always — Helm does not upgrade CRDs on `helm upgrade`.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.8.0/beskar7-manifests-v0.8.0.yaml
+# or, for a chart install: apply charts/beskar7/crds/*.yaml, then
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.8.0 --reset-then-reuse-values
+```
+
+**If hosts were stuck in `Error` before inspection**, this release is the fix. Every release before
+it typed Redfish's `ComputerSystem.OperatingSystem` as a string, while the spec models it as a link,
+so a BMC that returns `{"@odata.id": "…"}` failed *every* read with `json: cannot unmarshal object
+into Go struct field .OperatingSystem of type string`. Upgrading is all that is required; the
+affected hosts recover on the next reconcile. Reported against AMI MegaRAC SP-X, but nothing about it
+is vendor-specific.
+
+**k0s users: one fix in this release is not delivered by upgrading the controller.** The shipped
+ProviderID example (`examples/kairos-k0s-providerid-stage.yaml`) made every k0s **worker** start a
+stray `k0s controller` from its second boot, which took k0s's runtime lock and left the node
+`NotReady` for good. That stage is baked into *your target image*, so:
+
+- Rebuild the target image with the corrected stage and re-provision the affected workers. Images
+  built from the example in `v0.4.4` through `v0.7.0` carry the bug.
+- For a node you cannot re-image yet, [troubleshooting issue 16](troubleshooting.md#16-k0s-worker-goes-notready-after-a-reboot-and-never-rejoins-another-k0s-process-is-still-running)
+  has the in-place recovery. Note that `/etc/systemd` persists across reboots, so fixing `/oem` alone
+  costs one more failed boot — the unit file has to be corrected too.
+
+Control-plane nodes were never affected, and a k3s image is unaffected entirely.
 
 ## `v0.6.x` → `v0.7.0` — additive; adds `Beskar7ClusterTemplate`
 
@@ -272,9 +308,9 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 
 ```bash
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.7.0/beskar7-manifests-v0.7.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.8.0/beskar7-manifests-v0.8.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.7.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.8.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).
