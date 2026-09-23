@@ -31,7 +31,7 @@ kustomize is pulled by the Makefile when needed.
 make docker-build docker-push IMG=my-registry/my-repo:dev
 ```
 
-The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar7:v0.7.0`. Override it to push to your own registry.
+The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar7:v0.8.0`. Override it to push to your own registry.
 
 ## Regenerate CRDs and RBAC
 
@@ -70,8 +70,8 @@ This applies the full kustomize overlay including RBAC, the deployment, and the 
 To exercise the clusterctl install path against the current tree, publish it as a clusterctl local repository and let `clusterctl init` install it:
 
 ```bash
-make clusterctl-override VERSION=v0.7.0        # writes ~/.cluster-api/overrides/infrastructure-beskar7/v0.7.0/
-clusterctl init --infrastructure beskar7:v0.7.0 # needs the provider in ~/.cluster-api/clusterctl.yaml, see Installation
+make clusterctl-override VERSION=v0.8.0        # writes ~/.cluster-api/overrides/infrastructure-beskar7/v0.8.0/
+clusterctl init --infrastructure beskar7:v0.8.0 # needs the provider in ~/.cluster-api/clusterctl.yaml, see Installation
 ```
 
 `VERSION` must be a semantic version; it names the repository directory and the image tag in the components, so point clusterctl at the image you built (`images:` overrides in its config) or push it under that tag.

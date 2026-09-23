@@ -4,6 +4,70 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.8.0] - 2026-09-23
+
+### Fixed
+
+- **A BMC that returns `OperatingSystem` as a link no longer breaks every Redfish read** (#218,
+  reported by @SorteFatale). Redfish models `ComputerSystem.OperatingSystem` as a navigation
+  property — a link — and a BMC returning `{"@odata.id": "…"}` made every call through `Systems()`
+  fail with `json: cannot unmarshal object into Go struct field .OperatingSystem of type string`,
+  so the `PhysicalHost` reached `Error` before inspection could start. The Redfish client we pinned
+  typed the field as a plain string; it has modelled it as a link since `v0.21.0`, and this release
+  moves to `v0.26.0`. Reported against AMI MegaRAC SP-X, but nothing about it is vendor-specific —
+  any BMC returning the property as the spec describes hit it.
+
+  **Every release up to and including `v0.7.0` is affected**: the old client was pinned in the
+  initial commit. There is no workaround on an affected release, because the field's type is in the
+  dependency.
+
+  The client upgrade is mostly mechanical — two packages collapse into one import, two constants are
+  renamed — with two real signature changes. `Reset` now returns a task monitor, which beskar7
+  discards: it re-reads power state on the next reconcile rather than following a BMC task, which is
+  the behaviour every release so far has had. `SetBoot` takes a pointer. A regression test serves a
+  link-shaped `OperatingSystem` through the real client and fails against the old one.
+
+- **k0s workers built from the shipped ProviderID example never rejoined after a reboot** (#217).
+  `examples/kairos-k0s-providerid-stage.yaml` gave its unit `Wants=k0scontroller.service`, on the
+  premise that systemd ignores a unit that does not exist. The Kairos k0s image ships *both* k0s
+  units on every node and merely disables the one a node does not run, and `Wants=` starts a
+  disabled unit — so every worker brought up a stand-alone `k0s controller`, which took k0s's
+  runtime lock and left `k0sworker` crash-looping on `another k0s process is still running`. The
+  node went `NotReady` and stayed there. The start gate hid this on the first boot only, and by
+  milliseconds.
+
+  **This one lives in your target image, not in the controller: upgrading beskar7 does not fix a
+  running cluster.** Rebuild the image with the corrected stage and re-provision. For a node you
+  cannot re-image yet, `docs/troubleshooting.md` issue 16 has the in-place recovery — and note that
+  `/etc/systemd` persists, so fixing `/oem` alone costs one more failed boot. Images built from the
+  example in `v0.4.4` through `v0.7.0` are affected.
+
+### Added
+
+- **`spec.template.metadata` on `Beskar7MachineTemplate`** (#215), so labels and annotations can be
+  propagated onto every `Beskar7Machine` created from the template. This matches
+  `Beskar7ClusterTemplate` and CAPI's `InfrastructureMachineTemplate` contract. Optional and
+  additive: existing templates validate unchanged.
+
+  Only labels and annotations survive the clone. CAPI's `GenerateTemplate` lifts the whole
+  `spec.template` map into the new object and then overwrites name, namespace, UID, resourceVersion
+  and finalizers, so templating a name is not possible.
+
+### Changed
+
+- **OpenTelemetry to `v1.45.0`** for GHSA-8wmf-6v46-5gfg (#216) — an information disclosure where
+  OpenTelemetry-Go can log a trace collector's endpoint, and whether its connection is insecure,
+  into an internal diagnostic. Not reachable here: nothing in this repository imports
+  `go.opentelemetry.io`, the packages arrive transitively through controller-runtime's metrics
+  filter, and no tracer is ever constructed. Bumped so the scheduled scan stays honest.
+- Dependency maintenance: `k8s.io/apiextensions-apiserver` (#212), Ginkgo and Gomega (#213), and the
+  pinned GitHub Actions (#214).
+
+**Upgrading from `v0.7.0`** is additive for the controller: one new optional field on
+`Beskar7MachineTemplate`, no schema change to any existing resource, and the contract stays `v4.2`,
+so the inspector is unaffected. Apply the CRDs as usual. If you run k0s workers, read the #217 note
+above — that fix is in the image you build, not in this release.
+
 ## [v0.7.0] - 2026-09-16
 
 ### Added
@@ -1655,6 +1719,7 @@ For detailed implementation information, see the examples directory and document
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
 [Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[v0.8.0]: https://github.com/projectbeskar/beskar7/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/projectbeskar/beskar7/compare/v0.6.2...v0.7.0
 [v0.6.2]: https://github.com/projectbeskar/beskar7/compare/v0.6.1...v0.6.2
 [v0.6.1]: https://github.com/projectbeskar/beskar7/compare/v0.6.0...v0.6.1
