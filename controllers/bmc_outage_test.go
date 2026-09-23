@@ -26,7 +26,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stmcginnis/gofish/common"
+	"github.com/stmcginnis/gofish/schemas"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -361,7 +361,7 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 			hostReason: infrav1.BMCUnreachableReason, machineReason: infrav1.WaitingForBMCReason,
 		}),
 		Entry("the BMC rejects the credentials", hostFault{
-			factory:    failingBMC(common.ConstructError(401, []byte("unauthorized"))),
+			factory:    failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
 			hostReason: infrav1.RedfishConnectionFailedReason, machineReason: infrav1.PhysicalHostErrorReason, terminal: true,
 		}),
 		Entry("the BMC presents a certificate the client rejects", hostFault{

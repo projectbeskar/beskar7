@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/stmcginnis/gofish"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -253,12 +253,12 @@ func (c *gofishClient) Close(_ context.Context) {
 
 // getSystemService retrieves the first ComputerSystem instance.
 // Helper function to avoid repetition.
-func (c *gofishClient) getSystemService(ctx context.Context) (*redfish.ComputerSystem, error) {
+func (c *gofishClient) getSystemService(ctx context.Context) (*schemas.ComputerSystem, error) {
 	if c.gofishClient == nil {
 		return nil, fmt.Errorf("redfish client is not connected")
 	}
 	service := c.gofishClient.Service
-	var systems []*redfish.ComputerSystem
+	var systems []*schemas.ComputerSystem
 	if err := doWithCtx(ctx, func() error {
 		var inner error
 		systems, inner = service.Systems()
@@ -295,7 +295,7 @@ func (c *gofishClient) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 }
 
 // GetPowerState retrieves the current power state of the system.
-func (c *gofishClient) GetPowerState(ctx context.Context) (redfish.PowerState, error) {
+func (c *gofishClient) GetPowerState(ctx context.Context) (schemas.PowerState, error) {
 	system, err := c.getSystemService(ctx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get system for power state check: %w", err)
@@ -307,30 +307,34 @@ func (c *gofishClient) GetPowerState(ctx context.Context) (redfish.PowerState, e
 // SetPowerState sets the desired power state of the system.
 // Mapping Off → GracefulShutdown ensures the OS can flush state before power
 // is removed. Callers that need an immediate power-cut must use ForcePowerOff.
-func (c *gofishClient) SetPowerState(ctx context.Context, state redfish.PowerState) error {
+// Reset returns a *TaskMonitorInfo since gofish v0.21.0, for BMCs that answer
+// 202 Accepted and carry the work on a task. We discard it: beskar7 re-reads
+// the power state on the next reconcile rather than following a task, which
+// is what every release so far has done.
+func (c *gofishClient) SetPowerState(ctx context.Context, state schemas.PowerState) error {
 	system, err := c.getSystemService(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get system for setting power state: %w", err)
 	}
 
-	var resetType redfish.ResetType
+	var resetType schemas.ResetType
 	switch state {
-	case redfish.OnPowerState:
-		resetType = redfish.OnResetType
-	case redfish.OffPowerState:
-		resetType = redfish.GracefulShutdownResetType
+	case schemas.OnPowerState:
+		resetType = schemas.OnResetType
+	case schemas.OffPowerState:
+		resetType = schemas.GracefulShutdownResetType
 	default:
 		// Try direct conversion if it matches a ResetType
-		switch redfish.ResetType(state) {
-		case redfish.OnResetType, redfish.ForceOffResetType, redfish.GracefulShutdownResetType, redfish.GracefulRestartResetType, redfish.ForceRestartResetType, redfish.NmiResetType, redfish.ForceOnResetType, redfish.PushPowerButtonResetType, redfish.PowerCycleResetType:
-			resetType = redfish.ResetType(state)
+		switch schemas.ResetType(state) {
+		case schemas.OnResetType, schemas.ForceOffResetType, schemas.GracefulShutdownResetType, schemas.GracefulRestartResetType, schemas.ForceRestartResetType, schemas.NmiResetType, schemas.ForceOnResetType, schemas.PushPowerButtonResetType, schemas.PowerCycleResetType:
+			resetType = schemas.ResetType(state)
 		default:
 			return fmt.Errorf("unsupported power state or reset type for SetPowerState: %s", state)
 		}
 	}
 
 	log.Info("Attempting to set power state", "desiredState", state, "resetType", resetType)
-	if err := doWithCtx(ctx, func() error { return system.Reset(resetType) }); err != nil {
+	if err := doWithCtx(ctx, func() error { _, rErr := system.Reset(resetType); return rErr }); err != nil {
 		log.Error(err, "Failed to set power state", "desiredState", state)
 		return fmt.Errorf("failed to set power state to %s: %w", state, err)
 	}
@@ -347,7 +351,7 @@ func (c *gofishClient) ForcePowerOff(ctx context.Context) error {
 		return fmt.Errorf("failed to get system for force power-off: %w", err)
 	}
 	log.Info("Forcing system power-off (bypassing graceful shutdown)")
-	if err := doWithCtx(ctx, func() error { return system.Reset(redfish.ForceOffResetType) }); err != nil {
+	if err := doWithCtx(ctx, func() error { _, rErr := system.Reset(schemas.ForceOffResetType); return rErr }); err != nil {
 		log.Error(err, "Failed to force power-off")
 		return fmt.Errorf("failed to force power-off: %w", err)
 	}
@@ -361,12 +365,12 @@ func (c *gofishClient) SetBootSourcePXE(ctx context.Context) error {
 		return fmt.Errorf("failed to get system to set PXE boot: %w", err)
 	}
 
-	boot := redfish.Boot{
-		BootSourceOverrideTarget:  redfish.PxeBootSourceOverrideTarget,
-		BootSourceOverrideEnabled: redfish.OnceBootSourceOverrideEnabled,
+	boot := schemas.Boot{
+		BootSourceOverrideTarget:  schemas.PxeBootSource,
+		BootSourceOverrideEnabled: schemas.OnceBootSourceOverrideEnabled,
 	}
 	log.Info("Attempting to set boot source override to PXE", "target", boot.BootSourceOverrideTarget, "enabled", boot.BootSourceOverrideEnabled)
-	if err := doWithCtx(ctx, func() error { return system.SetBoot(boot) }); err != nil {
+	if err := doWithCtx(ctx, func() error { return system.SetBoot(&boot) }); err != nil {
 		log.Error(err, "Failed to set boot source override to PXE")
 		return fmt.Errorf("failed to set boot source override to PXE: %w", err)
 	}
@@ -391,12 +395,12 @@ func (c *gofishClient) ClearBootSourceOverride(ctx context.Context) error {
 	// stranded the post-provision boot-to-disk transition (D-015 #2) and the
 	// release-path override clear. Target=None is the Redfish-canonical "no
 	// override" target and reverts the host to its normal boot order.
-	boot := redfish.Boot{
-		BootSourceOverrideEnabled: redfish.DisabledBootSourceOverrideEnabled,
-		BootSourceOverrideTarget:  redfish.NoneBootSourceOverrideTarget,
+	boot := schemas.Boot{
+		BootSourceOverrideEnabled: schemas.DisabledBootSourceOverrideEnabled,
+		BootSourceOverrideTarget:  schemas.NoneBootSource,
 	}
 	log.Info("Clearing boot source override")
-	if err := doWithCtx(ctx, func() error { return system.SetBoot(boot) }); err != nil {
+	if err := doWithCtx(ctx, func() error { return system.SetBoot(&boot) }); err != nil {
 		log.Error(err, "Failed to clear boot source override")
 		return fmt.Errorf("failed to clear boot source override: %w", err)
 	}
@@ -412,7 +416,7 @@ func (c *gofishClient) Reset(ctx context.Context) error {
 	}
 
 	log.Info("Attempting to reset system")
-	if err := doWithCtx(ctx, func() error { return system.Reset(redfish.ForceRestartResetType) }); err != nil {
+	if err := doWithCtx(ctx, func() error { _, rErr := system.Reset(schemas.ForceRestartResetType); return rErr }); err != nil {
 		log.Error(err, "Failed to reset system")
 		return fmt.Errorf("failed to reset system: %w", err)
 	}
@@ -433,7 +437,7 @@ func (c *gofishClient) GetNetworkAddresses(ctx context.Context) ([]NetworkAddres
 	var addresses []NetworkAddress
 
 	// Try to get EthernetInterfaces first (more common and reliable)
-	var ethernetInterfaces []*redfish.EthernetInterface
+	var ethernetInterfaces []*schemas.EthernetInterface
 	if err := doWithCtx(ctx, func() error {
 		var inner error
 		ethernetInterfaces, inner = system.EthernetInterfaces()
@@ -452,7 +456,7 @@ func (c *gofishClient) GetNetworkAddresses(ctx context.Context) ([]NetworkAddres
 	// If we didn't get addresses from EthernetInterfaces, try NetworkInterfaces
 	if len(addresses) == 0 {
 		log.Info("No addresses found via EthernetInterfaces, trying NetworkInterfaces fallback")
-		var networkInterfaces []*redfish.NetworkInterface
+		var networkInterfaces []*schemas.NetworkInterface
 		if err := doWithCtx(ctx, func() error {
 			var inner error
 			networkInterfaces, inner = system.NetworkInterfaces()
@@ -473,7 +477,7 @@ func (c *gofishClient) GetNetworkAddresses(ctx context.Context) ([]NetworkAddres
 }
 
 // extractAddressesFromEthernetInterface extracts network addresses from an EthernetInterface.
-func (c *gofishClient) extractAddressesFromEthernetInterface(ctx context.Context, ethIntf *redfish.EthernetInterface) []NetworkAddress {
+func (c *gofishClient) extractAddressesFromEthernetInterface(ctx context.Context, ethIntf *schemas.EthernetInterface) []NetworkAddress {
 	log := logf.FromContext(ctx)
 	var addresses []NetworkAddress
 
@@ -511,7 +515,7 @@ func (c *gofishClient) extractAddressesFromEthernetInterface(ctx context.Context
 }
 
 // extractAddressesFromNetworkInterface extracts network addresses from a NetworkInterface.
-func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context, netIntf *redfish.NetworkInterface) []NetworkAddress {
+func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context, netIntf *schemas.NetworkInterface) []NetworkAddress {
 	log := logf.FromContext(ctx)
 	var addresses []NetworkAddress
 
@@ -520,7 +524,7 @@ func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context,
 	log.V(1).Info("Extracting addresses from NetworkInterface", "interface", netIntf.Name, "id", netIntf.ID)
 
 	// Try to get NetworkPorts from the NetworkInterface
-	var networkPorts []*redfish.NetworkPort
+	var networkPorts []*schemas.NetworkPort
 	if err := doWithCtx(ctx, func() error {
 		var inner error
 		networkPorts, inner = netIntf.NetworkPorts()
@@ -537,7 +541,7 @@ func (c *gofishClient) extractAddressesFromNetworkInterface(ctx context.Context,
 	}
 
 	// Try to get NetworkDeviceFunctions from the NetworkInterface
-	var networkDeviceFunctions []*redfish.NetworkDeviceFunction
+	var networkDeviceFunctions []*schemas.NetworkDeviceFunction
 	if err := doWithCtx(ctx, func() error {
 		var inner error
 		networkDeviceFunctions, inner = netIntf.NetworkDeviceFunctions()

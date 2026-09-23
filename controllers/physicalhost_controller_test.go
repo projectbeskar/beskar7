@@ -8,7 +8,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -152,7 +152,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				createdPh := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, createdPh)).To(Succeed())
 				g.Expect(createdPh.Status.State).To(Equal(infrav1.StateAvailable))
-				g.Expect(createdPh.Status.ObservedPowerState).To(Equal(string(redfish.OffPowerState)))
+				g.Expect(createdPh.Status.ObservedPowerState).To(Equal(string(schemas.OffPowerState)))
 				g.Expect(createdPh.Status.HardwareDetails).NotTo(BeNil())
 				g.Expect(conditions.IsTrue(createdPh, infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
 				g.Expect(conditions.IsTrue(createdPh, infrav1.HostAvailableCondition)).To(BeTrue())
@@ -709,18 +709,18 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Eventually(func(g Gomega) {
 				ph := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OffPowerState)))
+				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(schemas.OffPowerState)))
 			}, Timeout, Interval).Should(Succeed())
 
 			By("Simulating power on")
-			mockRfClient.PowerState = redfish.OnPowerState
+			mockRfClient.PowerState = schemas.OnPowerState
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
 			Eventually(func(g Gomega) {
 				ph := &infrav1.PhysicalHost{}
 				g.Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(redfish.OnPowerState)))
+				g.Expect(ph.Status.ObservedPowerState).To(Equal(string(schemas.OnPowerState)))
 			}, Timeout, Interval).Should(Succeed())
 		})
 

@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/stmcginnis/gofish/common"
+	"github.com/stmcginnis/gofish/schemas"
 )
 
 // timeoutError mimics the error http.Client returns when its Timeout elapses:
@@ -34,15 +34,15 @@ func dialError(errno syscall.Errno) error {
 }
 
 func TestIsTransientConnectionError(t *testing.T) {
-	refusedInCollection := common.NewCollectionError()
+	refusedInCollection := schemas.NewCollectionError()
 	refusedInCollection.Failures["/redfish/v1/Systems"] = dialError(syscall.ECONNREFUSED)
 
-	mixedCollection := common.NewCollectionError()
-	mixedCollection.Failures["/redfish/v1/Systems/2"] = common.ConstructError(401, []byte("nope"))
+	mixedCollection := schemas.NewCollectionError()
+	mixedCollection.Failures["/redfish/v1/Systems/2"] = schemas.ConstructError(401, []byte("nope"))
 	mixedCollection.Failures["/redfish/v1/Systems/1"] = dialError(syscall.ECONNREFUSED)
 
-	authInCollection := common.NewCollectionError()
-	authInCollection.Failures["/redfish/v1/Systems/1"] = common.ConstructError(401, []byte("nope"))
+	authInCollection := schemas.NewCollectionError()
+	authInCollection.Failures["/redfish/v1/Systems/1"] = schemas.ConstructError(401, []byte("nope"))
 
 	cases := []struct {
 		name      string
@@ -66,14 +66,14 @@ func TestIsTransientConnectionError(t *testing.T) {
 		{"http.Client timeout", &url.Error{Op: "Get", URL: "https://bmc/redfish/v1/", Err: timeoutError{}}, true, "timed out"},
 		{"reconcile context deadline (doWithCtx)", context.DeadlineExceeded, true, "timed out"},
 		{"connection closed mid-response", &url.Error{Op: "Get", URL: "https://bmc/redfish/v1/", Err: io.EOF}, true, "connection closed"},
-		{"BMC still starting (503)", common.ConstructError(503, []byte("starting")), true, "HTTP 503"},
+		{"BMC still starting (503)", schemas.ConstructError(503, []byte("starting")), true, "HTTP 503"},
 		{"collection walk hit a refused connection, wrapped like getSystemService does",
 			fmt.Errorf("failed to retrieve systems: %w", refusedInCollection), true, "connection refused"},
 		{"collection walk with one refused and one 401 item (deterministic pick by link)",
 			mixedCollection, true, "connection refused"},
 
-		{"rejected credentials", common.ConstructError(401, []byte("nope")), false, ""},
-		{"server error (500)", common.ConstructError(500, []byte("boom")), false, ""},
+		{"rejected credentials", schemas.ConstructError(401, []byte("nope")), false, ""},
+		{"server error (500)", schemas.ConstructError(500, []byte("boom")), false, ""},
 		{"collection walk with only auth failures", authInCollection, false, ""},
 		{"certificate rejected by the client",
 			&url.Error{Op: "Get", URL: "https://bmc/redfish/v1/", Err: x509.UnknownAuthorityError{}},

@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -328,7 +328,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 		// called directly. We set up ProviderID + ConsumerRef manually and inject a MockClient.
 		It("Should clear boot source override and power off the host before clearing ConsumerRef", func() {
 			mockRf := internalredfish.NewMockClient()
-			mockRf.PowerState = redfish.OnPowerState
+			mockRf.PowerState = schemas.OnPowerState
 			mockRf.BootSourceIsPXE = true
 
 			r := &Beskar7MachineReconciler{
@@ -379,7 +379,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			By("Verifying SetPowerState(Off) was called")
 			Expect(mockRf.SetPowerStateCalled).To(BeTrue(),
 				"SetPowerState must be called on clean release")
-			Expect(mockRf.PowerState).To(Equal(redfish.OffPowerState))
+			Expect(mockRf.PowerState).To(Equal(schemas.OffPowerState))
 
 			By("Verifying ConsumerRef is nil on the host")
 			hostAfter := &infrav1.PhysicalHost{}

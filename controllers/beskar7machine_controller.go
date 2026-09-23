@@ -29,7 +29,7 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -516,8 +516,8 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		return ctrl.Result{}, err
 	}
 
-	if powerState != redfish.OnPowerState {
-		if err := rfClient.SetPowerState(ctx, redfish.OnPowerState); err != nil {
+	if powerState != schemas.OnPowerState {
+		if err := rfClient.SetPowerState(ctx, schemas.OnPowerState); err != nil {
 			logger.Error(err, "Failed to power on system")
 			internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
 			return ctrl.Result{}, err
@@ -1060,7 +1060,7 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 	// below still apply if it never comes up.
 	if physicalHost.Status.InspectionTimestamp != nil &&
 		time.Since(physicalHost.Status.InspectionTimestamp.Time) > InspectionPowerRecheckDelay &&
-		physicalHost.Status.ObservedPowerState == string(redfish.OffPowerState) {
+		physicalHost.Status.ObservedPowerState == string(schemas.OffPowerState) {
 		if err := r.ensureHostPoweredOnForInspection(ctx, logger, physicalHost); err != nil {
 			// Non-fatal: the timeout below is the backstop, and a BMC that is
 			// unreachable right now is not a reason to fail the machine here.
@@ -1112,12 +1112,12 @@ func (r *Beskar7MachineReconciler) ensureHostPoweredOnForInspection(ctx context.
 	if err != nil {
 		return err
 	}
-	if state == redfish.OnPowerState {
+	if state == schemas.OnPowerState {
 		// The cached reading was stale; nothing to correct.
 		return nil
 	}
 
-	if err := rfClient.SetPowerState(ctx, redfish.OnPowerState); err != nil {
+	if err := rfClient.SetPowerState(ctx, schemas.OnPowerState); err != nil {
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
 		return err
 	}
@@ -1569,7 +1569,7 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	if err := rfClient.ClearBootSourceOverride(ctx); err != nil {
 		logger.Info("Failed to clear boot source override during release; continuing", "err", err)
 	}
-	if err := rfClient.SetPowerState(ctx, redfish.OffPowerState); err != nil {
+	if err := rfClient.SetPowerState(ctx, schemas.OffPowerState); err != nil {
 		logger.Info("Failed to graceful power-off during release; continuing", "err", err)
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeFailed)
 	} else {

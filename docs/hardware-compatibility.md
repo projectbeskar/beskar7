@@ -73,6 +73,23 @@ spec, which is exactly why they cannot surface the firmware quirks real BMCs
 have. Treat the table above as "should work, unverified" and pilot on a small
 number of hosts before committing a fleet.
 
+### Reported from real hardware
+
+The first field report against a physical BMC. It was a failure rather than a
+validation, so the table above is unchanged:
+
+- **AMI MegaRAC SP-X** (Redfish `1.15.1`, schema bundle `2022.1`) returns
+  `ComputerSystem.OperatingSystem` as a link object — `{"@odata.id": "…"}` —
+  which is how Redfish models that property. Every release up to and including
+  `v0.7.0` pinned a Redfish client that typed it as a plain string, so **every**
+  read through `Systems()` failed with `json: cannot unmarshal object into Go
+  struct field .OperatingSystem of type string`, and the `PhysicalHost` went to
+  `Error` before inspection could start. Fixed in
+  [#218](https://github.com/projectbeskar/beskar7/issues/218) by moving to a
+  client that treats it as a link; a link-shaped `OperatingSystem` now has a
+  regression test. Nothing about this is vendor-specific — any BMC returning the
+  property the way the spec describes would have hit it.
+
 ### Known spec-conformance caveats
 
 General Redfish guidance, not Beskar7 findings:
