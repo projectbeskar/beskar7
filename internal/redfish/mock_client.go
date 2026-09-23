@@ -4,8 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/stmcginnis/gofish/common"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 )
 
 // MockClient provides a mock implementation of the Client interface for testing.
@@ -15,7 +14,7 @@ type MockClient struct {
 
 	// Mockable fields
 	SystemInfo      *SystemInfo
-	PowerState      redfish.PowerState
+	PowerState      schemas.PowerState
 	ShouldFail      map[string]error // Map method name to error to simulate failures
 	BootSourceIsPXE bool
 
@@ -42,9 +41,9 @@ func NewMockClient() *MockClient {
 			Manufacturer: "MockInc",
 			Model:        "MockSystem",
 			SerialNumber: "MOCK12345",
-			Status:       common.Status{State: common.EnabledState},
+			Status:       schemas.Status{State: schemas.EnabledState},
 		},
-		PowerState: redfish.OffPowerState,
+		PowerState: schemas.OffPowerState,
 		ShouldFail: make(map[string]error),
 	}
 }
@@ -73,7 +72,7 @@ func (m *MockClient) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 }
 
 // GetPowerState mock implementation.
-func (m *MockClient) GetPowerState(ctx context.Context) (redfish.PowerState, error) {
+func (m *MockClient) GetPowerState(ctx context.Context) (schemas.PowerState, error) {
 	m.mu.Lock()
 	m.GetPowerStateCalled = true
 	m.mu.Unlock()
@@ -86,7 +85,7 @@ func (m *MockClient) GetPowerState(ctx context.Context) (redfish.PowerState, err
 }
 
 // SetPowerState mock implementation.
-func (m *MockClient) SetPowerState(ctx context.Context, state redfish.PowerState) error {
+func (m *MockClient) SetPowerState(ctx context.Context, state schemas.PowerState) error {
 	m.mu.Lock()
 	m.SetPowerStateCalled = true
 	m.mu.Unlock()
@@ -124,7 +123,7 @@ func (m *MockClient) Reset(ctx context.Context) error {
 	// Simulate a reset by cycling power state
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.PowerState = redfish.OnPowerState
+	m.PowerState = schemas.OnPowerState
 	return nil
 }
 
@@ -166,7 +165,7 @@ func (m *MockClient) ForcePowerOff(ctx context.Context) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.PowerState = redfish.OffPowerState
+	m.PowerState = schemas.OffPowerState
 	return nil
 }
 

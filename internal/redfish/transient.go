@@ -10,7 +10,7 @@ import (
 	"sort"
 	"syscall"
 
-	"github.com/stmcginnis/gofish/common"
+	"github.com/stmcginnis/gofish/schemas"
 )
 
 // IsTransientConnectionError reports whether err is a failure to reach the BMC
@@ -24,7 +24,7 @@ import (
 // ComputerSystem. Those need a spec, Secret or firmware change, and retrying
 // them on a short timer would only add noise.
 //
-// gofish reports failures inside a collection walk as a *common.CollectionError
+// gofish reports failures inside a collection walk as a *schemas.CollectionError
 // whose Error() text JSON-encodes the per-item errors; it does not implement
 // Unwrap, so the per-item errors are inspected explicitly.
 func IsTransientConnectionError(err error) bool {
@@ -48,7 +48,7 @@ func classifyTransient(err error) (string, bool) {
 		return "", false
 	}
 
-	var collErr *common.CollectionError
+	var collErr *schemas.CollectionError
 	if errors.As(err, &collErr) {
 		links := make([]string, 0, len(collErr.Failures))
 		for link := range collErr.Failures {
@@ -99,7 +99,7 @@ func classifyTransient(err error) (string, bool) {
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return "connection closed", true
 	}
-	var httpErr *common.Error
+	var httpErr *schemas.Error
 	if errors.As(err, &httpErr) {
 		switch httpErr.HTTPReturnedStatusCode {
 		case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:

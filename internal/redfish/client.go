@@ -4,8 +4,7 @@ import (
 	"context"
 	"net"
 
-	"github.com/stmcginnis/gofish/common"
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
@@ -18,10 +17,10 @@ type Client interface {
 	GetSystemInfo(ctx context.Context) (*SystemInfo, error)
 
 	// GetPowerState retrieves the current power state
-	GetPowerState(ctx context.Context) (redfish.PowerState, error)
+	GetPowerState(ctx context.Context) (schemas.PowerState, error)
 
 	// SetPowerState sets the power state
-	SetPowerState(ctx context.Context, state redfish.PowerState) error
+	SetPowerState(ctx context.Context, state schemas.PowerState) error
 
 	// SetBootSourcePXE configures the system to boot from PXE/network (iPXE)
 	SetBootSourcePXE(ctx context.Context) error
@@ -45,10 +44,10 @@ type Client interface {
 
 // SystemInfo contains basic system information
 type SystemInfo struct {
-	Manufacturer string        `json:"manufacturer"`
-	Model        string        `json:"model"`
-	SerialNumber string        `json:"serialNumber"`
-	Status       common.Status `json:"status"`
+	Manufacturer string         `json:"manufacturer"`
+	Model        string         `json:"model"`
+	SerialNumber string         `json:"serialNumber"`
+	Status       schemas.Status `json:"status"`
 }
 
 // NetworkAddressType represents the type of network address

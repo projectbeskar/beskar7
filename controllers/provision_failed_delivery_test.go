@@ -26,7 +26,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stmcginnis/gofish/common"
+	"github.com/stmcginnis/gofish/schemas"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -214,7 +214,7 @@ var _ = Describe("The inspector's /provision-failed report when the host's BMC f
 		hostReason:      infrav1.MissingCredentialsReason,
 	}
 	rejectedCredentials := bmcFault{
-		factory:    failingBMC(common.ConstructError(401, []byte("unauthorized"))),
+		factory:    failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
 		hostReason: infrav1.RedfishConnectionFailedReason,
 	}
 

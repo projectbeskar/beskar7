@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	gofishredfish "github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 )
 
 // corpusRoot is the filesystem path to the vendored DMTF mockup subtree.
@@ -151,8 +151,8 @@ func TestCorpusReadRobustness_GetPowerState(t *testing.T) {
 	// Value is verbatim from
 	// testdata/corpus/public-rackmount1/redfish/v1/Systems/437XR1138R2/index.json
 	// "PowerState": "On"
-	if state != gofishredfish.OnPowerState {
-		t.Errorf("PowerState: want %q, got %q", gofishredfish.OnPowerState, state)
+	if state != schemas.OnPowerState {
+		t.Errorf("PowerState: want %q, got %q", schemas.OnPowerState, state)
 	}
 }
 

@@ -23,7 +23,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stmcginnis/gofish/redfish"
+	"github.com/stmcginnis/gofish/schemas"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -103,7 +103,7 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 
 	// inspecting puts the host in the state handleInspectingHost monitors, with
 	// the inspection started `age` ago and the given cached power reading.
-	inspecting := func(age time.Duration, observed redfish.PowerState) {
+	inspecting := func(age time.Duration, observed schemas.PowerState) {
 		stamp := metav1.NewTime(time.Now().Add(-age))
 		host.Status.State = infrav1.StateInspecting
 		host.Status.InspectionPhase = infrav1.InspectionPhasePending
@@ -113,15 +113,15 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 	}
 
 	It("powers the host back on instead of waiting out the inspection timeout", func() {
-		inspecting(pastTheRecheckDelay, redfish.OffPowerState)
-		mockRf.PowerState = redfish.OffPowerState
+		inspecting(pastTheRecheckDelay, schemas.OffPowerState)
+		mockRf.PowerState = schemas.OffPowerState
 
 		result, err := r.handleInspectingHost(ctx, r.Log, b7m, host)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(mockRf.SetPowerStateCalled).To(BeTrue(),
 			"a host that is off cannot be running the inspector; it must be powered back on")
-		Expect(mockRf.PowerState).To(Equal(redfish.OnPowerState))
+		Expect(mockRf.PowerState).To(Equal(schemas.OnPowerState))
 
 		By("leaving the machine still inspecting rather than failing it")
 		Expect(isTerminallyFailed(b7m)).To(BeFalse())
@@ -129,8 +129,8 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 	})
 
 	It("does not touch a host that is running normally", func() {
-		inspecting(pastTheRecheckDelay, redfish.OnPowerState)
-		mockRf.PowerState = redfish.OnPowerState
+		inspecting(pastTheRecheckDelay, schemas.OnPowerState)
+		mockRf.PowerState = schemas.OnPowerState
 
 		_, err := r.handleInspectingHost(ctx, r.Log, b7m, host)
 		Expect(err).NotTo(HaveOccurred())
@@ -143,8 +143,8 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 		// The other reconciler maintains ObservedPowerState on its own cadence,
 		// so it can still say Off just after a successful power-on. Confirming
 		// over Redfish is what stops that becoming a spurious power cycle.
-		inspecting(pastTheRecheckDelay, redfish.OffPowerState)
-		mockRf.PowerState = redfish.OnPowerState
+		inspecting(pastTheRecheckDelay, schemas.OffPowerState)
+		mockRf.PowerState = schemas.OnPowerState
 
 		_, err := r.handleInspectingHost(ctx, r.Log, b7m, host)
 		Expect(err).NotTo(HaveOccurred())
@@ -153,8 +153,8 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 	})
 
 	It("gives a freshly started inspection time to settle before believing an Off", func() {
-		inspecting(10*time.Second, redfish.OffPowerState)
-		mockRf.PowerState = redfish.OffPowerState
+		inspecting(10*time.Second, schemas.OffPowerState)
+		mockRf.PowerState = schemas.OffPowerState
 
 		_, err := r.handleInspectingHost(ctx, r.Log, b7m, host)
 		Expect(err).NotTo(HaveOccurred())
@@ -164,8 +164,8 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 
 	It("still fails the machine when the host never comes up at all", func() {
 		// The power-on is a recovery attempt, not a replacement for the timeout.
-		inspecting(r.inspectionTimeout()+time.Minute, redfish.OffPowerState)
-		mockRf.PowerState = redfish.OffPowerState
+		inspecting(r.inspectionTimeout()+time.Minute, schemas.OffPowerState)
+		mockRf.PowerState = schemas.OffPowerState
 
 		_, err := r.handleInspectingHost(ctx, r.Log, b7m, host)
 		Expect(err).NotTo(HaveOccurred())

@@ -24,7 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"github.com/stmcginnis/gofish/common"
+	"github.com/stmcginnis/gofish/schemas"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -333,7 +333,7 @@ var _ = Describe("Claimed PhysicalHost whose provisioning run failed", func() {
 			hostReason: infrav1.BMCUnreachableReason, requeueAfter: retryInterval,
 		}),
 		Entry("the BMC rejects the credentials", bmcFailure{
-			factory:    failingBMC(common.ConstructError(401, []byte("unauthorized"))),
+			factory:    failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
 			hostReason: infrav1.RedfishConnectionFailedReason,
 		}),
 		Entry("the BMC has no ComputerSystem", bmcFailure{

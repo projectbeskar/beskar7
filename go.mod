@@ -11,7 +11,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/stmcginnis/gofish v0.20.0
+	github.com/stmcginnis/gofish v0.26.0
 	golang.org/x/time v0.16.0
 	k8s.io/api v0.35.8
 	k8s.io/apiextensions-apiserver v0.35.8
