@@ -8,6 +8,21 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **The size overlays under `config/overlays/` could not run.** Each one replaced the manager's
+  `args` with a list that passed two flags the manager does not define
+  (`--leader-elect-release-on-cancel`, `--enable-security-monitoring`), so the manager exited at
+  startup; the same list dropped `--bootstrap-url-base` and `--enable-webhook`. Each also renamed
+  every object with a `namePrefix`, while the cert-manager `Certificate` names the webhook and
+  callback Services literally, so neither Service matched its serving certificate — with the
+  webhook's `failurePolicy: Fail`, every `Beskar7Cluster` create and update would have been refused.
+  `large` and `extra-large` also carried a never-published image pin (inert, since `config/default`
+  had already renamed the image it targeted) and put `deployment-size` into selectors, which made a
+  switch between sizes fail on the Deployment's immutable selector. The overlays now only resize:
+  replicas, resources, scheduling, and for `extra-large` a PodDisruptionBudget and appended
+  leader-election timings. `make deploy DEPLOY_KUSTOMIZATION=config/overlays/<size>` deploys one with
+  the bootstrap URL default resolved, and a contract test renders each overlay and runs the real
+  manager binary against its args. `docs/deployment-best-practices.md` replaces a custom-overlay
+  example that used the deprecated `patchesStrategicMerge` and referenced files that do not exist.
 - **A BMC credential rotation or certificate renewal could get a healthy machine replaced.**
   `setConnectionError` guarded only the Error a failed provisioning run left, not a claimed
   `PhysicalHost` already `Inspecting`, `Deploying` or `Ready` — so a non-transient BMC fault

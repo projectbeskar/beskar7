@@ -170,15 +170,19 @@ uninstall:
 	$(MAKE) manifests
 	kustomize build config/crd | kubectl delete -f -
 
+# What deploy/undeploy build: config/default, or a size overlay such as
+# config/overlays/large.
+DEPLOY_KUSTOMIZATION ?= config/default
+
 # Deploy controller to the cluster specified in ~/.kube/config
 deploy:
 	$(MAKE) manifests
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/default | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl apply -f -
+	$(KUSTOMIZE) build $(DEPLOY_KUSTOMIZATION) | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl apply -f -
 
 # Undeploy controller from the cluster specified in ~/.kube/config
 undeploy:
-	$(KUSTOMIZE) build config/default | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl delete -f -
+	$(KUSTOMIZE) build $(DEPLOY_KUSTOMIZATION) | $(RESOLVE_CLUSTERCTL_DEFAULTS) | kubectl delete -f -
 
 # Generate the release manifests: infrastructure-components.yaml (clusterctl,
 # keeps ${VAR:=default}) and beskar7-manifests-$(VERSION).yaml (plain kubectl,

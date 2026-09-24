@@ -1,6 +1,7 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# See ../small/kustomization.yaml for what a size overlay may change.
 namespace: capb7-system
 
 resources:
@@ -9,24 +10,7 @@ resources:
 patches:
 - path: manager_patch.yaml
 
-namePrefix: large-
-
-# deployment-size is already covered by the labels block below (which also
-# carries includeSelectors: true), so the old commonLabels entry was redundant
-# and was dropped during the v1→v2 migration.
-# The version label is deliberately NOT in a selector group — it is rewritten on
-# every release, and Deployment.spec.selector is immutable (see
-# config/default/kustomization.yaml).
 labels:
-- includeSelectors: true
-  pairs:
-    app.kubernetes.io/name: beskar7
+- pairs:
     deployment-size: large
-- includeSelectors: false
-  pairs:
-    app.kubernetes.io/version: v0.3.4-alpha
-
-images:
-- name: controller
-  newName: ghcr.io/projectbeskar/beskar7/beskar7
-  newTag: v0.3.4-alpha-alpha
+  includeSelectors: false

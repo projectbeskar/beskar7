@@ -4,21 +4,11 @@ metadata:
   name: capb7-controller-manager
   namespace: capb7-system
 spec:
-  replicas: 3  # Large HA deployment with 3 replicas
+  replicas: 3
   template:
     spec:
       containers:
       - name: manager
-        args:
-        - --leader-elect=true
-        - --leader-elect-lease-duration=15s
-        - --leader-elect-renew-deadline=10s
-        - --leader-elect-retry-period=2s
-        - --leader-elect-release-on-cancel=true
-        - --enable-security-monitoring=true
-        - --metrics-bind-address=:8443
-        - --health-probe-bind-address=:8081
-        # Add resources optimized for large deployments
         resources:
           limits:
             cpu: 1000m
@@ -28,7 +18,6 @@ spec:
             cpu: 200m
             memory: 256Mi
             ephemeral-storage: 100Mi
-      # Add anti-affinity for large deployments
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -37,4 +26,4 @@ spec:
               labelSelector:
                 matchLabels:
                   control-plane: controller-manager
-              topologyKey: kubernetes.io/hostname 
+              topologyKey: kubernetes.io/hostname
