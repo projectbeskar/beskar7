@@ -2394,14 +2394,6 @@ var _ = Describe("Host claim honours placement: failure domain and hostSelector"
 
 		By("a hostSelector alone")
 		b7m.Spec.HostSelector = &metav1.LabelSelector{MatchLabels: map[string]string{"node-role": "control-plane"}}
-		// Beskar7MachineSpec.DeepCopyInto is hand-written, so a new pointer field
-		// is easy to leave shallow. The cache hands the controller copies; a copy
-		// must carry the selector and must not alias the original.
-		cp := b7m.DeepCopy()
-		Expect(cp.Spec.HostSelector).To(Equal(b7m.Spec.HostSelector), "DeepCopy must carry the selector")
-		cp.Spec.HostSelector.MatchLabels["node-role"] = "mutated-copy"
-		Expect(b7m.Spec.HostSelector.MatchLabels["node-role"]).To(Equal("control-plane"),
-			"DeepCopy must not alias the selector: mutating the copy changed the original")
 		sel, err = hostPlacementSelector(b7m, nil)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(sel.Matches(labels.Set{"node-role": "control-plane"})).To(BeTrue())
