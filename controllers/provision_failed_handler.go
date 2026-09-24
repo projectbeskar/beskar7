@@ -232,9 +232,7 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		// Clear any stale annotation so the reconciler doesn't double-process, then return.
 		log.V(1).Info("Provision-failed callback on already-errored host; clearing annotation idempotently", "host", hostName)
 		if _, ok := ph.Annotations[ProvisionFailedRequestAnnotation]; ok {
-			base := ph.DeepCopy()
-			delete(ph.Annotations, ProvisionFailedRequestAnnotation)
-			if err := h.Client.Patch(ctx, ph, client.MergeFrom(base)); err != nil {
+			if err := h.Client.Patch(ctx, ph, removeAnnotationsPatch(ProvisionFailedRequestAnnotation)); err != nil {
 				log.V(1).Info("Failed to clear stale provision-failed annotation; continuing", "err", err.Error())
 			}
 		}

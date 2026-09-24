@@ -8,6 +8,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **An inspection report, or any other annotation another writer set on a `PhysicalHost`, could be
+  deleted by the host's own reconcile.** When a reconcile consumed the host's last annotation, the
+  emptied map dropped out of the JSON (`omitempty`), so the metadata merge patch sent by CAPI's
+  `patch.Helper` was `"annotations": null`. That deleted every annotation on the server, including
+  one the inspection handler or the `Beskar7Machine` controller had written after the reconcile read
+  the host. A lost inspection-result annotation meant the host never read the report and the machine
+  failed with `InspectionTimedOut`; a lost `/provisioned` report, token or nonce mint, or
+  inspect-complete request stalled the run the same way. Only hosts with no other annotation were
+  exposed. Client-side `kubectl apply` adds `last-applied-configuration`, which kept the map
+  non-empty; `kubectl create`, Helm and server-side apply do not. The host reconciler now removes
+  consumed annotations by key, in a merge patch of their own sent after its status write, and the
+  `/provision-failed` handler clears a stale report the same way. This was also the cause of the
+  intermittent `provisioning_readiness_test.go` failure (FLAKE-1).
 - **Two API types' deep copies shared memory with the original.** `InspectionReport` shared each
   NIC's `ipAddresses`, and `Beskar7ClusterStatus` shared each failure domain's `controlPlane` and
   `attributes`, so mutating an object a reconciler had copied could change the copy held by the

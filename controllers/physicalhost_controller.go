@@ -20,6 +20,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -166,17 +168,27 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, fmt.Errorf("failed to init patch helper for PhysicalHost: %w", err)
 	}
 
+	annotationsRead := maps.Clone(physicalHost.Annotations)
+
 	// Objects written before v0.6.0 carry conditions with no reason, which the
 	// metav1.Condition schema rejects on write. Repair them here, after the
 	// helper has snapshotted the object, so the fix is seen as a change.
 	repairLegacyConditions(physicalHost, logger)
 	defer func() {
+		consumed := restoreConsumedAnnotations(physicalHost, annotationsRead)
 		if perr := patchHelper.Patch(ctx, physicalHost,
 			patch.WithStatusObservedGeneration{},
 		); perr != nil {
 			logger.Error(perr, "failed to patch PhysicalHost")
 			if reterr == nil {
 				reterr = perr
+			}
+		} else if len(consumed) > 0 {
+			if err := r.Patch(ctx, physicalHost, removeAnnotationsPatch(consumed...)); err != nil && !apierrors.IsNotFound(err) {
+				logger.Error(err, "failed to remove consumed annotations", "annotations", consumed)
+				if reterr == nil {
+					reterr = err
+				}
 			}
 		}
 		logger.Info("Finished reconciliation")
@@ -195,6 +207,32 @@ func (r *PhysicalHostReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// Reconcile normal operation
 	return r.reconcileNormal(ctx, logger, physicalHost)
+}
+
+// restoreConsumedAnnotations puts back every annotation this pass read and then
+// deleted, and returns their keys, so that the deferred patch.Helper sends no
+// annotation change and Reconcile removes them by key afterwards
+// (removeAnnotationsPatch). Left to the helper, deleting the host's last
+// annotation empties the map, which JSON omits, so its merge patch carries
+// "annotations": null and deletes every annotation on the server. That
+// includes one the inspection handler or the Beskar7Machine controller wrote
+// after this pass read the host: an inspection report lost that way left the
+// run to time out. Removing them after the helper's status write also means
+// the status an annotation fed into is published before the annotation goes.
+func restoreConsumedAnnotations(physicalHost *infrav1.PhysicalHost, read map[string]string) []string {
+	var consumed []string
+	for key, value := range read {
+		if _, kept := physicalHost.Annotations[key]; kept {
+			continue
+		}
+		if physicalHost.Annotations == nil {
+			physicalHost.Annotations = map[string]string{}
+		}
+		physicalHost.Annotations[key] = value
+		consumed = append(consumed, key)
+	}
+	slices.Sort(consumed)
+	return consumed
 }
 
 // reconcileNormal handles normal (non-deletion) reconciliation.
@@ -733,13 +771,12 @@ func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger,
 //
 // "Annotation in, status out" as in applyBootstrapURLAnnotation, but the clear
 // is deferred by one pass: the annotation stays until status already carries
-// the same mint. The deferred patch writes metadata before status (two API
-// calls), so clearing in the same pass publishes a version of the host that
-// advertises no credential at all; the Beskar7Machine controller reads
-// annotation-then-status and, landing in that gap while the host is still
-// InUse, minted a fresh token over the one the inspector had already fetched
-// (401 on every callback). Keeping the annotation one pass longer also means a
-// failed status patch cannot lose the mint. Malformed JSON is logged and the
+// the same mint, so no published version of the host advertises no credential
+// at all. The Beskar7Machine controller reads annotation-then-status and,
+// landing in such a gap while the host is still InUse, minted a fresh token
+// over the one the inspector had already fetched (401 on every callback).
+// Keeping the annotation one pass longer also means a failed status patch
+// cannot lose the mint. Malformed JSON is logged and the
 // annotation is left in place so the next reconcile (or operator) can
 // investigate; clearing would silently drop a token-state signal.
 func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
@@ -912,11 +949,9 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 // and right after applyProvisionFailedRequestAnnotation, so a failure report that is
 // waiting as well is applied instead. What becomes of the report depends on the host:
 //
-//   - Deploying: applied, and the annotation stays until a pass finds the host Ready.
-//     The deferred patch writes metadata before status, in calls of their own (CAPI's
-//     patch.Helper), so dropping it in the pass that moves the host to Ready lost the
-//     report whenever only the status write failed, and left the host Deploying for a
-//     deployment that was over.
+//   - Deploying: applied, and the annotation stays until a pass finds the host Ready,
+//     so a status write that fails cannot lose the report and leave the host Deploying
+//     for a deployment that was over.
 //   - Ready: cleared. Status shows the report, or this is a duplicate of it.
 //   - Claimed, still Inspecting, and in possession of this run's inspection report
 //     (inspectionReportReceived): kept, and applied once the host is Deploying. The
