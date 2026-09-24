@@ -8,6 +8,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **Two API types' deep copies shared memory with the original.** `InspectionReport` shared each
+  NIC's `ipAddresses`, and `Beskar7ClusterStatus` shared each failure domain's `controlPlane` and
+  `attributes`, so mutating an object a reconciler had copied could change the copy held by the
+  controller-runtime cache. Both came from hand-written `DeepCopyInto` methods that had fallen behind
+  their types; controller-gen never regenerates a method a type already defines. All ten
+  hand-written deepcopy methods are gone and `zz_generated.deepcopy.go` carries them now. A new
+  test fills every field of every registered kind and requires `DeepCopyObject` to share no pointer,
+  slice or map with the original. No API or CRD change.
 - **The size overlays under `config/overlays/` could not run.** Each one replaced the manager's
   `args` with a list that passed two flags the manager does not define
   (`--leader-elect-release-on-cancel`, `--enable-security-monitoring`), so the manager exited at
