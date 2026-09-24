@@ -51,8 +51,9 @@ import (
 //   - An inspector the machine had just powered on could not fetch /boot: the
 //     nonce in its iPXE script was not in the host's status.
 //
-// A BMC failure that needs a fix still holds the annotations until the
-// connection works, as before.
+// A BMC failure that needs a fix held the annotations the same way, until the
+// connection worked; it now acts on them too, and keeps the state they produce
+// (bmc_outage_test.go).
 
 // inUseHost creates a claimed host that is InUse with a healthy BMC
 // connection, carrying annotations for its next reconcile.
@@ -273,12 +274,10 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 		Expect(after.Status.ErrorMessage).To(Equal(inspectionTimedOutMessage))
 	})
 
-	// A failure that needs a fix writes its own Error over the host's state in
-	// the pass that finds it. A request applied in that pass would go with that
-	// state, and the host would come back InUse once the connection worked, where
-	// its machine boots the inspector again. Left in place, the request is
-	// applied in the pass that connects.
-	It("leaves the machine's requests in place while a BMC failure that needs a fix holds the connection", func() {
+	// A failure that needs a fix does not overwrite the state a request
+	// produces, so the request is applied in the pass that finds the failure,
+	// as during a network-level outage.
+	It("applies the machine's requests in the same pass a BMC failure that needs a fix arrives", func() {
 		gate.setReachable(true)
 		key := inspectedHost(ns.Name, "held-request-host", "held-request-machine")
 		requestInspectionStep(key, "inspect-complete")
@@ -286,15 +285,18 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 
 		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 		Expect(err).To(HaveOccurred(), "a missing credentials Secret keeps the workqueue's backoff")
-		failing := getPhysicalHost(key)
-		Expect(failing.Status.State).To(Equal(infrav1.StateError))
-		Expect(conditions.GetReason(failing, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.MissingCredentialsReason))
-		Expect(failing.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"))
+		deploying := getPhysicalHost(key)
+		Expect(deploying.Status.State).To(Equal(infrav1.StateDeploying),
+			"not held: the request lands in the same pass, not InUse-turned-Error")
+		Expect(deploying.Status.DeployingTimestamp).NotTo(BeNil())
+		Expect(deploying.Status.ErrorMessage).To(BeEmpty())
+		Expect(conditions.GetReason(deploying, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.MissingCredentialsReason))
+		Expect(deploying.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 
 		By("restoring the credentials")
 		Expect(k8sClient.Create(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
 		resumed := settlePhysicalHost(hostReconciler, key)
-		Expect(resumed.Status.State).To(Equal(infrav1.StateDeploying), "not InUse, where the machine would boot the inspector again")
+		Expect(resumed.Status.State).To(Equal(infrav1.StateDeploying), "the host comes back where it was")
 		Expect(resumed.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 	})
 })

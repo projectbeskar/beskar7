@@ -283,10 +283,14 @@ var _ = Describe("PhysicalHost versions published while it recovers from a BMC o
 	})
 })
 
-// Every way the real PhysicalHost reconciler leaves a claimed host in Error,
-// handed to the machine exactly as the host publishes it. Only the BMC outage
-// is waited out; everything that needs a change to clear fails the machine with
-// the reason it always had.
+// Every way the real PhysicalHost reconciler leaves a freshly claimed host —
+// one that never reached Inspecting, Deploying or Ready — in Error, handed to
+// the machine exactly as the host publishes it. Only the BMC outage is waited
+// out; everything that needs a change to clear fails the machine with the
+// reason it always had. A host already part-way through its run keeps that
+// state instead of Error for every one of these same faults
+// (inProvisioningSubState); see "the host's state through a non-transient BMC
+// fault" in the Describe below this one.
 var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error", func() {
 	var ns *corev1.Namespace
 
@@ -422,12 +426,13 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 
 // A claimed host that is Inspecting, Deploying or Ready is part-way through, or
 // done with, a provisioning run its BMC plays no part in: the inspector and the
-// installed OS run without it. It keeps that state through an outage and only
-// RedfishConnectionReady reports it. Before, the outage overwrote the state with
-// Error and the recovery could only restore InUse, so a machine that stopped
-// being failed for the outage would have booted the inspector again on a host
-// it had already provisioned. An InUse host still goes to Error, which it comes
-// back from by itself.
+// installed OS run without it. It keeps that state through an outage — and,
+// below, through any other BMC fault, including the ones that need a change
+// before a retry can succeed — and only RedfishConnectionReady reports it.
+// Before, both kinds of fault overwrote the state with Error and the recovery
+// could only restore InUse, so a machine that stopped being failed would have
+// booted the inspector again on a host it had already provisioned. An InUse
+// host still goes to Error either way, which it comes back from by itself.
 var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BMC goes away", func() {
 	const retryInterval = 2 * time.Second
 
@@ -515,6 +520,209 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		Entry("Ready is kept", infrav1.StateReady, true),
 		Entry("InUse goes to Error and comes back by itself", infrav1.StateInUse, false),
 	)
+
+	// Unlike the outage above, none of these clear by themselves — something
+	// about the spec or the credentials has to change. bmc_outage_test.go's
+	// "the machine's decision" table already pins what each one does to a
+	// freshly claimed host (Error, and the machine fails terminally); these are
+	// the same faults against a host already Inspecting, Deploying or Ready.
+	// setConnectionError leaves that state alone for the same reason
+	// retryTransientRedfishFailure does above: neither the inspector nor the
+	// installed OS needs the BMC. InUse is the control: it is not a
+	// provisioning sub-state, so it still goes to Error.
+	const bmcAddress = "https://mock-redfish.example.invalid:8443"
+
+	type nonTransientFault struct {
+		name          string
+		noCredentials bool
+		connection    func(*infrav1.RedfishConnection)
+		factory       internalredfish.RedfishClientFactory
+		hostReason    string
+	}
+
+	nonTransientFaults := []nonTransientFault{
+		{
+			name:       "the BMC rejects the credentials",
+			factory:    failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
+			hostReason: infrav1.RedfishConnectionFailedReason,
+		},
+		{
+			name:       "the BMC presents a certificate the client rejects",
+			factory:    failingBMC(&url.Error{Op: "Get", URL: bmcAddress + "/redfish/v1/", Err: x509.UnknownAuthorityError{}}),
+			hostReason: infrav1.RedfishConnectionFailedReason,
+		},
+		{
+			name: "the BMC has no ComputerSystem",
+			factory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
+				empty := internalredfish.NewMockClient()
+				empty.ShouldFail["GetSystemInfo"] = errors.New("no systems found")
+				return empty, nil
+			},
+			hostReason: infrav1.RedfishQueryFailedReason,
+		},
+		{
+			name:          "the credentials Secret does not exist",
+			noCredentials: true,
+			factory:       failingBMC(errors.New("the factory must not be reached")),
+			hostReason:    infrav1.MissingCredentialsReason,
+		},
+		{
+			name: "insecureSkipVerify is combined with a CA bundle",
+			connection: func(c *infrav1.RedfishConnection) {
+				c.InsecureSkipVerify = ptr.To(true)
+				c.CABundleSecretRef = "bmc-ca"
+			},
+			factory:    failingBMC(errors.New("the factory must not be reached")),
+			hostReason: infrav1.InsecureCABundleConflictReason,
+		},
+		{
+			name:       "the CA bundle Secret does not exist",
+			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
+			factory:    failingBMC(errors.New("the factory must not be reached")),
+			hostReason: infrav1.CABundleFetchFailedReason,
+		},
+	}
+
+	type substate struct {
+		state string
+		kept  bool
+	}
+	substates := []substate{
+		{infrav1.StateInspecting, true},
+		{infrav1.StateDeploying, true},
+		{infrav1.StateReady, true},
+		{infrav1.StateInUse, false},
+	}
+
+	// DescribeTable's args are a single variadic slice, so the body and the
+	// generated entries are built into one []any: a fixed argument cannot
+	// precede a spread of the remaining variadic parameters in the same call.
+	nonTransientTableArgs := []any{
+		func(state string, kept bool, fault nonTransientFault) {
+			if fault.noCredentials {
+				Expect(k8sClient.Delete(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
+			}
+			hostKey := busyHost("fault-host", state)
+			if fault.connection != nil {
+				editRedfishConnection(hostKey, fault.connection)
+			}
+			hostReconciler := &PhysicalHostReconciler{
+				Client: k8sClient, Scheme: k8sClient.Scheme(),
+				Log:                  ctrl.Log.WithName("bmc-substate-fault-host"),
+				Recorder:             record.NewFakeRecorder(10),
+				RedfishClientFactory: fault.factory,
+			}
+			// The failures that need a change return their error for the
+			// workqueue's backoff; that is the host's business and not what this
+			// table is about.
+			_, _ = hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: hostKey})
+
+			during := getPhysicalHost(hostKey)
+			cond := conditions.Get(during, infrav1.RedfishConnectionReadyCondition)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(fault.hostReason))
+			if kept {
+				Expect(during.Status.State).To(Equal(state))
+				Expect(during.Status.Ready).To(BeTrue())
+				Expect(during.Status.ErrorMessage).To(BeEmpty(),
+					"the condition carries the fault; errorMessage stays reserved for the Error state")
+			} else {
+				Expect(during.Status.State).To(Equal(infrav1.StateError))
+				Expect(during.Status.ErrorMessage).NotTo(BeEmpty())
+			}
+
+			By("letting the BMC work again")
+			if fault.noCredentials {
+				Expect(k8sClient.Create(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
+			}
+			if fault.connection != nil {
+				editRedfishConnection(hostKey, func(c *infrav1.RedfishConnection) {
+					*c = infrav1.RedfishConnection{Address: bmcAddress, CredentialsSecretRef: "bmc-credentials"}
+				})
+			}
+			hostReconciler.RedfishClientFactory = reachableBMC()
+			_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: hostKey})
+			Expect(err).NotTo(HaveOccurred())
+			after := getPhysicalHost(hostKey)
+			Expect(after.Status.State).To(Equal(state), "the host comes back where it was")
+			Expect(after.Status.ErrorMessage).To(BeEmpty())
+			Expect(conditions.IsTrue(after, infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
+		},
+	}
+	for _, fault := range nonTransientFaults {
+		for _, s := range substates {
+			nonTransientTableArgs = append(nonTransientTableArgs,
+				Entry(fmt.Sprintf("%s, while %s", fault.name, s.state), s.state, s.kept, fault))
+		}
+	}
+	DescribeTable("the host's state through a non-transient BMC fault", nonTransientTableArgs...)
+
+	It("leaves a provisioned machine Ready when its host's BMC rejects the credentials", func() {
+		hostKey := busyHost("provisioned-401-host", infrav1.StateReady)
+		hostReconciler := &PhysicalHostReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			Log:                  ctrl.Log.WithName("bmc-substate-401-host"),
+			Recorder:             record.NewFakeRecorder(10),
+			RedfishClientFactory: failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
+		}
+		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: hostKey})
+		Expect(err).To(HaveOccurred(), "a failure that needs a change keeps the workqueue's backoff")
+		host := getPhysicalHost(hostKey)
+		Expect(host.Status.State).To(Equal(infrav1.StateReady), "the fault must not overwrite a Ready host")
+		Expect(conditions.GetReason(host, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.RedfishConnectionFailedReason))
+
+		machine := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "busy-machine", Namespace: ns.Name},
+			Spec:       infrav1.Beskar7MachineSpec{ProviderID: providerID(ns.Name, host.Name)},
+			Status: infrav1.Beskar7MachineStatus{
+				Ready:          true,
+				Phase:          ptr.To("Provisioned"),
+				Initialization: infrav1.Beskar7MachineInitializationStatus{Provisioned: ptr.To(true)},
+			},
+		}
+		setTrue(machine, infrav1.InfrastructureReadyCondition, infrav1.ProvisionedReason)
+
+		// No Redfish client: a provisioned machine must not need its BMC.
+		machineReconciler := &Beskar7MachineReconciler{Log: ctrl.Log.WithName("bmc-substate-401-machine")}
+		_, err = machineReconciler.handlePhysicalHostState(ctx, machineReconciler.Log, machine, host)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(isTerminallyFailed(machine)).To(BeFalse())
+		Expect(machine.Status.Ready).To(BeTrue())
+		Expect(ptr.Deref(machine.Status.Phase, "")).To(Equal("Provisioned"))
+		Expect(conditions.IsTrue(machine, infrav1.InfrastructureReadyCondition)).To(BeTrue(),
+			"a serving node whose out-of-band management rejected a rotated credential is still a serving node")
+	})
+
+	It("reaches Deploying in the same pass a 401 arrives, with an inspection result and inspect-complete both waiting", func() {
+		key := provisioningHost(ns.Name, "runon-401-host", "runon-401-machine", infrav1.StateInspecting, nil)
+		postInspectionReport(key)
+		requestInspectionStep(key, "inspect-complete")
+
+		hostReconciler := &PhysicalHostReconciler{
+			Client: k8sClient, Scheme: k8sClient.Scheme(),
+			Log:                  ctrl.Log.WithName("bmc-substate-runon-host"),
+			Recorder:             record.NewFakeRecorder(10),
+			RedfishClientFactory: failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
+		}
+		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+		Expect(err).To(HaveOccurred(), "a failure that needs a change keeps the workqueue's backoff")
+
+		deploying := getPhysicalHost(key)
+		Expect(deploying.Status.State).To(Equal(infrav1.StateDeploying),
+			"both the waiting report and inspect-complete must still land although the BMC rejects the credentials")
+		Expect(deploying.Status.DeployingTimestamp).NotTo(BeNil())
+		Expect(deploying.Status.InspectionReport).NotTo(BeNil())
+		Expect(deploying.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete))
+		Expect(deploying.Status.ErrorMessage).To(BeEmpty())
+		Expect(deploying.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+		Expect(deploying.Annotations).NotTo(HaveKey(InspectionResultAnnotation))
+		Expect(conditions.GetReason(deploying, infrav1.RedfishConnectionReadyCondition)).To(Equal(infrav1.RedfishConnectionFailedReason))
+
+		machine, _ := judgeHost(deploying)
+		Expect(isTerminallyFailed(machine)).To(BeFalse())
+		Expect(ptr.Deref(machine.Status.Phase, "")).To(Equal("Provisioning"))
+	})
 
 	It("leaves a provisioned machine Ready while its host's BMC is down", func() {
 		hostKey := busyHost("provisioned-host", infrav1.StateReady)

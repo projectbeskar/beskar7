@@ -70,7 +70,7 @@ spec:
 
 The CA bundle Secret must live in the same namespace as the PhysicalHost. The reconciler refreshes its TLS roots on each reconcile, so rotating the Secret takes effect at the next reconcile cycle (default 5 minutes; trigger sooner with a no-op `kubectl annotate physicalhost <name> reconcile-now=...`).
 
-If the Secret is missing or has empty `ca.crt`/`tls.crt`, the controller marks `RedfishConnectionReady=False (CABundleFetchFailed)` and the host moves to `Error`.
+If the Secret is missing or has empty `ca.crt`/`tls.crt`, the controller marks `RedfishConnectionReady=False (CABundleFetchFailed)`. A host not yet `Inspecting`, `Deploying` or `Ready` (still `InUse` or unclaimed) moves to `Error`; a host already in one of those states — for example right after the rotation above — keeps it, and only the condition reports the fault.
 
 ### Skipping verification (development only)
 

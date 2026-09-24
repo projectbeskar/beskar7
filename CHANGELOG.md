@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **A BMC credential rotation or certificate renewal could get a healthy machine replaced.**
+  `setConnectionError` guarded only the Error a failed provisioning run left, not a claimed
+  `PhysicalHost` already `Inspecting`, `Deploying` or `Ready` — so a non-transient BMC fault
+  (missing or unreadable credentials, a rejected certificate, a 401, an `insecureSkipVerify` +
+  `caBundleSecretRef` conflict, a query the BMC answered with something other than a system) flipped
+  that host to `Error` regardless. `Beskar7Machine`'s `StateError` case only forgives an unreachable
+  BMC (`BMCUnreachableReason`, the transient path #196 already covered), so it failed an
+  already-serving machine terminally, and a `MachineHealthCheck` replaced a node whose BMC merely
+  had a password rotated or a certificate renewed a few seconds apart from its Secret. Fixed the
+  same way #196 fixed the transient path: `setConnectionError` now leaves a claimed host's
+  provisioning sub-state alone (`inProvisioningSubState`) and reports the fault only through
+  `RedfishConnectionReady`, and `applyRunAnnotations` runs on that path too — ahead of
+  `setConnectionError`, so an inspection result or an inspect-complete request already waiting still
+  reaches `Deploying` instead of timing out. An `InUse` host, and one that has never reached a
+  provisioning sub-state, still goes to `Error` unchanged. No Beskar7Machine controller change was
+  needed.
+
 ## [v0.8.0] - 2026-09-23
 
 ### Fixed

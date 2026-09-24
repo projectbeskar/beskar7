@@ -65,7 +65,7 @@ Connection coordinates for the Redfish BMC.
 | `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. |
 | `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
 
-When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`; the host is moved to `Error`.
+When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`. A host not yet `Inspecting`, `Deploying` or `Ready` (still `InUse` or unclaimed) is moved to `Error`; a host already in one of those states keeps it, and only the condition reports the conflict.
 
 #### `spec.consumerRef`
 

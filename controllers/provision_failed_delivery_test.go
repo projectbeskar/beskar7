@@ -290,22 +290,24 @@ var _ = Describe("The inspector's /provision-failed report when the host's BMC f
 		}),
 	)
 
-	// The machine that reads the BMC's Error has usually failed already, with
-	// PhysicalHostError: a failure that needs a fix is terminal (#190). This is
-	// about the host: it records the inspector's reason, keeps the run's Error
-	// once the BMC answers, and a machine that missed the BMC's Error fails with
-	// DeploymentFailed instead of booting the inspector again.
-	DescribeTable("a report posted while the host is in an Error its BMC wrote over the deployment",
+	// A failure that needs a fix leaves a Deploying host Deploying: the
+	// inspector does not need the BMC and carries on (bmc_outage_test.go). Its
+	// report lands, the run's Error outlasts both the failing BMC and its
+	// recovery, and the machine fails with DeploymentFailed instead of booting
+	// the inspector again.
+	DescribeTable("a report posted while the host is Deploying and its BMC has separately failed",
 		func(fault bmcFault) {
 			key := provisioningHost(ns.Name, "bmc-error-host", "bmc-error-machine", infrav1.StateDeploying, nil)
 			hostReconciler := newHostReconciler()
 			restore := breakBMC(hostReconciler, key, fault)
 			result, err := reconcileHost(hostReconciler, key)
 			expectFailedPass(fault, result, err)
-			errored := getPhysicalHost(key)
-			Expect(errored.Status.State).To(Equal(infrav1.StateError))
-			Expect(errored.Status.ErrorMessage).NotTo(HavePrefix(provisionFailedReasonPrefix))
-			Expect(errored.Status.DeployingTimestamp).NotTo(BeNil())
+			during := getPhysicalHost(key)
+			Expect(during.Status.State).To(Equal(infrav1.StateDeploying),
+				"the fault alone must not interrupt a deployment the inspector is still running")
+			Expect(during.Status.ErrorMessage).To(BeEmpty())
+			Expect(during.Status.DeployingTimestamp).NotTo(BeNil())
+			Expect(conditions.GetReason(during, infrav1.RedfishConnectionReadyCondition)).To(Equal(fault.hostReason))
 
 			By("the inspector reporting its deploy failure now")
 			report := sanitizeFailureReason("COS_OEM partition not found")
@@ -338,23 +340,67 @@ var _ = Describe("The inspector's /provision-failed report when the host's BMC f
 		Entry("the BMC rejects the credentials", rejectedCredentials),
 	)
 
-	It("takes no report for a host whose BMC failed before it was deploying", func() {
+	// v0.8.0 and earlier wrote a BMC Error over a Deploying host (a claimed
+	// host in Error, DeployingTimestamp set, not the run's own Error). The
+	// current controller never produces that, so the fixture writes it
+	// directly: a host upgraded in that state must still take its report.
+	It("applies a report to a Deploying host's BMC Error left by v0.8.0 or earlier", func() {
+		key := provisioningHost(ns.Name, "legacy-bmc-error-host", "legacy-bmc-error-machine", infrav1.StateDeploying, nil)
+		legacy := getPhysicalHost(key)
+		legacy.Status.State = infrav1.StateError
+		legacy.Status.Ready = false
+		setFalse(legacy, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "Connection failed: unauthorized")
+		Expect(k8sClient.Status().Update(ctx, legacy)).To(Succeed())
+		Expect(deployInterruptedByBMCError(legacy)).To(BeTrue(), "the fixture must exercise the branch under test")
+
+		report := sanitizeFailureReason("COS_OEM partition not found")
+		reportDeployFailure(key, report)
+
+		hostReconciler := newHostReconciler()
+		_, err := reconcileHost(hostReconciler, key)
+		Expect(err).NotTo(HaveOccurred())
+		failed := getPhysicalHost(key)
+		Expect(failed.Status.State).To(Equal(infrav1.StateError))
+		Expect(failed.Status.ErrorMessage).To(Equal(report))
+		Expect(failed.Annotations).NotTo(HaveKey(ProvisionFailedRequestAnnotation))
+
+		machine, _ := judgeHost(failed)
+		Expect(isTerminallyFailed(machine)).To(BeTrue())
+		Expect(conditions.GetReason(machine, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.DeploymentFailedReason))
+	})
+
+	It("keeps Inspecting for a host whose BMC fails before an inspection report arrives, and takes no report for it", func() {
 		key := provisioningHost(ns.Name, "inspecting-bmc-error-host", "inspecting-bmc-error-machine", infrav1.StateInspecting, nil)
 		hostReconciler := newHostReconciler()
 		restore := breakBMC(hostReconciler, key, rejectedCredentials)
 		_, err := reconcileHost(hostReconciler, key)
 		Expect(err).To(HaveOccurred())
-		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+		during := getPhysicalHost(key)
+		Expect(during.Status.State).To(Equal(infrav1.StateInspecting),
+			"the fault alone must not interrupt an inspection that has not reported yet")
+		Expect(during.Status.ErrorMessage).To(BeEmpty())
 
 		By("a deploy failure arriving for it")
+		// The handler itself does not gate on whether an inspection report was
+		// received (signalProvisionFailed accepts any claimed, Inspecting host);
+		// it trusts applyProvisionFailedRequestAnnotation to tell an inspection
+		// still in progress from one already validated, and this one never
+		// received a report, so the annotation is cleared without a transition
+		// on the reconcile that follows.
 		reportDeployFailure(key, sanitizeFailureReason("image fetch failed"))
-		Expect(getPhysicalHost(key).Annotations).NotTo(HaveKey(ProvisionFailedRequestAnnotation),
+		Expect(getPhysicalHost(key).Annotations).To(HaveKey(ProvisionFailedRequestAnnotation))
+		_, err = reconcileHost(hostReconciler, key)
+		Expect(err).To(HaveOccurred())
+		cleared := getPhysicalHost(key)
+		Expect(cleared.Annotations).NotTo(HaveKey(ProvisionFailedRequestAnnotation),
 			"no deployment was running for the report to be about")
+		Expect(cleared.Status.State).To(Equal(infrav1.StateInspecting))
+		Expect(cleared.Status.ErrorMessage).To(BeEmpty())
 
 		By("letting the BMC answer again")
 		restore()
 		recovered := settlePhysicalHost(hostReconciler, key)
-		Expect(recovered.Status.State).To(Equal(infrav1.StateInUse), "an Error about the BMC clears as before")
+		Expect(recovered.Status.State).To(Equal(infrav1.StateInspecting), "the host comes back where it was")
 		Expect(recovered.Status.ErrorMessage).To(BeEmpty())
 	})
 })
