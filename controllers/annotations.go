@@ -16,7 +16,29 @@ limitations under the License.
 
 package controllers
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	"encoding/json"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+// removeAnnotationsPatch returns a merge patch that deletes exactly keys and
+// no other annotation. A merge patch computed by diffing a copy of the object
+// does not: when the deletion leaves the copy's map empty, JSON omits it
+// (omitempty) and the patch becomes "annotations": null, which deletes every
+// annotation on the server, including any another writer added after the copy
+// was read.
+func removeAnnotationsPatch(keys ...string) client.Patch {
+	nulls := make(map[string]any, len(keys))
+	for _, key := range keys {
+		nulls[key] = nil
+	}
+	// Marshalling maps of strings to nil cannot fail.
+	data, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": nulls}})
+	return client.RawPatch(types.MergePatchType, data)
+}
 
 // BootstrapURLAnnotation is set by the Beskar7Machine controller on a PhysicalHost
 // to signal the computed per-host bootstrap URL. The PhysicalHost controller reads
