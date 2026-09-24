@@ -524,10 +524,10 @@ If the BMC cannot be reached at the network level (connection refused or reset, 
 3. The `Beskar7Machine` holding the host waits (`InfrastructureReady=False`, reason `WaitingForBMC`) instead of failing, and carries on once the host does; if the host's run has already failed, the machine fails with the run's reason instead
 
 Any other Redfish failure (refused credentials, a rejected certificate, a malformed address, no `ComputerSystem`):
-1. PhysicalHost.status.state set to `Error` (a claimed host whose run failed keeps that `Error` and its message)
+1. `PhysicalHost.status.state` set to `Error`, unless the host is claimed and `Inspecting`, `Deploying` or `Ready`, or already in `Error` because its run failed, which it keeps
 2. `RedfishConnectionReady` condition set to `False` with a reason (`RedfishConnectionFailed`, `RedfishQueryFailed`, `MissingCredentials`, …) and the error in the message
 3. Retry with exponential backoff
-4. The `Beskar7Machine` holding the host fails terminally (`PhysicalHostError`); fix the cause and replace the machine
+4. If the host was `InUse` or unclaimed, the `Beskar7Machine` holding it fails terminally (`PhysicalHostError`); fix the cause and replace the machine. A host already `Inspecting`, `Deploying` or `Ready` keeps running instead — its machine is not failed
 
 ## Security Considerations
 

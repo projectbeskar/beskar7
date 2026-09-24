@@ -202,11 +202,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	logger.Info("Reconciling PhysicalHost", "currentState", physicalHost.Status.State)
 
 	// The inspector's reports go first, before the BMC is tried. They need
-	// nothing from the BMC, and a connection failure that needs a fix returns
-	// below without acting on any other annotation (applyRunAnnotations): a
-	// /provision-failed report left until then came too late once that failure
-	// had written its own Error over Deploying. Applied here, the run's Error
-	// outlasts whatever the connection does next.
+	// nothing from the BMC, and the run's Error they may write outlasts whatever
+	// the connection does next: no connection failure overwrites a claimed
+	// host's provisioning state (inProvisioningSubState).
 	//
 	// The success report goes right after the failure report, ahead of the
 	// machine's requests as well, so the two are always weighed against the same
@@ -225,6 +223,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	username, password, err := r.getRedfishCredentials(ctx, physicalHost)
 	if err != nil {
 		logger.Error(err, "Failed to get Redfish credentials")
+		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, err.Error())
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.MissingCredentialsReason, "Failed to retrieve credentials: %v", err)
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
@@ -248,6 +247,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// long requeue avoids hot-looping on a misconfigured spec.
 	if err := validateRedfishTLSCombination(insecure, physicalHost.Spec.RedfishConnection.CABundleSecretRef); err != nil {
 		logger.Error(err, "Invalid Redfish TLS configuration")
+		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, err.Error())
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.InsecureCABundleConflictReason, "%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
@@ -258,6 +258,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	caBundle, err := fetchRedfishCABundle(ctx, r.Client, physicalHost)
 	if err != nil {
 		logger.Error(err, "Failed to fetch Redfish CA bundle")
+		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, err.Error())
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.CABundleFetchFailedReason, "%s", err.Error())
 		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
@@ -281,6 +282,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 			r.applyRunAnnotations(ctx, logger, physicalHost)
 			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
 		}
+		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, fmt.Sprintf("Redfish connection failed: %v", err))
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectionFailedReason, "Connection failed: %v", err)
 		// Not a network-level failure (malformed address, certificate the client
@@ -306,6 +308,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 			r.applyRunAnnotations(ctx, logger, physicalHost)
 			return r.retryTransientRedfishFailure(logger, physicalHost, err), nil
 		}
+		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, fmt.Sprintf("Failed to query system: %v", err))
 		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishQueryFailedReason, "Query failed: %v", err)
 		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
@@ -470,13 +473,18 @@ func provisioningRunFailed(physicalHost *infrav1.PhysicalHost) bool {
 }
 
 // deployInterruptedByBMCError reports whether a claimed host is in an Error
-// about its BMC that setConnectionError wrote over a deployment: the host got
-// as far as Deploying (DeployingTimestamp is set then and cleared only when the
-// host is released), and the Error is not the run's own. The inspector does
-// not need the BMC and carries on deploying, so its /provision-failed report
-// still applies to such a host. The host does not record whether it was
-// Deploying or already Ready when the BMC failed; the inspector reports a
-// failure only while it deploys.
+// about its BMC that was written over a deployment: the host got as far as
+// Deploying (DeployingTimestamp is set then and cleared only when the host is
+// released), and the Error is not the run's own. The inspector does not need
+// the BMC and carries on deploying, so its /provision-failed report still
+// applies to such a host. The host does not record whether it was Deploying
+// or already Ready when the BMC failed; the inspector reports a failure only
+// while it deploys.
+//
+// Neither setConnectionError nor retryTransientRedfishFailure writes Error
+// over a Deploying host, so only v0.8.0 and earlier leave this combination
+// behind. A host upgraded in that state must still take its /provision-failed
+// report rather than have it cleared as unexpected.
 func deployInterruptedByBMCError(physicalHost *infrav1.PhysicalHost) bool {
 	return physicalHost.Spec.ConsumerRef != nil &&
 		physicalHost.Status.State == infrav1.StateError &&
@@ -503,23 +511,22 @@ func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 // inspection report. The inspector's /provision-failed and /provisioned reports
 // are applied at the top of reconcileNormal instead.
 //
-// reconcileNormal calls it once the BMC has answered, and also when the BMC
-// cannot be reached at the network level, before retryTransientRedfishFailure.
-// Nothing here needs the BMC, and a claimed host keeps its provisioning state
-// through such an outage, so its run goes on. Left for the BMC, the host read
-// no inspection report, so a machine whose inspection timeout ran out
-// meanwhile failed with InspectionTimedOut on a host that went on to deploy; a
-// waiting inspect-complete left the machine Inspecting until a
-// MachineHealthCheck replaced it; and an inspector the machine had just powered
-// on could not fetch /boot, its nonce not yet in status.
+// reconcileNormal calls it once the BMC has answered, and also when it has
+// not: before retryTransientRedfishFailure for a network-level outage, and
+// before setConnectionError for a failure that needs a fix (credentials, TLS,
+// a rejected certificate, a BMC with no system). Nothing here needs the BMC,
+// and a claimed host keeps its provisioning state through any of those, so its
+// run goes on. Left for the BMC, the host read no inspection report, so a
+// machine whose inspection timeout ran out meanwhile failed with
+// InspectionTimedOut on a host that went on to deploy; a waiting
+// inspect-complete left the machine Inspecting until a MachineHealthCheck
+// replaced it; and an inspector the machine had just powered on could not
+// fetch /boot, its nonce not yet in status.
 //
-// It is not called when the connection fails in a way that needs a fix. That
-// failure writes its own Error over the host's state in the same pass
-// (setConnectionError), so a request applied then would go with the state it
-// produced, and the host would come back InUse once the connection worked,
-// where its machine boots the inspector again. Left in place, the requests are
-// applied in the pass that connects, ahead of the claimed-host branch, which
-// keeps the state they produce.
+// Calling it ahead of a connection failure relies on neither failure path
+// overwriting a claimed host's provisioning state. A failure that wrote Error
+// over the state a request had just produced would put the host back at InUse
+// once the BMC answered, where its machine boots the inspector again.
 func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	// Drop anything left over from a previous provisioning run before the
 	// handlers below, so a host that is claimed again starts clean.
@@ -566,13 +573,17 @@ func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger
 }
 
 // setConnectionError puts the host in Error for a BMC it cannot reach or use.
-// A host whose run has failed keeps the run's Error instead, and the
-// RedfishConnectionReady condition the caller sets reports the connection. The
-// run's message is the reason its machine fails with, and it is also what
-// marks the Error as the run's: overwritten, the host would be put back at
-// InUse once the BMC answers.
+// A claimed host that is Inspecting, Deploying or Ready, or whose run has
+// failed (inProvisioningSubState), keeps its state and message, and only the
+// RedfishConnectionReady condition the caller sets reports the fault. Neither
+// the inspector nor the installed OS needs the BMC. The Beskar7Machine
+// controller fails a machine whose host is in an Error it cannot wait out
+// (hostWaitingForBMC), so an Error here would get a serving node replaced over
+// a rotated BMC password; and once the BMC answered, the host would be put
+// back at InUse, where its machine boots the inspector again. A failed run's
+// message is also the reason its machine fails with.
 func (r *PhysicalHostReconciler) setConnectionError(physicalHost *infrav1.PhysicalHost, msg string) {
-	if provisioningRunFailed(physicalHost) {
+	if inProvisioningSubState(physicalHost) {
 		return
 	}
 	r.updateStatus(physicalHost, infrav1.StateError, false, msg)
