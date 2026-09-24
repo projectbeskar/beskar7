@@ -15,7 +15,7 @@ Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
 ramdisk (`beskar7-inspector`). Both repositories pin to a contract version; a
 change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
-(see [Versioning and anti-drift](#versioning-and-anti-drift)).
+(see [Versioning and anti-drift](#10-versioning-and-anti-drift)).
 
 > **v4.2 in one line:** adds per-host `ProviderID` delivery for templated
 > pools/HA control planes (D-014 P2) — a new required cmdline param
