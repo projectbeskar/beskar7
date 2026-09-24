@@ -4,21 +4,11 @@ metadata:
   name: capb7-controller-manager
   namespace: capb7-system
 spec:
-  replicas: 2  # Small HA deployment
+  replicas: 2
   template:
     spec:
       containers:
       - name: manager
-        args:
-        - --leader-elect=true
-        - --leader-elect-lease-duration=15s
-        - --leader-elect-renew-deadline=10s
-        - --leader-elect-retry-period=2s
-        - --leader-elect-release-on-cancel=true
-        - --enable-security-monitoring=true
-        - --metrics-bind-address=:8443
-        - --health-probe-bind-address=:8081
-        # Add resources optimized for small deployments
         resources:
           limits:
             cpu: 500m
@@ -27,4 +17,4 @@ spec:
           requests:
             cpu: 100m
             memory: 128Mi
-            ephemeral-storage: 50Mi 
+            ephemeral-storage: 50Mi

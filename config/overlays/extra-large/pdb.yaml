@@ -8,4 +8,3 @@ spec:
   selector:
     matchLabels:
       control-plane: controller-manager
-      deployment-size: extra-large 

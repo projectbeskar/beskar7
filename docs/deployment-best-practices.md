@@ -276,32 +276,27 @@ kubectl get mutatingwebhookconfiguration
 ```
 
 **Using Kustomize:**
+
+The repository ships three size overlays on top of `config/default`:
+
+| Overlay | Replicas | Scheduling | Manager limits (CPU / memory) |
+|---|---|---|---|
+| `config/overlays/small` | 2 | default | 500m / 512Mi |
+| `config/overlays/large` | 3 | spread across nodes (preferred) | 1000m / 1Gi |
+| `config/overlays/extra-large` | 5 | one per node (needs ≥ 5 nodes), spread across zones; a PodDisruptionBudget of `minAvailable: 2`; leader-election lease 20s / renew 15s / retry 3s | 2000m / 2Gi |
+
+Only one replica is the leader; the others take over when it goes away, and every replica serves the webhook and the inspector callbacks. Deploy one with `make deploy`, which also resolves the `${BESKAR7_BOOTSTRAP_URL_BASE:=…}` default in the manager's args — a plain `kubectl apply -k` would hand the manager that string verbatim:
+
 ```bash
-# Create production overlay
-mkdir -p config/overlays/production
-
-# config/overlays/production/kustomization.yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-resources:
-- ../../default
-
-patchesStrategicMerge:
-- manager_config.yaml
-- resource_limits.yaml
-
-images:
-- name: ghcr.io/projectbeskar/beskar7/beskar7
-  newTag: ${VERSION}
-
-replicas:
-- name: capb7-controller-manager
-  count: 3
-
-# Apply production configuration
-kubectl apply -k config/overlays/production/
+make deploy IMG=ghcr.io/projectbeskar/beskar7/beskar7:<version> DEPLOY_KUSTOMIZATION=config/overlays/large
 ```
+
+To write your own, copy one of them. An overlay may add objects and change replicas, resources, scheduling and manager flags, and nothing else (`test/contract/overlays_test.go` enforces this for the shipped ones):
+
+- **No `namePrefix` or `nameSuffix`.** The cert-manager `Certificate` names the webhook and callback Services literally, so renamed Services no longer match their serving certificate.
+- **Append manager flags; never replace `args`.** A strategic-merge patch replaces the whole list and drops `--bootstrap-url-base` and `--enable-webhook`. Use a JSON 6902 `add` to `/spec/template/spec/containers/0/args/-`, as `config/overlays/extra-large/kustomization.yaml` does, and only with flags the manager defines (`manager --help`).
+- **No `images` entry.** The image comes from `config/default` (stamped by `make deploy` and the release).
+- **Keep new labels out of selectors** (`includeSelectors: false`): `Deployment.spec.selector` is immutable, so a changed selector fails the next `kubectl apply`.
 
 ## Security Hardening
 
