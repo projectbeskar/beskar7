@@ -31,7 +31,6 @@ import (
 
 	"github.com/go-logr/logr"
 	"golang.org/x/time/rate"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -116,10 +115,12 @@ type ipEntry struct {
 
 // BootHandler serves the per-host iPXE boot script.
 //
-// Auth: the {nonce} path segment is verified constant-time against
-// Status.Bootstrap.BootNonceHash, within TTL. NOT bearer-gated — the booting
-// host has no bearer token yet; that token is delivered by this endpoint in the
-// rendered cmdline.
+// Auth: the {nonce} path segment is verified constant-time against the boot
+// nonce in the host's bootstrap-token Secret, within the expiry stored next to
+// it, and only while the host's ConsumerRef names the Beskar7Machine the
+// Secret is bound to (D-029). Status.Bootstrap's hashes are a mirror and are
+// never read here. NOT bearer-gated — the booting host has no bearer token
+// yet; that token is delivered by this endpoint in the rendered cmdline.
 //
 // On success: records the nonce consumed if it is not yet (D-010) and returns
 // the rendered iPXE script. A second fetch with the same nonce (race loser or
@@ -192,10 +193,18 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Verify the nonce. All three conditions must hold: BootNonceHash non-empty,
-	// BootNonceExpiresAt in the future, and auth.Verify constant-time match.
-	// Any failure is opaque — no oracle for "bad hash" vs "expired" vs "consumed".
-	if !verifyBootNonce(nonce, ph) {
+	// 2. Verify the nonce against the credentials bound to the host's current
+	// claim (D-029): the host must be claimed, its claim must name the
+	// Beskar7Machine the Secret was minted for, and the nonce must be the
+	// Secret's, unexpired, compared in constant time. Any failure is opaque —
+	// no oracle for "unclaimed" vs "bad nonce" vs "expired" vs "consumed".
+	creds, consumerKey, err := boundBootstrapCredentials(ctx, h.Client, ph)
+	if err != nil {
+		log.V(1).Info("boot GET: no credentials bound to the host's claim", "err", err.Error())
+		h.opaqueFailure(w)
+		return
+	}
+	if !verifyBootNonce(nonce, creds, time.Now()) {
 		log.V(1).Info("boot GET: nonce verification failed")
 		h.opaqueFailure(w)
 		return
@@ -214,14 +223,17 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// handler; no reconciler writes them, so the BUG-1 last-write-wins hazard
 	// does not apply. A Conflict is the desired outcome (the winner consumed;
 	// the loser confirms it and renders identically).
-	if !bootNonceConsumed(ph.Status.Bootstrap) {
+	if !bootNonceConsumed(ph.Status.Bootstrap, auth.Hash(creds.nonce)) {
 		var consumeOK bool
 		for attempt := 0; attempt < bootNonceConsumeMaxRetries; attempt++ {
 			base := ph.DeepCopy()
+			if ph.Status.Bootstrap == nil {
+				ph.Status.Bootstrap = &infrav1.BootstrapStatus{}
+			}
 			now := metav1.NewTime(time.Now())
 			ph.Status.Bootstrap.BootNonceConsumedAt = &now
-			// verifyBootNonce has matched the nonce to this hash.
-			ph.Status.Bootstrap.BootNonceConsumedHash = ph.Status.Bootstrap.BootNonceHash
+			// verifyBootNonce has matched the nonce to the Secret's.
+			ph.Status.Bootstrap.BootNonceConsumedHash = auth.Hash(creds.nonce)
 
 			// Status().Update is FORBIDDEN in handler files (D-005).
 			// This single Status().Patch is the audited D-010 exception.
@@ -246,18 +258,19 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			ph = fresh
 
-			// The nonce must still be the one the host advertises before
-			// anything else is judged: the conflict may be a newer mint being
-			// promoted over it (or the hash cleared), and the fresh consume
-			// record would then describe that nonce, not this one.
-			if !verifyBootNonce(nonce, ph) {
+			// The nonce must still be the one bound to the host's claim before
+			// anything else is judged: the conflict may come with a newer mint
+			// (or a changed claim), and the fresh consume record would then
+			// describe that nonce, not this one.
+			creds, consumerKey, err = boundBootstrapCredentials(ctx, h.Client, ph)
+			if err != nil || !verifyBootNonce(nonce, creds, time.Now()) {
 				log.V(1).Info("boot GET: nonce no longer valid after conflict re-get")
 				h.opaqueFailure(w)
 				return
 			}
 			// Still this nonce, and a concurrent fetch consumed it first: we
 			// lost the race; render identical content below.
-			if bootNonceConsumed(ph.Status.Bootstrap) {
+			if bootNonceConsumed(ph.Status.Bootstrap, auth.Hash(creds.nonce)) {
 				consumeOK = true
 				break
 			}
@@ -272,16 +285,16 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Render — ONLY after consume is durable (or already-consumed confirmed).
-	// renderBootScript is a pure function of (ph, machine, secret, config) so
-	// the response is byte-identical on the fresh-consume and already-consumed
-	// paths.
+	// renderBootScript is a pure function of (ph, machine, credentials, config)
+	// so the response is byte-identical on the fresh-consume and
+	// already-consumed paths.
 	//
 	// The operator's first-stage iPXE chainload appends ?mac=${net0/mac} by
 	// convention so multi-NIC hosts can hint which NIC the inspector should treat
 	// as the provisioning interface. The value is optional: single-NIC hosts work
 	// without it (the inspector falls back to its own NIC selection heuristic).
 	mac := r.URL.Query().Get("mac")
-	script, err := h.renderBootScript(ctx, log, ph, mac)
+	script, err := h.renderBootScript(ctx, log, ph, consumerKey, creds.token, mac)
 	if err != nil {
 		log.V(1).Info("boot GET: render failed", "err", err.Error())
 		h.opaqueFailure(w)
@@ -294,53 +307,6 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, err := w.Write([]byte(script)); err != nil {
 		log.V(1).Info("boot GET: response write failed", "err", err.Error())
 	}
-}
-
-// verifyBootNonce reports whether the nonce is valid for the given host.
-// All three conditions must hold: BootNonceHash non-empty, BootNonceExpiresAt
-// in the future, and auth.Verify constant-time match. Pulled out so it can be
-// re-evaluated after an optimistic-lock conflict without duplicating logic.
-//
-// Deliberately does NOT check the consume record — that check belongs in the
-// consume path so the already-consumed branch can render identical content.
-func verifyBootNonce(nonce string, ph *infrav1.PhysicalHost) bool {
-	bs := ph.Status.Bootstrap
-	if bs == nil || bs.BootNonceHash == "" {
-		return false
-	}
-	if bs.BootNonceExpiresAt == nil || !time.Now().Before(bs.BootNonceExpiresAt.Time) {
-		return false
-	}
-	return auth.Verify(nonce, bs.BootNonceHash)
-}
-
-// bootNonceConsumed reports whether the consume record in bs names the boot
-// nonce bs currently advertises (D-010).
-//
-// The record is never cleared: Status.Bootstrap outlives a claim, and the
-// nonce the next claim mints is promoted next to the record of the one before.
-// Telling the two apart by hash is what keeps that new nonce unconsumed until
-// its own first fetch. Clearing the record when a new hash is promoted is not
-// an option: the PhysicalHost reconciler's status patch carries no
-// resourceVersion, so a pass computed from a stale cache would clear a consume
-// the handler had already recorded for the new nonce.
-//
-// A record without a hash, written by a handler from before the record named
-// one, is not attributed to the current nonce here, so the next fetch records
-// its consume afresh. The Beskar7Machine reads such a record the other way
-// (bootNonceConsumeUnattributed): it never reuses a nonce the record might
-// describe.
-func bootNonceConsumed(bs *infrav1.BootstrapStatus) bool {
-	return bs != nil && bs.BootNonceConsumedAt != nil &&
-		bs.BootNonceHash != "" && bs.BootNonceConsumedHash == bs.BootNonceHash
-}
-
-// bootNonceConsumeUnattributed reports whether bs carries a consume record that
-// does not say which nonce it consumed: one written by a /boot handler from
-// before BootNonceConsumedHash existed, which may describe the current nonce or
-// an earlier one.
-func bootNonceConsumeUnattributed(bs *infrav1.BootstrapStatus) bool {
-	return bs != nil && bs.BootNonceConsumedAt != nil && bs.BootNonceConsumedHash == ""
 }
 
 // validateBootURL rejects values that could break out of a single
@@ -501,8 +467,9 @@ func validateStaticIP(raw string) error {
 	return nil
 }
 
-// renderBootScript resolves the consuming Beskar7Machine, reads the bearer-token
-// plaintext from the per-host Secret, and renders the §4.1 iPXE script.
+// renderBootScript reads the Beskar7Machine the host's credentials are bound to
+// (consumerKey, from boundBootstrapCredentials) and renders the §4.1 iPXE
+// script carrying token, the bearer token from the same Secret read.
 //
 // macParam is the raw value of the ?mac= query parameter supplied by the
 // first-stage iPXE chainload (iPXE convention: ${net0/mac}). It is validated
@@ -510,7 +477,7 @@ func validateStaticIP(raw string) error {
 // malformed value results in no BOOTIF token on the kernel cmdline (omit-on-
 // invalid; see formatBootif).
 //
-// Pure function of (host, machine, secret, config, macParam): the rendered
+// Pure function of (host, machine, token, config, macParam): the rendered
 // output is byte-identical on fresh-consume and already-consumed paths for the
 // same host and the same macParam. No secret material is logged here; the
 // caller logs only namespace + host + outcome.
@@ -518,16 +485,13 @@ func (h *BootHandler) renderBootScript(
 	ctx context.Context,
 	log logr.Logger,
 	ph *infrav1.PhysicalHost,
+	consumerKey types.NamespacedName,
+	token string,
 	macParam string,
 ) (string, error) {
-	// Walk to the consuming Beskar7Machine via Spec.ConsumerRef. Namespace-pinned
-	// (SEC-12, D-029): a ConsumerRef naming a different namespace resolves
-	// to no consumer, so a host cannot be pointed at another namespace's machine
-	// to have that machine's bearer token and CA rendered into its script.
-	consumerKey, ok := resolveConsumerBeskar7Machine(ph)
-	if !ok {
-		return "", fmt.Errorf("PhysicalHost %s/%s has no valid Beskar7Machine consumer", ph.Namespace, ph.Name)
-	}
+	// consumerKey is namespace-pinned and bound to the Secret (SEC-12, D-029):
+	// a host cannot be pointed at another machine to have that machine's spec
+	// rendered into its script.
 	b7m := &infrav1.Beskar7Machine{}
 	if err := h.Client.Get(ctx, consumerKey, b7m); err != nil {
 		return "", fmt.Errorf("get Beskar7Machine %s/%s: %w", consumerKey.Namespace, consumerKey.Name, err)
@@ -586,17 +550,10 @@ func (h *BootHandler) renderBootScript(
 		staticIP = *b7m.Spec.StaticIP
 	}
 
-	// Read the bearer-token plaintext from the per-host bootstrap-token Secret.
 	// The handler received the {nonce} in the URL; it hands back the bearer token
 	// in the rendered cmdline — these are two distinct secrets (§3, D-009).
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{Namespace: ph.Namespace, Name: bootstrapTokenSecretName(ph.Name)}
-	if err := h.Client.Get(ctx, secretKey, secret); err != nil {
-		return "", fmt.Errorf("get bootstrap-token Secret %s: %w", secretKey.Name, err)
-	}
-	tokenBytes, ok := secret.Data[bootstrapTokenSecretKey]
-	if !ok || len(tokenBytes) == 0 {
-		return "", fmt.Errorf("bootstrap-token Secret %s has no plaintext-token key", secretKey.Name)
+	if token == "" {
+		return "", fmt.Errorf("bootstrap-token Secret of %s/%s has no plaintext-token key", ph.Namespace, ph.Name)
 	}
 
 	// base64-encode the CA PEM for inline delivery via beskar7.ca=.
@@ -612,7 +569,7 @@ func (h *BootHandler) renderBootScript(
 		h.Config.APIBase,
 		ph.Namespace,
 		ph.Name,
-		string(tokenBytes),
+		token,
 		b7m.Spec.TargetImageURL,
 		b7m.Spec.TargetImageDigest,
 		hostProviderID,

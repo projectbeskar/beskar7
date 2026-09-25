@@ -88,8 +88,9 @@ func bootTestConfig() BootHandlerConfig {
 //   - bootstrap-token Secret holding plaintext-token
 //
 // Returns (physicalHost, b7machine, bearerTokenPlaintext, noncePlaintext).
-// The caller is responsible for minting and storing the boot nonce on the host's
-// Status.Bootstrap (use setHostBootNonce).
+// The host is claimed by the Beskar7Machine, and its bootstrap-token Secret
+// holds both credentials bound to it (D-029). Status.Bootstrap is left empty:
+// /boot never reads it.
 func bootTestFixture(testNs string) (
 	*infrav1.PhysicalHost,
 	*infrav1.Beskar7Machine,
@@ -138,28 +139,15 @@ func bootTestFixture(testNs string) (
 	}
 	Expect(k8sClient.Patch(ctx, freshPH, client.MergeFrom(base))).To(Succeed())
 
-	By("minting bearer token and creating bootstrap-token Secret")
-	bearerPlaintext, bearerHash, err := auth.MintToken()
+	By("minting the credentials into the bootstrap-token Secret, bound to the Beskar7Machine")
+	bearerPlaintext, _, err := auth.MintToken()
 	Expect(err).NotTo(HaveOccurred())
 
-	noncePlaintext, nonceHash, err := auth.MintToken()
+	noncePlaintext, _, err := auth.MintToken()
 	Expect(err).NotTo(HaveOccurred())
 
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      bootstrapTokenSecretName(ph.Name),
-			Namespace: testNs,
-		},
-		Type: corev1.SecretTypeOpaque,
-		Data: map[string][]byte{
-			"plaintext-token":      []byte(bearerPlaintext),
-			"plaintext-boot-nonce": []byte(noncePlaintext),
-		},
-	}
-	Expect(k8sClient.Create(ctx, secret)).To(Succeed())
-
-	By("writing BootNonceHash + BootNonceExpiresAt to PhysicalHost Status.Bootstrap")
-	setHostBootNonce(freshPH.Name, testNs, nonceHash, bearerHash, 10*time.Minute)
+	Expect(k8sClient.Create(ctx, credentialSecret(testNs, ph.Name,
+		boundCredentialData(b7m.Name, bearerPlaintext, 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 	// Return fresh copies so callers hold the latest resourceVersion.
 	gotPH := &infrav1.PhysicalHost{}
@@ -168,22 +156,17 @@ func bootTestFixture(testNs string) (
 	return gotPH, b7m, bearerPlaintext, noncePlaintext
 }
 
-// setHostBootNonce writes BootNonceHash, BootNonceExpiresAt, and TokenHash to
-// the host's Status.Bootstrap via Status().Update. Call after the host exists.
-func setHostBootNonce(hostName, ns, nonceHash, tokenHash string, ttl time.Duration) {
-	ph := &infrav1.PhysicalHost{}
-	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: hostName, Namespace: ns}, ph)).To(Succeed())
-	expiresAt := metav1.NewTime(time.Now().Add(ttl))
-	issuedAt := metav1.NewTime(time.Now())
-	tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
-	ph.Status.Bootstrap = &infrav1.BootstrapStatus{
-		TokenHash:          tokenHash,
-		IssuedAt:           &issuedAt,
-		ExpiresAt:          &tokenExpiresAt,
-		BootNonceHash:      nonceHash,
-		BootNonceExpiresAt: &expiresAt,
+// setBootNonceExpiry rewrites the expiry of the boot nonce in the host's
+// bootstrap-token Secret to raw, as it is stored.
+func setBootNonceExpiry(hostName, ns string, raw []byte) {
+	secret := &corev1.Secret{}
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bootstrapTokenSecretName(hostName), Namespace: ns}, secret)).To(Succeed())
+	if raw == nil {
+		delete(secret.Data, bootNonceExpiresAtSecretKey)
+	} else {
+		secret.Data[bootNonceExpiresAtSecretKey] = raw
 	}
-	Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+	Expect(k8sClient.Update(ctx, secret)).To(Succeed())
 }
 
 // doBoot issues GET /api/v1/boot/{namespace}/{host}/{nonce} against server.
@@ -274,7 +257,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			g.Expect(got.Status.Bootstrap).NotTo(BeNil())
 			g.Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
 				"BootNonceConsumedAt must be set after first /boot fetch")
-			g.Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(ph.Status.Bootstrap.BootNonceHash),
+			g.Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(auth.Hash(nonce)),
 				"the consume record must name the nonce it consumed")
 		}, Timeout, Interval).Should(Succeed())
 	})
@@ -379,8 +362,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		consumedAt := metav1.NewTime(time.Now().Add(-1 * time.Second))
 		freshPH := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
-		freshPH.Status.Bootstrap.BootNonceConsumedAt = &consumedAt
-		freshPH.Status.Bootstrap.BootNonceConsumedHash = freshPH.Status.Bootstrap.BootNonceHash
+		freshPH.Status.Bootstrap = &infrav1.BootstrapStatus{
+			BootNonceConsumedAt:   &consumedAt,
+			BootNonceConsumedHash: auth.Hash(nonce),
+		}
 		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
 
 		By("issuing a /boot fetch against an already-consumed nonce")
@@ -400,7 +385,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(got.Status.Bootstrap.BootNonceConsumedAt.Truncate(time.Second)).To(
 			BeTemporally("==", consumedAt.Truncate(time.Second)),
 			"ConsumedAt must not be advanced by a second /boot fetch")
-		Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(got.Status.Bootstrap.BootNonceHash))
+		Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(auth.Hash(nonce)))
 	})
 
 	// ── 3b. A consume record that does not name this nonce ─────────────────
@@ -427,7 +412,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			earlier := metav1.NewTime(time.Now().Add(-time.Hour))
 			freshPH := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, key, freshPH)).To(Succeed())
-			freshPH.Status.Bootstrap.BootNonceConsumedAt = &earlier
+			freshPH.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceConsumedAt: &earlier}
 			if tc.namesHash {
 				_, earlierHash, err := auth.MintToken()
 				Expect(err).NotTo(HaveOccurred())
@@ -441,7 +426,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 			got := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
-			Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(got.Status.Bootstrap.BootNonceHash),
+			Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(auth.Hash(nonce)),
 				"the record must name the nonce this fetch consumed")
 			Expect(got.Status.Bootstrap.BootNonceConsumedAt.Time).To(BeTemporally(">", earlier.Time),
 				"the record must be this fetch's, not the earlier one")
@@ -451,19 +436,15 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	// ── 3c. The nonce is superseded while the consume is in flight ─────────
 	//
 	// The consume patch conflicts whenever the host changed after the handler
-	// read it, and a newer nonce being promoted is one such change. The host
-	// read back then carries that nonce's hash, and maybe its consume record,
-	// so the handler must verify its own nonce again before it takes a record
-	// as a lost race: the script is only ever served for the advertised nonce.
+	// read it, and a newer nonce being minted (and its consume recorded) is one
+	// such change. The handler must re-read the host and the Secret and verify
+	// its own nonce again before it takes a record as a lost race: the script is
+	// only ever served for the nonce the Secret holds.
 	It("conflict re-get: nonce superseded by a newer, consumed one before the consume lands → opaque 404", func() {
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, newerHash, err := auth.MintToken()
+		newerNonce, newerHash, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
-		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-superseded", Namespace: "n"},
@@ -471,14 +452,6 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				RedfishConnection: infrav1.RedfishConnection{Address: "https://192.168.1.1", CredentialsSecretRef: "x"},
 				ConsumerRef: &corev1.ObjectReference{
 					Kind: "Beskar7Machine", APIVersion: InfrastructureAPIVersion, Name: "b7m-superseded", Namespace: "n",
-				},
-			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					TokenHash:          tokenHash,
-					ExpiresAt:          &tokenExpiresAt,
-					BootNonceHash:      nonceHash,
-					BootNonceExpiresAt: &nonceExpiresAt,
 				},
 			},
 		}
@@ -490,12 +463,10 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName(ph.Name), Namespace: "n"},
-			Data:       map[string][]byte{bootstrapTokenSecretKey: []byte("superseded-token")},
-		}
+		tokenSecret := credentialSecret("n", ph.Name,
+			boundCredentialData(b7m.Name, "superseded-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 
-		// The first consume patch finds the newer nonce promoted and consumed.
+		// The first consume patch finds a newer nonce minted and consumed.
 		// Setup errors are kept rather than returned: the handler would turn
 		// them into the very 404 this spec expects.
 		var superseded bool
@@ -511,14 +482,20 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 						return c.SubResource(subResource).Patch(ctx, obj, patch, opts...)
 					}
 					superseded = true
+					secret := &corev1.Secret{}
+					if supersedeErr = c.Get(ctx, client.ObjectKeyFromObject(tokenSecret), secret); supersedeErr != nil {
+						return supersedeErr
+					}
+					secret.Data[bootNonceSecretKey] = []byte(newerNonce)
+					if supersedeErr = c.Update(ctx, secret); supersedeErr != nil {
+						return supersedeErr
+					}
 					current := &infrav1.PhysicalHost{}
 					if supersedeErr = c.Get(ctx, client.ObjectKeyFromObject(obj), current); supersedeErr != nil {
 						return supersedeErr
 					}
 					consumedAt := metav1.Now()
-					current.Status.Bootstrap.BootNonceHash = newerHash
-					current.Status.Bootstrap.BootNonceConsumedAt = &consumedAt
-					current.Status.Bootstrap.BootNonceConsumedHash = newerHash
+					current.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceConsumedAt: &consumedAt, BootNonceConsumedHash: newerHash}
 					if supersedeErr = c.Status().Update(ctx, current); supersedeErr != nil {
 						return supersedeErr
 					}
@@ -539,7 +516,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(superseded).To(BeTrue(), "the handler must have tried to record the consume")
 		Expect(supersedeErr).NotTo(HaveOccurred())
 		Expect(w.Code).To(Equal(http.StatusNotFound),
-			"a nonce the host no longer advertises must not be served the script: %s", w.Body.String())
+			"a nonce the Secret no longer holds must not be served the script: %s", w.Body.String())
 		Expect(w.Body.String()).NotTo(ContainSubstring("superseded-token"))
 	})
 
@@ -548,17 +525,58 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	It("opaque 404: expired nonce", func() {
 		ph, _, _, nonce := bootTestFixture(testNs.Name)
 
-		By("overwriting the expiry to the past")
-		freshPH := &infrav1.PhysicalHost{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
-		expiredAt := metav1.NewTime(time.Now().Add(-1 * time.Hour))
-		freshPH.Status.Bootstrap.BootNonceExpiresAt = &expiredAt
-		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
+		By("overwriting the expiry in the Secret to the past")
+		setBootNonceExpiry(ph.Name, testNs.Name, credentialTime(time.Now().Add(-1*time.Hour)))
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
 		body := readBody(resp)
 		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		Expect(body).To(ContainSubstring(bootHandlerOpaqueFailureBody))
+	})
+
+	// A nonce whose expiry cannot be read has no trusted end, so it fails
+	// closed however valid the status mirror makes it look (D-029).
+	for _, tc := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "missing", raw: nil},
+		{name: "unparseable", raw: []byte("in ten minutes")},
+	} {
+		It("opaque 404: nonce expiry "+tc.name+" in the Secret, whatever status says", func() {
+			ph, _, token, nonce := bootTestFixture(testNs.Name)
+			setBootNonceExpiry(ph.Name, testNs.Name, tc.raw)
+			mirrored := &infrav1.PhysicalHost{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, mirrored)).To(Succeed())
+			future := metav1.NewTime(time.Now().Add(time.Hour))
+			mirrored.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceHash: auth.Hash(nonce), BootNonceExpiresAt: &future}
+			Expect(k8sClient.Status().Update(ctx, mirrored)).To(Succeed())
+
+			resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+			body := readBody(resp)
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+			Expect(body).NotTo(ContainSubstring(token))
+		})
+	}
+
+	It("opaque 404: ConsumerRef re-pointed at a machine the Secret is not bound to — script never rendered", func() {
+		ph, _, token, nonce := bootTestFixture(testNs.Name)
+		other := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "boot-handler-other-b7m", Namespace: testNs.Name},
+			Spec: infrav1.Beskar7MachineSpec{
+				InspectionImageURL: "https://other.example.com/inspect",
+				TargetImageURL:     "https://other.example.com/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		setHostConsumer(client.ObjectKeyFromObject(ph), other.Name)
+
+		resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+		body := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		Expect(body).NotTo(ContainSubstring(token), "the bound machine's bearer token must not be served for another claim")
+		Expect(body).NotTo(ContainSubstring("other.example.com"))
 	})
 
 	It("opaque 404: wrong nonce", func() {
@@ -597,27 +615,22 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
+		tokenPlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootNonce(ph.Name, testNs.Name, nonceHash, tokenHash, 10*time.Minute)
 
-		// Create the token secret (the handler reads it after resolving the
-		// consumer, but we still create it to isolate the "no consumer" branch).
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      bootstrapTokenSecretName(ph.Name),
-				Namespace: testNs.Name,
-			},
-			Type: corev1.SecretTypeOpaque,
-			Data: map[string][]byte{"plaintext-token": []byte("irrelevant")},
-		})).To(Succeed())
+		// A valid nonce, bound to the machine that last claimed the host, so the
+		// only thing wrong is that nobody claims it now: callbacks for an
+		// unclaimed host are rejected (D-029).
+		Expect(k8sClient.Create(ctx, credentialSecret(testNs.Name, ph.Name,
+			boundCredentialData("previous-machine", tokenPlaintext, 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
 		body := readBody(resp)
 		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 		Expect(body).To(ContainSubstring(bootHandlerOpaqueFailureBody))
+		Expect(body).NotTo(ContainSubstring(tokenPlaintext))
 	})
 
 	It("opaque 404: ConsumerRef names a Beskar7Machine in a different namespace (SEC-12) — script never rendered", func() {
@@ -662,23 +675,15 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-		setHostBootNonce(ph.Name, testNs.Name, nonceHash, tokenHash, 10*time.Minute)
 
-		// The host's own bootstrap-token Secret is present, so the only thing
-		// standing between a valid nonce and a rendered script naming namespace
-		// B's InspectionImageURL is the ConsumerRef namespace check.
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      bootstrapTokenSecretName(ph.Name),
-				Namespace: testNs.Name,
-			},
-			Type: corev1.SecretTypeOpaque,
-			Data: map[string][]byte{"plaintext-token": []byte("host-a-token")},
-		})).To(Succeed())
+		// The host's own bootstrap-token Secret holds the nonce, bound to a
+		// machine of the ConsumerRef's name, so the only thing standing between
+		// a valid nonce and a rendered script naming namespace B's
+		// InspectionImageURL is the ConsumerRef namespace check.
+		Expect(k8sClient.Create(ctx, credentialSecret(testNs.Name, ph.Name,
+			boundCredentialData(crossB7m.Name, "host-a-token", 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
 		body := readBody(resp)
@@ -692,14 +697,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	// admission time, so we use a fake client (which skips API validation) to
 	// stage the object. Same technique as the oversize-bootstrap test.
 	It("opaque 404: empty InspectionImageURL on Beskar7Machine (fake client)", func() {
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-
-		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
-		issuedAt := metav1.NewTime(time.Now())
-		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-empty-inspect", Namespace: "n"},
@@ -714,15 +713,6 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					TokenHash:          tokenHash,
-					IssuedAt:           &issuedAt,
-					ExpiresAt:          &tokenExpiresAt,
-					BootNonceHash:      nonceHash,
-					BootNonceExpiresAt: &nonceExpiresAt,
-				},
-			},
 		}
 		// Beskar7Machine with empty InspectionImageURL (bypassing CRD validation
 		// via fake client — testing the handler's own guard, not the CRD schema).
@@ -733,20 +723,14 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 			},
 		}
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName("h-empty-inspect"), Namespace: "n"},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{"plaintext-token": []byte("fake-token")},
-		}
+		tokenSecret := credentialSecret("n", "h-empty-inspect",
+			boundCredentialData("b7m-empty", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
 			WithObjects(b7mEmpty, tokenSecret).
 			WithStatusSubresource(ph).
 			WithObjects(ph).
 			Build()
-		// Set status directly (fake client allows this without Status().Update).
-		// Re-Get to apply the Status.Bootstrap we set in the object literal above.
-		// Fake client populates status from WithObjects when WithStatusSubresource is set.
 
 		handler := &BootHandler{
 			Client: fakeClient,
@@ -806,10 +790,14 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 		noncePlaintext, nonceHash, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-		setHostBootNonce(ph.Name, testNs.Name, nonceHash, tokenHash, 10*time.Minute)
-		// Deliberately do NOT create the bootstrap-token Secret.
+		// Deliberately do NOT create the bootstrap-token Secret. Status
+		// advertises the nonce as a mirror would, which counts for nothing:
+		// the Secret is the only credential /boot checks (D-029).
+		freshPH = &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
+		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
+		freshPH.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceHash: nonceHash, BootNonceExpiresAt: &nonceExpiresAt}
+		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
 		body := readBody(resp)
@@ -828,14 +816,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	// We define it as a local closure rather than a top-level helper so it can
 	// capture the test namespace's context cleanly.
 	buildInjectionFakeHandler := func(inspectionURL, targetURL string) (*BootHandler, string) {
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-
-		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
-		issuedAt := metav1.NewTime(time.Now())
-		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-inject", Namespace: "n"},
@@ -850,15 +832,6 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					TokenHash:          tokenHash,
-					IssuedAt:           &issuedAt,
-					ExpiresAt:          &tokenExpiresAt,
-					BootNonceHash:      nonceHash,
-					BootNonceExpiresAt: &nonceExpiresAt,
-				},
-			},
 		}
 		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-inject", Namespace: "n"},
@@ -868,11 +841,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName("h-inject"), Namespace: "n"},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{"plaintext-token": []byte("fake-token")},
-		}
+		tokenSecret := credentialSecret("n", "h-inject",
+			boundCredentialData("b7m-inject", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
 			WithObjects(b7m, tokenSecret).
@@ -1030,14 +1000,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 	// ── 6b. Digest handler integration: invalid digest on Beskar7Machine → opaque 404
 
 	It("opaque 404: invalid TargetImageDigest on Beskar7Machine (fake client)", func() {
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-
-		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
-		issuedAt := metav1.NewTime(time.Now())
-		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-bad-digest", Namespace: "n"},
@@ -1052,15 +1016,6 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					TokenHash:          tokenHash,
-					IssuedAt:           &issuedAt,
-					ExpiresAt:          &tokenExpiresAt,
-					BootNonceHash:      nonceHash,
-					BootNonceExpiresAt: &nonceExpiresAt,
-				},
-			},
 		}
 		// TargetImageDigest is intentionally malformed — uppercase hex, rejected
 		// by validateBootDigest (contract §5/§8.1, SEC-7). Bypasses CRD validation
@@ -1073,11 +1028,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  "sha256:A3B4C5D6E7F80102030405060708090A0B0C0D0E0F101112131415161718191A",
 			},
 		}
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName("h-bad-digest"), Namespace: "n"},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{"plaintext-token": []byte("fake-token")},
-		}
+		tokenSecret := credentialSecret("n", "h-bad-digest",
+			boundCredentialData("b7m-bad-digest", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
 			WithObjects(b7mBadDigest, tokenSecret).
@@ -1117,14 +1069,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 			CABytes: oversizedCA,
 		}
 
-		noncePlaintext, nonceHash, err := auth.MintToken()
+		noncePlaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, tokenHash, err := auth.MintToken()
-		Expect(err).NotTo(HaveOccurred())
-
-		nonceExpiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute))
-		issuedAt := metav1.NewTime(time.Now())
-		tokenExpiresAt := metav1.NewTime(time.Now().Add(30 * time.Minute))
 
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "h-large-ca", Namespace: "n"},
@@ -1139,15 +1085,6 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 					Namespace:  "n",
 				},
 			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					TokenHash:          tokenHash,
-					IssuedAt:           &issuedAt,
-					ExpiresAt:          &tokenExpiresAt,
-					BootNonceHash:      nonceHash,
-					BootNonceExpiresAt: &nonceExpiresAt,
-				},
-			},
 		}
 		b7m := &infrav1.Beskar7Machine{
 			ObjectMeta: metav1.ObjectMeta{Name: "b7m-large-ca", Namespace: "n"},
@@ -1157,11 +1094,8 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName("h-large-ca"), Namespace: "n"},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{"plaintext-token": []byte("fake-token")},
-		}
+		tokenSecret := credentialSecret("n", "h-large-ca",
+			boundCredentialData("b7m-large-ca", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
 			WithObjects(b7m, tokenSecret).

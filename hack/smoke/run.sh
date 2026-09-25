@@ -489,10 +489,12 @@ layer_4_claim() {
 #
 # Flow:
 #   1. Wait for PhysicalHost.Status.Bootstrap.{URL,TokenHash} to be set.
-#      The Beskar7Machine controller mints these once the host is claimed.
+#      The Beskar7Machine controller mints the token into the per-host
+#      Secret once the host is claimed; the PhysicalHost controller mirrors
+#      its hash into Status.Bootstrap.TokenHash (D-029).
 #   2. Read the plaintext token from Secret <hostName>-bootstrap-token
-#      (key plaintext-token). The controller writes it there in lockstep
-#      with publishing the hash to Status.Bootstrap.TokenHash.
+#      (key plaintext-token). The Secret is what the callback server checks;
+#      the status hash only mirrors it, and may trail it by a reconcile.
 #   3. Derive the inspection URL from the bootstrap URL: same host:port,
 #      swap "/api/v1/bootstrap/" -> "/api/v1/inspection/".
 #   4. POST a fake hardware report from inside the cluster (via a

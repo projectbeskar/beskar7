@@ -539,8 +539,8 @@ Any other Redfish failure (refused credentials, a rejected certificate, a malfor
 The same per-host bearer token authenticates the inspection POST and the bootstrap GET on `:8082`:
 
 - 32 bytes from `crypto/rand`, encoded as base64-raw-url (43 chars).
-- SHA-256 hash persisted on `PhysicalHost.Status.Bootstrap.TokenHash` (64 hex chars).
-- Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`); GC'd on host delete via owner-ref.
+- Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`) with its expiry and the name of the claiming `Beskar7Machine`; GC'd on host delete via owner-ref. That Secret is the only credential the manager checks, and only while the host's `ConsumerRef` names that machine (D-029).
+- SHA-256 hash mirrored on `PhysicalHost.Status.Bootstrap.TokenHash` (64 hex chars) for operators; not an authentication input.
 - Lifetime: 60 minutes (`auth.TokenLifetime` in `internal/auth/token.go`).
 - Constant-time SHA-256 compare (`crypto/subtle`) on every request.
 - The plaintext travels on the iPXE kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](ipxe-setup.md).

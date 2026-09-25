@@ -147,14 +147,8 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		setTrue(host, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
 		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
-		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName(hostName), Namespace: ns},
-			Type:       corev1.SecretTypeOpaque,
-			Data: map[string][]byte{
-				bootstrapTokenSecretKey: []byte("s3cr3t-token"),
-				bootNonceSecretKey:      []byte("s3cr3t-nonce"),
-			},
-		}
+		tokenSecret := credentialSecret(ns, hostName,
+			boundCredentialData(machineName, "s3cr3t-token", 10*time.Minute, "s3cr3t-nonce", 5*time.Minute))
 		Expect(controllerutil.SetControllerReference(host, tokenSecret, k8sClient.Scheme())).To(Succeed())
 		Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
 
@@ -316,8 +310,9 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 
 		finalHost := getPhysicalHost(client.ObjectKeyFromObject(newHost))
 		Expect(finalHost.Annotations).NotTo(HaveKey(InspectionRequestAnnotation), "no inspection was ever requested")
-		Expect(finalHost.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation), "no fresh bearer token was minted")
-		Expect(finalHost.Annotations).NotTo(HaveKey(BootNonceAnnotation), "no fresh boot nonce was minted")
+		finalTokenSecret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(tokenSecret), finalTokenSecret)).To(Succeed())
+		Expect(finalTokenSecret.Data).To(Equal(tokenSecret.Data), "no fresh bearer token or boot nonce was minted")
 	})
 
 	It("adopts Ready even when the credentials Secret has not been created yet", func() {

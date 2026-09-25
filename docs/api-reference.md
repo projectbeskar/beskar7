@@ -125,18 +125,18 @@ The report is an array-of-structs shape — never a single flat object. Source: 
 
 #### `BootstrapStatus`
 
-Per-host bootstrap fetch coordinates and the hashed bearer token used to authenticate the inspection POST and bootstrap GET. The plaintext token is never stored on this object; it lives in a per-host Secret named `<host-name>-bootstrap-token`. See decision D-004 in `.claude/context/PROJECT_CONTEXT.md`.
+Per-host bootstrap fetch coordinates, a read-only mirror of the host's callback credentials, and the boot nonce's consume record. The credentials themselves — the bearer token and boot nonce, their expiries, and the `Beskar7Machine` they were minted for — live only in a per-host Secret named `<host-name>-bootstrap-token`, and that Secret is the only thing the manager checks a presented credential against. The hash and lifetime fields below are copied from it by the PhysicalHost controller; editing them changes nothing about what the manager accepts. See decision D-029 in `.claude/context/PROJECT_CONTEXT.md`.
 
 | Field | Type | Description |
 |---|---|---|
 | `url` | string | The manager-served HTTPS URL that returns the host's bootstrap user-data. Computed as `<--bootstrap-url-base>/api/v1/bootstrap/<namespace>/<name>`. |
-| `tokenHash` | string | Hex-encoded SHA-256 of the per-host bearer token. 64 chars. |
-| `issuedAt` | `*metav1.Time` | When the current token was minted. |
-| `expiresAt` | `*metav1.Time` | When the current token stops being accepted. Defaults to `issuedAt + 60m` (`auth.TokenLifetime`, SEC-D015-1). |
-| `bootNonceHash` | string | Hex-encoded SHA-256 of the per-host boot nonce minted at inspection time (D-009). Gates `GET /api/v1/boot/{ns}/{host}/{nonce}`. The plaintext nonce is never stored here — it lives in a per-host Secret under key `plaintext-boot-nonce`. |
-| `bootNonceExpiresAt` | `*metav1.Time` | When the current boot nonce stops being accepted. Defaults to mint time `+ 10m` (`auth.BootNonceLifetime`, D-009) — intentionally shorter than the bearer-token lifetime because the nonce is single-use. |
+| `tokenHash` | string | Mirror: hex-encoded SHA-256 of the per-host bearer token in the Secret. 64 chars. |
+| `issuedAt` | `*metav1.Time` | Mirror: when the current token was minted. |
+| `expiresAt` | `*metav1.Time` | Mirror: when the current token stops being accepted, as stored in the Secret — mint time `+ 60m` (`auth.TokenLifetime`, SEC-D015-1). |
+| `bootNonceHash` | string | Mirror: hex-encoded SHA-256 of the per-host boot nonce minted at inspection time (D-009), which gates `GET /api/v1/boot/{ns}/{host}/{nonce}`. The plaintext lives in the Secret under key `plaintext-boot-nonce`. |
+| `bootNonceExpiresAt` | `*metav1.Time` | Mirror: when the current boot nonce stops being accepted, as stored in the Secret — mint time `+ 10m` (`auth.BootNonceLifetime`, D-009), intentionally shorter than the bearer-token lifetime because the nonce is single-use. |
 | `bootNonceConsumedAt` | `*metav1.Time` | Timestamp at which the `/boot` handler consumed the boot nonce named by `bootNonceConsumedHash` (D-010). Nil until first boot, and never cleared: a nonce minted later has a different hash, so the record does not apply to it, and that nonce's first fetch records its own consume over it. A consumed nonce is never reused — a new nonce is minted on the next re-provision cycle. |
-| `bootNonceConsumedHash` | string | The `bootNonceHash` of the nonce `bootNonceConsumedAt` records. The advertised nonce has been consumed only while the two hashes match. Written with `bootNonceConsumedAt` by the `/boot` handler. Empty next to a `bootNonceConsumedAt` recorded by a release before this field existed: `/boot` then records the advertised nonce's consume afresh, and the controller does not reuse that nonce. |
+| `bootNonceConsumedHash` | string | The SHA-256 of the nonce `bootNonceConsumedAt` records. The nonce in the Secret has been consumed only while it hashes to this value. Written with `bootNonceConsumedAt` by the `/boot` handler. Empty next to a `bootNonceConsumedAt` recorded by a release before this field existed: `/boot` then records the current nonce's consume afresh, and the controller does not reuse that nonce. |
 
 #### Conditions
 

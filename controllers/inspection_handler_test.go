@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -129,18 +130,14 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		return resp
 	}
 
-	setHostBootstrap := func(hash string, expiresIn time.Duration) {
-		// Re-fetch to pick up any concurrent status writes.
-		ph := &infrav1.PhysicalHost{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
-		issuedAt := metav1.NewTime(time.Now())
-		expiresAt := metav1.NewTime(issuedAt.Add(expiresIn))
-		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: hash,
-			IssuedAt:  &issuedAt,
-			ExpiresAt: &expiresAt,
-		}
-		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+	// setHostBootstrap claims the host for a Beskar7Machine and stores a bearer
+	// token in its bootstrap-token Secret bound to that machine (D-029). The
+	// verifier does not need the machine to exist.
+	const consumer = "insp-handler-machine"
+	setHostBootstrap := func(plaintext string, expiresIn time.Duration) {
+		key := client.ObjectKeyFromObject(physicalHost)
+		setHostConsumer(key, consumer)
+		putCredentialSecret(key, boundCredentialData(consumer, plaintext, expiresIn, "", 0))
 	}
 
 	It("rejects POST without a bearer token (401)", func() {
@@ -157,14 +154,45 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		defer func() { _ = resp.Body.Close() }()
 
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
-			"host has no Status.Bootstrap.TokenHash → must reject any presented token")
+			"host has no bootstrap-token Secret → must reject any presented token")
+	})
+
+	It("rejects POST with a token whose expiry in the Secret is missing or unparseable (401)", func() {
+		plaintext, _, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(plaintext, 30*time.Minute)
+		key := client.ObjectKeyFromObject(physicalHost)
+
+		for _, expiry := range [][]byte{nil, []byte("30m"), []byte("")} {
+			data := boundCredentialData(consumer, plaintext, 30*time.Minute, "", 0)
+			if expiry == nil {
+				delete(data, bootstrapTokenExpiresAtSecretKey)
+			} else {
+				data[bootstrapTokenExpiresAtSecretKey] = expiry
+			}
+			putCredentialSecret(key, data)
+			resp := postReport(plaintext, makeReportBody(0))
+			_ = resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized), "expiry %q must fail closed", expiry)
+		}
+	})
+
+	It("rejects POST once the host's claim names a machine other than the one the token was minted for (401)", func() {
+		plaintext, _, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(plaintext, 30*time.Minute)
+		setHostConsumer(client.ObjectKeyFromObject(physicalHost), "another-machine")
+
+		resp := postReport(plaintext, makeReportBody(0))
+		defer func() { _ = resp.Body.Close() }()
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
 	It("rejects POST with an expired token (401)", func() {
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
 		// Set ExpiresAt 1 hour in the past.
-		setHostBootstrap(hash, -1*time.Hour)
+		setHostBootstrap(plaintext, -1*time.Hour)
 
 		body := makeReportBody(0)
 		resp := postReport(plaintext, body)
@@ -175,9 +203,9 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 	})
 
 	It("rejects POST with the wrong token (401)", func() {
-		_, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		// Present a different plaintext.
 		body := makeReportBody(0)
@@ -188,14 +216,14 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 	})
 
 	// A rejected bearer is the only server-side trace of a host booting with a
-	// credential that cannot authenticate (a Secret/status split, a stale
-	// cmdline, an expired token); at default verbosity the machine otherwise
+	// credential that cannot authenticate (a stale cmdline, an expired token, a
+	// claim that moved on); at default verbosity the machine otherwise
 	// just times out in Inspecting. So the line must be at Info — not V(1) —
 	// and must carry the host and the remote address but never the token.
 	It("logs a rejected bearer at Info with host and remote, never the token", func() {
-		_, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		sink := &infoOnlySink{}
 		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
@@ -213,12 +241,13 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		Expect(joined).To(ContainSubstring(physicalHost.Name))
 		Expect(joined).To(ContainSubstring("10.0.0.7:41234"))
 		Expect(joined).NotTo(ContainSubstring(presented), "the presented token must never be logged")
+		Expect(joined).NotTo(ContainSubstring(plaintext), "the token in the Secret must never be logged")
 	})
 
 	It("logs nothing at Info for an accepted bearer", func() {
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		sink := &infoOnlySink{}
 		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
@@ -232,9 +261,9 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 	})
 
 	It("accepts a valid token, creates a result ConfigMap, and sets the inspection-result annotation (202)", func() {
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		// Body with some structure so we can verify the round-trip.
 		payload, err := json.Marshal(InspectionReportRequest{
@@ -294,9 +323,9 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 	})
 
 	It("rejects a body larger than the 1 MiB cap (413)", func() {
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		// 2 MiB of padding — well above the 1 MiB cap.
 		body := makeReportBody(2 << 20)

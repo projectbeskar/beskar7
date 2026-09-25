@@ -35,7 +35,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -45,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -81,11 +81,9 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "d016-http-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		var hash string
 		var err error
-		tokenPlain, hash, err = auth.MintToken()
+		tokenPlain, _, err = auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, expiresAt := auth.LifetimeFor(time.Now())
 
 		ph = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-pfail-http", Namespace: testNs.Name},
@@ -98,11 +96,12 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateDeploying
-		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: hash,
-			ExpiresAt: &expiresAt,
-		}
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+		// Claimed, with the token bound to its machine in the host's
+		// bootstrap-token Secret, so the verifier accepts it (D-029).
+		setHostConsumer(client.ObjectKeyFromObject(ph), "deploying-machine")
+		putCredentialSecret(client.ObjectKeyFromObject(ph),
+			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "", 0))
 	})
 
 	AfterEach(func() {
@@ -228,6 +227,8 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		// Move host to a non-Deploying state (e.g. StateInspecting). Unclaimed, it has
 		// no deployment for the report to be about.
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		ph.Spec.ConsumerRef = nil
+		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateInspecting
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 
@@ -245,8 +246,12 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = resp.Body.Close() }()
 
-		Expect(resp.StatusCode).To(Equal(http.StatusAccepted),
-			"handler returns 202 even when host not in Deploying (no-op, not an error)")
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
+			"the bearer gate rejects callbacks for an unclaimed host (D-029)")
+
+		By("the handler itself treating the report as a no-op, should anything let it through")
+		log := ctrl.Log.WithName("provision-failed-handler-direct")
+		Expect((&ProvisionFailedHandler{Client: k8sClient, Log: log}).signalProvisionFailed(ctx, log, testNs.Name, ph.Name, "fail")).To(Succeed())
 
 		By("Verifying annotation was NOT set on a non-Deploying host")
 		updated := &infrav1.PhysicalHost{}
@@ -265,6 +270,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 			APIVersion: infrav1.GroupVersion.String(),
 		}
 		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
+		putCredentialSecret(key, boundCredentialData("b7m-pfail-http", tokenPlain, auth.TokenLifetime, "", 0))
 		ph.Status.State = infrav1.StateInspecting
 		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())

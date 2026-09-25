@@ -50,7 +50,7 @@ It generates a self-signed RSA cert in memory at startup (configurable via `--tl
 
 ### The mock inspector
 
-`cmd/mock-inspector` is the layer-5 simulator: a small Go binary that reads `PhysicalHost.Status.Bootstrap.{URL,TokenHash}`, fetches the plaintext token from the per-host `<host>-bootstrap-token` Secret, derives the inspection callback URL (path-swap `/api/v1/bootstrap/` → `/api/v1/inspection/`), and POSTs a hardware-details payload matching `controllers.InspectionReportRequest`. Exits 0 on 2xx, non-zero with a diagnostic on any other status.
+`cmd/mock-inspector` is the layer-5 simulator: a small Go binary that reads `PhysicalHost.Status.Bootstrap.{URL,TokenHash}` (the hash is the controller's mirror of the token Secret), fetches the plaintext token from the per-host `<host>-bootstrap-token` Secret, derives the inspection callback URL (path-swap `/api/v1/bootstrap/` → `/api/v1/inspection/`), and POSTs a hardware-details payload matching `controllers.InspectionReportRequest`. Exits 0 on 2xx, non-zero with a diagnostic on any other status.
 
 Flags:
 - `--namespace`, `--host-name` (required): which PhysicalHost to inspect

@@ -17,7 +17,8 @@ limitations under the License.
 package controllers
 
 import (
-	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -40,16 +41,17 @@ import (
 // needs the BMC. Its run used to stop there all the same: apart from the
 // inspector's two reports, the host acted on its annotations only after a
 // successful BMC connection. During a network-level outage it read no
-// inspection report, applied none of the machine's inspection requests and
-// published no bootstrap token or boot nonce the machine had just minted:
+// inspection report and applied none of the machine's inspection requests:
 //
 //   - A machine whose inspection timeout ran out meanwhile failed with
 //     InspectionTimedOut, although the inspector had reported and went on to
 //     deploy the host.
 //   - A machine whose inspect-complete waited sat Inspecting until a
 //     MachineHealthCheck replaced it.
-//   - An inspector the machine had just powered on could not fetch /boot: the
-//     nonce in its iPXE script was not in the host's status.
+//
+// The callback credentials never depended on the host's reconcile once the
+// Secret became their only source (D-029), and the host mirrors them into its
+// status during an outage too.
 //
 // A BMC failure that needs a fix held the annotations the same way, until the
 // connection worked; it now acts on them too, and keeps the state they produce
@@ -84,24 +86,15 @@ func inspectedHost(namespace, name, machineName string) client.ObjectKey {
 }
 
 // inspectionCredentials mints a bearer token and a boot nonce the way
-// triggerInspection does, and returns the annotations that signal them to the
-// host together with the plaintexts the inspector would present.
-func inspectionCredentials() (map[string]string, string, string) {
-	token, tokenHash, err := auth.MintToken()
+// triggerInspection does, stores them in the host's bootstrap-token Secret
+// bound to machineName, and returns the plaintexts the inspector would present.
+func inspectionCredentials(key client.ObjectKey, machineName string) (string, string) {
+	token, _, err := auth.MintToken()
 	Expect(err).NotTo(HaveOccurred())
-	issuedAt, expiresAt := auth.LifetimeFor(time.Now())
-	tokenValue, err := json.Marshal(BootstrapTokenAnnotationValue{Hash: tokenHash, IssuedAt: issuedAt, ExpiresAt: expiresAt})
+	nonce, _, err := auth.MintToken()
 	Expect(err).NotTo(HaveOccurred())
-
-	nonce, nonceHash, err := auth.MintToken()
-	Expect(err).NotTo(HaveOccurred())
-	nonceValue, err := json.Marshal(BootNonceAnnotationValue{Hash: nonceHash, ExpiresAt: auth.NonceLifetimeFor(time.Now())})
-	Expect(err).NotTo(HaveOccurred())
-
-	return map[string]string{
-		BootstrapTokenAnnotation: string(tokenValue),
-		BootNonceAnnotation:      string(nonceValue),
-	}, token, nonce
+	putCredentialSecret(key, boundCredentialData(machineName, token, auth.TokenLifetime, nonce, auth.BootNonceLifetime))
+	return token, nonce
 }
 
 // judgeWithInspectionTimeout hands a host, exactly as published, to the
@@ -194,11 +187,12 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 	})
 
 	// The machine powers the host on into the inspector through its own BMC
-	// connection, then signals the inspection and the credentials it minted.
-	It("starts the inspection the machine asked for, and publishes the credentials the inspector presents", func() {
-		annotations, token, nonce := inspectionCredentials()
-		annotations[InspectionRequestAnnotation] = "inspect"
-		key := inUseHost(ns.Name, "booting-host", "booting-machine", annotations)
+	// connection, stores the credentials it minted in the host's Secret, then
+	// signals the inspection.
+	It("starts the inspection the machine asked for, and mirrors the credentials the inspector presents", func() {
+		key := inUseHost(ns.Name, "booting-host", "booting-machine",
+			map[string]string{InspectionRequestAnnotation: "inspect"})
+		token, nonce := inspectionCredentials(key, "booting-machine")
 
 		inspecting := reconcileInOutage(key)
 		Expect(inspecting.Status.State).To(Equal(infrav1.StateInspecting),
@@ -206,20 +200,23 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 		Expect(inspecting.Status.InspectionTimestamp).NotTo(BeNil())
 		Expect(inspecting.Status.ErrorMessage).To(BeEmpty())
 		Expect(inspecting.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
-		Expect(verifyBootNonce(nonce, inspecting)).To(BeTrue(), "/boot accepts the nonce in the inspector's iPXE script")
-		Expect(inspecting.Status.Bootstrap).NotTo(BeNil())
-		Expect(auth.Verify(token, inspecting.Status.Bootstrap.TokenHash)).To(BeTrue(),
+
+		By("the callback server accepting the credentials, which the BMC has nothing to do with")
+		creds, _, err := boundBootstrapCredentials(ctx, k8sClient, inspecting)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(verifyBootNonce(nonce, creds, time.Now())).To(BeTrue(), "/boot accepts the nonce in the inspector's iPXE script")
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/"+key.Namespace+"/"+key.Name, nil)
+		req.SetPathValue("namespace", key.Namespace)
+		req.SetPathValue("hostName", key.Name)
+		Expect(newBearerTokenVerifier(k8sClient, ctrl.Log.WithName("outage-run-verifier"))(token, req)).To(Succeed(),
 			"the callbacks accept the inspector's bearer token")
 
-		By("clearing the credential annotations once status carries them")
-		Expect(inspecting.Annotations).To(HaveKey(BootstrapTokenAnnotation), "cleared one pass after status shows the mint")
-		Expect(inspecting.Annotations).To(HaveKey(BootNonceAnnotation))
-		cleared := reconcileInOutage(key)
-		Expect(cleared.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation))
-		Expect(cleared.Annotations).NotTo(HaveKey(BootNonceAnnotation))
-		Expect(verifyBootNonce(nonce, cleared)).To(BeTrue())
+		By("mirroring them into status during the outage")
+		Expect(inspecting.Status.Bootstrap).NotTo(BeNil())
+		Expect(auth.Verify(token, inspecting.Status.Bootstrap.TokenHash)).To(BeTrue())
+		Expect(auth.Verify(nonce, inspecting.Status.Bootstrap.BootNonceHash)).To(BeTrue())
 
-		machine, _ := judgeHost(cleared)
+		machine, _ := judgeHost(inspecting)
 		Expect(isTerminallyFailed(machine)).To(BeFalse())
 		Expect(ptr.Deref(machine.Status.Phase, "")).To(Equal("Inspecting"))
 		Expect(conditions.GetReason(machine, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.PhysicalHostNotReadyReason))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -17,8 +18,10 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/internal/auth"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
@@ -724,71 +727,6 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}, Timeout, Interval).Should(Succeed())
 		})
 
-		It("Should consume bootstrap-token annotation, persist hash+lifetime to Status.Bootstrap, and clear the annotation only once status shows it", func() {
-			By("Creating the PhysicalHost and making it Available")
-			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
-
-			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-			_, err := reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			ph := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
-
-			By("Setting the bootstrap-token annotation (as Beskar7Machine controller would)")
-			fakeHash := "deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
-			now := metav1.Now()
-			expiresAt := metav1.NewTime(now.Add(30 * time.Minute))
-			value := BootstrapTokenAnnotationValue{
-				Hash:      fakeHash,
-				IssuedAt:  now,
-				ExpiresAt: expiresAt,
-			}
-			encoded, err := json.Marshal(value)
-			Expect(err).NotTo(HaveOccurred())
-
-			phPatch := ph.DeepCopy()
-			if phPatch.Annotations == nil {
-				phPatch.Annotations = map[string]string{}
-			}
-			phPatch.Annotations[BootstrapTokenAnnotation] = string(encoded)
-			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
-
-			By("Reconciling once — the controller persists the mint to Status.Bootstrap but keeps the annotation")
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			got := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-			Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
-			Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
-			Expect(got.Status.Bootstrap.IssuedAt).NotTo(BeNil())
-			Expect(got.Status.Bootstrap.ExpiresAt).NotTo(BeNil())
-			// Allow some skew between encoded and decoded times due to status round-trip.
-			Expect(got.Status.Bootstrap.ExpiresAt.Time.After(got.Status.Bootstrap.IssuedAt.Time)).To(BeTrue(),
-				"ExpiresAt must be after IssuedAt")
-			// The patch writes metadata before status. Clearing the annotation in the
-			// same pass would publish a version that advertises no token, and the
-			// Beskar7Machine controller (annotation, then status) would mint again over
-			// the token the inspector already fetched.
-			Expect(got.Annotations).To(HaveKey(BootstrapTokenAnnotation),
-				"the annotation must outlive the status write by one pass")
-			Expect(unexpiredBootstrapTokenHash(got, time.Now())).To(Equal(fakeHash),
-				"a reader must see the same hash through every published version")
-
-			By("Reconciling again — status already carries the mint, so the annotation is cleared")
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-			Expect(got.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation),
-				"bootstrap-token annotation must be removed once status shows it")
-			Expect(got.Status.Bootstrap.TokenHash).To(Equal(fakeHash))
-			Expect(unexpiredBootstrapTokenHash(got, time.Now())).To(Equal(fakeHash))
-		})
-
 		It("Should consume inspection-result annotation, persist InspectionReport to Status, delete the ConfigMap, and clear the annotation", func() {
 			By("Creating the PhysicalHost and making it Available, with a ConsumerRef so we don't transition back to Available")
 			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
@@ -1019,228 +957,114 @@ var _ = Describe("PhysicalHost Controller", func() {
 	})
 })
 
-// applyBootstrapTokenAnnotation two-phase handoff. Pure unit; no I/O.
-var _ = Describe("applyBootstrapTokenAnnotation", func() {
-	var r *PhysicalHostReconciler
+// The retired credential annotations (D-029) are removed on sight and never
+// read. Pure unit; no I/O.
+var _ = Describe("dropRetiredCredentialAnnotations", func() {
+	r := &PhysicalHostReconciler{Log: ctrl.Log.WithName("retired-annotations-test")}
 
-	BeforeEach(func() {
-		r = &PhysicalHostReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Log:    ctrl.Log.WithName("bootstrap-token-test"),
-		}
-	})
-
-	annotate := func(ph *infrav1.PhysicalHost, hash string, expiresAt metav1.Time) {
-		encoded, err := json.Marshal(BootstrapTokenAnnotationValue{
-			Hash:      hash,
-			IssuedAt:  metav1.NewTime(expiresAt.Add(-time.Hour)),
-			ExpiresAt: expiresAt,
-		})
-		Expect(err).NotTo(HaveOccurred())
-		if ph.Annotations == nil {
-			ph.Annotations = map[string]string{}
-		}
-		ph.Annotations[BootstrapTokenAnnotation] = string(encoded)
-	}
-
-	It("keeps the annotation until status carries the mint, then clears it — a reader never sees neither", func() {
-		hash := "1111111111111111111111111111111111111111111111111111111111111111"
-		expiresAt := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
-		ph := &infrav1.PhysicalHost{}
-		annotate(ph, hash, expiresAt)
-
-		By("pass 1: status out, annotation kept")
-		r.applyBootstrapTokenAnnotation(r.Log, ph)
-		Expect(ph.Status.Bootstrap).NotTo(BeNil())
-		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(hash))
-		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation))
-		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(hash))
-
-		By("pass 2: status shows the mint, annotation cleared")
-		r.applyBootstrapTokenAnnotation(r.Log, ph)
-		Expect(ph.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation))
-		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(hash))
-		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(hash))
-	})
-
-	It("lets a newer mint replace the status hash, and clears that annotation only on the following pass", func() {
-		previous := "2222222222222222222222222222222222222222222222222222222222222222"
-		newer := "3333333333333333333333333333333333333333333333333333333333333333"
-		previousExpiry := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
-		newerExpiry := metav1.NewTime(time.Now().Add(time.Hour).Truncate(time.Second))
+	It("removes both keys, whatever they carry, and leaves status and every other annotation alone", func() {
 		ph := &infrav1.PhysicalHost{
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{TokenHash: previous, ExpiresAt: &previousExpiry},
-			},
+			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+				BootstrapTokenAnnotation:    `{"hash":"` + strings.Repeat("a", 64) + `"}`,
+				BootNonceAnnotation:         "not-even-json",
+				InspectionRequestAnnotation: "inspect",
+			}},
 		}
-		annotate(ph, newer, newerExpiry)
+		r.dropRetiredCredentialAnnotations(r.Log, ph)
+		Expect(ph.Annotations).To(Equal(map[string]string{InspectionRequestAnnotation: "inspect"}))
+		Expect(ph.Status.Bootstrap).To(BeNil(), "an annotation is never promoted into status")
+	})
 
-		r.applyBootstrapTokenAnnotation(r.Log, ph)
-		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(newer))
-		Expect(ph.Status.Bootstrap.ExpiresAt.Time.Equal(newerExpiry.Time)).To(BeTrue())
-		Expect(ph.Annotations).To(HaveKey(BootstrapTokenAnnotation), "not cleared until status carries the newer mint")
-		Expect(unexpiredBootstrapTokenHash(ph, time.Now())).To(Equal(newer))
-
-		r.applyBootstrapTokenAnnotation(r.Log, ph)
-		Expect(ph.Annotations).NotTo(HaveKey(BootstrapTokenAnnotation))
-		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(newer))
+	It("is a no-op when neither annotation is present", func() {
+		ph := &infrav1.PhysicalHost{}
+		r.dropRetiredCredentialAnnotations(r.Log, ph)
+		Expect(ph.Annotations).To(BeNil())
 	})
 })
 
-// applyBootNonceAnnotation unit tests (D-009). Pure unit; no I/O so no envtest needed.
-// Mirrors the applyBootstrapTokenAnnotation tests in the Context block above.
-var _ = Describe("applyBootNonceAnnotation", func() {
-	var r *PhysicalHostReconciler
-
+// mirrorBootstrapCredentials copies the Secret's hashes and lifetimes into
+// status for operators; nothing authenticates against the copy (D-029). Pure
+// unit against a fake client.
+var _ = Describe("mirrorBootstrapCredentials", func() {
+	const ns, hostName = "mirror-ns", "mirror-host"
+	var (
+		now        time.Time
+		consumedAt metav1.Time
+	)
 	BeforeEach(func() {
-		r = &PhysicalHostReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Log:    ctrl.Log.WithName("boot-nonce-test"),
-		}
+		now = time.Now().Truncate(time.Second)
+		consumedAt = metav1.NewTime(now.Add(-time.Minute))
 	})
 
-	It("lifts BootNonceHash and BootNonceExpiresAt into Status.Bootstrap from the annotation", func() {
-		fakeHash := "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
-		// Truncate to second precision: metav1.Time marshals as RFC3339 (second
-		// resolution), so sub-second precision is lost in the JSON round-trip.
-		// The test compares the round-tripped value; truncate the input to match.
-		expiresAt := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
-		value := BootNonceAnnotationValue{
-			Hash:      fakeHash,
-			ExpiresAt: expiresAt,
+	mirror := func(ph *infrav1.PhysicalHost, objs ...client.Object) {
+		r := &PhysicalHostReconciler{
+			Client: fake.NewClientBuilder().WithScheme(k8sClient.Scheme()).WithObjects(objs...).Build(),
+			Log:    ctrl.Log.WithName("mirror-test"),
 		}
-		encoded, err := json.Marshal(value)
-		Expect(err).NotTo(HaveOccurred())
-
-		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
-			},
+		r.mirrorBootstrapCredentials(ctx, r.Log, ph)
+	}
+	hostWithStatus := func() *infrav1.PhysicalHost {
+		return &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns},
+			Status: infrav1.PhysicalHostStatus{Bootstrap: &infrav1.BootstrapStatus{
+				URL:                   "https://callback.example.com/api/v1/bootstrap/mirror-ns/mirror-host",
+				TokenHash:             auth.Hash("older-token"),
+				BootNonceHash:         auth.Hash("older-nonce"),
+				BootNonceConsumedAt:   &consumedAt,
+				BootNonceConsumedHash: auth.Hash("older-nonce"),
+			}},
 		}
+	}
 
-		r.applyBootNonceAnnotation(r.Log, ph)
+	It("mirrors the bound Secret's hashes and lifetimes, and leaves the URL and the consume record alone", func() {
+		ph := hostWithStatus()
+		data := boundCredentialData("mirror-machine", "token", time.Hour, "nonce", 10*time.Minute)
+		data[bootstrapTokenIssuedAtSecretKey] = credentialTime(now)
+		mirror(ph, credentialSecret(ns, hostName, data))
 
-		Expect(ph.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
-		Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(fakeHash))
-		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).NotTo(BeNil())
-		Expect(ph.Status.Bootstrap.BootNonceExpiresAt.Time.Equal(expiresAt.Time)).To(BeTrue())
-		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation),
-			"the annotation must outlive the status write by one pass (metadata is patched before status)")
-		Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(fakeHash))
-
-		By("clearing the annotation on the next pass, once status shows the same mint")
-		r.applyBootNonceAnnotation(r.Log, ph)
-		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation),
-			"annotation must be cleared once status carries the mint")
-		Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(fakeHash))
-		Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(fakeHash))
+		bs := ph.Status.Bootstrap
+		Expect(bs.TokenHash).To(Equal(auth.Hash("token")))
+		Expect(bs.IssuedAt.Time).To(BeTemporally("==", now))
+		Expect(bs.ExpiresAt.Time).To(BeTemporally("~", now.Add(time.Hour), 2*time.Second))
+		Expect(bs.BootNonceHash).To(Equal(auth.Hash("nonce")))
+		Expect(bs.BootNonceExpiresAt.Time).To(BeTemporally("~", now.Add(10*time.Minute), 2*time.Second))
+		Expect(bs.URL).To(Equal("https://callback.example.com/api/v1/bootstrap/mirror-ns/mirror-host"))
+		Expect(bs.BootNonceConsumedAt).To(Equal(&consumedAt), "the consume record is the /boot handler's (D-010)")
+		Expect(bs.BootNonceConsumedHash).To(Equal(auth.Hash("older-nonce")))
 	})
 
-	It("does not touch BootNonceConsumedAt (that field belongs to the /boot handler)", func() {
-		consumed := metav1.Now()
-		fakeHash := "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
-		expiresAt := metav1.NewTime(time.Now().Add(5 * time.Minute))
-		value := BootNonceAnnotationValue{Hash: fakeHash, ExpiresAt: expiresAt}
-		encoded, err := json.Marshal(value)
-		Expect(err).NotTo(HaveOccurred())
-
-		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
-			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					BootNonceConsumedAt: &consumed,
-				},
-			},
-		}
-
-		r.applyBootNonceAnnotation(r.Log, ph)
-
-		Expect(ph.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil(),
-			"applyBootNonceAnnotation must not clear BootNonceConsumedAt — it is the /boot handler's field")
-		Expect(ph.Status.Bootstrap.BootNonceConsumedAt.Time.Equal(consumed.Time)).To(BeTrue())
+	It("mirrors a missing or malformed expiry as absent, as the verifier reads it", func() {
+		ph := hostWithStatus()
+		data := boundCredentialData("mirror-machine", "token", time.Hour, "nonce", time.Minute)
+		data[bootstrapTokenExpiresAtSecretKey] = []byte("next tuesday")
+		delete(data, bootNonceExpiresAtSecretKey)
+		mirror(ph, credentialSecret(ns, hostName, data))
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(auth.Hash("token")))
+		Expect(ph.Status.Bootstrap.ExpiresAt).To(BeNil())
+		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).To(BeNil())
 	})
 
-	// Status.Bootstrap outlives a claim, so a re-claimed host's fresh nonce is
-	// promoted next to the record of the nonce before it. The record stays the
-	// handler's to write; it is its hash that keeps the fresh nonce unconsumed.
-	It("leaves an earlier nonce's consume record in place, and the nonce it promotes counts as unconsumed", func() {
-		earlierHash := "9988776655443322110099887766554433221100998877665544332211009988"
-		freshHash := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-		consumed := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
-		earlierExpiry := metav1.NewTime(time.Now().Add(-50 * time.Minute).Truncate(time.Second))
-		freshExpiry := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
-		encoded, err := json.Marshal(BootNonceAnnotationValue{Hash: freshHash, ExpiresAt: freshExpiry})
-		Expect(err).NotTo(HaveOccurred())
-
-		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
-			},
-			Status: infrav1.PhysicalHostStatus{
-				Bootstrap: &infrav1.BootstrapStatus{
-					BootNonceHash:         earlierHash,
-					BootNonceExpiresAt:    &earlierExpiry,
-					BootNonceConsumedAt:   &consumed,
-					BootNonceConsumedHash: earlierHash,
-				},
-			},
-		}
-
-		for pass := 1; pass <= 2; pass++ {
-			By(fmt.Sprintf("pass %d", pass))
-			r.applyBootNonceAnnotation(r.Log, ph)
-			Expect(ph.Status.Bootstrap.BootNonceHash).To(Equal(freshHash))
-			Expect(ph.Status.Bootstrap.BootNonceConsumedAt.Time.Equal(consumed.Time)).To(BeTrue(),
-				"the consume record is the /boot handler's to write")
-			Expect(ph.Status.Bootstrap.BootNonceConsumedHash).To(Equal(earlierHash))
-			Expect(bootNonceConsumed(ph.Status.Bootstrap)).To(BeFalse(),
-				"the record names the earlier nonce, not the one just promoted")
-			Expect(unexpiredBootNonceHash(ph, time.Now())).To(Equal(freshHash),
-				"the Beskar7Machine may reuse the promoted nonce until it is fetched")
-		}
-		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation))
+	It("leaves status alone for a Secret written before the consumer binding (the upgrade backfill reads it)", func() {
+		ph := hostWithStatus()
+		before := ph.Status.DeepCopy()
+		mirror(ph, credentialSecret(ns, hostName, map[string][]byte{bootstrapTokenSecretKey: []byte("token")}))
+		Expect(ph.Status).To(Equal(*before))
 	})
 
-	It("leaves annotation in place when JSON is malformed", func() {
-		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{BootNonceAnnotation: "not-json"},
-			},
-		}
-		r.applyBootNonceAnnotation(r.Log, ph)
-
-		Expect(ph.Annotations).To(HaveKey(BootNonceAnnotation),
-			"malformed JSON must leave the annotation in place for investigation")
-		Expect(ph.Status.Bootstrap).To(BeNil(),
-			"malformed JSON must not initialize Status.Bootstrap")
+	It("clears the mirrored credentials when the Secret is gone, keeping the URL and the consume record", func() {
+		ph := hostWithStatus()
+		mirror(ph)
+		bs := ph.Status.Bootstrap
+		Expect(bs.TokenHash).To(BeEmpty())
+		Expect(bs.BootNonceHash).To(BeEmpty())
+		Expect(bs.ExpiresAt).To(BeNil())
+		Expect(bs.URL).NotTo(BeEmpty())
+		Expect(bs.BootNonceConsumedHash).To(Equal(auth.Hash("older-nonce")))
 	})
 
-	It("ignores and clears annotation when hash is empty", func() {
-		expiresAt := metav1.NewTime(time.Now().Add(5 * time.Minute))
-		value := BootNonceAnnotationValue{Hash: "", ExpiresAt: expiresAt}
-		encoded, err := json.Marshal(value)
-		Expect(err).NotTo(HaveOccurred())
-
-		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Annotations: map[string]string{BootNonceAnnotation: string(encoded)},
-			},
-		}
-		r.applyBootNonceAnnotation(r.Log, ph)
-
-		Expect(ph.Annotations).NotTo(HaveKey(BootNonceAnnotation),
-			"empty-hash annotation must be cleared")
-		Expect(ph.Status.Bootstrap).To(BeNil(),
-			"empty-hash annotation must not initialize Status.Bootstrap")
-	})
-
-	It("is a no-op when the annotation is absent", func() {
-		ph := &infrav1.PhysicalHost{}
-		r.applyBootNonceAnnotation(r.Log, ph)
+	It("writes nothing on a host that has no Status.Bootstrap and no Secret", func() {
+		ph := &infrav1.PhysicalHost{ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns}}
+		mirror(ph)
 		Expect(ph.Status.Bootstrap).To(BeNil())
 	})
 })

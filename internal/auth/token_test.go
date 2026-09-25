@@ -40,6 +40,24 @@ func TestMintToken(t *testing.T) {
 	}
 }
 
+func TestHash(t *testing.T) {
+	// sha256("abc"), FIPS 180-2 appendix B.1.
+	const want = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+	if got := Hash("abc"); got != want {
+		t.Errorf("Hash(\"abc\") = %s, want %s", got, want)
+	}
+	p, h, err := MintToken()
+	if err != nil {
+		t.Fatalf("MintToken returned error: %v", err)
+	}
+	if Hash(p) != h {
+		t.Error("Hash(plaintext) must equal the hash MintToken returns")
+	}
+	if !Verify(p, Hash(p)) {
+		t.Error("Verify must accept a plaintext against its own Hash")
+	}
+}
+
 func TestMintToken_Distinct(t *testing.T) {
 	p1, h1, err := MintToken()
 	if err != nil {

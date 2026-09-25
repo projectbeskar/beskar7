@@ -57,14 +57,15 @@ For the diagram and the full transition table, see [State Management](state-mana
 
 ## Bootstrap signaling
 
-When the Beskar7Machine controller has bootstrap data ready, it patches two annotations on the PhysicalHost. The PhysicalHost reconciler reads them on its next pass, persists the values to status, and clears the annotation. For the credential annotations (`bootstrap-token`, and the `boot-nonce` minted at inspection time) the clear happens one pass later, once status already shows the same hash: the reconciler's patch writes metadata before status, so clearing in the same pass would publish a version of the host that advertises no credential, and a reader in that gap (the Beskar7Machine controller checks the annotation, then status) would mint a fresh one over a token the inspector may already hold:
+When the Beskar7Machine controller has bootstrap data ready, it patches the bootstrap URL onto the PhysicalHost as an annotation. The PhysicalHost reconciler reads it on its next pass, persists the value to status, and clears the annotation:
 
 | Annotation | Persisted to | Source code |
 |---|---|---|
 | `infrastructure.cluster.x-k8s.io/bootstrap-url` | `Status.Bootstrap.URL` | `controllers/physicalhost_controller.go:applyBootstrapURLAnnotation` |
-| `infrastructure.cluster.x-k8s.io/bootstrap-token` | `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}` | `controllers/physicalhost_controller.go:applyBootstrapTokenAnnotation` |
 
-The plaintext bearer token is delivered out-of-band via a Secret named `<host-name>-bootstrap-token`, owned by the PhysicalHost (so it is GC'd when the host is deleted). The Secret has a single key: `plaintext-token`.
+The callback credentials — the bearer token and the boot nonce — never travel through the PhysicalHost. The Beskar7Machine controller mints them into a Secret named `<host-name>-bootstrap-token`, owned by the PhysicalHost (so it is GC'd when the host is deleted), with keys `plaintext-token`, `token-issued-at`, `token-expires-at`, `plaintext-boot-nonce`, `boot-nonce-expires-at` and `consumer` (the name of the `Beskar7Machine` they were minted for). That Secret is the only thing the callback server checks, and only while the host's `ConsumerRef` names that machine (decision D-029). The PhysicalHost reconciler watches it and mirrors the hashes and expiries into `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt, BootNonceHash, BootNonceExpiresAt}` for operators; nothing authenticates against the mirror.
+
+The `infrastructure.cluster.x-k8s.io/bootstrap-token` and `infrastructure.cluster.x-k8s.io/boot-nonce` annotations are retired: releases before D-029 promoted them into `Status.Bootstrap`, which let anyone allowed to patch a PhysicalHost forge callback credentials (SEC-12). The reconciler removes either one on sight without reading it.
 
 ## Inspection result handoff
 

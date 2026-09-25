@@ -189,24 +189,32 @@ func TestSetupManager(t *testing.T) {
 		callbackBase := fmt.Sprintf("https://127.0.0.1:%d", callbackPort)
 		expectStatus(t, httpsClient, http.MethodGet, callbackBase+"/healthz", "", http.StatusOK)
 
-		// A bearer-gated route. The verifier reads the host's token hash from
-		// PhysicalHost status through the cache, so this also proves the cache
-		// serves the handlers with no controller registered.
+		// A bearer-gated route. The verifier reads the PhysicalHost and its
+		// bootstrap-token Secret through the cache, so this also proves the
+		// cache serves the handlers with no controller registered.
 		ctx := context.Background()
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "callback-only-"}}
 		if err := k8sClient.Create(ctx, ns); err != nil {
 			t.Fatalf("create namespace: %v", err)
 		}
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		if err != nil {
 			t.Fatalf("mint token: %v", err)
 		}
+		// Claimed by a Beskar7Machine that does not exist, with the token bound
+		// to it: the verifier lets the request through, and the handler finds
+		// no consumer to serve.
+		const consumer = "absent-machine"
 		host := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-1", Namespace: ns.Name},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
 					Address:              "https://192.0.2.10",
 					CredentialsSecretRef: "bmc-creds",
+				},
+				ConsumerRef: &corev1.ObjectReference{
+					Kind: "Beskar7Machine", APIVersion: infrav1.GroupVersion.String(),
+					Name: consumer, Namespace: ns.Name,
 				},
 			},
 		}
@@ -220,21 +228,33 @@ func TestSetupManager(t *testing.T) {
 				t.Errorf("delete PhysicalHost: %v", err)
 			}
 		})
-		host.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: hash,
-			ExpiresAt: &metav1.Time{Time: time.Now().Add(time.Hour)},
+		// The Secret's data keys are the manager's (controllers package,
+		// D-029): the token, its expiry, and the machine it is bound to.
+		tokenSecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: host.Name + "-bootstrap-token", Namespace: ns.Name},
+			Data: map[string][]byte{
+				"plaintext-token":  []byte(plaintext),
+				"token-expires-at": []byte(time.Now().Add(time.Hour).UTC().Format(time.RFC3339)),
+				"consumer":         []byte(consumer),
+			},
 		}
-		if err := k8sClient.Status().Update(ctx, host); err != nil {
-			t.Fatalf("update PhysicalHost status: %v", err)
+		if err := k8sClient.Create(ctx, tokenSecret); err != nil {
+			t.Fatalf("create bootstrap-token Secret: %v", err)
 		}
+		t.Cleanup(func() {
+			if err := k8sClient.Delete(context.Background(), tokenSecret); err != nil {
+				t.Errorf("delete bootstrap-token Secret: %v", err)
+			}
+		})
 
 		route := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s", callbackBase, ns.Name, host.Name)
-		// The status update reaches the cache through a watch, so the
+		// The host and the Secret reach the cache through a watch, so the
 		// accepted-token case is polled; the rejections are checked once the
 		// token is known to be visible.
 		//
-		// A host with no consumer is a 404 from the handler — anything but 401
-		// means the bearer gate let the request through.
+		// A claim whose Beskar7Machine does not exist is a 404 from the
+		// handler — anything but 401 means the bearer gate let the request
+		// through.
 		expectStatus(t, httpsClient, http.MethodGet, route, "Bearer "+plaintext, http.StatusNotFound)
 		expectStatus(t, httpsClient, http.MethodGet, route, "", http.StatusUnauthorized)
 		expectStatus(t, httpsClient, http.MethodGet, route, "Bearer not-the-token", http.StatusUnauthorized)
