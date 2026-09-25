@@ -27,6 +27,7 @@ import (
 
 	"github.com/go-logr/logr"
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/internal/auth"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	corev1 "k8s.io/api/core/v1"
@@ -620,9 +621,10 @@ func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 
 // applyRunAnnotations acts on the annotations through which the Beskar7Machine
 // controller and the inspection handler drive a provisioning run: the
-// inspection requests, the bootstrap URL, bearer token and boot nonce, and the
-// inspection report. The inspector's /provision-failed and /provisioned reports
-// are applied at the top of reconcileNormal instead.
+// inspection requests, the bootstrap URL and the inspection report. It also
+// mirrors the run's callback credentials from their Secret into status. The
+// inspector's /provision-failed and /provisioned reports are applied at the
+// top of reconcileNormal instead.
 //
 // reconcileNormal calls it once the BMC has answered, and also when it has
 // not: before retryTransientRedfishFailure for a network-level outage, and
@@ -631,10 +633,9 @@ func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 // and a claimed host keeps its provisioning state through any of those, so its
 // run goes on. Left for the BMC, the host read no inspection report, so a
 // machine whose inspection timeout ran out meanwhile failed with
-// InspectionTimedOut on a host that went on to deploy; a waiting
+// InspectionTimedOut on a host that went on to deploy, and a waiting
 // inspect-complete left the machine Inspecting until a MachineHealthCheck
-// replaced it; and an inspector the machine had just powered on could not
-// fetch /boot, its nonce not yet in status.
+// replaced it.
 //
 // Calling it ahead of a connection failure relies on neither failure path
 // overwriting a claimed host's provisioning state. A failure that wrote Error
@@ -663,19 +664,11 @@ func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger
 	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
 	r.applyBootstrapURLAnnotation(logger, physicalHost)
 
-	// Consume the bootstrap-token annotation (PR-5.2 / D-004): the Beskar7Machine
-	// controller signals the freshly minted token's hash + lifetime here; we
-	// persist them to Status.Bootstrap so the inspection HTTPS handler can verify
-	// bearer tokens against the stored hash.
-	r.applyBootstrapTokenAnnotation(logger, physicalHost)
-
-	// Consume the boot-nonce annotation (D-009): the Beskar7Machine controller
-	// signals the hash + expiry of the freshly minted per-host boot nonce; we
-	// persist them to Status.Bootstrap.{BootNonceHash,BootNonceExpiresAt}.
-	// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
-	// touched here — it is the /boot handler's (D-010). Same idempotent
-	// annotation-in/status-out pattern as the token.
-	r.applyBootNonceAnnotation(logger, physicalHost)
+	// The callback credentials live only in the bootstrap-token Secret (D-029):
+	// drop the annotations that used to carry them, unread, and mirror the
+	// Secret into Status.Bootstrap for operators.
+	r.dropRetiredCredentialAnnotations(logger, physicalHost)
+	r.mirrorBootstrapCredentials(ctx, logger, physicalHost)
 
 	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
 	// HTTP handler stored the validated InspectionReport on a ConfigMap and
@@ -718,10 +711,11 @@ func (r *PhysicalHostReconciler) setConnectionError(physicalHost *infrav1.Physic
 // hardware, and MachineHealthCheck remediation.
 //
 // Status.Bootstrap is deliberately NOT cleared here. It is not run-scoped in the
-// way the timestamps are: the bootstrap-url and bootstrap-token annotations are
-// consumed into it while the host is still unclaimed, so wiping it on every
-// unclaimed reconcile destroys state the Beskar7Machine controller just wrote.
-// Token hygiene across consumers is a separate concern and needs its own change.
+// way the timestamps are: it holds the bootstrap URL, the /boot handler's
+// consume record (D-010) and a mirror of the bootstrap-token Secret, which
+// follows the Secret rather than the claim. A released host's credentials
+// stop authenticating without it: the callback server accepts them only while
+// the host's claim names the machine they were minted for (D-029).
 //
 // Idempotent: safe to call on every reconcile of an unclaimed host.
 func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
@@ -839,111 +833,83 @@ func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger,
 	delete(physicalHost.Annotations, BootstrapURLAnnotation)
 }
 
-// applyBootstrapTokenAnnotation reads the BootstrapTokenAnnotation, JSON-decodes
-// the {hash, issuedAt, expiresAt} payload, and persists those values to
-// Status.Bootstrap. The plaintext token is delivered out-of-band via a Secret —
-// the annotation only carries the hash + lifetime.
-//
-// "Annotation in, status out" as in applyBootstrapURLAnnotation, but the clear
-// is deferred by one pass: the annotation stays until status already carries
-// the same mint, so no published version of the host advertises no credential
-// at all. The Beskar7Machine controller reads annotation-then-status and,
-// landing in such a gap while the host is still InUse, minted a fresh token
-// over the one the inspector had already fetched (401 on every callback).
-// Keeping the annotation one pass longer also means a failed status patch
-// cannot lose the mint. Malformed JSON is logged and the
-// annotation is left in place so the next reconcile (or operator) can
-// investigate; clearing would silently drop a token-state signal.
-func (r *PhysicalHostReconciler) applyBootstrapTokenAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	raw := physicalHost.Annotations[BootstrapTokenAnnotation]
-	if raw == "" {
-		return
+// dropRetiredCredentialAnnotations removes the bootstrap-token and boot-nonce
+// annotations on sight, without reading them (D-029). Releases before D-029
+// copied their hash and expiry into Status.Bootstrap, which the callback server
+// trusted, so anyone allowed to patch a PhysicalHost could mint a bearer token
+// or boot nonce of their own (SEC-12). Nothing in the manager writes them: one
+// found on a host is a leftover from an older manager or a forgery, and either
+// way it is never promoted. Reconcile removes them by key after its status
+// patch (restoreConsumedAnnotations), like every other annotation a pass
+// consumes.
+func (r *PhysicalHostReconciler) dropRetiredCredentialAnnotations(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	for _, key := range []string{BootstrapTokenAnnotation, BootNonceAnnotation} {
+		if _, ok := physicalHost.Annotations[key]; ok {
+			// The value is never logged: it is not trusted, and not read.
+			logger.Info("Removing a retired credential annotation without applying it; callback credentials come only from the bootstrap-token Secret",
+				"host", physicalHost.Name, "annotation", key)
+			delete(physicalHost.Annotations, key)
+		}
 	}
-	var value BootstrapTokenAnnotationValue
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		logger.Error(err, "Failed to decode bootstrap-token annotation; leaving in place for investigation",
-			"host", physicalHost.Name)
-		return
-	}
-	if value.Hash == "" {
-		logger.Info("bootstrap-token annotation has empty hash; ignoring", "host", physicalHost.Name)
-		delete(physicalHost.Annotations, BootstrapTokenAnnotation)
-		return
-	}
-
-	if bs := physicalHost.Status.Bootstrap; bs != nil && bs.TokenHash == value.Hash &&
-		bs.ExpiresAt != nil && bs.ExpiresAt.Equal(&value.ExpiresAt) {
-		// Second pass: the status patch carrying this mint has landed.
-		logger.V(1).Info("Status already carries the bootstrap-token mint; clearing the annotation", "host", physicalHost.Name)
-		delete(physicalHost.Annotations, BootstrapTokenAnnotation)
-		return
-	}
-
-	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
-	}
-	// Copy the hash (safe to log later — see Status.Bootstrap.TokenHash docstring).
-	physicalHost.Status.Bootstrap.TokenHash = value.Hash
-	issuedAt := value.IssuedAt
-	expiresAt := value.ExpiresAt
-	physicalHost.Status.Bootstrap.IssuedAt = &issuedAt
-	physicalHost.Status.Bootstrap.ExpiresAt = &expiresAt
-	logger.Info("Applied bootstrap-token annotation to Status.Bootstrap", "host", physicalHost.Name)
 }
 
-// applyBootNonceAnnotation reads the BootNonceAnnotation, JSON-decodes the
-// {hash, expiresAt} payload, and persists those values to Status.Bootstrap.
-// The consume record (BootNonceConsumedAt/BootNonceConsumedHash) is NOT
-// written here — it is exclusively written by the /boot handler (D-010). A
-// record left by an earlier nonce therefore stays in Status next to the newly
-// promoted hash; it names that earlier nonce's hash, so the new nonce counts as
-// unconsumed until its own first fetch (bootNonceConsumed). Clearing the record
-// here instead would race the handler: this reconciler's status patch carries
-// no resourceVersion, and a pass computed from a stale cache would erase a
-// consume already recorded for the new nonce.
+// mirrorBootstrapCredentials copies the hashes and lifetimes of the credentials
+// in the host's bootstrap-token Secret into Status.Bootstrap, for operators and
+// tooling (hack/smoke, cmd/mock-inspector) to read. It is a mirror and never an
+// input to authentication: the bearer verifier and /boot read the Secret itself
+// (D-029). SetupWithManager maps a change to the Secret onto this host, so the
+// mirror follows the Secret.
 //
-// Same two-phase handoff as applyBootstrapTokenAnnotation: status first, the
-// annotation is cleared on the following pass once status shows the same
-// mint, so no published version of the host is without a nonce. Malformed
-// JSON → log + leave annotation in place (do not clear) so the next reconcile
-// or an operator can investigate; clearing would silently discard a
-// nonce-state signal. Empty hash → ignore the annotation and clear it
-// (nothing useful to persist).
-func (r *PhysicalHostReconciler) applyBootNonceAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	raw := physicalHost.Annotations[BootNonceAnnotation]
-	if raw == "" {
-		return
-	}
-	var value BootNonceAnnotationValue
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		logger.Error(err, "Failed to decode boot-nonce annotation; leaving in place for investigation",
-			"host", physicalHost.Name)
-		return
-	}
-	if value.Hash == "" {
-		logger.Info("boot-nonce annotation has empty hash; ignoring", "host", physicalHost.Name)
-		delete(physicalHost.Annotations, BootNonceAnnotation)
-		return
-	}
-
-	if bs := physicalHost.Status.Bootstrap; bs != nil && bs.BootNonceHash == value.Hash &&
-		bs.BootNonceExpiresAt != nil && bs.BootNonceExpiresAt.Equal(&value.ExpiresAt) {
-		// Second pass: the status patch carrying this mint has landed.
-		logger.V(1).Info("Status already carries the boot-nonce mint; clearing the annotation", "host", physicalHost.Name)
-		delete(physicalHost.Annotations, BootNonceAnnotation)
-		return
+// A Secret with no consumer binding was written before D-029 and is left
+// unmirrored. Its hashes and lifetimes are already in status from the release
+// that wrote it, and the Beskar7Machine's one-release upgrade backfill reads
+// that lifetime to bind a run still in flight (backfillLegacyCredentials). A
+// missing Secret clears the mirror. The consume record the /boot handler owns
+// (D-010) and the bootstrap URL are left alone; the plaintexts never leave the
+// Secret.
+func (r *PhysicalHostReconciler) mirrorBootstrapCredentials(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: physicalHost.Namespace, Name: bootstrapTokenSecretName(physicalHost.Name)}
+	var creds bootstrapCredentials
+	if err := r.Get(ctx, key, secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to read the bootstrap-token Secret to mirror it into status", "secret", key.Name)
+			return
+		}
+		if physicalHost.Status.Bootstrap == nil {
+			return
+		}
+	} else {
+		creds = readBootstrapCredentials(secret)
+		if creds.consumer == "" {
+			return
+		}
 	}
 
 	if physicalHost.Status.Bootstrap == nil {
 		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
 	}
-	// Copy the hash (safe to log — see BootNonceHash docstring in physicalhost_types.go).
-	physicalHost.Status.Bootstrap.BootNonceHash = value.Hash
-	expiresAt := value.ExpiresAt
-	physicalHost.Status.Bootstrap.BootNonceExpiresAt = &expiresAt
-	// Intentionally do NOT touch the consume record — it belongs to the /boot
-	// handler (D-010). This controller must not clear or overwrite it.
-	logger.Info("Applied boot-nonce annotation to Status.Bootstrap", "host", physicalHost.Name)
+	bs := physicalHost.Status.Bootstrap
+	bs.TokenHash = mirroredHash(creds.token)
+	bs.IssuedAt = mirroredTime(creds.tokenIssuedAt)
+	bs.ExpiresAt = mirroredTime(creds.tokenExpiresAt)
+	bs.BootNonceHash = mirroredHash(creds.nonce)
+	bs.BootNonceExpiresAt = mirroredTime(creds.nonceExpiresAt)
+}
+
+func mirroredHash(plaintext string) string {
+	if plaintext == "" {
+		return ""
+	}
+	return auth.Hash(plaintext)
+}
+
+func mirroredTime(t time.Time) *metav1.Time {
+	if t.IsZero() {
+		return nil
+	}
+	mt := metav1.NewTime(t)
+	return &mt
 }
 
 // applyInspectionResultAnnotation reads the InspectionResultAnnotation, fetches
@@ -1278,7 +1244,10 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// SecretToPhysicalHosts maps Secret changes to PhysicalHost reconcile requests.
+// SecretToPhysicalHosts maps Secret changes to PhysicalHost reconcile requests:
+// a host's BMC credentials Secret and its bootstrap-token Secret. The latter
+// carries a controller reference to its host, but Owns would register a second
+// Secret watch; one mapper covers both.
 func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj client.Object) []reconcile.Request {
 	secret, ok := obj.(*corev1.Secret)
 	if !ok {
@@ -1295,7 +1264,10 @@ func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj 
 
 	var requests []reconcile.Request
 	for _, ph := range physicalHostList.Items {
-		if ph.Spec.RedfishConnection.CredentialsSecretRef == secret.Name {
+		// The BMC credentials a host connects with, and its bootstrap-token
+		// Secret, which mirrorBootstrapCredentials copies into its status.
+		if ph.Spec.RedfishConnection.CredentialsSecretRef == secret.Name ||
+			bootstrapTokenSecretName(ph.Name) == secret.Name {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: ph.Namespace,

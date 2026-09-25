@@ -34,8 +34,8 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-// Status.Bootstrap outlives a claim: a released host keeps it, and the next
-// Beskar7Machine to claim the host mints its credentials into it. The boot
+// Status.Bootstrap outlives a claim: a released host keeps it when the next
+// Beskar7Machine claims the host and mints fresh credentials. The boot
 // nonce's consume record in it is written by the /boot handler and cleared by
 // nothing, so the record a host's first boot left used to be inherited by every
 // nonce minted after it. /boot took each new nonce for one it had already
@@ -112,26 +112,26 @@ var _ = Describe("Boot nonce across two provisioning cycles of one host", func()
 		return machine
 	}
 
-	// secretNonce returns the boot nonce the per-host Secret holds: the one the
-	// operator's boot service puts in the host's /boot URL.
-	secretNonce := func() string {
+	// secretCredentials returns the credentials the per-host Secret holds; its
+	// nonce is the one the operator's boot service puts in the host's /boot URL.
+	secretCredentials := func() bootstrapCredentials {
 		secret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: bootstrapTokenSecretName(hostKey.Name)}, secret)).To(Succeed())
-		return string(secret.Data[bootNonceSecretKey])
+		return readBootstrapCredentials(secret)
 	}
+	secretNonce := func() string { return secretCredentials().nonce }
 
 	// startInspection runs the machine's triggerInspection on the host as
 	// persisted, has the host reconciler take up what it signalled, and returns
-	// the nonce the host now advertises.
+	// the nonce the Secret now holds.
 	startInspection := func(machine *infrav1.Beskar7Machine) string {
 		_, err := machineR.triggerInspection(ctx, machineR.Log, machine, getPhysicalHost(hostKey))
 		Expect(err).NotTo(HaveOccurred())
 		host := settlePhysicalHost(hostR, hostKey)
 		Expect(host.Status.State).To(Equal(infrav1.StateInspecting))
-		Expect(host.Annotations).NotTo(HaveKey(BootNonceAnnotation), "the host has taken up the mint")
 		nonce := secretNonce()
 		Expect(auth.Verify(nonce, host.Status.Bootstrap.BootNonceHash)).To(BeTrue(),
-			"the host advertises the nonce the Secret holds")
+			"the host's status mirrors the nonce the Secret holds")
 		return nonce
 	}
 
@@ -204,23 +204,24 @@ var _ = Describe("Boot nonce across two provisioning cycles of one host", func()
 		releasePhysicalHost(hostKey)
 		Expect(settlePhysicalHost(hostR, hostKey).Status.State).To(Equal(infrav1.StateAvailable))
 
-		By("cycle 2: the re-claim's nonce, promoted but not fetched yet")
+		By("cycle 2: the re-claim's nonce, minted but not fetched yet")
 		machine := claim("second-machine")
 		secondNonce := startInspection(machine)
-		promoted := getPhysicalHost(hostKey)
-		Expect(unexpiredBootNonceHash(promoted, time.Now())).To(Equal(promoted.Status.Bootstrap.BootNonceHash),
+		minted := getPhysicalHost(hostKey)
+		Expect(bootNonceReusable(secretCredentials(), minted.Status.Bootstrap, machine.Name, time.Now())).To(BeTrue(),
 			"a nonce nothing has fetched is not spent, whatever an earlier nonce's consume record says")
 
 		By("triggering inspection again, which must keep the nonce the boot service may already have handed out")
-		_, err := machineR.triggerInspection(ctx, machineR.Log, machine, promoted)
+		before := secretCredentials()
+		_, err := machineR.triggerInspection(ctx, machineR.Log, machine, minted)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(secretNonce()).To(Equal(secondNonce))
-		Expect(getPhysicalHost(hostKey).Annotations).NotTo(HaveKey(BootNonceAnnotation), "no fresh nonce is advertised")
+		Expect(secretCredentials()).To(Equal(before), "no fresh credential is minted")
 
 		By("fetching it, after which it counts as spent")
 		code, _, fetched := fetchBoot(secondNonce)
 		Expect(code).To(Equal(http.StatusOK))
-		Expect(unexpiredBootNonceHash(fetched, time.Now())).To(BeEmpty(),
+		Expect(bootNonceReusable(secretCredentials(), fetched.Status.Bootstrap, machine.Name, time.Now())).To(BeFalse(),
 			"a consumed nonce is never reused: the next trigger mints a fresh one")
 	})
 })

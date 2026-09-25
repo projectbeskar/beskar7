@@ -21,12 +21,11 @@ limitations under the License.
 // Security rules for callers:
 //
 //   - The plaintext token is sensitive and must NEVER be logged. MintToken
-//     returns it once; the caller is expected to render it into the iPXE
-//     kernel cmdline and otherwise hold it only in memory for the duration of
-//     the reconcile.
-//   - Only the SHA-256 hash is persisted (on PhysicalHost.Status.Bootstrap).
-//     The hash leaking via reconcile logs is acceptable — it cannot be used
-//     to forge a valid Authorization: Bearer header.
+//     returns it once; the caller stores it in the host's bootstrap-token
+//     Secret, the only place the callback server reads it from (D-029).
+//   - The SHA-256 hash is safe to publish (PhysicalHost.Status.Bootstrap
+//     mirrors it for operators) and to log — it cannot be used to forge a
+//     valid Authorization: Bearer header.
 //   - Verify uses crypto/subtle.ConstantTimeCompare. Do not replace it with
 //     ordinary string equality.
 //   - Random source is crypto/rand. math/rand is forbidden for token material.
@@ -80,12 +79,12 @@ const (
 //     bytes drawn from crypto/rand. 43 characters. Suitable for inclusion in
 //     iPXE kernel cmdlines and HTTP Authorization headers.
 //   - hash: the lowercase hex encoding of sha256(plaintext). 64 characters.
-//     This is the form persisted on PhysicalHost.Status.Bootstrap.TokenHash.
+//     The same value Hash returns for plaintext.
 //
 // The plaintext is returned exactly once. Callers MUST NOT log it. If the
 // caller fails to deliver the plaintext to its destination (e.g. an iPXE
-// render error), the only recovery is to mint a new token and rewrite the
-// status — the original plaintext cannot be recovered from the hash.
+// render error), the only recovery is to mint a new token — the original
+// plaintext cannot be recovered from the hash.
 func MintToken() (plaintext, hash string, err error) {
 	buf := make([]byte, tokenBytes)
 	if _, err := rand.Read(buf); err != nil {
@@ -97,42 +96,45 @@ func MintToken() (plaintext, hash string, err error) {
 	// strip trailing `=` and because tokens travel on iPXE kernel cmdlines
 	// where shell-special characters are best avoided.
 	plaintext = base64.RawURLEncoding.EncodeToString(buf)
+	return plaintext, Hash(plaintext), nil
+}
+
+// Hash returns the lowercase hex encoding of sha256(plaintext): the form Verify
+// compares against, and the one PhysicalHost.Status.Bootstrap mirrors.
+func Hash(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
-	hash = hex.EncodeToString(sum[:])
-	return plaintext, hash, nil
+	return hex.EncodeToString(sum[:])
 }
 
 // Verify reports whether plaintext hashes to storedHash.
 //
 // Comparison is constant-time via crypto/subtle.ConstantTimeCompare to
 // foreclose timing side channels. As a defense-in-depth measure, Verify
-// returns false immediately if either input is empty, so that an
-// unpopulated PhysicalHost.Status.Bootstrap.TokenHash cannot be matched by
-// an attacker submitting an empty Authorization header.
+// returns false immediately if either input is empty, so that a credential
+// that was never issued cannot be matched by an attacker submitting an empty
+// value.
 func Verify(plaintext, storedHash string) bool {
 	if plaintext == "" || storedHash == "" {
 		return false
 	}
-	sum := sha256.Sum256([]byte(plaintext))
-	candidate := hex.EncodeToString(sum[:])
-	return subtle.ConstantTimeCompare([]byte(candidate), []byte(storedHash)) == 1
+	return subtle.ConstantTimeCompare([]byte(Hash(plaintext)), []byte(storedHash)) == 1
 }
 
-// LifetimeFor returns the (issuedAt, expiresAt) pair to persist on
-// PhysicalHost.Status.Bootstrap when a token is minted at the given instant.
-// Centralized here so future PRs that wire mint-on-inspection (PR-5.2/5.3)
-// share a single source of truth for the validity window.
+// LifetimeFor returns the (issuedAt, expiresAt) pair a token minted at the
+// given instant is stored with in the host's bootstrap-token Secret (D-029).
+// Centralized here so every mint shares a single source of truth for the
+// validity window.
 func LifetimeFor(now time.Time) (issuedAt, expiresAt metav1.Time) {
 	issuedAt = metav1.NewTime(now)
 	expiresAt = metav1.NewTime(now.Add(TokenLifetime))
 	return issuedAt, expiresAt
 }
 
-// NonceLifetimeFor returns the expiresAt timestamp to persist on
-// PhysicalHost.Status.Bootstrap when a boot nonce is minted at the given
-// instant. The nonce has no issuedAt field in Status — only expiresAt and the
-// consumed marker matter for the validity check. Uses BootNonceLifetime (10 min)
-// rather than TokenLifetime (60 min) because the nonce is single-use.
+// NonceLifetimeFor returns the expiresAt timestamp a boot nonce minted at the
+// given instant is stored with in the host's bootstrap-token Secret (D-029).
+// The nonce has no issuedAt — only expiresAt and the consume record matter for
+// the validity check. Uses BootNonceLifetime (10 min) rather than
+// TokenLifetime (60 min) because the nonce is single-use.
 func NonceLifetimeFor(now time.Time) (expiresAt metav1.Time) {
 	return metav1.NewTime(now.Add(BootNonceLifetime))
 }

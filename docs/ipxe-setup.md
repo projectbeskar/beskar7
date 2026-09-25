@@ -60,13 +60,22 @@ Understanding the flow is essential before configuring any component.
 
 When `Beskar7MachineReconciler` claims a `PhysicalHost`, `triggerInspection`:
 
-1. Mints a **bearer token** (32-byte random, 60-minute lifetime). Its SHA-256 is
-   stored in `PhysicalHost.Status.Bootstrap.TokenHash`; the plaintext is stored in
-   the Secret `<hostName>-bootstrap-token`, data key `plaintext-token`.
-2. Mints a **boot nonce** (256-bit random, ~10-minute lifetime). Its SHA-256 is
-   stored in `PhysicalHost.Status.Bootstrap.BootNonceHash`; the plaintext is stored
-   in the same Secret under data key `plaintext-boot-nonce`.
-3. Instructs the BMC (via Redfish) to set the boot source to PXE and power on.
+1. Mints a **bearer token** (32-byte random, 60-minute lifetime) into the Secret
+   `<hostName>-bootstrap-token`, data key `plaintext-token`, with its expiry
+   under `token-expires-at`.
+2. Mints a **boot nonce** (256-bit random, ~10-minute lifetime) into the same
+   Secret, data key `plaintext-boot-nonce`, with its expiry under
+   `boot-nonce-expires-at`.
+3. Records, under `consumer`, the name of the `Beskar7Machine` that minted them.
+   The controller accepts the token and the nonce only while the host's
+   `ConsumerRef` names that machine, and only before the expiries in the Secret.
+4. Instructs the BMC (via Redfish) to set the boot source to PXE and power on.
+
+The Secret is the only place the controller checks these credentials against.
+`PhysicalHost.Status.Bootstrap.{TokenHash,BootNonceHash}` and their expiries
+mirror it for operators; editing them changes nothing about what the controller
+accepts. Treat read access to the Secret as read access to the host's bootstrap
+data, and restrict it accordingly.
 
 The nonce is **single-use**: the controller's `/boot` handler consumes it on the
 first successful fetch and never un-consumes it. A fresh nonce is minted on every

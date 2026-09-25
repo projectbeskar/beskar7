@@ -316,8 +316,9 @@ type PhysicalHostStatus struct {
 	DeployingTimestamp *metav1.Time `json:"deployingTimestamp,omitempty"`
 
 	// Bootstrap holds the per-host data the inspection image and target OS use
-	// to fetch bootstrap data (cloud-init / Ignition) from the manager, plus
-	// the hashed credential the manager checks on each fetch.
+	// to fetch bootstrap data (cloud-init / Ignition) from the manager, a
+	// read-only mirror of the hashes and lifetimes of the host's callback
+	// credentials, and the boot nonce's consume record.
 	// +optional
 	Bootstrap *BootstrapStatus `json:"bootstrap,omitempty"`
 
@@ -329,9 +330,16 @@ type PhysicalHostStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
-// BootstrapStatus is the per-host bootstrap data fetch coordinates and the
-// hashed credential used to authenticate inspection POSTs and bootstrap GETs.
-// See decision D-004 in PROJECT_CONTEXT.md.
+// BootstrapStatus is the per-host bootstrap data fetch coordinates, a mirror of
+// the host's callback credentials and the boot nonce's consume record.
+//
+// The credentials themselves live only in the per-host
+// "<host>-bootstrap-token" Secret, bound to the claiming Beskar7Machine, and
+// that Secret is the only thing the manager checks a bearer token or boot nonce
+// against (decision D-029 in PROJECT_CONTEXT.md). The hash and lifetime fields
+// here are copied from it by the PhysicalHost controller for operators and
+// tooling; they are not an input to authentication, and editing them changes
+// nothing about what the manager accepts.
 type BootstrapStatus struct {
 	// URL is the manager-served HTTPS endpoint that returns the host's
 	// bootstrap secret bytes. Computed deterministically from the manager's
@@ -339,38 +347,40 @@ type BootstrapStatus struct {
 	// +optional
 	URL string `json:"url,omitempty"`
 
-	// TokenHash is the hex-encoded SHA-256 of the per-host bearer token
-	// used to authenticate inspection POSTs and bootstrap GETs. The
-	// plaintext token is never persisted on this object — only the hash.
-	// The hash by itself cannot be used to forge a valid bearer header,
-	// so its presence in reconcile logs is acceptable.
+	// TokenHash mirrors the hex-encoded SHA-256 of the per-host bearer token
+	// held in the host's bootstrap-token Secret. Informational only: the
+	// manager authenticates inspection POSTs and bootstrap GETs against the
+	// Secret, never against this field. The hash cannot be used to forge a
+	// valid bearer header, so its presence in reconcile logs is acceptable.
 	// +optional
 	TokenHash string `json:"tokenHash,omitempty"`
 
-	// IssuedAt is the time the current token was minted.
+	// IssuedAt mirrors the time the current token was minted.
 	// +optional
 	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
 
-	// ExpiresAt is the time the current token stops being accepted.
-	// Set to IssuedAt + auth.TokenLifetime at mint time (D-004).
+	// ExpiresAt mirrors the time the current token stops being accepted, as
+	// stored in the bootstrap-token Secret (mint time + auth.TokenLifetime).
+	// Informational only; the manager reads the expiry from the Secret.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
-	// BootNonceHash is the hex-encoded SHA-256 of the per-host boot nonce
-	// minted at inspection time (D-009). The nonce gates the
-	// GET /api/v1/boot/{ns}/{host}/{nonce} endpoint. Only the hash is stored
-	// here — the plaintext rides a per-host Secret under key "plaintext-boot-nonce".
-	// The hash cannot be used to forge a valid nonce URL, so its presence
-	// in reconcile logs is acceptable.
+	// BootNonceHash mirrors the hex-encoded SHA-256 of the per-host boot nonce
+	// (D-009) held in the host's bootstrap-token Secret under key
+	// "plaintext-boot-nonce". The nonce gates
+	// GET /api/v1/boot/{ns}/{host}/{nonce}; the manager checks it against the
+	// Secret, never against this field. The hash cannot be used to forge a
+	// valid nonce URL, so its presence in reconcile logs is acceptable.
 	// +optional
 	BootNonceHash string `json:"bootNonceHash,omitempty"`
 
-	// BootNonceExpiresAt is the time the current boot nonce stops being
-	// accepted. Defaults to mint time + 10 min (BootNonceLifetime, D-009).
-	// A shorter window than the bearer-token lifetime is intentional: the
-	// nonce is consumed at first boot and never reused for another boot, but
-	// /boot serves a retry of it until it expires (contract §4.1), so a long
-	// window only widens the race window for a co-located attacker.
+	// BootNonceExpiresAt mirrors the time the current boot nonce stops being
+	// accepted, as stored in the bootstrap-token Secret (mint time + 10 min,
+	// BootNonceLifetime, D-009). A shorter window than the bearer-token
+	// lifetime is intentional: the nonce is consumed at first boot and never
+	// reused for another boot, but /boot serves a retry of it until it
+	// expires (contract §4.1), so a long window only widens the race window
+	// for a co-located attacker. Informational only.
 	// +optional
 	BootNonceExpiresAt *metav1.Time `json:"bootNonceExpiresAt,omitempty"`
 
@@ -384,13 +394,13 @@ type BootstrapStatus struct {
 	// +optional
 	BootNonceConsumedAt *metav1.Time `json:"bootNonceConsumedAt,omitempty"`
 
-	// BootNonceConsumedHash is the BootNonceHash of the nonce that
-	// BootNonceConsumedAt records the consume of. The advertised nonce has
-	// been consumed only while the two hashes match. Written by the /boot
-	// handler in the same patch as BootNonceConsumedAt (D-010). Empty
-	// alongside a set BootNonceConsumedAt when a handler from before this
-	// field existed wrote the record; which nonce it describes is then
-	// unknown.
+	// BootNonceConsumedHash is the SHA-256 of the nonce that
+	// BootNonceConsumedAt records the consume of. The nonce in the
+	// bootstrap-token Secret has been consumed only while it hashes to this
+	// value. Written by the /boot handler in the same patch as
+	// BootNonceConsumedAt (D-010). Empty alongside a set BootNonceConsumedAt
+	// when a handler from before this field existed wrote the record; which
+	// nonce it describes is then unknown.
 	// +optional
 	BootNonceConsumedHash string `json:"bootNonceConsumedHash,omitempty"`
 }

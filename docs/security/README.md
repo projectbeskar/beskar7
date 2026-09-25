@@ -75,18 +75,18 @@ The manager runs an HTTPS server on `:8082` that hosts two host-scoped endpoints
 Both are gated by the same `auth.RequireBearer` middleware. The verifier:
 
 1. Resolves `{namespace,hostName}` from the URL path.
-2. Loads the targeted `PhysicalHost` and reads `Status.Bootstrap.TokenHash` and `ExpiresAt`.
-3. Rejects the request if no token has been issued, the token has expired, or `auth.Verify(presented, storedHash)` returns false (constant-time SHA-256 compare via `crypto/subtle`).
+2. Loads the targeted `PhysicalHost` and its per-host Secret `<host>-bootstrap-token` (decision D-029). `PhysicalHost.Status.Bootstrap` is a read-only mirror of that Secret and is never consulted, so the right to patch PhysicalHosts does not let anyone mint a credential.
+3. Rejects the request if the host is not claimed, if its `ConsumerRef` names a different `Beskar7Machine` than the one the Secret's credentials were minted for (`consumer` key), if no token has been issued, if the token's expiry in the Secret is missing, unparseable or past, or if `sha256(presented)` does not equal `sha256(Secret token)` (constant-time compare via `crypto/subtle`).
 
 All authentication failures collapse to an opaque `401 Unauthorized` body — the verifier's specific error is logged at V(1) only, never echoed to the client.
 
 Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 
 - 32 bytes from `crypto/rand`, encoded as `base64.RawURLEncoding` (43 chars), suitable for an iPXE kernel cmdline.
-- SHA-256 hash (64 hex chars) is persisted to `PhysicalHost.Status.Bootstrap.TokenHash`.
+- The Secret holds the plaintext, its manager-written expiry and the claiming machine's name; `PhysicalHost.Status.Bootstrap.TokenHash` mirrors the SHA-256 (64 hex chars) for operators.
 - Lifetime: 60 minutes (`auth.TokenLifetime`). Above the 10-minute `DefaultInspectionTimeout`, with headroom for slow BIOS POST + first-boot inspector.
 
-The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decision D-006.
+The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decisions D-006, D-029.
 
 Source: `internal/auth/token.go`, `internal/auth/middleware.go`, `controllers/inspection_handler.go:newBearerTokenVerifier`, `controllers/bootstrap_handler.go`.
 

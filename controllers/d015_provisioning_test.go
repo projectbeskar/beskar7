@@ -40,6 +40,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -406,12 +407,10 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "d015-http-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		// Mint a bearer token and store its hash on the PhysicalHost so the verifier accepts it.
-		var hash string
+		// Mint the bearer token the inspector presents.
 		var err error
-		tokenPlain, hash, err = auth.MintToken()
+		tokenPlain, _, err = auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		_, expiresAt := auth.LifetimeFor(time.Now())
 
 		ph = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "host-http", Namespace: testNs.Name},
@@ -424,11 +423,12 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateDeploying
-		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: hash,
-			ExpiresAt: &expiresAt,
-		}
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+		// Claimed, with the token bound to its machine in the host's
+		// bootstrap-token Secret, so the verifier accepts it (D-029).
+		setHostConsumer(client.ObjectKeyFromObject(ph), "deploying-machine")
+		putCredentialSecret(client.ObjectKeyFromObject(ph),
+			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "", 0))
 	})
 
 	AfterEach(func() {
@@ -501,8 +501,9 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
-	// postProvisioned makes the inspector's POST with the host's bearer token.
-	postProvisioned := func() {
+	// postProvisioned makes the inspector's POST with the host's bearer token
+	// and returns the response status.
+	postProvisioned := func() int {
 		mux, _ := buildProvisionedMux()
 		srv := httptest.NewServer(mux)
 		defer srv.Close()
@@ -516,20 +517,23 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		resp, err := http.DefaultClient.Do(req)
 		Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = resp.Body.Close() }()
-		Expect(resp.StatusCode).To(Equal(http.StatusAccepted), "the inspector gets 202 whatever the host's state")
+		return resp.StatusCode
 	}
 
-	// moveHost gives the host a consumer (or none) and a state.
+	// moveHost gives the host a consumer (or none) and a state. A consumer's
+	// claim comes with the token bound to it, as its own mint would leave it.
 	moveHost := func(consumer, state string) types.NamespacedName {
 		key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
 		Expect(k8sClient.Get(ctx, key, ph)).To(Succeed())
+		ph.Spec.ConsumerRef = nil
 		if consumer != "" {
 			ph.Spec.ConsumerRef = &corev1.ObjectReference{
 				Kind: "Beskar7Machine", Name: consumer, Namespace: testNs.Name,
 				APIVersion: infrav1.GroupVersion.String(),
 			}
-			Expect(k8sClient.Update(ctx, ph)).To(Succeed())
+			putCredentialSecret(key, boundCredentialData(consumer, tokenPlain, auth.TokenLifetime, "", 0))
 		}
+		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
 		ph.Status.State = state
 		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
@@ -540,7 +544,7 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		// The inspector deploys without waiting for the host, which reaches
 		// Deploying only once it has applied the machine's inspect-complete.
 		key := moveHost("b7m-provisioned-http", infrav1.StateInspecting)
-		postProvisioned()
+		Expect(postProvisioned()).To(Equal(http.StatusAccepted))
 
 		updated := &infrav1.PhysicalHost{}
 		Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())
@@ -551,7 +555,16 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 	DescribeTable("does NOT set the annotation on a host the report cannot be about",
 		func(consumer, state string) {
 			key := moveHost(consumer, state)
-			postProvisioned()
+			code := postProvisioned()
+			if consumer == "" {
+				// The bearer gate rejects callbacks for an unclaimed host
+				// (D-029), so the handler's own guard is exercised directly.
+				Expect(code).To(Equal(http.StatusUnauthorized))
+				log := ctrl.Log.WithName("provisioned-handler-direct")
+				Expect((&ProvisionedHandler{Client: k8sClient, Log: log}).signalProvisioned(ctx, log, key.Namespace, key.Name)).To(Succeed())
+			} else {
+				Expect(code).To(Equal(http.StatusAccepted), "the inspector gets 202 whatever the host's state")
+			}
 
 			updated := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, key, updated)).To(Succeed())

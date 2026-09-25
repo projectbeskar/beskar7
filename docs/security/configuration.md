@@ -115,13 +115,14 @@ To rotate, update the Secret. The PhysicalHost reconciler watches the Secret and
 This is automatic — the operator does not configure it directly. Per host:
 
 1. The `Beskar7Machine` reconciler mints a 32-byte token (`internal/auth/token.go:MintToken`).
-2. The plaintext is written to a per-host Secret named `<host-name>-bootstrap-token`, owner-ref'd to the PhysicalHost.
-3. The SHA-256 hash is signalled to the PhysicalHost via the `infrastructure.cluster.x-k8s.io/bootstrap-token` annotation, then persisted to `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}`.
-4. The iPXE infrastructure renders the plaintext into the kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](../ipxe-setup.md).
-5. The inspector and target OS present `Authorization: Bearer <token>` on every call to `:8082`.
-6. After 60 minutes, or on Beskar7Machine deletion, the token Secret is GC'd.
+2. The plaintext is written to a per-host Secret named `<host-name>-bootstrap-token`, owner-ref'd to the PhysicalHost, together with its expiry (`token-expires-at`) and the name of the `Beskar7Machine` it was minted for (`consumer`), in one write.
+3. The controller's nonce-gated `/boot` endpoint renders the plaintext into the kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](../ipxe-setup.md).
+4. The inspector presents `Authorization: Bearer <token>` on every call to `:8082`. The manager accepts it only if it hashes to the token in the Secret, the expiry in the Secret has not passed (a missing or unreadable expiry is a rejection), and the host's `ConsumerRef` names the `Beskar7Machine` in `consumer` (D-029).
+5. The token stops authenticating after 60 minutes, or as soon as the host is released or claimed by another machine, whose own claim mints a fresh one. The Secret is GC'd with the PhysicalHost.
 
-The plaintext is never logged at any verbosity. The hash on Status is safe to log — it cannot be used to forge a valid bearer header.
+The Secret is the only credential the manager checks. `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt}` mirrors it for operators and is not an authentication input. The retired `infrastructure.cluster.x-k8s.io/bootstrap-token` and `boot-nonce` annotations are removed from a PhysicalHost on sight and never read, so the right to patch PhysicalHosts does not let anyone mint a credential.
+
+The plaintext is never logged at any verbosity. The mirrored hash is safe to log — it cannot be used to forge a valid bearer header.
 
 ## Manager flags relevant to security
 

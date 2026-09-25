@@ -68,19 +68,24 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		server       *httptest.Server
 	)
 
-	// setHostBootstrap mints + stores a bearer-token hash on the host's
-	// Status.Bootstrap so the verifier accepts the returned plaintext.
-	setHostBootstrap := func(hash string, expiresIn time.Duration) {
-		ph := &infrav1.PhysicalHost{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
-		issuedAt := metav1.NewTime(time.Now())
-		expiresAt := metav1.NewTime(issuedAt.Add(expiresIn))
-		ph.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: hash,
-			IssuedAt:  &issuedAt,
-			ExpiresAt: &expiresAt,
-		}
-		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+	// setHostBootstrap stores a bearer token in the host's bootstrap-token
+	// Secret, bound to the test Beskar7Machine (D-029), so the verifier accepts
+	// it while the host's ConsumerRef names that machine.
+	setHostBootstrap := func(plaintext string, expiresIn time.Duration) {
+		putCredentialSecret(client.ObjectKeyFromObject(physicalHost),
+			boundCredentialData(b7machine.Name, plaintext, expiresIn, "", 0))
+	}
+
+	// serveDirect calls the handler itself with bearer token, as if the bearer
+	// middleware had let the request through, and returns the recorded response.
+	serveDirect := func(token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/"+physicalHost.Namespace+"/"+physicalHost.Name, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.SetPathValue("namespace", physicalHost.Namespace)
+		req.SetPathValue("hostName", physicalHost.Name)
+		w := httptest.NewRecorder()
+		(&BootstrapHandler{Client: k8sClient, Log: ctrl.Log.WithName("bootstrap-handler-direct")}).ServeHTTP(w, req)
+		return w
 	}
 
 	// linkConsumer points the host's Spec.ConsumerRef at the test
@@ -204,9 +209,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		ownerMachine.Spec.Bootstrap.DataSecretName = &secretName
 		Expect(k8sClient.Update(ctx, ownerMachine)).To(Succeed())
 
-		_, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap("")
 		defer func() { _ = resp.Body.Close() }()
@@ -217,27 +222,54 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		linkConsumer()
 		bindMachineOwner()
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
 		// ExpiresAt 1 hour in the past.
-		setHostBootstrap(hash, -1*time.Hour)
+		setHostBootstrap(plaintext, -1*time.Hour)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
 		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 	})
 
-	It("returns 404 when PhysicalHost has no Beskar7Machine consumer", func() {
-		// Token is valid (verifier passes — host has Status.Bootstrap), but
-		// Spec.ConsumerRef is nil. The handler must walk the chain and refuse.
-		plaintext, hash, err := auth.MintToken()
+	It("rejects a host with no Beskar7Machine consumer (401), and the handler refuses it too (404)", func() {
+		// The Secret holds an unexpired token bound to the machine, but
+		// Spec.ConsumerRef is nil: callbacks for an unclaimed host are
+		// rejected (D-029).
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		// Do NOT call linkConsumer() — host has no ConsumerRef.
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
-		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+		Expect(serveDirect(plaintext).Code).To(Equal(http.StatusNotFound))
+	})
+
+	It("rejects a token whose expiry in the Secret is missing or unparseable (401), however valid status says it is", func() {
+		linkConsumer()
+		bindMachineOwner()
+		plaintext, hash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		future := metav1.NewTime(time.Now().Add(time.Hour))
+		ph := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(physicalHost), ph)).To(Succeed())
+		ph.Status.Bootstrap = &infrav1.BootstrapStatus{TokenHash: hash, ExpiresAt: &future}
+		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+
+		for _, expiry := range [][]byte{nil, []byte("tomorrow")} {
+			data := boundCredentialData(b7machine.Name, plaintext, time.Hour, "", 0)
+			if expiry == nil {
+				delete(data, bootstrapTokenExpiresAtSecretKey)
+			} else {
+				data[bootstrapTokenExpiresAtSecretKey] = expiry
+			}
+			putCredentialSecret(client.ObjectKeyFromObject(physicalHost), data)
+			resp := getBootstrap(plaintext)
+			_ = resp.Body.Close()
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized), "expiry %q must fail closed", expiry)
+		}
 	})
 
 	It("returns 404 when the consumer Beskar7Machine has been deleted", func() {
@@ -251,9 +283,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 			g.Expect(err).To(HaveOccurred())
 		}, Timeout, Interval).Should(Succeed())
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
@@ -265,9 +297,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		bindMachineOwner()
 		// ownerMachine.Spec.Bootstrap.DataSecretName left nil.
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
@@ -284,9 +316,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		ownerMachine.Spec.Bootstrap.DataSecretName = &missingName
 		Expect(k8sClient.Update(ctx, ownerMachine)).To(Succeed())
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
@@ -307,9 +339,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		ownerMachine.Spec.Bootstrap.DataSecretName = &secretName
 		Expect(k8sClient.Update(ctx, ownerMachine)).To(Succeed())
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
@@ -365,7 +397,8 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		}
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
-			WithObjects(ph, b7m, owner, secret).
+			WithObjects(ph, b7m, owner, secret,
+				credentialSecret("n", "h", boundCredentialData("b7m", "token", time.Hour, "", 0))).
 			Build()
 		handler := &BootstrapHandler{
 			Client: fakeClient,
@@ -373,6 +406,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		}
 		// Build a request whose path values mimic the live mux.
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/n/h", nil)
+		req.Header.Set("Authorization", "Bearer token")
 		req.SetPathValue("namespace", "n")
 		req.SetPathValue("hostName", "h")
 		w := httptest.NewRecorder()
@@ -455,21 +489,56 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		}
 		Expect(k8sClient.Patch(ctx, ph, client.MergeFrom(phBase))).To(Succeed())
 
-		// Valid token for the host itself (namespace A) — the attacker needs
-		// nothing from namespace B to reach this far.
-		plaintext, hash, err := auth.MintToken()
+		// Valid token for the host itself (namespace A), bound to a machine of
+		// the forged ConsumerRef's name — the attacker needs nothing from
+		// namespace B to reach this far, so the namespace pin is all that
+		// stands in the way.
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		putCredentialSecret(client.ObjectKeyFromObject(physicalHost),
+			boundCredentialData(crossMachine.Name, plaintext, 30*time.Minute, "", 0))
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()
 		body, err := io.ReadAll(resp.Body)
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
-			"a cross-namespace ConsumerRef must resolve to no consumer, the same opaque 404 as no consumer at all")
+		Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized),
+			"a cross-namespace ConsumerRef resolves to no consumer: the same rejection as an unclaimed host")
 		Expect(body).NotTo(ContainSubstring("SENSITIVE-NAMESPACE-B"),
 			"namespace B's bootstrap data must never be served for a host in namespace A")
+
+		By("the handler itself refusing it with the opaque 404, should anything let the request through")
+		w := serveDirect(plaintext)
+		Expect(w.Code).To(Equal(http.StatusNotFound))
+		Expect(w.Body.String()).NotTo(ContainSubstring("SENSITIVE-NAMESPACE-B"))
+	})
+
+	It("refuses a token that does not match the host's current credentials, even with the chain intact", func() {
+		linkConsumer()
+		bindMachineOwner()
+		secretName := "bs-stale-token"
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: testNs.Name},
+			Data:       map[string][]byte{bootstrapDataSecretKey: []byte("CURRENT-CLAIM-DATA")},
+		})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ownerMachine.Name, Namespace: testNs.Name}, ownerMachine)).To(Succeed())
+		ownerMachine.Spec.Bootstrap.DataSecretName = &secretName
+		Expect(k8sClient.Update(ctx, ownerMachine)).To(Succeed())
+
+		current, _, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(current, 30*time.Minute)
+
+		// A request the verifier let through just before a release and re-mint
+		// carries the old token; the handler checks it against its own read.
+		stale, _, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		w := serveDirect(stale)
+		Expect(w.Code).To(Equal(http.StatusNotFound))
+		Expect(w.Body.String()).NotTo(ContainSubstring("CURRENT-CLAIM-DATA"))
+
+		Expect(serveDirect(current).Code).To(Equal(http.StatusOK), "the current token still fetches")
 	})
 
 	It("returns 200 with the Secret bytes when the chain is intact", func() {
@@ -486,9 +555,9 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		ownerMachine.Spec.Bootstrap.DataSecretName = &secretName
 		Expect(k8sClient.Update(ctx, ownerMachine)).To(Succeed())
 
-		plaintext, hash, err := auth.MintToken()
+		plaintext, _, err := auth.MintToken()
 		Expect(err).NotTo(HaveOccurred())
-		setHostBootstrap(hash, 30*time.Minute)
+		setHostBootstrap(plaintext, 30*time.Minute)
 
 		resp := getBootstrap(plaintext)
 		defer func() { _ = resp.Body.Close() }()

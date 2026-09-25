@@ -56,8 +56,8 @@ callback + boot endpoints, and operators wiring the provisioning network.
 Beskar7Machine reconcile (controller)
   ├─ claim PhysicalHost (ConsumerRef) → host StateInUse
   ├─ triggerInspection:
-  │    ├─ mint bearer token  → hash on Status.Bootstrap.TokenHash, plaintext in Secret
-  │    ├─ mint boot nonce    → hash on Status.Bootstrap.BootNonceHash, plaintext in Secret
+  │    ├─ mint bearer token  → plaintext + expiry in the per-host Secret, bound to the machine
+  │    ├─ mint boot nonce    → plaintext + expiry in the same Secret (status mirrors the hashes)
   │    └─ Redfish SetBootSourcePXE + power on
   │
 operator DHCP/boot-infra (NOT Beskar7)
@@ -140,10 +140,17 @@ chicken-and-egg: possession of an unguessable 256-bit nonce — not a spoofable
 MAC and not network placement — is the authorization to receive the bearer
 token + boot parameters.
 
-Both secrets are minted with `crypto/rand` and stored hashed (SHA-256 hex) on
-`PhysicalHost.Status.Bootstrap`; plaintexts live only in the per-host Secret
-`<hostName>-bootstrap-token` (owner-ref'd to the PhysicalHost, GC'd on delete)
-and in host memory. See `internal/auth/token.go` for the primitives.
+Both secrets are minted with `crypto/rand`. They live only in the per-host
+Secret `<hostName>-bootstrap-token` (owner-ref'd to the PhysicalHost, GC'd on
+delete) and in host memory. The Secret also holds each secret's expiry, written
+by the controller when it mints, and the name of the `Beskar7Machine` they were
+minted for; it is the **only** thing the controller checks a presented token or
+nonce against (D-029). A presented secret is accepted only while the host's
+`ConsumerRef` names that same machine (in the host's own namespace), and a
+secret whose expiry is missing or unreadable never verifies.
+`PhysicalHost.Status.Bootstrap` carries a read-only mirror of their SHA-256
+hashes and expiries for operators and tooling; it is not an input to
+authentication. See `internal/auth/token.go` for the primitives.
 
 ---
 
@@ -155,14 +162,17 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 
 ### 4.1 `GET /api/v1/boot/{namespace}/{hostName}/{nonce}` — boot-param rendering
 
-- **Auth**: the `{nonce}` path segment, verified constant-time against
-  `Status.Bootstrap.BootNonceHash`, and within TTL. NOT bearer-gated.
+- **Auth**: the `{nonce}` path segment, verified constant-time against the boot
+  nonce in the host's bootstrap-token Secret, within the expiry stored with it,
+  and only while the host is claimed by the machine the Secret is bound to (§3).
+  NOT bearer-gated.
 - **On success**: marks the nonce consumed unless it already is (single-use, see
   §7) and returns the rendered iPXE script / kernel cmdline carrying the
   parameters in §5. A second successful fetch within the window (e.g. a NIC
   retry) MUST return **identical** content for the same host.
-- **Failure**: opaque response identical for "no such host", "wrong nonce"
-  (including a nonce a newer mint has replaced), and "expired" — no oracle. The
+- **Failure**: opaque response identical for "no such host", "host not claimed
+  by the machine the nonce was minted for", "wrong nonce" (including a nonce a
+  newer mint has replaced), and "expired" — no oracle. The
   nonce, the URL, and the `{nonce}` path value MUST NOT be logged (the nonce hash
   MAY be).
 - **Rate limiting**: this route is ungated; it MUST be rate-limited per source IP
@@ -230,9 +240,12 @@ gatewayed winner on a multi-NIC host (§8.2).
 
 ### 4.2 `POST /api/v1/inspection/{namespace}/{hostName}` — hardware report
 
-- **Auth**: `Authorization: Bearer <token>`; the token's SHA-256 MUST match
-  `Status.Bootstrap.TokenHash` and `ExpiresAt` MUST be in the future
-  (`auth.RequireBearer` + `newBearerTokenVerifier`).
+- **Auth**: `Authorization: Bearer <token>`; the token's SHA-256 MUST match the
+  SHA-256 of the token in the host's bootstrap-token Secret, the expiry stored
+  with it MUST be in the future, and the host's `ConsumerRef` MUST name the
+  machine the Secret is bound to (§3; `auth.RequireBearer` +
+  `newBearerTokenVerifier`). Any failure is the same opaque `401`, including a
+  host nobody claims.
 - **Body**: JSON, the `InspectionReportRequest` schema in §6. Max 1 MiB
   (`inspectionMaxBodyBytes`); over-limit → `413`.
 - **Success**: **`202 Accepted`** with body `{"status":"accepted"}`. The 202 (not
@@ -250,12 +263,16 @@ gatewayed winner on a multi-NIC host (§8.2).
   (`Content-Type: application/octet-stream`, `Cache-Control: no-store`). This is
   the cloud-init/Ignition payload (the CAPI Secret `data["value"]`) — see
   `controllers/bootstrap_handler.go`. **It may contain cluster join secrets.**
-- **Failure**: opaque `404` for every resolution-chain failure (host → ConsumerRef
+- **Failure**: opaque `401` from the bearer gate (§4.2), which already rejects a
+  host whose `ConsumerRef` does not name the machine the token was minted for;
+  opaque `404` for every resolution-chain failure (host → ConsumerRef
   → Beskar7Machine → owner Machine → `Spec.Bootstrap.DataSecretName` → Secret);
   `500` only for an oversize secret. The `ConsumerRef` step resolves only within
-  the host's own namespace: a `ConsumerRef.Namespace` naming a different
-  namespace is treated as no consumer at all, so a host can never serve another
-  namespace's bootstrap data (SEC-12).
+  the host's own namespace, and only to the machine the host's bootstrap-token
+  Secret is bound to: a `ConsumerRef.Namespace` naming a different namespace is
+  treated as no consumer at all, so a host can never serve another namespace's
+  bootstrap data, and a re-pointed `ConsumerRef` never serves another machine's
+  (SEC-12).
 
 ### 4.4 `POST /api/v1/provisioned/{namespace}/{hostName}` — provisioning-complete signal
 
@@ -454,16 +471,17 @@ evaluate correctly:
   writes deliberately drop optimistic locking (single unique writer); the consume
   is the opposite situation — a Conflict is the desired outcome and MUST be
   enforced.
-- The consume record describes one nonce: the advertised nonce is consumed only
-  while `BootNonceConsumedHash` equals `BootNonceHash`. `Status.Bootstrap`
-  outlives a claim, so a re-claimed host's fresh nonce is promoted next to the
+- The consume record describes one nonce: the nonce in the host's
+  bootstrap-token Secret is consumed only while its SHA-256 equals
+  `BootNonceConsumedHash`. `Status.Bootstrap`
+  outlives a claim, so a re-claimed host's fresh nonce is minted next to the
   record of the nonce before it, and that record MUST NOT count for the fresh
   nonce — otherwise `/boot` records nothing for it and the controller treats it
   as spent before anything has fetched it. Nothing clears the record (a
   reconciler clearing it without an optimistic lock could erase a consume
   `/boot` had already recorded); the fresh nonce's first fetch replaces it. A
   record with no `BootNonceConsumedHash`, written before the field existed, is
-  read the safe way by each side: `/boot` records the advertised nonce's consume
+  read the safe way by each side: `/boot` records the current nonce's consume
   afresh, and the controller never reuses a nonce such a record might describe.
 - A double-fetch to the **same host** (race loser, or a legitimate retry) is
   benign and MUST return identical content (§4.1), until the nonce expires or a
@@ -883,6 +901,21 @@ change. These are not new contract versions.
   enforce this explicitly via a shared `resolveConsumerBeskar7Machine` helper.
   No cmdline parameter, endpoint, status code, or report field changed — this
   section is prose-only.
+- **SEC-12 / D-029 (2026-09-25):** §3, §4.1, §4.2, §4.3 and §7 said the
+  controller checks the bearer token and boot nonce against the hashes in
+  `PhysicalHost.Status.Bootstrap`. It checks the per-host
+  `<hostName>-bootstrap-token` Secret instead, which holds both plaintexts,
+  their controller-written expiries and the `Beskar7Machine` they were minted
+  for, and accepts a secret only while the host's `ConsumerRef` names that
+  machine. `Status.Bootstrap` keeps the hashes and expiries as a read-only
+  mirror; the `bootstrap-token` and `boot-nonce` annotations that fed it are
+  retired. **The wire is unchanged** — the `Authorization: Bearer` header, the
+  `/boot` nonce URL and the kernel cmdline are exactly as before, and an
+  inspector needs no change. Observable server-side differences only: a
+  callback for a host nobody claims, or claimed by a different machine than
+  the one the secret was minted for, is rejected with the same opaque
+  `401`/`404` as any other bad credential, and a secret the controller minted
+  before this change stops working on a host that was already `Ready`.
 
 ---
 

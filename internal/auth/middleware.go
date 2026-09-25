@@ -29,8 +29,8 @@ import (
 // observability only — it must NOT leak to the client beyond a generic 401.
 //
 // Implementations typically extract host coordinates from the request (path values
-// or headers), look up the matching PhysicalHost, and call Verify against the
-// stored TokenHash.
+// or headers), look up the credential issued to the matching PhysicalHost, and
+// call Verify against its hash.
 type Verifier func(token string, r *http.Request) error
 
 // unauthorizedBody is the single, opaque response body returned for every
@@ -77,6 +77,13 @@ func RequireBearer(log logr.Logger, verifier Verifier, next http.Handler) http.H
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// BearerToken returns the bearer token r carries, or ok=false when it carries
+// none. For a handler behind RequireBearer that re-checks the token against
+// what it reads itself.
+func BearerToken(r *http.Request) (string, bool) {
+	return extractBearerToken(r.Header.Get("Authorization"))
 }
 
 // extractBearerToken parses an "Authorization" header value and returns the token

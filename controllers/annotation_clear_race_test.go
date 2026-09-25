@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -57,17 +56,12 @@ var _ = Describe("A PhysicalHost reconcile that clears the host's last annotatio
 	})
 
 	It("keeps an annotation another writer added in the meantime", func() {
-		hash := strings.Repeat("a", 64)
-		expires := metav1.NewTime(time.Now().Add(10 * time.Minute).Truncate(time.Second))
-		nonce, err := json.Marshal(BootNonceAnnotationValue{Hash: hash, ExpiresAt: expires})
-		Expect(err).NotTo(HaveOccurred())
+		// A retired credential annotation (D-029), which every pass removes on
+		// sight: here the host's only annotation.
+		leftover := `{"hash":"` + strings.Repeat("a", 64) + `","expiresAt":"` +
+			time.Now().Add(10*time.Minute).UTC().Format(time.RFC3339) + `"}`
 		key := provisioningHost(ns.Name, "race-host", "race-machine", infrav1.StateInspecting,
-			map[string]string{BootNonceAnnotation: string(nonce)})
-		// Status already carries the mint, so this pass clears the annotation:
-		// the host's only one.
-		host := getPhysicalHost(key)
-		host.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceHash: hash, BootNonceExpiresAt: &expires}
-		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+			map[string]string{BootNonceAnnotation: leftover})
 
 		base, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
 		Expect(err).NotTo(HaveOccurred())

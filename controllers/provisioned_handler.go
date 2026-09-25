@@ -43,7 +43,7 @@ const (
 //
 // Authentication: callers must present "Authorization: Bearer <token>" with the same
 // per-host bearer token used for inspection POST and bootstrap GET
-// (newBearerTokenVerifier + auth.RequireBearer; D-004). ServeHTTP assumes the request
+// (newBearerTokenVerifier + auth.RequireBearer; D-004, D-029). ServeHTTP assumes the request
 // has already passed the bearer middleware.
 //
 // Signal: the handler patches ProvisionedRequestAnnotation="provisioned" onto the
@@ -144,11 +144,10 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 	}
 	ph.Annotations[ProvisionedRequestAnnotation] = "provisioned"
 
-	// Plain MergeFrom (no optimistic lock). Same reasoning as
-	// setBootstrapTokenAnnotation: this annotation key is unique to this handler,
-	// no other writer collides on it. Optimistic lock caused repeated Conflict
-	// failures under normal load in the inspection path; we apply the same
-	// lesson here.
+	// Plain MergeFrom (no optimistic lock): this annotation key is unique to
+	// this handler, no other writer collides on it. Optimistic lock caused
+	// repeated Conflict failures under normal load in the inspection path; we
+	// apply the same lesson here.
 	if err := h.Client.Patch(ctx, ph, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("patch PhysicalHost provisioned annotation: %w", err)
 	}

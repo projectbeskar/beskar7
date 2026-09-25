@@ -23,6 +23,40 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   same-named machine in a different namespace is neither adopted nor released by the wrong machine,
   and deleting a machine whose `providerID` names another namespace's host no longer releases and
   powers off that host.
+- **Anyone allowed to create or patch a `PhysicalHost` could forge its callback credentials without
+  reading a single Secret (SEC-12).** The `PhysicalHost` controller copied whatever hash and expiry
+  the `infrastructure.cluster.x-k8s.io/bootstrap-token` and `.../boot-nonce` annotations carried into
+  `status.bootstrap`, and the callback server authenticated against that status. An annotated hash
+  of the attacker's own token passed every bearer-gated callback — without an `expiresAt`, forever —
+  and an annotated nonce made `/boot` render the host's real bearer token. A token also outlived its
+  claim: one minted for one `Beskar7Machine` kept fetching whichever machine `consumerRef` named next,
+  including the next claim after a release (SEC-13). The per-host `<host>-bootstrap-token` Secret is
+  now the only thing the bearer verifier and `/boot` check (D-029): it holds the token and the boot
+  nonce, their expiries written by the manager when it mints (a missing or unparseable expiry is
+  rejected), and the name of the `Beskar7Machine` they were minted for, and a credential is accepted
+  only while the host's `consumerRef` names that machine in the host's own namespace. Callbacks for a
+  host nobody claims are rejected with the same opaque `401`/`404`. A re-claim by another machine —
+  including one recreated under the same name, which the Secret tells apart by UID — always mints
+  fresh credentials, and the bootstrap GET re-checks the token against the credentials it serves
+  from. The Secret is written in one optimistic-locked update, so a
+  mint computed from a stale cache is retried instead of replacing a newer one. `status.bootstrap`
+  keeps the hashes and expiries as a read-only mirror, which the `PhysicalHost` controller follows
+  through a watch on the Secret. The wire is unchanged: `docs/inspector-contract.md` is clarified in
+  place under v4.2, and the inspector needs no update.
+
+  **Upgrade note — upgrade with no host `Inspecting` or `Deploying`.** A callback from a run that was
+  in flight before the upgrade is rejected (`401`) by the new manager until its `Beskar7Machine` has
+  been reconciled by the new leader, and during a rolling update the new pod serves callbacks before
+  it holds the lease. The inspector treats a `401` as fatal, so such a run fails with
+  `InspectionTimedOut` or `DeploymentTimedOut` and a `MachineHealthCheck` replaces the machine. Wait
+  for in-flight provisioning to finish, or expect those runs to be remediated. Runs that reconcile
+  under the new leader before their next callback carry on: for one release the `Beskar7Machine`
+  controller binds their existing credentials to the machine, keeping each only if its plaintext
+  hashes to what `status.bootstrap` carries, with an expiry no later than the one status carried.
+  Credentials minted before the upgrade stop working on hosts that were already `Ready`, which is
+  harmless because no callback follows `Ready`. The two annotations are removed from every
+  `PhysicalHost` on sight and never read; a tool that wrote them, or read `status.bootstrap` as the
+  authority, must use the Secret instead.
 
 ### Fixed
 

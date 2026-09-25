@@ -64,12 +64,12 @@ const (
 
 // InspectionHandler handles HTTP requests from inspection images.
 //
-// Authentication: callers must present "Authorization: Bearer <token>" with a
-// token whose SHA-256 matches the targeted PhysicalHost's
-// Status.Bootstrap.TokenHash and whose ExpiresAt is in the future.
+// Authentication: callers must present "Authorization: Bearer <token>" with the
+// unexpired token held in the targeted PhysicalHost's bootstrap-token Secret,
+// bound to the Beskar7Machine the host's ConsumerRef names (D-029).
 // Authentication is enforced by the auth.RequireBearer middleware wrapped around
-// this handler in SetupCallbackServer; ServeHTTP itself assumes the request has
-// already authenticated.
+// this handler in SetupCallbackServer (newBearerTokenVerifier); ServeHTTP itself
+// assumes the request has already authenticated.
 //
 // Status ownership: this handler does NOT write to PhysicalHost.Status. It writes
 // the validated InspectionReport to a ConfigMap and patches an annotation onto
@@ -142,8 +142,8 @@ type NICData struct {
 
 // ServeHTTP handles inspection report submissions. It is invoked only after the
 // bearer-auth middleware has validated the caller against the targeted host's
-// Status.Bootstrap.TokenHash. The path values "namespace" and "hostName" come
-// from the registered route (POST /api/v1/inspection/{namespace}/{hostName}).
+// bootstrap-token Secret. The path values "namespace" and "hostName" come from
+// the registered route (POST /api/v1/inspection/{namespace}/{hostName}).
 func (h *InspectionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	namespace := r.PathValue("namespace")
 	hostName := r.PathValue("hostName")
@@ -360,9 +360,8 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 		physicalHost.Annotations = map[string]string{}
 	}
 	physicalHost.Annotations[InspectionResultAnnotation] = cmName
-	// Plain MergeFrom (no optimistic lock). Same reasoning as
-	// Beskar7MachineReconciler.setBootstrapTokenAnnotation: this annotation
-	// key is unique to this handler, no other writer collides on it, and
+	// Plain MergeFrom (no optimistic lock): this annotation key is unique to
+	// this handler, no other writer collides on it, and
 	// MergeFromWithOptimisticLock against a concurrently-mutating PhysicalHost
 	// (status updates from the PhysicalHost reconciler) caused repeated
 	// Conflict failures that broke the inspection-result handoff entirely.
@@ -594,23 +593,31 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 }
 
 // newBearerTokenVerifier constructs the auth.Verifier shared by every
-// host-scoped endpoint on the callback server (inspection POST + bootstrap
-// GET). It is a free function (not a method) so tests can compose a verifier
-// against a fake client without standing up a full server.
+// host-scoped endpoint on the callback server (inspection POST, bootstrap GET,
+// provisioned and provision-failed POSTs). It is a free function (not a
+// method) so tests can compose a verifier against a fake client without
+// standing up a full server.
 //
-// Verification flow:
+// The host's bootstrap-token Secret is the only thing it checks (D-029);
+// PhysicalHost.Status.Bootstrap is a mirror for operators and is never read
+// here, because anyone who can patch a PhysicalHost could otherwise steer
+// what authenticates. Verification flow:
 //  1. Resolve {namespace,hostName} from path values. Reject if either empty.
 //  2. Get the PhysicalHost. NotFound → reject (no leak: same 401 as bad token).
-//  3. Reject if Status.Bootstrap is nil or TokenHash is empty (no token issued
-//     for this host yet — there is no valid token to present).
-//  4. Reject if ExpiresAt is set and in the past.
-//  5. Reject unless auth.Verify(presented, storedHash) returns true.
+//  3. Read the credentials bound to the host's current claim
+//     (boundBootstrapCredentials): reject a host nobody claims, and one whose
+//     claim names a different Beskar7Machine than the one the Secret's
+//     credentials were minted for.
+//  4. Reject unless the Secret holds a token with a parseable expiry that has
+//     not passed. A missing or malformed expiry fails closed.
+//  5. Reject unless sha256(presented) equals sha256(Secret token), compared in
+//     constant time (auth.Verify).
 //
 // Returned errors are descriptive for logging only — never echoed to the
 // client. Every rejection is logged here at Info with the host coordinates and
 // the remote address (never the token): a rejected bearer is the only
 // server-side trace of a host booting with a credential that cannot
-// authenticate — a Secret/Status split, a stale cmdline, an expired token —
+// authenticate — a stale cmdline, an expired token, a claim that moved on —
 // and at default verbosity the machine would otherwise just time out in
 // Inspecting with nothing in the manager log to say why.
 func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
@@ -626,13 +633,20 @@ func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 			// distinction lives in the logs.
 			return fmt.Errorf("get PhysicalHost: %w", err)
 		}
-		if ph.Status.Bootstrap == nil || ph.Status.Bootstrap.TokenHash == "" {
+		creds, _, err := boundBootstrapCredentials(r.Context(), c, ph)
+		if err != nil {
+			return err
+		}
+		if creds.token == "" {
 			return fmt.Errorf("no bootstrap token issued for host %s/%s", namespace, hostName)
 		}
-		if ph.Status.Bootstrap.ExpiresAt != nil && time.Now().After(ph.Status.Bootstrap.ExpiresAt.Time) {
+		if creds.tokenExpiresAt.IsZero() {
+			return fmt.Errorf("bootstrap token for host %s/%s has no valid expiry", namespace, hostName)
+		}
+		if !time.Now().Before(creds.tokenExpiresAt) {
 			return fmt.Errorf("bootstrap token expired for host %s/%s", namespace, hostName)
 		}
-		if !auth.Verify(token, ph.Status.Bootstrap.TokenHash) {
+		if !auth.Verify(token, auth.Hash(creds.token)) {
 			return fmt.Errorf("bootstrap token mismatch for host %s/%s", namespace, hostName)
 		}
 		return nil

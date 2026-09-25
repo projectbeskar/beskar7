@@ -63,7 +63,7 @@ const (
 //
 // Authentication: callers must present "Authorization: Bearer <token>" with the same
 // per-host bearer token used for inspection POST, bootstrap GET, and the provisioned
-// callback (newBearerTokenVerifier + auth.RequireBearer; D-004). ServeHTTP assumes the
+// callback (newBearerTokenVerifier + auth.RequireBearer; D-004, D-029). ServeHTTP assumes the
 // request has already passed the bearer middleware.
 //
 // Signal: the handler extracts and sanitizes the "reason" field from the advisory JSON
