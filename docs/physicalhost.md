@@ -13,7 +13,7 @@ For the full field reference, see [API Reference: PhysicalHost](api-reference.md
 - **Short name:** `ph`
 - **Scope:** Namespaced
 - **Categories:** `cluster-api` (`kubectl get cluster-api` lists hosts)
-- **clusterctl:** the CRD carries `clusterctl.cluster.x-k8s.io`, so `clusterctl move` discovers hosts, and `clusterctl.cluster.x-k8s.io/move-hierarchy`, so every host in the namespace is moved together with the Secret and ConfigMap it owns — nothing owns a host, so without it a move would leave all hosts behind. The BMC credentials Secret is yours, not the host's: label it `clusterctl.cluster.x-k8s.io/move=""` or create it on the target first (see [Installation](installation.md#clusterctl-move)).
+- **clusterctl:** the CRD carries `clusterctl.cluster.x-k8s.io`, so `clusterctl move` discovers hosts, and `clusterctl.cluster.x-k8s.io/move-hierarchy`, so every host in the namespace is moved together with the Secret and ConfigMap it owns — nothing owns a host, so without it a move would leave all hosts behind. The BMC credentials Secret is yours, not the host's: label it `clusterctl.cluster.x-k8s.io/move=""` or create it on the target first, with its [address annotations](#binding-the-credentials-to-their-bmc) (see [Installation](installation.md#clusterctl-move)).
 
 ## Spec at a glance
 
@@ -27,7 +27,31 @@ spec:
   # consumerRef is set by the Beskar7Machine controller; do not set manually
 ```
 
-The credentials Secret must contain `username` and `password` keys (Opaque). It must live in the same namespace as the PhysicalHost.
+The credentials Secret must contain `username` and `password` keys (Opaque). It must live in the same namespace as the PhysicalHost, and it must say which BMCs its credentials may be sent to — see the next section.
+
+### Binding the credentials to their BMC
+
+Anyone allowed to edit a `PhysicalHost` can change its `address`. Without a binding, pointing a host at an endpoint you control, with `insecureSkipVerify: true`, and naming any Secret in the namespace as its `credentialsSecretRef` made the controller send that Secret's username and password to you on its first Redfish request (SEC-16). So the Secret decides where its credentials go (decision D-030), through two annotations on the **Secret**, never on the host:
+
+| Annotation (on the credentials Secret) | Required | Meaning |
+|---|---|---|
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` | always | The BMC addresses these credentials may be sent to, separated by commas and/or whitespace. |
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` | for an `http://` address or `insecureSkipVerify: true` | Must be exactly `"true"`. Allows sending the credentials over a connection that does not verify the BMC. |
+
+The host of `redfishConnection.address` (the part between `://` and the port) is matched against `bmc-addresses` entries:
+
+| Entry | Matches | Does not match |
+|---|---|---|
+| `10.0.0.5`, `2001:db8::1` | that IP address | anything else |
+| `10.0.0.0/24`, `2001:db8::/32` | IP addresses in the range | hostnames, even `10.0.0.5.nip.io` |
+| `bmc01.example.com` | that hostname, case-insensitively | subdomains |
+| `*.bmc.example.com` | one or more labels under the suffix: `r1.bmc.example.com`, `a.r1.bmc.example.com` | `bmc.example.com` itself, `xbmc.example.com`, IP addresses |
+
+Matching is literal: a hostname is matched as written, and a CIDR never matches a hostname. A listed name is resolved only when the manager connects, through its pod's DNS resolver and the cluster search path, so list IP addresses where you can and otherwise fully-qualified names under a domain you control: a short name such as `bmc1.lab` is looked up first as `bmc1.lab.<namespace>.svc.cluster.local`, where a Service named `bmc1` in a namespace called `lab` would answer. CIDRs wider than /8 (IPv4) or /32 (IPv6), and wildcards over a public suffix (`*.com`, `*.co.uk`, `*.lab`, `*.svc`), are rejected. The address must be an `http://` or `https://` URL with a host and no `user:password@` part. **Any malformed entry authorises no address at all**, so a typo shows up as a refusal instead of silently widening or narrowing the list.
+
+When the Secret does not authorise the host's address, the controller makes no Redfish request: the host reports `RedfishConnectionReady = False (CredentialsNotAuthorized)` with a message naming the annotation to add and the address's host, never the credentials. An unclaimed or `InUse` host goes to `Error` (and is not claimed); an `Inspecting`, `Deploying` or `Ready` host keeps its state. A `Beskar7Machine` holding the host waits (`InfrastructureReady = False (WaitingForBMC)`) instead of failing, and nothing is reprovisioned. Annotating the Secret recovers the host at once: the controller watches the Secret.
+
+List the addresses your BMCs really have. Do not widen the list to whatever the hosts currently say — a host someone already re-pointed would put their endpoint on it. Re-pointing a host to another address that *is* on the list still works; that is an integrity concern the list does not address, not a credential leak.
 
 When `caBundleSecretRef` is set, the manager builds an HTTP client whose TLS roots include the CA bundle. The Secret data must contain a `ca.crt` (preferred) or `tls.crt` key with PEM bytes. Setting `caBundleSecretRef` together with `insecureSkipVerify: true` is rejected — the controller marks `RedfishConnectionReady = False (InsecureCABundleConflict)` and stops reconciling until the operator fixes the spec.
 
@@ -46,8 +70,8 @@ Inspecting → unchanged, then Ready             (claimed; /provisioned before D
 Inspecting → unchanged, then Error             (claimed; /provision-failed before Deploying: kept until Deploying)
 Error about the BMC → Error of a failed run    (claimed; /provision-failed on a host v0.8.0 or earlier left in a BMC Error over Deploying)
 Inspecting → Error                             (inspection timeout, default 10 min)
-InUse or unclaimed → Error                     (BMC unreachable, TLS conflict, missing credentials)
-Inspecting/Deploying/Ready → unchanged         (claimed; BMC unreachable, missing/refused credentials, a rejected certificate, a malformed address, no ComputerSystem, or the insecureSkipVerify/CA-bundle conflict: only RedfishConnectionReady reports it, and the run goes on)
+InUse or unclaimed → Error                     (BMC unreachable, TLS conflict, missing credentials, credentials not authorised for the address)
+Inspecting/Deploying/Ready → unchanged         (claimed; BMC unreachable, missing/refused credentials, credentials not authorised for the address, a rejected certificate, a malformed address, no ComputerSystem, or the insecureSkipVerify/CA-bundle conflict: only RedfishConnectionReady reports it, and the run goes on)
 Error → Available, or InUse if claimed         (operator fixes spec, BMC recovers)
 Error of a failed run (claimed) → unchanged    (the two run failures above: kept until release, whatever the BMC does)
 any claimed state → Available                  (Beskar7Machine deletion clears consumerRef)
@@ -77,7 +101,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 
 | Type | Meaning | True reason | Other reasons |
 |---|---|---|---|
-| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `BMCUnreachable` (the BMC cannot be reached at the network level; retried every 15 s and clears by itself, so a `Beskar7Machine` holding the host waits for it), `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `BMCUnreachable` (the BMC cannot be reached at the network level; retried every 15 s and clears by itself, so a `Beskar7Machine` holding the host waits for it), `CredentialsNotAuthorized` (the credentials Secret does not [authorise the address](#binding-the-credentials-to-their-bmc); no request is made, and a `Beskar7Machine` holding the host waits for the Secret to be annotated), `MissingCredentials`, `SecretGetFailed`, `SecretNotFound`, `MissingSecretData`, `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only — BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released). |
 | `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
 
@@ -97,6 +121,9 @@ kind: Secret
 metadata:
   name: bmc-credentials
   namespace: default
+  annotations:
+    # The only BMCs these credentials may be sent to (IPs, CIDRs, hostnames, *.suffix).
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100"
 type: Opaque
 stringData:
   username: "admin"

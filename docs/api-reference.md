@@ -60,12 +60,23 @@ Connection coordinates for the Redfish BMC.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`. |
-| `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys. Min length 1. |
-| `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. |
+| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`; the controller also rejects userinfo. Its host must be listed in the credentials Secret's `bmc-addresses` annotation (below), and an `http://` address also needs the Secret's `bmc-insecure-transport` annotation. |
+| `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys, annotated with the BMC addresses they may be sent to (below). Min length 1. |
+| `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. `true` also needs the credentials Secret's `bmc-insecure-transport` annotation. |
 | `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
 
 When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`. A host not yet `Inspecting`, `Deploying` or `Ready` (still `InUse` or unclaimed) is moved to `Error`; a host already in one of those states keeps it, and only the condition reports the conflict.
+
+#### Credentials Secret annotations
+
+The Secret `credentialsSecretRef` names decides where its credentials may be sent (decision D-030). Both annotations go on the **Secret**:
+
+| Annotation | Required | Value |
+|---|---|---|
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` | yes | Comma- and/or whitespace-separated IP addresses, CIDRs (matched against IP addresses only), hostnames (exact, case-insensitive) and `*.suffix` wildcards (one or more labels under the suffix, never the suffix itself), matched against the host of `address` without DNS resolution. One malformed entry authorises no address at all. |
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` | for `http://` or `insecureSkipVerify: true` | `"true"`, exactly. |
+
+If the Secret does not authorise the address, no Redfish request is made and `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
 
 #### `spec.consumerRef`
 
@@ -144,7 +155,7 @@ Per-host bootstrap fetch coordinates, a read-only mirror of the host's callback 
 
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|
-| `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `BMCUnreachable` (the BMC cannot be reached at the network level — retried every 15 s, clears by itself, and the one reason a consuming `Beskar7Machine` waits out), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
+| `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `BMCUnreachable` (the BMC cannot be reached at the network level — retried every 15 s and clears by itself; a consuming `Beskar7Machine` waits it out), `CredentialsNotAuthorized` (the credentials Secret's [annotations](#credentials-secret-annotations) do not authorise `address` or its transport — no request is made; cleared by annotating the Secret, and a consuming `Beskar7Machine` waits for that too), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host — `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`). |
 | `HostInspected` | `PhysicalHost` | `HostInspected` | `HostReleased` (the host went back to `Available`; the prior inspection describes a run that ended, not the hardware). |
 
@@ -156,6 +167,8 @@ kind: Secret
 metadata:
   name: bmc-credentials
   namespace: default
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100"
 type: Opaque
 stringData:
   username: "admin"
@@ -234,7 +247,7 @@ There is no `status.failureReason` or `status.failureMessage` — both were remo
 | Type | Set by | True reason | False / other reasons |
 |---|---|---|---|
 | `Ready` | `Beskar7Machine` (summary) | Derived from the summarized conditions; carries the reason of the one that isn't `True` when only one is at fault. | Same, `False`/`Unknown`. |
-| `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForBMC` (the host cannot reach its BMC; not terminal — the machine carries on once the host does); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
+| `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address yet; not terminal — the machine carries on once the host does); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
 | `PhysicalHostAssociated` | `Beskar7Machine` | `PhysicalHostAssociated` | `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
 | `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |

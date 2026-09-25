@@ -43,17 +43,35 @@ const (
 
 // RedfishConnection contains the information needed to connect to a Redfish service
 type RedfishConnection struct {
-	// Address is the URL of the Redfish service
+	// Address is the URL of the Redfish service: http:// or https://, a host,
+	// and no userinfo. The credentials are sent to it only if the Secret
+	// CredentialsSecretRef names lists its host in the
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses annotation, and
+	// an http:// address also needs
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
+	// on that Secret. Otherwise no Redfish request is made and
+	// RedfishConnectionReady is False with CredentialsNotAuthorized.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$"
 	Address string `json:"address"`
 
-	// CredentialsSecretRef is the name of the secret containing the Redfish credentials
+	// CredentialsSecretRef is the name of a Secret in the PhysicalHost's
+	// namespace holding the Redfish credentials in its "username" and
+	// "password" keys. The Secret must carry the
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses annotation: a
+	// comma- or whitespace-separated list of the BMC addresses its credentials
+	// may be sent to, as IP addresses, CIDRs (matched against IP addresses
+	// only), hostnames (exact, case-insensitive) and *.suffix wildcards (any
+	// host under the suffix, not the suffix itself). Nothing is resolved
+	// through DNS, and one malformed entry authorises no address at all.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	CredentialsSecretRef string `json:"credentialsSecretRef"`
 
 	// InsecureSkipVerify determines whether to skip TLS certificate verification.
+	// Setting it to true also requires
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true" on
+	// the credentials Secret, or the credentials are not sent.
 	// Mutually exclusive with CABundleSecretRef: setting both is rejected during
 	// reconcile (a custom CA bundle and "skip verification" together is incoherent).
 	// +kubebuilder:default=false
@@ -453,6 +471,19 @@ const (
 	// the host waits it out instead of failing. Every other False reason needs
 	// a change to the spec, the credentials Secret or the BMC.
 	BMCUnreachableReason string = "BMCUnreachable"
+	// CredentialsNotAuthorizedReason marks RedfishConnectionReady=False when
+	// the credentials Secret does not authorise sending its credentials to
+	// Address (D-030, SEC-16): it has no
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses annotation, the
+	// annotation is malformed or does not list Address's host, Address is not
+	// an http(s) URL with a host and no userinfo, or the connection is http://
+	// or InsecureSkipVerify without
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
+	// on the Secret. No Redfish request is made. Only a change to the Secret or
+	// the spec clears it, but a Beskar7Machine holding the host waits rather
+	// than failing: every Secret written before the annotations existed reads
+	// this way, and annotating it recovers the host.
+	CredentialsNotAuthorizedReason string = "CredentialsNotAuthorized"
 )
 
 // +kubebuilder:object:root=true

@@ -407,8 +407,13 @@ spec:
     metadata:
       name: bmc-credentials
       namespace: default
+      annotations:
+        # Required: the BMC addresses these credentials may be sent to.
+        beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "10.20.0.0/24, *.bmc.example.com"
     type: Opaque
 ```
+
+Beskar7 reads the annotations from the generated Secret, so whatever tool writes it must put them there (for a SealedSecret, under `spec.template.metadata.annotations`). Without `bmc-addresses` the controller sends the credentials nowhere and the host reports `RedfishConnectionReady=False (CredentialsNotAuthorized)`. BMCs reached over `http://` or with `insecureSkipVerify: true` also need `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`. List only the addresses your BMCs really have; see [Security Configuration → Where the credentials may go](security/configuration.md#where-the-credentials-may-go).
 
 ## Monitoring and Observability
 

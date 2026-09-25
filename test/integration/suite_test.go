@@ -237,13 +237,17 @@ func createNamespace(ctx context.Context) *corev1.Namespace {
 	return ns
 }
 
-// createBMCSecret creates a Secret with username/password data that satisfies
-// PhysicalHostReconciler.getRedfishCredentials. Returns the Secret.
+// createBMCSecret creates a Secret with username/password data, authorised
+// (D-030) for the address createPhysicalHost gives every host. Returns the
+// Secret.
 func createBMCSecret(ctx context.Context, ns, name string) *corev1.Secret {
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
+			Annotations: map[string]string{
+				controllers.BMCAddressesAnnotation: "192.168.100.1",
+			},
 		},
 		Data: map[string][]byte{
 			"username": []byte("admin"),

@@ -113,9 +113,10 @@ func NewPhysicalHostReconciler(
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts/finalizers,verbs=update
 // Secret access is read-only and restricted to BMC credential lookup
-// (see getRedfishCredentials). list/watch are required because
+// (see resolveBMCAccess). list/watch are required because
 // SetupWithManager registers a .Watches(&corev1.Secret{}, ...) informer
-// to trigger reconciles on credential rotation; controller-runtime's
+// to trigger reconciles on credential rotation and on the D-030
+// annotations changing; controller-runtime's
 // cached client backs that informer with a list+watch on the cluster.
 // SEC-2 (D-007): the cluster-wide list/watch on Secret is the residual
 // scope after PR-7. Eliminating it requires either dropping the watch
@@ -274,60 +275,43 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
 	r.applyProvisionedRequestAnnotation(logger, physicalHost)
 
-	// Get Redfish credentials
-	username, password, err := r.getRedfishCredentials(ctx, physicalHost)
+	// The credentials, and whether they may go to this host's address at all
+	// (D-030): nothing below may build a Redfish client without them.
+	access, err := resolveBMCAccess(ctx, r.Client, physicalHost)
 	if err != nil {
-		logger.Error(err, "Failed to get Redfish credentials")
+		reason := bmcAccessReason(err)
+		logger.Error(err, "BMC credentials cannot be used for this host", "reason", reason)
 		r.applyRunAnnotations(ctx, logger, physicalHost)
 		r.setConnectionError(physicalHost, err.Error())
-		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.MissingCredentialsReason, "Failed to retrieve credentials: %v", err)
-		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
-		// Return the error without an explicit RequeueAfter so the workqueue's
-		// exponential rate-limiter (configured in SetupWithManager) governs the
-		// retry interval. A fixed 1-minute requeue would override the rate-limiter
-		// and ping a persistently-misconfigured host every 60s indefinitely.
-		return ctrl.Result{}, err
-	}
-
-	// Determine insecure setting
-	insecure := false
-	if physicalHost.Spec.RedfishConnection.InsecureSkipVerify != nil {
-		insecure = *physicalHost.Spec.RedfishConnection.InsecureSkipVerify
-	}
-
-	// Reject the (insecure=true, caBundleSecretRef!="") combination terminally.
-	// There is no PhysicalHost validating webhook, so this is the gate; we set a
-	// clear condition + ErrorMessage and stop reconciling rather than silently
-	// picking one side of the conflict. Returning a non-error result with a
-	// long requeue avoids hot-looping on a misconfigured spec.
-	if err := validateRedfishTLSCombination(insecure, physicalHost.Spec.RedfishConnection.CABundleSecretRef); err != nil {
-		logger.Error(err, "Invalid Redfish TLS configuration")
-		r.applyRunAnnotations(ctx, logger, physicalHost)
-		r.setConnectionError(physicalHost, err.Error())
-		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.InsecureCABundleConflictReason, "%s", err.Error())
-		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
-		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
-	}
-
-	// Fetch optional CA bundle (returns nil bytes when CABundleSecretRef is "").
-	caBundle, err := fetchRedfishCABundle(ctx, r.Client, physicalHost)
-	if err != nil {
-		logger.Error(err, "Failed to fetch Redfish CA bundle")
-		r.applyRunAnnotations(ctx, logger, physicalHost)
-		r.setConnectionError(physicalHost, err.Error())
-		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.CABundleFetchFailedReason, "%s", err.Error())
-		internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
-		// Workqueue exponential backoff via SetupWithManager handles the retry cadence.
-		return ctrl.Result{}, err
+		setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, reason, "%s", err.Error())
+		switch reason {
+		case infrav1.CredentialsNotAuthorizedReason, infrav1.InsecureCABundleConflictReason:
+			// The spec or the credentials Secret has to change, and either
+			// change is a watch event that reconciles the host at once
+			// (SetupWithManager, SecretToPhysicalHosts). Until then, retrying
+			// only repeats the refusal, so a long requeue without an error
+			// keeps a host nobody has fixed yet from hot-looping or flooding
+			// the log. There is no PhysicalHost validating webhook, so this is
+			// also where the conflicting TLS settings are rejected.
+			internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeValidation)
+			return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+		default:
+			// Missing credentials or CA bundle: return the error without an
+			// explicit RequeueAfter so the workqueue's exponential rate-limiter
+			// (SetupWithManager) governs the retry interval rather than pinging
+			// a persistently-misconfigured host at a fixed cadence.
+			internalmetrics.RecordError("physicalhost", physicalHost.Namespace, internalmetrics.ErrorTypeConnection)
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Create Redfish client
 	rfClient, err := r.RedfishClientFactory(ctx,
 		physicalHost.Spec.RedfishConnection.Address,
-		username,
-		password,
-		insecure,
-		caBundle,
+		access.username,
+		access.password,
+		access.insecure,
+		access.caBundle,
 	)
 	if err != nil {
 		logger.Error(err, "Failed to create Redfish client")
@@ -1128,39 +1112,6 @@ func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger log
 	return ctrl.Result{}, nil
 }
 
-// getRedfishCredentials retrieves Redfish credentials from the referenced secret.
-func (r *PhysicalHostReconciler) getRedfishCredentials(ctx context.Context, physicalHost *infrav1.PhysicalHost) (string, string, error) {
-	secretName := physicalHost.Spec.RedfishConnection.CredentialsSecretRef
-	if secretName == "" {
-		return "", "", fmt.Errorf("credentials secret reference is empty")
-	}
-
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Namespace: physicalHost.Namespace,
-		Name:      secretName,
-	}
-
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return "", "", fmt.Errorf("credentials secret %q not found", secretName)
-		}
-		return "", "", fmt.Errorf("failed to get credentials secret: %w", err)
-	}
-
-	username, ok := secret.Data["username"]
-	if !ok {
-		return "", "", fmt.Errorf("username not found in secret %q", secretName)
-	}
-
-	password, ok := secret.Data["password"]
-	if !ok {
-		return "", "", fmt.Errorf("password not found in secret %q", secretName)
-	}
-
-	return string(username), string(password), nil
-}
-
 // updateStatus is a helper to update PhysicalHost status fields.
 func (r *PhysicalHostReconciler) updateStatus(ph *infrav1.PhysicalHost, state string, ready bool, errorMsg string) {
 	ph.Status.State = state
@@ -1247,7 +1198,10 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // SecretToPhysicalHosts maps Secret changes to PhysicalHost reconcile requests:
 // a host's BMC credentials Secret and its bootstrap-token Secret. The latter
 // carries a controller reference to its host, but Owns would register a second
-// Secret watch; one mapper covers both.
+// Secret watch; one mapper covers both. The watch has no predicate, so an edit
+// to the credentials Secret's annotations alone (D-030) reconciles every host
+// that names it: that is how annotating the Secret recovers a host refused
+// with CredentialsNotAuthorized, which is otherwise only requeued after minutes.
 func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj client.Object) []reconcile.Request {
 	secret, ok := obj.(*corev1.Secret)
 	if !ok {

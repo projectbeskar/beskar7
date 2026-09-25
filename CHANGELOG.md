@@ -57,6 +57,38 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   harmless because no callback follows `Ready`. The two annotations are removed from every
   `PhysicalHost` on sight and never read; a tool that wrote them, or read `status.bootstrap` as the
   authority, must use the Secret instead.
+- **Anyone allowed to create or patch a `PhysicalHost` could collect any same-namespace Secret that has
+  `username` and `password` keys — other hosts' BMC credentials included (SEC-16).** Pointing
+  `spec.redfishConnection.address` at an endpoint they controlled, with `insecureSkipVerify: true`, and
+  naming the victim Secret as `credentialsSecretRef` was enough: the controller read the Secret and
+  gofish sent it as HTTP Basic auth on its first Redfish request. Both readers were affected — the
+  `PhysicalHost` controller and the `Beskar7Machine` controller's power, boot-override and release
+  calls. A credentials Secret now says where its credentials may go (D-030): it is used only if it
+  carries `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`, a comma- or whitespace-separated
+  list of IP addresses, CIDRs (matched against IP addresses only), hostnames and `*.suffix` wildcards,
+  matched literally against the host of the address, and only for an address on that list. CIDRs
+  wider than /8 (IPv4) or /32 (IPv6) and wildcards over a public suffix (`*.com`, `*.lab`, `*.svc`)
+  are rejected, since anyone can hold an address or register a name there. A listed name is resolved
+  when the manager connects, through the cluster DNS search path, so prefer IP addresses or
+  fully-qualified names under a domain you control. Sending the credentials over `http://` or with `insecureSkipVerify: true` also needs
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"` on the same Secret. The
+  address must be an `http(s)://` URL with a host and no userinfo, and one malformed entry makes the
+  whole list authorise nothing. Both readers check this before any Redfish client exists; a refusal
+  makes no request and reports `RedfishConnectionReady=False` with the new reason
+  `CredentialsNotAuthorized`, whose message names the annotation to add and the address's host, never
+  the credentials. Re-pointing a host to another *listed* BMC remains possible; that is an integrity
+  concern, not a credential leak.
+
+  **Upgrade note — annotate every BMC credentials Secret before upgrading.** Every Secret a
+  `credentialsSecretRef` names needs `bmc-addresses` (and `bmc-insecure-transport` where a host uses
+  `http://` or `insecureSkipVerify`); v0.8.0 ignores both, so annotating first is safe. Build each list
+  from the addresses your BMCs really have, not by copying what the `PhysicalHost` objects say today: a
+  host someone has already re-pointed would put their endpoint on the list. A Secret you miss is not
+  fatal: its hosts report `CredentialsNotAuthorized` and are not contacted, an `Inspecting`,
+  `Deploying` or `Ready` host keeps its state, a `Beskar7Machine` waits (`WaitingForBMC`) instead of
+  failing, and nothing is reprovisioned. Annotating the Secret afterwards recovers its hosts within
+  seconds, because the controller watches it. A Secret you create by hand on the target of a
+  `clusterctl move` needs the annotations too.
 
 ### Fixed
 

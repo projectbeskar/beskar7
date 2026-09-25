@@ -67,6 +67,10 @@ curl -sk -u "$USER:$PASS" https://<bmc-address>/redfish/v1/Systems
 
 If `curl` succeeds, the credentials are correct — the problem is elsewhere (BMC firewall, BMC user disabled, BMC role lacks required privilege).
 
+### Symptom: `RedfishConnectionReady=False (CredentialsNotAuthorized)`
+
+The credentials Secret does not authorise sending its credentials to the host's `redfishConnection.address`, so the controller sent nothing to the BMC. Check that the address really is this host's BMC before you change anything: someone able to edit `PhysicalHost` objects may have re-pointed it. Then add the address to the Secret's `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation (and `bmc-insecure-transport: "true"` for `http://` or `insecureSkipVerify: true`). Full procedure: [Troubleshooting → 17](../troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized).
+
 ## Bearer-token failures (`401 Unauthorized` from `:8082`)
 
 The callback endpoint returns an opaque `401` for every authentication failure. Each rejection is logged on the manager at default verbosity as `auth: rejected bearer token`, with the `host`, the `remote` address and a `reason` — never the token or the `Authorization` header. To see why a request failed:

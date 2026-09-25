@@ -532,6 +532,11 @@ Any other Redfish failure (refused credentials, a rejected certificate, a malfor
 3. Retry with exponential backoff
 4. If the host was `InUse` or unclaimed, the `Beskar7Machine` holding it fails terminally (`PhysicalHostError`); fix the cause and replace the machine. A host already `Inspecting`, `Deploying` or `Ready` keeps running instead — its machine is not failed
 
+If the credentials Secret does not authorise the host's address (no matching `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` entry, or an `http://`/`insecureSkipVerify` connection without `bmc-insecure-transport: "true"`; decision D-030):
+1. No Redfish request is made; `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`, and the host's state changes as for the failures above
+2. Re-checked every 5 minutes, and at once when the Secret or the host changes
+3. The `Beskar7Machine` holding the host waits (`WaitingForBMC`) instead of failing, and carries on once the Secret is annotated. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc)
+
 ## Security Considerations
 
 ### Inspection / bootstrap bearer token
@@ -549,6 +554,7 @@ The same per-host bearer token authenticates the inspection POST and the bootstr
 
 BMC credentials are stored in Kubernetes Secrets:
 - Referenced by PhysicalHost.spec.redfishConnection.credentialsSecretRef
+- Sent only to the BMC addresses the Secret's `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation lists (decision D-030; see [Security Configuration → Where the credentials may go](security/configuration.md#where-the-credentials-may-go))
 - Never logged or exposed in status
 - Encrypted at rest (if etcd encryption enabled)
 

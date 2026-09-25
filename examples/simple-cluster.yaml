@@ -23,6 +23,16 @@ kind: Secret
 metadata:
   name: bmc-credentials
   namespace: default
+  annotations:
+    # The only BMC addresses these credentials may be sent to (D-030): IPs,
+    # CIDRs, hostnames or *.suffix entries, matched without DNS. A host whose
+    # address is not listed is refused with CredentialsNotAuthorized and never
+    # contacted. List your real BMCs; don't widen it to fit whatever the
+    # PhysicalHosts say.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100, 192.168.1.101, 192.168.1.102"
+    # Required because the hosts below set insecureSkipVerify (testing only):
+    # without it the credentials are not sent to an unverified BMC.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 type: Opaque
 stringData:
   username: "admin"

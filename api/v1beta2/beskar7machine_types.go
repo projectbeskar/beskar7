@@ -61,13 +61,17 @@ const (
 	PhysicalHostNotReadyReason string = "PhysicalHostNotReady"
 	// PhysicalHostErrorReason (Severity=Error, terminal) indicates that the associated
 	// PhysicalHost is in an Error state that needs a change to clear — refused or
-	// missing credentials, a rejected certificate, a malformed address. An
-	// unreachable BMC is not one of them: see WaitingForBMCReason.
+	// missing credentials, a rejected certificate. An unreachable BMC is not one
+	// of them, nor is a credentials Secret that does not authorise the host's
+	// address, nor an address the credentials gate refuses to parse: see
+	// WaitingForBMCReason.
 	PhysicalHostErrorReason string = "PhysicalHostError"
 	// WaitingForBMCReason (Severity=Info, not terminal) indicates that the associated
-	// PhysicalHost cannot reach its BMC right now (its RedfishConnectionReady condition
-	// is False with BMCUnreachable). An outage clears by itself and the host keeps
-	// retrying, so the machine waits and carries on once the host is healthy again.
+	// PhysicalHost cannot use its BMC right now: its RedfishConnectionReady condition
+	// is False with BMCUnreachable (an outage, which clears by itself while the host
+	// keeps retrying) or CredentialsNotAuthorized (its credentials Secret lacks the
+	// D-030 annotations for its address, which annotating the Secret clears). The
+	// machine waits and carries on once the host is healthy again.
 	WaitingForBMCReason string = "WaitingForBMC"
 	// ReleasePhysicalHostFailedReason (Severity=Warning) indicates that releasing the
 	// associated PhysicalHost failed during deletion.

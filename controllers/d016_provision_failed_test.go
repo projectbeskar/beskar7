@@ -515,13 +515,7 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "d016-b7m-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		credSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "bmc-creds-d016", Namespace: testNs.Name},
-			Data: map[string][]byte{
-				"username": []byte("admin"),
-				"password": []byte("secret"),
-			},
-		}
+		credSecret := bmcCredentialsSecretNamed(testNs.Name, "bmc-creds-d016")
 		Expect(k8sClient.Create(ctx, credSecret)).To(Succeed())
 
 		mockRf = internalredfish.NewMockClient()
