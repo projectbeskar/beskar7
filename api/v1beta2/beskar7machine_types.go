@@ -103,6 +103,17 @@ const (
 	// itself signals that the image fetch, digest verify, disk write, or COS_OEM
 	// inject failed and provisioning cannot proceed.
 	DeploymentFailedReason string = "DeploymentFailed"
+	// WaitingForHostAdoptionReason (not terminal) indicates that
+	// this machine's ProviderID already names the PhysicalHost it finds InUse —
+	// it held that host at Ready before — so the host is not a fresh claim and
+	// must not be re-inspected. Most commonly seen right after a `clusterctl
+	// move`, which only Creates objects on the target and drops status
+	// (mover.go), so a moved host always lands at State InUse/"" even though
+	// its ProviderID-holding machine already provisioned it (D-028). The host's
+	// own reconcile restores Ready from that same ProviderID
+	// (adoptProvisionedClaim) and wakes this machine through the existing
+	// PhysicalHost watch once it does.
+	WaitingForHostAdoptionReason string = "WaitingForHostAdoption"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.

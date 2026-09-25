@@ -26,6 +26,25 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Fixed
 
+- **`clusterctl move` re-inspected — and could strand — an already-provisioned host.** `clusterctl move` only
+  `Create`s objects on the target, dropping `.status` entirely, so a moved `PhysicalHost` always landed with
+  `state` empty even though it had already been provisioned; the claimed-host branch of its reconcile read
+  that as a fresh claim and moved it to `InUse`. Its `Beskar7Machine` still held it by `spec.providerID` (spec
+  is never dropped by a move) but, on unpause, saw `InUse` and booted the inspector again — a fresh PXE
+  override, a freshly minted bearer token and boot nonce — on hardware that was already serving. About ten
+  minutes later the inspection timeout failed the machine terminally, a `MachineHealthCheck` replaced it, and
+  any reboot in between re-imaged the still-running node. `PhysicalHostReconciler` now recognises, before any
+  credentials lookup or Redfish call, a claimed host at state `""`/`InUse` whose same-namespace consumer's
+  `spec.providerID` already names it, and restores `state: Ready` from that fact alone; `Beskar7MachineReconciler`
+  never re-triggers inspection while its `providerID` already names the host it finds `InUse`, waiting instead
+  for the host to catch up (new condition reason `WaitingForHostAdoption`). A `Beskar7Machine` deletion carrying
+  clusterctl's `delete-for-move` annotation — the source side of a move — no longer powers the host off or
+  releases its claim, since the same host keeps serving under the pair now live on the target. State is
+  derived from spec on every reconcile rather than mirrored across the move through an annotation, so nothing
+  new is added to the credential-forging surface tracked for the callback annotations. The inspection report
+  and the run's timestamps are not reconstructable this way and do not survive a move; `docs/installation.md`'s
+  `clusterctl move` section now says so.
+
 - **An inspection report, or any other annotation another writer set on a `PhysicalHost`, could be
   deleted by the host's own reconcile.** When a reconcile consumed the host's last annotation, the
   emptied map dropped out of the JSON (`omitempty`), so the metadata merge patch sent by CAPI's

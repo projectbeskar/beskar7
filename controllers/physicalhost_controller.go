@@ -39,10 +39,13 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -127,6 +130,12 @@ func NewPhysicalHostReconciler(
 // note that omitted these is superseded by the inspection-handler design.
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// beskar7machines is read-only here: adoptProvisionedClaim looks up the
+// consumer named by ConsumerRef.Name to compare its ProviderID against this
+// host, and SetupWithManager watches Beskar7Machine so a newly-landed machine
+// (clusterctl move creates it after its host, D-028) wakes the host at once
+// instead of waiting for the next resync.
+//+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machines,verbs=get;list;watch
 
 // Reconcile handles PhysicalHost reconciliation.
 // Simplified workflow: Connect via Redfish → Verify connection → Report ready.
@@ -238,6 +247,13 @@ func restoreConsumedAnnotations(physicalHost *infrav1.PhysicalHost, read map[str
 // reconcileNormal handles normal (non-deletion) reconciliation.
 func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Reconciling PhysicalHost", "currentState", physicalHost.Status.State)
+
+	// Runs before anything else, including the credentials lookup and every
+	// Redfish call below: a moved host's own consumer may not have landed yet,
+	// or its credentials Secret may arrive after the host does, or its BMC may
+	// be unreachable, and none of that should delay recognising a claim this
+	// host already fulfilled.
+	r.adoptProvisionedClaim(ctx, logger, physicalHost)
 
 	// The inspector's reports go first, before the BMC is tried. They need
 	// nothing from the BMC, and the run's Error they may write outlasts whatever
@@ -493,6 +509,65 @@ func inProvisioningSubState(physicalHost *infrav1.PhysicalHost) bool {
 		return true
 	}
 	return provisioningRunFailed(physicalHost)
+}
+
+// adoptProvisionedClaim recognises a host that already reached Ready under its
+// current claim and restores that state without waiting on the BMC (D-028).
+//
+// clusterctl move only Creates objects on the target and drops .status
+// entirely (cmd/clusterctl/client/cluster/mover.go), so a moved host always
+// lands at State "" with its Spec (including ConsumerRef) intact. Left alone,
+// the claimed branch below reads that as a fresh claim and moves the host to
+// InUse, and the Beskar7Machine that already held it to Ready boots the
+// inspector again on hardware that is already serving (MOVE-1). State is
+// derived here from Spec.ProviderID rather than mirrored across the move
+// through an annotation: a mirror would reopen the SEC-12 route into status,
+// and restoring it verbatim risks D-026 if the target's status schema has
+// tightened since the source wrote it.
+//
+// Adopts only a host that is claimed and still at State "" or InUse — never
+// Inspecting, Deploying, Ready or Error, which are driven by the annotation
+// handlers and must not be second-guessed here — whose ConsumerRef names a
+// Beskar7Machine in this host's own namespace (resolveConsumerBeskar7Machine:
+// claims are always same-namespace, SEC-12) and whose
+// Spec.ProviderID equals this host's own b7://<namespace>/<name> form. That
+// form is produced only by handleReadyHost once this exact host reached
+// Ready, so the match is proof the consumer already provisioned this host,
+// not a guess. Idempotent: once adopted the host is inProvisioningSubState,
+// so a second call finds State already outside {"", InUse} and does nothing.
+func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	if physicalHost.Status.State != infrav1.StateNone && physicalHost.Status.State != infrav1.StateInUse {
+		return
+	}
+	key, ok := resolveConsumerBeskar7Machine(physicalHost)
+	if !ok {
+		return
+	}
+
+	b7machine := &infrav1.Beskar7Machine{}
+	if err := r.Get(ctx, key, b7machine); err != nil {
+		if !apierrors.IsNotFound(err) {
+			logger.Error(err, "Failed to get consumer Beskar7Machine for adoption", "beskar7machine", key)
+		}
+		// NotFound is the ordinary case right after a move: the mover creates
+		// PhysicalHost well before the Beskar7Machine that claims it. The
+		// Beskar7Machine watch (SetupWithManager) re-queues this host the
+		// moment it lands.
+		return
+	}
+
+	if b7machine.Spec.ProviderID == "" || b7machine.Spec.ProviderID != providerID(physicalHost.Namespace, physicalHost.Name) {
+		return
+	}
+
+	logger.Info("Adopting Ready: consumer already holds this host by ProviderID", "beskar7machine", key.Name)
+	physicalHost.Status.State = infrav1.StateReady
+	physicalHost.Status.Ready = true
+	physicalHost.Status.ErrorMessage = ""
+	if r.Recorder != nil {
+		r.Recorder.Eventf(physicalHost, corev1.EventTypeNormal, "AdoptedProvisionedClaim",
+			"Adopted Ready: consumer %s already holds this host by ProviderID", key.Name)
+	}
 }
 
 // provisioningRunFailed reports whether a claimed host is in an Error its
@@ -1175,6 +1250,11 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.SecretToPhysicalHosts),
 		).
+		Watches(
+			&infrav1.Beskar7Machine{},
+			handler.EnqueueRequestsFromMapFunc(r.Beskar7MachineToPhysicalHost),
+			builder.WithPredicates(beskar7MachineProviderIDLanded()),
+		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
 			// Exponential backoff for Redfish failures that need something to
@@ -1226,4 +1306,53 @@ func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj 
 	}
 
 	return requests
+}
+
+// beskar7MachineProviderIDLanded admits exactly the Beskar7Machine events that
+// can make an adoption newly possible: creation with a ProviderID already set
+// (clusterctl's mover creates the Beskar7Machine well after its host, so by
+// the time it lands ProviderID is already in its Spec — D-028), and an update
+// where ProviderID changed. Anything else — status churn, an unrelated spec
+// edit, a create with no ProviderID yet — would re-enqueue a host for no
+// reason, ping-ponging against Beskar7MachineToPhysicalHost's own watch on
+// this controller's host writes.
+func beskar7MachineProviderIDLanded() predicate.Funcs {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool {
+			m, ok := e.Object.(*infrav1.Beskar7Machine)
+			return ok && m.Spec.ProviderID != ""
+		},
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldM, ok := e.ObjectOld.(*infrav1.Beskar7Machine)
+			if !ok {
+				return false
+			}
+			newM, ok := e.ObjectNew.(*infrav1.Beskar7Machine)
+			return ok && oldM.Spec.ProviderID != newM.Spec.ProviderID
+		},
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+}
+
+// Beskar7MachineToPhysicalHost maps a Beskar7Machine to the PhysicalHost its
+// Spec.ProviderID names, so a host adopts as soon as its consumer lands
+// (D-028) instead of waiting for its own next resync. parseProviderID rejects
+// anything not shaped b7://<namespace>/<name>; the namespace segment is
+// compared against the machine's own namespace defensively — this controller
+// never produces a cross-namespace ProviderID — rather than trusted alone.
+func (r *PhysicalHostReconciler) Beskar7MachineToPhysicalHost(ctx context.Context, obj client.Object) []reconcile.Request {
+	m, ok := obj.(*infrav1.Beskar7Machine)
+	if !ok {
+		r.Log.Error(nil, "Expected a Beskar7Machine in Beskar7MachineToPhysicalHost map", "object", obj)
+		return nil
+	}
+	if m.Spec.ProviderID == "" {
+		return nil
+	}
+	ns, name, err := parseProviderID(m.Spec.ProviderID)
+	if err != nil || ns != m.Namespace {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}
 }
