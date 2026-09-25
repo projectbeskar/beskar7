@@ -12,6 +12,11 @@ kind: Secret
 metadata:
   name: test-bmc-creds
   namespace: default
+  annotations:
+    # Where these credentials may be sent (D-030): the host's BMC address.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100"
+    # Required because the host sets insecureSkipVerify (testing only).
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 type: Opaque
 stringData:
   username: "admin"

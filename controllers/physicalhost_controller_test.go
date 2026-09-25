@@ -85,16 +85,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 			// Create the credential secret
-			credentialSecret = &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-redfish-credentials",
-					Namespace: testNs.Name,
-				},
-				Data: map[string][]byte{
-					"username": []byte("testuser"),
-					"password": []byte("testpass"),
-				},
-			}
+			credentialSecret = bmcCredentialsSecretNamed(testNs.Name, "test-redfish-credentials")
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
 			// Define the PhysicalHost resource
@@ -857,16 +848,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-			credentialSecret = &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-redfish-credentials-pause",
-					Namespace: testNs.Name,
-				},
-				Data: map[string][]byte{
-					"username": []byte("testuser"),
-					"password": []byte("testpass"),
-				},
-			}
+			credentialSecret = bmcCredentialsSecretNamed(testNs.Name, "test-redfish-credentials-pause")
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
 			physicalHost = &infrav1.PhysicalHost{

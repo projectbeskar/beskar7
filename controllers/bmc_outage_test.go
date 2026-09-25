@@ -53,11 +53,42 @@ import (
 // carries on, a host part-way through provisioning comes back where it was,
 // and every host error that needs a change to clear stays terminal.
 
-func bmcCredentialsSecret(namespace string) *corev1.Secret {
+// fixtureBMCAddresses allow-lists every BMC address the fixtures in this
+// package point a PhysicalHost at (D-030). TEST-NET-3 (203.0.113.0/24) is
+// deliberately left off: the SEC-16 specs use it as an endpoint an attacker
+// controls.
+const fixtureBMCAddresses = "*.example.com, *.example.invalid, 192.168.0.0/16, 192.0.2.0/24"
+
+const (
+	fixtureBMCUsername = "fixture-bmc-user"
+	fixtureBMCPassword = "fixture-bmc-password"
+)
+
+// bmcCredentialsSecretWith returns a BMC credentials Secret carrying exactly
+// the given annotations.
+func bmcCredentialsSecretWith(namespace, name string, annotations map[string]string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "bmc-credentials", Namespace: namespace},
-		Data:       map[string][]byte{"username": []byte("admin"), "password": []byte("pw")},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Annotations: annotations},
+		Data: map[string][]byte{
+			"username": []byte(fixtureBMCUsername),
+			"password": []byte(fixtureBMCPassword),
+		},
 	}
+}
+
+// bmcCredentialsSecretNamed returns a BMC credentials Secret authorised for
+// every fixture address, over any transport, as an operator would annotate one
+// for the hosts it serves (D-030). Specs about the authorisation itself build
+// their own with bmcCredentialsSecretWith.
+func bmcCredentialsSecretNamed(namespace, name string) *corev1.Secret {
+	return bmcCredentialsSecretWith(namespace, name, map[string]string{
+		BMCAddressesAnnotation:         fixtureBMCAddresses,
+		BMCInsecureTransportAnnotation: "true",
+	})
+}
+
+func bmcCredentialsSecret(namespace string) *corev1.Secret {
+	return bmcCredentialsSecretNamed(namespace, "bmc-credentials")
 }
 
 func claimedPhysicalHost(namespace, name, machineName string) *infrav1.PhysicalHost {
@@ -285,8 +316,9 @@ var _ = Describe("PhysicalHost versions published while it recovers from a BMC o
 
 // Every way the real PhysicalHost reconciler leaves a freshly claimed host —
 // one that never reached Inspecting, Deploying or Ready — in Error, handed to
-// the machine exactly as the host publishes it. Only the BMC outage is waited
-// out; everything that needs a change to clear fails the machine with the
+// the machine exactly as the host publishes it. Only the BMC outage and a
+// credentials Secret that does not authorise the address (D-030) are waited
+// out; everything else that needs a change to clear fails the machine with the
 // reason it always had. A host already part-way through its run keeps that
 // state instead of Error for every one of these same faults
 // (inProvisioningSubState); see "the host's state through a non-transient BMC
@@ -305,18 +337,24 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 
 	type hostFault struct {
 		noCredentials bool
-		connection    func(*infrav1.RedfishConnection)
-		factory       internalredfish.RedfishClientFactory
-		hostReason    string
-		machineReason string
-		terminal      bool
+		// unauthorizedCredentials creates the credentials Secret without the
+		// D-030 annotations, as every Secret written before v0.9.0 is.
+		unauthorizedCredentials bool
+		connection              func(*infrav1.RedfishConnection)
+		factory                 internalredfish.RedfishClientFactory
+		hostReason              string
+		machineReason           string
+		terminal                bool
 	}
 
 	const bmcAddress = "https://mock-redfish.example.invalid:8443"
 
 	DescribeTable("the machine's decision",
 		func(fault hostFault) {
-			if !fault.noCredentials {
+			switch {
+			case fault.unauthorizedCredentials:
+				Expect(k8sClient.Create(ctx, bmcCredentialsSecretWith(ns.Name, "bmc-credentials", nil))).To(Succeed())
+			case !fault.noCredentials:
 				Expect(k8sClient.Create(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
 			}
 			host := claimedPhysicalHost(ns.Name, "faulty-host", "faulty-machine")
@@ -402,6 +440,19 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.CABundleFetchFailedReason, machineReason: infrav1.PhysicalHostErrorReason, terminal: true,
+		}),
+		// D-030: annotating the Secret recovers the host, so failing the machine
+		// would reprovision a host that only waited for its operator. The first
+		// entry is every claim in flight when v0.9.0 is installed over v0.8.0.
+		Entry("the credentials Secret carries no D-030 annotations", hostFault{
+			unauthorizedCredentials: true,
+			factory:                 failingBMC(errors.New("the factory must not be reached")),
+			hostReason:              infrav1.CredentialsNotAuthorizedReason, machineReason: infrav1.WaitingForBMCReason,
+		}),
+		Entry("the address is not on the credentials Secret's allow-list", hostFault{
+			connection: func(c *infrav1.RedfishConnection) { c.Address = "https://203.0.113.9" },
+			factory:    failingBMC(errors.New("the factory must not be reached")),
+			hostReason: infrav1.CredentialsNotAuthorizedReason, machineReason: infrav1.WaitingForBMCReason,
 		}),
 	)
 
@@ -535,9 +586,12 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 	type nonTransientFault struct {
 		name          string
 		noCredentials bool
-		connection    func(*infrav1.RedfishConnection)
-		factory       internalredfish.RedfishClientFactory
-		hostReason    string
+		// unauthorizedCredentials strips the D-030 annotations from the
+		// credentials Secret, as on a Secret written before v0.9.0.
+		unauthorizedCredentials bool
+		connection              func(*infrav1.RedfishConnection)
+		factory                 internalredfish.RedfishClientFactory
+		hostReason              string
 	}
 
 	nonTransientFaults := []nonTransientFault{
@@ -581,6 +635,18 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.CABundleFetchFailedReason,
 		},
+		{
+			name:                    "the credentials Secret carries no D-030 annotations",
+			unauthorizedCredentials: true,
+			factory:                 failingBMC(errors.New("the factory must not be reached")),
+			hostReason:              infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
+			name:       "the address is not on the credentials Secret's allow-list",
+			connection: func(c *infrav1.RedfishConnection) { c.Address = "https://203.0.113.9" },
+			factory:    failingBMC(errors.New("the factory must not be reached")),
+			hostReason: infrav1.CredentialsNotAuthorizedReason,
+		},
 	}
 
 	type substate struct {
@@ -601,6 +667,9 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		func(state string, kept bool, fault nonTransientFault) {
 			if fault.noCredentials {
 				Expect(k8sClient.Delete(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
+			}
+			if fault.unauthorizedCredentials {
+				setSecretAnnotations(client.ObjectKeyFromObject(bmcCredentialsSecret(ns.Name)), nil)
 			}
 			hostKey := busyHost("fault-host", state)
 			if fault.connection != nil {
@@ -635,6 +704,10 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 			By("letting the BMC work again")
 			if fault.noCredentials {
 				Expect(k8sClient.Create(ctx, bmcCredentialsSecret(ns.Name))).To(Succeed())
+			}
+			if fault.unauthorizedCredentials {
+				fixture := bmcCredentialsSecret(ns.Name)
+				setSecretAnnotations(client.ObjectKeyFromObject(fixture), fixture.Annotations)
 			}
 			if fault.connection != nil {
 				editRedfishConnection(hostKey, func(c *infrav1.RedfishConnection) {

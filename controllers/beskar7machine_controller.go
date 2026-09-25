@@ -169,8 +169,9 @@ func (r *Beskar7MachineReconciler) deploymentTimeout() time.Duration {
 // match the chart so kustomize-based installs are not silently more restrictive.
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7machinetemplates,verbs=get;list;watch
 // Secret access in this controller is by name only:
-//   - getRedfishClientForHost: r.Get on the BMC credentials Secret named
-//     by host.Spec.RedfishConnection.CredentialsSecretRef.
+//   - getRedfishClientForHost (resolveBMCAccess): r.Get on the BMC
+//     credentials Secret named by host.Spec.RedfishConnection.CredentialsSecretRef,
+//     and on the CA bundle Secret named by CABundleSecretRef.
 //   - reconcileBootstrapData: r.Get on the bootstrap-data Secret named by
 //     machine.Spec.Bootstrap.DataSecretName.
 //   - ensureBootstrapCredentials / backfillBootstrapCredentials: Get, then
@@ -439,11 +440,13 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	case infrav1.StateError:
 		if hostWaitingForBMC(physicalHost) {
 			// An unreachable BMC is a fact about the world, not about this
-			// machine, and it usually clears by itself. Failing the machine for
-			// it would have its replacement wipe and reprovision a host that was
-			// never broken. The host's recovery wakes this machine through the
-			// PhysicalHost watch; the requeue is only a backstop.
-			logger.Info("PhysicalHost cannot reach its BMC; waiting for it to recover", "errorMessage", physicalHost.Status.ErrorMessage)
+			// machine, and it usually clears by itself; a credentials Secret
+			// that does not authorise the host's address yet clears when it is
+			// annotated. Failing the machine for either would have its
+			// replacement wipe and reprovision a host that was never broken.
+			// The host's recovery wakes this machine through the PhysicalHost
+			// watch; the requeue is only a backstop.
+			logger.Info("PhysicalHost cannot use its BMC; waiting for it to recover", "errorMessage", physicalHost.Status.ErrorMessage)
 			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.WaitingForBMCReason,
 				"Waiting for PhysicalHost %q: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -483,12 +486,21 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 }
 
 // hostWaitingForBMC reports whether a PhysicalHost in StateError is there only
-// because it cannot reach its BMC: the one Error the host clears by itself,
-// retrying on a flat interval until the BMC answers.
+// because it cannot use its BMC yet, in one of two ways that do not mean the
+// host is broken:
 //
-// The host publishes that class on its RedfishConnectionReady condition —
-// False with BMCUnreachableReason, which only retryTransientRedfishFailure
-// sets — so this does not have to guess from the error message.
+//   - It cannot reach the BMC: the one Error the host clears by itself,
+//     retrying on a flat interval until the BMC answers. The host publishes
+//     that class on its RedfishConnectionReady condition — False with
+//     BMCUnreachableReason, which only retryTransientRedfishFailure sets — so
+//     this does not have to guess from the error message.
+//   - Its credentials Secret does not authorise the host's address
+//     (CredentialsNotAuthorizedReason, D-030). Every Secret written before the
+//     annotations existed reads this way after an upgrade, and annotating it
+//     recovers the host through its Secret watch. Failing the machine instead
+//     would have its replacement wipe and reprovision a host that only waited
+//     for its operator, and a re-pointed address is refused before anything
+//     is sent, so waiting costs nothing.
 //
 // True counts as waiting as well. The patch helper writes conditions in a call
 // of their own, ahead of the rest of status, so a host whose BMC has just
@@ -513,7 +525,7 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 	}
 	switch cond.Status {
 	case metav1.ConditionFalse:
-		return cond.Reason == infrav1.BMCUnreachableReason
+		return cond.Reason == infrav1.BMCUnreachableReason || cond.Reason == infrav1.CredentialsNotAuthorizedReason
 	case metav1.ConditionTrue:
 		return true
 	}
@@ -1385,7 +1397,8 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 // bestEffortReleaseRedfish issues ClearBootSourceOverride and a graceful power-off
 // against the host's BMC. All errors are logged at Info and swallowed so a
 // dead BMC cannot strand the Beskar7Machine finalizer.
-// Missing credentials are treated identically — log a warning and return.
+// Missing credentials, or a credentials Secret that does not authorise the
+// host's address (D-030), are treated identically — log and return.
 func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost) {
 	rfClient, err := r.getRedfishClientForHost(ctx, logger, host)
 	if err != nil {
@@ -1523,39 +1536,18 @@ func (r *Beskar7MachineReconciler) setBootstrapURLAnnotation(
 }
 
 // getRedfishClientForHost creates a Redfish client for the given PhysicalHost.
+//
+// It reads the host's spec as this controller last saw it, which may carry an
+// address its own reconciler has not checked yet, so it runs the same gate
+// (resolveBMCAccess, D-030) rather than trusting the host's
+// RedfishConnectionReady condition. The PhysicalHost reconciler is the one
+// that publishes a refusal as a condition; here it is only an error.
 func (r *Beskar7MachineReconciler) getRedfishClientForHost(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost) (internalredfish.Client, error) {
-	// Get credentials
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Namespace: host.Namespace,
-		Name:      host.Spec.RedfishConnection.CredentialsSecretRef,
-	}
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		return nil, errors.Wrap(err, "failed to get credentials secret")
-	}
-
-	username := string(secret.Data["username"])
-	password := string(secret.Data["password"])
-
-	insecure := false
-	if host.Spec.RedfishConnection.InsecureSkipVerify != nil {
-		insecure = *host.Spec.RedfishConnection.InsecureSkipVerify
-	}
-
-	// Reject the conflicting combination at this layer too. The PhysicalHost
-	// reconciler is the canonical gate (it sets the InsecureCABundleConflict
-	// condition), but Beskar7Machine consumes the same Spec, so we must not
-	// silently produce a working client here while PhysicalHost is in error.
-	if err := validateRedfishTLSCombination(insecure, host.Spec.RedfishConnection.CABundleSecretRef); err != nil {
+	access, err := resolveBMCAccess(ctx, r.Client, host)
+	if err != nil {
 		return nil, err
 	}
-
-	caBundle, err := fetchRedfishCABundle(ctx, r.Client, host)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to fetch CA bundle")
-	}
-
-	return r.RedfishClientFactory(ctx, host.Spec.RedfishConnection.Address, username, password, insecure, caBundle)
+	return r.RedfishClientFactory(ctx, host.Spec.RedfishConnection.Address, access.username, access.password, access.insecure, access.caBundle)
 }
 
 // Helper functions

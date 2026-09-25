@@ -16,6 +16,14 @@
 #
 # Replace every <...> placeholder; combine with the Cluster, control plane and
 # MachineDeployment objects from examples/kairos-k3s-node.yaml or your own.
+#
+# Both hosts name one credentials Secret (the one in
+# examples/kairos-k3s-node.yaml). Its credentials are sent only to BMC
+# addresses its beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses
+# annotation lists (D-030), so that annotation must name both BMCs below,
+# for example "<bmc-of-cp-01>, <bmc-of-worker-01>", or a CIDR or *.suffix
+# entry that covers the whole pool. A host whose BMC is not listed is
+# refused with CredentialsNotAuthorized and never contacted.
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost

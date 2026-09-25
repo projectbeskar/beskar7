@@ -55,10 +55,7 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "insp-power-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "bmc-creds", Namespace: testNs.Name},
-			Data:       map[string][]byte{"username": []byte("admin"), "password": []byte("pw")},
-		})).To(Succeed())
+		Expect(k8sClient.Create(ctx, bmcCredentialsSecretNamed(testNs.Name, "bmc-creds"))).To(Succeed())
 
 		mockRf = internalredfish.NewMockClient()
 		r = &Beskar7MachineReconciler{

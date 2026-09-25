@@ -740,7 +740,9 @@ instance renders it into the iPXE cmdline.
 
 **Symptom:** the `Beskar7Machine` has `InfrastructureReady=False` with reason `WaitingForBMC`, and its
 `PhysicalHost` is in `Error` with `RedfishConnectionReady=False`, reason `BMCUnreachable`, message
-`BMC unreachable (connection refused); retrying every 15s` or similar.
+`BMC unreachable (connection refused); retrying every 15s` or similar. (If the host's reason is
+`CredentialsNotAuthorized` instead, see
+[17](#17-physicalhost-reports-credentialsnotauthorized).)
 
 **Cause:** the controller cannot reach the host's BMC at the network level — a refused or reset
 connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still starting.
@@ -791,6 +793,50 @@ failed boot.
 **Verify on the host after a reboot:** `systemctl show k0scontroller -p WantedBy` is empty,
 `journalctl -b -u k0scontroller` has no lines at all, `k0sworker` is `active`, and
 `/run/k0s/etcd.pid` does not exist.
+
+### 17. PhysicalHost reports `CredentialsNotAuthorized`
+
+**Symptom:** the `PhysicalHost` has `RedfishConnectionReady=False` with reason
+`CredentialsNotAuthorized`, and a message starting `BMC credentials not sent:`. An unclaimed or
+`InUse` host is in `Error`; an `Inspecting`, `Deploying` or `Ready` host keeps its state. A
+`Beskar7Machine` holding it reports `InfrastructureReady=False (WaitingForBMC)`. The BMC is never
+contacted. Typical right after upgrading to v0.9.0, or after hand-creating the credentials Secret on
+the target of a `clusterctl move`.
+
+**Cause:** the Secret `spec.redfishConnection.credentialsSecretRef` names does not authorise sending
+its credentials to this host's `spec.redfishConnection.address` (decision D-030). The message says
+which of these it is:
+
+- The Secret has no `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation (every Secret
+  written before v0.9.0).
+- The annotation does not list the address's host, or one of its entries is malformed (then it
+  authorises nothing; the message gives the entry's position).
+- The address is `http://`, or the host sets `insecureSkipVerify: true`, and the Secret lacks
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`.
+- The address is not an `http://`/`https://` URL with a host, or it carries `user:password@`.
+
+**Solution:** first check that the address is really this host's BMC — someone able to edit
+`PhysicalHost` objects may have re-pointed it, and this refusal is what kept the password from them:
+
+```bash
+kubectl get physicalhost <host> -n <ns> -o jsonpath='{.spec.redfishConnection.address}{"\n"}'
+```
+
+If it is, annotate the Secret (list the BMC's IP, a CIDR, its hostname, or a `*.suffix` covering it;
+matching is literal; prefer IP addresses or fully-qualified names, because a listed name is resolved through the cluster DNS search path when the manager connects):
+
+```bash
+kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses="10.20.0.0/24"
+# only for http:// addresses or insecureSkipVerify: true
+kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport=true
+```
+
+The controller watches the Secret, so the host reconnects within seconds and a waiting machine
+carries on; nothing is reprovisioned and no machine needs deleting. If the address is not a BMC you
+recognise, fix the `PhysicalHost` instead and find out who changed it. See
+[PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
 
 ## Getting Help
 

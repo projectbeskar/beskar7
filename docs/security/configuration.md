@@ -80,6 +80,8 @@ spec:
     insecureSkipVerify: true
 ```
 
+The credentials Secret must also carry `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`, or the credentials are not sent (see [BMC credentials](#bmc-credentials)). The same applies to an `http://` address.
+
 `insecureSkipVerify: true` and `caBundleSecretRef` together is a hard error: the controller marks `RedfishConnectionReady=False (InsecureCABundleConflict)` and stops reconciling until you fix the spec.
 
 ## BMC credentials
@@ -92,6 +94,11 @@ kind: Secret
 metadata:
   name: bmc-credentials
   namespace: default
+  annotations:
+    # Required: the BMC addresses these credentials may be sent to.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "10.20.0.0/24, *.bmc.example.com"
+    # Only for http:// addresses or insecureSkipVerify: true.
+    # beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 type: Opaque
 stringData:
   username: "admin"
@@ -106,9 +113,26 @@ kubectl create secret generic bmc-credentials \
   --from-literal=username=admin \
   --from-literal=password="$PASS" \
   -n default
+kubectl annotate secret bmc-credentials -n default \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses="10.20.0.0/24, *.bmc.example.com"
 ```
 
 To rotate, update the Secret. The PhysicalHost reconciler watches the Secret and re-reconciles on change; the manager rebuilds the gofish client with the new credentials on the next reconcile.
+
+### Where the credentials may go
+
+Anyone who can create or patch a `PhysicalHost` chooses its `redfishConnection.address`, and can name any Secret in the namespace as its `credentialsSecretRef`. Without a binding, that was enough to have the controller send another host's BMC password to an endpoint of the attacker's choosing, as HTTP Basic auth on the first Redfish request (SEC-16). The binding lives on the Secret, because only someone who may write the Secret should decide where its credentials go (decision D-030):
+
+- **`beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`** (required) lists the BMC addresses the credentials may be sent to, separated by commas and/or whitespace: IP addresses, CIDRs (matched against IP addresses only), hostnames (exact, case-insensitive) and `*.suffix` wildcards (one or more labels under the suffix, never the suffix itself). The address's host is matched as written; a listed name is resolved only when the manager connects (see below). CIDRs wider than /8 (IPv4) or /32 (IPv6), and wildcards over a public suffix such as `*.com`, `*.lab` or `*.svc`, are rejected. A single malformed entry makes the whole annotation authorise nothing.
+- **`beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`** is also required before the credentials travel over `http://` or to a host with `insecureSkipVerify: true`, since either lets whoever is on the path read them.
+
+Both readers of BMC credentials — the `PhysicalHost` controller and the `Beskar7Machine` controller's power and boot calls — check the Secret before they build a Redfish client, and nothing is sent when it does not authorise the address. The host reports `RedfishConnectionReady = False (CredentialsNotAuthorized)`, and its message names the annotation and the address's host to add; it never contains the credentials. See [PhysicalHost → Binding the credentials to their BMC](../physicalhost.md#binding-the-credentials-to-their-bmc) for the matching rules and how the host and its machine behave meanwhile.
+
+Keep the list to the addresses your BMCs really have. Copying every host's current address into it would also authorise a host someone has already re-pointed. What the list does not stop is re-pointing a host to *another* listed BMC: the credentials still go only to an address you listed, but the host then drives the wrong machine. Restrict who can patch `PhysicalHost` objects for that.
+
+A listed name is trusted to resolve to your BMC. The manager resolves it through its pod's resolver and the cluster DNS search path (`ndots:5`), so a short name such as `bmc1.lab` is tried as `bmc1.lab.<namespace>.svc.cluster.local` before the name itself, and a Service named `bmc1` in a namespace called `lab` would receive the connection. Prefer IP addresses and CIDRs; otherwise use fully-qualified names under a domain you control, and never wildcard a service that maps names to arbitrary IP addresses, such as nip.io or sslip.io.
+
+`caBundleSecretRef` needs no such annotation: only its `ca.crt`/`tls.crt` keys are read, and they are not sent anywhere.
 
 ## Bearer-token authentication on the callback endpoint
 

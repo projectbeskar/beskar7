@@ -187,6 +187,11 @@ kind: Secret
 metadata:
   name: test-bmc-creds
   namespace: default
+  annotations:
+    # The only BMC addresses these credentials may be sent to.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100"
+    # Required because the host below sets insecureSkipVerify: true.
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 stringData:
   username: "admin"
   password: "your-password"

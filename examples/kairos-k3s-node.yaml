@@ -38,11 +38,22 @@ metadata:
 # BMC credentials Secret. Must contain "username" and "password" keys.
 # The Redfish endpoint must expose exactly ONE System (use an allow-list on
 # sushy-tools if your emulator exposes multiple domains).
+#
+# The annotations bind the credentials to their BMC (D-030): the controller
+# sends them only to a PhysicalHost address whose host is listed in
+# bmc-addresses (IPs, CIDRs, hostnames or *.suffix entries, matched without
+# DNS), and otherwise reports CredentialsNotAuthorized without contacting it.
+# The PhysicalHost below uses http://, so the Secret must also opt in to
+# sending the credentials unencrypted with bmc-insecure-transport. Drop that
+# annotation once the BMC is on HTTPS with a verified certificate.
 apiVersion: v1
 kind: Secret
 metadata:
   name: bmc-credentials
   namespace: <namespace>
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "<bmc-address>"
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 type: Opaque
 stringData:
   username: "<bmc-username>"

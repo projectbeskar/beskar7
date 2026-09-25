@@ -8,8 +8,10 @@
 #   1. PhysicalHost.spec.redfishConnection.caBundleSecretRef for verified BMC TLS
 #   2. PhysicalHost.spec.redfishConnection.insecureSkipVerify=false
 #   3. Strong BMC credentials in a Secret (operator-managed; no in-controller policy)
-#   4. NetworkPolicy gating manager ingress
-#   5. cert-manager-issued certs for the webhook + callback endpoint
+#   4. The Secret's bmc-addresses annotation, which binds those credentials
+#      to the BMCs they belong to (D-030)
+#   5. NetworkPolicy gating manager ingress
+#   6. cert-manager-issued certs for the webhook + callback endpoint
 #
 # See docs/security/README.md and docs/security/configuration.md.
 
@@ -24,11 +26,22 @@ metadata:
 ---
 # BMC credentials Secret. Generate the password externally; Beskar7 does not
 # enforce any strength policy itself.
+#
+# bmc-addresses lists the only BMC addresses these credentials may be sent to
+# (D-030): IPs, CIDRs, hostnames or *.suffix entries such as
+# "*.bmc.prod.example.com", matched without DNS. Anyone who can edit a
+# PhysicalHost can change its address, so the list is what stops them
+# pointing a host at their own endpoint to collect the password. List the
+# fleet's real BMCs, not whatever the hosts currently say. There is no
+# bmc-insecure-transport annotation: every host verifies its BMC's
+# certificate, so the credentials never travel unverified.
 apiVersion: v1
 kind: Secret
 metadata:
   name: bmc-credentials
   namespace: beskar7-prod
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "bmc.prod.example.com"
 type: Opaque
 data:
   username: YWRtaW4=                       # "admin"

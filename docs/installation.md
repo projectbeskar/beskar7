@@ -115,6 +115,8 @@ Before moving a namespace:
    kubectl label secret bmc-credentials -n <namespace> clusterctl.cluster.x-k8s.io/move=""
    ```
 
+   A moved Secret keeps its annotations. One you create on the target by hand needs the same `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation (and `bmc-insecure-transport`, if the source had it) as the source Secret: without it the target's controller sends no credentials, and the moved hosts report `RedfishConnectionReady = False (CredentialsNotAuthorized)` until you add it. They stay `Ready` meanwhile, and their machines stay `Provisioned`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
+
 3. **On an existing install, re-apply the CRDs first.** `helm upgrade` never touches CRDs, so CRDs installed before the labels were added still lack them; see [Upgrading](upgrading.md).
 
 **Pausing during a move.** `clusterctl move` pauses each `Cluster` by setting `spec.paused: true` on the source before moving objects, and clears it on the target afterward. `Beskar7Cluster` and `Beskar7Machine` honour `Cluster.spec.paused` (via `sigs.k8s.io/cluster-api/util/paused`), so they stop reconciling — including the deletion path that would otherwise power a host off over Redfish — for the duration of the move, with no manual annotate/unannotate step required.

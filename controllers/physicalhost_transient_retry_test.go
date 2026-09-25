@@ -147,13 +147,7 @@ var _ = Describe("PhysicalHost reconcile when the BMC is unreachable", func() {
 		}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "bmc-credentials", Namespace: testNs.Name},
-			Data: map[string][]byte{
-				"username": []byte("admin"),
-				"password": []byte("password123"),
-			},
-		})).To(Succeed())
+		Expect(k8sClient.Create(ctx, bmcCredentialsSecret(testNs.Name))).To(Succeed())
 
 		host = &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: "flaky-bmc-host", Namespace: testNs.Name},
@@ -355,13 +349,7 @@ var _ = Describe("PhysicalHost transient-failure retries under a running manager
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "ph-transient-mgr-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "bmc-credentials", Namespace: testNs.Name},
-			Data: map[string][]byte{
-				"username": []byte("admin"),
-				"password": []byte("password123"),
-			},
-		})).To(Succeed())
+		Expect(k8sClient.Create(ctx, bmcCredentialsSecret(testNs.Name))).To(Succeed())
 
 		skipNameValidation := true
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{

@@ -88,16 +88,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 			// Create credential secret
-			credentialSecret = &corev1.Secret{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-bmc-creds",
-					Namespace: testNs.Name,
-				},
-				Data: map[string][]byte{
-					"username": []byte("admin"),
-					"password": []byte("password"),
-				},
-			}
+			credentialSecret = bmcCredentialsSecretNamed(testNs.Name, "test-bmc-creds")
 			Expect(k8sClient.Create(ctx, credentialSecret)).To(Succeed())
 
 			// Create available PhysicalHost
@@ -2451,10 +2442,7 @@ var _ = Describe("Beskar7Machine credential reuse is judged by the bound Secret 
 		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "credential-reuse-test-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
-		creds := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: "bmc-creds", Namespace: testNs.Name},
-			Data:       map[string][]byte{"username": []byte("admin"), "password": []byte("password")},
-		}
+		creds := bmcCredentialsSecretNamed(testNs.Name, "bmc-creds")
 		Expect(k8sClient.Create(ctx, creds)).To(Succeed())
 
 		physicalHost = &infrav1.PhysicalHost{

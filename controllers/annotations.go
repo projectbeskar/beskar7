@@ -39,6 +39,28 @@ func removeAnnotationsPatch(keys ...string) client.Patch {
 	return client.RawPatch(types.MergePatchType, data)
 }
 
+// BMCAddressesAnnotation and BMCInsecureTransportAnnotation live on the Secret a
+// PhysicalHost's redfishConnection.credentialsSecretRef names, never on the host
+// (D-030, SEC-16). The Secret's credentials are sent only to a host whose
+// redfishConnection.address hostname BMCAddressesAnnotation lists, and only over
+// verified TLS unless BMCInsecureTransportAnnotation is "true"
+// (resolveBMCAccess). They sit on the Secret because only someone who may write
+// that Secret should decide where its credentials go; anyone who may patch a
+// PhysicalHost can already choose its address.
+//
+// BMCAddressesAnnotation's value is a comma- and/or whitespace-separated list of
+// IP addresses, CIDRs (matched against IP addresses only), hostnames (matched
+// exactly, case-insensitively) and *.suffix wildcards (one or more labels under
+// the suffix, never the suffix itself). Matching is literal; a listed name is
+// resolved only when the client connects, through the pod's resolver and the
+// cluster DNS search path. CIDRs wider than /8 (IPv4) or /32 (IPv6), wildcards
+// over a public suffix, and a single malformed entry each make the annotation
+// authorise no address at all.
+const (
+	BMCAddressesAnnotation         = "beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses"
+	BMCInsecureTransportAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport"
+)
+
 // BootstrapURLAnnotation is set by the Beskar7Machine controller on a PhysicalHost
 // to signal the computed per-host bootstrap URL. The PhysicalHost controller reads
 // this annotation, persists the value to Status.Bootstrap.URL, and then removes the

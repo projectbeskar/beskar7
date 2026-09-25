@@ -13,11 +13,20 @@ metadata:
 
 ---
 # Throwaway BMC credentials for a lab. Generate a real password externally.
+#
+# The annotations bind the credentials to their BMCs (D-030): they are sent
+# only to hosts listed in bmc-addresses (IPs, CIDRs, hostnames or *.suffix
+# entries, matched without DNS), and, because the host below skips TLS
+# verification, only with bmc-insecure-transport set as well. Without them
+# the host reports CredentialsNotAuthorized and its BMC is never contacted.
 apiVersion: v1
 kind: Secret
 metadata:
   name: bmc-credentials
   namespace: beskar7-dev
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "192.168.1.100"
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"   # Development only.
 type: Opaque
 stringData:
   username: "admin"
