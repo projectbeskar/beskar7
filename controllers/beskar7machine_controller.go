@@ -1379,7 +1379,10 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	}
 	for i := range allHosts.Items {
 		h := &allHosts.Items[i]
-		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+		// resolveConsumerBeskar7Machine also rejects a ConsumerRef naming a
+		// different namespace than h's own (SEC-12): a host claimed "by" a
+		// same-named machine in another namespace must not re-find as ours.
+		if key, ok := resolveConsumerBeskar7Machine(h); ok && key == client.ObjectKeyFromObject(b7machine) {
 			internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
 			internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
 			return h, ctrl.Result{}, nil
@@ -1527,7 +1530,10 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 			err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host)
 			switch {
 			case err == nil:
-				if host.Spec.ConsumerRef != nil && host.Spec.ConsumerRef.Name == b7machine.Name {
+				// ProviderID can name a host in any namespace; only a host whose
+				// consumer resolves to this very machine, namespace included, is
+				// ours to release (SEC-12).
+				if key, ok := resolveConsumerBeskar7Machine(host); ok && key == client.ObjectKeyFromObject(b7machine) {
 					return host, nil
 				}
 				// ProviderID points at a host not claimed by us; fall through to scan.
@@ -1547,7 +1553,10 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 	}
 	for i := range allHosts.Items {
 		h := &allHosts.Items[i]
-		if h.Spec.ConsumerRef != nil && h.Spec.ConsumerRef.Name == b7machine.Name {
+		// resolveConsumerBeskar7Machine also rejects a ConsumerRef naming a
+		// different namespace than h's own (SEC-12): a host claimed "by" a
+		// same-named machine in another namespace must not be released by us.
+		if key, ok := resolveConsumerBeskar7Machine(h); ok && key == client.ObjectKeyFromObject(b7machine) {
 			return h, nil
 		}
 	}

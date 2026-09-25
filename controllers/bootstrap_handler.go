@@ -98,15 +98,18 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Walk to the Beskar7Machine via Spec.ConsumerRef.
-	cr := ph.Spec.ConsumerRef
-	if cr == nil || cr.Kind != "Beskar7Machine" || cr.APIVersion != InfrastructureAPIVersion {
-		log.V(1).Info("bootstrap GET: PhysicalHost has no Beskar7Machine consumer")
+	// 2. Walk to the Beskar7Machine via Spec.ConsumerRef. The lookup is pinned
+	// to the host's own namespace (SEC-12, D-029): a ConsumerRef naming a
+	// different namespace resolves to no consumer at all, so a host in
+	// namespace A can never serve namespace B's bootstrap data.
+	consumerKey, ok := resolveConsumerBeskar7Machine(ph)
+	if !ok {
+		log.V(1).Info("bootstrap GET: PhysicalHost has no valid Beskar7Machine consumer")
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	b7m := &infrav1.Beskar7Machine{}
-	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}, b7m); err != nil {
+	if err := h.Client.Get(ctx, consumerKey, b7m); err != nil {
 		log.V(1).Info("bootstrap GET: Beskar7Machine lookup failed", "err", err.Error())
 		http.Error(w, "not found", http.StatusNotFound)
 		return
