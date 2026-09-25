@@ -116,7 +116,13 @@ var _ = Describe("Conditions written by a pre-v0.6.0 controller", func() {
 				legacyCondition(infrav1.RedfishConnectionReadyCondition),
 				legacyCondition(infrav1.HostAvailableCondition),
 			}
-			Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+			// The API server swaps in a CRD's new schema asynchronously, so the
+			// first write after relaxing it can still be validated against the
+			// strict one and rejected. A rejected update changes nothing, so
+			// retrying it as-is is safe.
+			Eventually(func() error {
+				return k8sClient.Status().Update(ctx, host)
+			}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 		})
 
 		By("confirming the stored object really is the legacy shape")
