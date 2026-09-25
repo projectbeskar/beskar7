@@ -22,7 +22,7 @@ Beskar7 is a Cluster API (CAPI) infrastructure provider for bare-metal machines.
 
 ## Beskar7ClusterTemplate
 
-`Beskar7ClusterTemplate` exists so Beskar7 can be used from a Cluster API [`ClusterClass`](https://cluster-api.sigs.k8s.io/tasks/experimental-features/cluster-class/): the class points at one, and CAPI's topology controller creates a `Beskar7Cluster` per `Cluster` from it. Like `Beskar7MachineTemplate` it has no controller — templates are inert. Its `spec.template.spec` is normally empty, because the only field a `Beskar7Cluster` carries is the control-plane endpoint, which each cluster must discover for itself. See [Beskar7ClusterTemplate](beskar7clustertemplate.md).
+`Beskar7ClusterTemplate` exists so Beskar7 can be used from a Cluster API [`ClusterClass`](https://cluster-api.sigs.k8s.io/tasks/experimental-features/cluster-class/): the class points at one, and CAPI's topology controller creates a `Beskar7Cluster` per `Cluster` from it. Like `Beskar7MachineTemplate` it has no controller — templates are inert. Its `spec.template.spec` is normally empty, because the only field a `Beskar7Cluster` carries is the control-plane endpoint, which Beskar7 does not discover — each cluster supplies its own via a `ClusterClass` variable patch or directly on `Cluster.spec.controlPlaneEndpoint`. See [Beskar7ClusterTemplate](beskar7clustertemplate.md).
 
 ## How a node gets provisioned
 

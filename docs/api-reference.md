@@ -318,7 +318,7 @@ The template's CRD carries the `clusterctl.cluster.x-k8s.io` label so `clusterct
 
 ## Beskar7Cluster
 
-A `Beskar7Cluster` is a CAPI infra-cluster. The reconciler in `controllers/beskar7cluster_controller.go` derives the control-plane endpoint and discovers failure domains.
+A `Beskar7Cluster` is a CAPI infra-cluster. The reconciler in `controllers/beskar7cluster_controller.go` mirrors the control-plane endpoint already set on `Cluster.spec` or its own `spec` (it does not discover one) and discovers failure domains.
 
 ```yaml
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -396,7 +396,7 @@ kind: Beskar7ClusterTemplate
 | `template.metadata` | `clusterv1.ObjectMeta` | Optional. Labels and annotations propagated onto each generated `Beskar7Cluster` (the `InfrastructureClusterTemplate` contract path `spec.template.metadata`). Other `ObjectMeta` fields are ignored. |
 | `template.spec` | `Beskar7ClusterSpec` | Identical schema to a `Beskar7Cluster`'s spec. Normally `{}` — see below. |
 
-`template.spec` being empty is correct. `Beskar7ClusterSpec`'s only field is `controlPlaneEndpoint`, and templating it would give every cluster in the class the same endpoint; left unset, the `Beskar7Cluster` controller discovers one from the control-plane `Machine` objects. See [Beskar7ClusterTemplate](beskar7clustertemplate.md) and [`examples/clusterclass.yaml`](../examples/clusterclass.yaml).
+`template.spec` being empty is correct. `Beskar7ClusterSpec`'s only field is `controlPlaneEndpoint`, and templating it would give every cluster in the class the same endpoint; Beskar7 does not discover one, so each `Cluster` supplies its own via a `controlPlaneEndpoint` `ClusterClass` variable patched into the generated `Beskar7Cluster`, or directly on `Cluster.spec.controlPlaneEndpoint`. See [Beskar7ClusterTemplate](beskar7clustertemplate.md) and [`examples/clusterclass.yaml`](../examples/clusterclass.yaml).
 
 ### Status
 

@@ -28,7 +28,6 @@ import (
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/cluster-api/util/paused"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -65,8 +64,6 @@ type Beskar7ClusterReconciler struct {
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters/finalizers,verbs=update
 //+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
-// Needed to find control plane machine addresses.
-//+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 // Needed to discover failure domains.
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch
 
@@ -192,17 +189,11 @@ func (r *Beskar7ClusterReconciler) reconcileNormal(ctx context.Context, logger l
 	}
 
 	// --- Reconcile ControlPlaneEndpoint ---
-	if err := r.reconcileControlPlaneEndpoint(ctx, logger, cluster, b7cluster); err != nil {
-		// Treat failure to find endpoint as a transient error
-		return ctrl.Result{}, err
-	}
-
-	// If the endpoint is not ready, it will be set in the reconcileControlPlaneEndpoint function,
-	// and we should requeue.
-	if !b7cluster.Status.Ready {
-		logger.Info("Control plane endpoint not yet available, requeuing")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
+	// No requeue timer here: a missing endpoint is a condition an operator
+	// resolves by editing Cluster or Beskar7Cluster spec, and the Cluster
+	// watch (see SetupWithManager) wakes this reconcile the moment either
+	// changes.
+	reconcileControlPlaneEndpoint(logger, cluster, b7cluster)
 
 	logger.Info("Beskar7Cluster reconciliation complete")
 	return ctrl.Result{}, nil
@@ -298,130 +289,40 @@ func failureDomainsEqual(a, b []clusterv1.FailureDomain) bool {
 	return true
 }
 
-// defaultAPIServerPort is the canonical Kubernetes API server port. Used as
-// the fallback when neither the user nor a discovery path provides one.
-const defaultAPIServerPort = 6443
-
-func (r *Beskar7ClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Context, logger logr.Logger, cluster *clusterv1.Cluster, b7cluster *infrav1.Beskar7Cluster) error {
+// reconcileControlPlaneEndpoint mirrors the control-plane endpoint in effect
+// to status. Beskar7 never discovers an endpoint and never writes Cluster or
+// Beskar7Cluster spec (D-027): Cluster.spec.controlPlaneEndpoint wins when it
+// IsValid(), since that is what a topology or an operator sets directly on
+// the Cluster; otherwise Beskar7Cluster's own spec.controlPlaneEndpoint is
+// used, which is what a ClusterClass variable patches in. IsValid() requires
+// both host and port, so a host with no port counts as not set.
+func reconcileControlPlaneEndpoint(logger logr.Logger, cluster *clusterv1.Cluster, b7cluster *infrav1.Beskar7Cluster) {
 	logger.Info("Reconciling control plane endpoint")
 
-	// If the operator pre-set a ControlPlaneEndpoint on the Beskar7Cluster spec
-	// (typical for VIP / load-balancer / external-DNS setups), use it
-	// authoritatively. We do not run discovery in this case — the operator
-	// already knows where the API server lives, and discovery would race with
-	// their explicit choice.
-	if specEndpoint := b7cluster.Spec.ControlPlaneEndpoint; specEndpoint.Host != "" {
-		port := specEndpoint.Port
-		if port == 0 {
-			port = defaultAPIServerPort
-		}
-		logger.Info("Using user-supplied control plane endpoint", "host", specEndpoint.Host, "port", port)
-		b7cluster.Status.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-			Host: specEndpoint.Host,
-			Port: port,
-		}
-		setTrue(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointSetReason)
-		b7cluster.Status.Ready = true
-		// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
-		b7cluster.Status.Initialization.Provisioned = ptr.To(true)
-		return nil
+	endpoint := cluster.Spec.ControlPlaneEndpoint
+	source := "Cluster"
+	if !endpoint.IsValid() {
+		endpoint = b7cluster.Spec.ControlPlaneEndpoint
+		source = "Beskar7Cluster"
 	}
 
-	// No user-supplied endpoint — discover from a ready control-plane Machine.
-	// The discovered host gets paired with Spec.ControlPlaneEndpoint.Port if
-	// set (operator wants a non-default port over the discovered IP), otherwise
-	// the canonical 6443.
-	cpEndpoint, err := r.findControlPlaneEndpoint(ctx, logger, cluster)
-	if err != nil {
-		return errors.Wrapf(err, "failed to find control plane endpoint for cluster %s/%s", cluster.Namespace, cluster.Name)
-	}
-
-	if cpEndpoint == nil {
-		setFalse(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointNotSetReason, "Waiting for control plane Beskar7Machine(s) to have IP addresses")
+	if !endpoint.IsValid() {
+		setFalse(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointNotSetReason,
+			"set spec.controlPlaneEndpoint (host and port) on Beskar7Cluster %s or on Cluster %s; Beskar7 does not discover one",
+			b7cluster.Name, cluster.Name)
 		b7cluster.Status.Ready = false
 		// Initialization.Provisioned is one-shot per the v1beta2 contract; leave it
 		// nil here rather than flipping back to false, so a cluster that briefly
 		// loses its endpoint does not regress in CAPI's view.
-		return nil
+		return
 	}
 
-	if specPort := b7cluster.Spec.ControlPlaneEndpoint.Port; specPort != 0 {
-		cpEndpoint.Port = specPort
-	}
-
-	logger.Info("Control plane endpoint discovered", "host", cpEndpoint.Host, "port", cpEndpoint.Port)
-	b7cluster.Status.ControlPlaneEndpoint = *cpEndpoint
+	logger.Info("Control plane endpoint in effect", "source", source, "host", endpoint.Host, "port", endpoint.Port)
+	b7cluster.Status.ControlPlaneEndpoint = endpoint
 	setTrue(b7cluster, infrav1.ControlPlaneEndpointReady, infrav1.ControlPlaneEndpointSetReason)
 	b7cluster.Status.Ready = true
 	// CAPI v1beta2 contract: surface to Cluster.status.initialization.infrastructureProvisioned.
 	b7cluster.Status.Initialization.Provisioned = ptr.To(true)
-
-	return nil
-}
-
-// findControlPlaneEndpoint searches for a ready control plane machine and extracts its IP.
-func (r *Beskar7ClusterReconciler) findControlPlaneEndpoint(ctx context.Context, logger logr.Logger, cluster *clusterv1.Cluster) (*clusterv1.APIEndpoint, error) {
-	logger.Info("Searching for control plane machine endpoint")
-
-	machineList := &clusterv1.MachineList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(cluster.Namespace),
-		client.MatchingLabels{
-			clusterv1.ClusterNameLabel:         cluster.Name,
-			clusterv1.MachineControlPlaneLabel: "",
-		},
-	}
-
-	if err := r.List(ctx, machineList, listOpts...); err != nil {
-		logger.Error(err, "Failed to list machines to find control plane endpoint")
-		return nil, err
-	}
-
-	if len(machineList.Items) == 0 {
-		logger.Info("No control plane machines found yet")
-		return nil, nil
-	}
-
-	// Find the first ready control plane machine with an address
-	for _, machine := range machineList.Items {
-		// Check if Machine has InfrastructureReady condition (implies Beskar7Machine is ready)
-		if !conditions.IsTrue(&machine, clusterv1.InfrastructureReadyCondition) {
-			logger.V(1).Info("Skipping machine, infrastructure not ready", "machine", machine.Name)
-			continue
-		}
-
-		// Check if Machine has an address in its status
-		if len(machine.Status.Addresses) == 0 {
-			logger.V(1).Info("Skipping machine, no addresses found in status", "machine", machine.Name)
-			continue
-		}
-
-		// Prefer an InternalIP; otherwise take the first address of whatever type,
-		// which may be a Hostname or DNS name rather than an ExternalIP.
-		var selectedAddress string
-		for _, addr := range machine.Status.Addresses {
-			if addr.Type == clusterv1.MachineInternalIP {
-				selectedAddress = addr.Address
-				break
-			}
-		}
-		if selectedAddress == "" {
-			selectedAddress = machine.Status.Addresses[0].Address // Fallback to the first address
-		}
-
-		logger.Info("Found suitable control plane machine endpoint", "machine", machine.Name, "address", selectedAddress)
-		// Port is the canonical 6443 by default; the caller
-		// (reconcileControlPlaneEndpoint) overrides with Spec.ControlPlaneEndpoint.Port
-		// when the operator has set one.
-		return &clusterv1.APIEndpoint{
-			Host: selectedAddress,
-			Port: defaultAPIServerPort,
-		}, nil
-	}
-
-	// No suitable machine found yet
-	logger.Info("No ready control plane machines with addresses found yet")
-	return nil, nil
 }
 
 // reconcileDelete handles the cleanup when a Beskar7Cluster is marked for deletion.
@@ -452,6 +353,13 @@ func (r *Beskar7ClusterReconciler) SetupWithManager(ctx context.Context, mgr ctr
 		Watches(
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Clusters),
+		).
+		// Cluster.spec.controlPlaneEndpoint is an endpoint source (D-027) and
+		// pause is read from the Cluster, so an edit to either must wake this
+		// reconcile; nothing else would, as a missing endpoint sets no timer.
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(util.ClusterToInfrastructureMapFunc(ctx, infrav1.GroupVersion.WithKind("Beskar7Cluster"), r.Client, &infrav1.Beskar7Cluster{})),
 		).
 		// options was previously accepted and silently discarded; apply it, with
 		// the worker count overlaid from the reconciler's own configuration.

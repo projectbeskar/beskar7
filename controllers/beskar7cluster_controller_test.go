@@ -95,7 +95,7 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 	})
 
 	Context("Reconcile Normal", func() {
-		It("should add finalizer and wait for control plane machines", func() {
+		It("should add finalizer, then report ControlPlaneEndpointReady=False with no requeue when nothing is set", func() {
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 
 			reconciler := &Beskar7ClusterReconciler{
@@ -121,10 +121,13 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				g.Expect(b7cluster.Finalizers).To(ContainElement(Beskar7ClusterFinalizer))
 			}, "5s", "100ms").Should(Succeed())
 
-			// Third reconcile tries to find endpoint, fails, sets condition, and requeues
+			// Third reconcile evaluates the endpoint: neither Cluster nor
+			// Beskar7Cluster carries one, and Beskar7 does not discover one
+			// (D-027), so this sets the NotSet condition with NO requeue timer
+			// — the reconciler waits on the Cluster watch instead of polling.
 			result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue when no machines are found")
+			Expect(result.RequeueAfter).To(BeZero(), "a missing endpoint must not poll; the Cluster watch wakes it instead")
 
 			// Check condition and status
 			Eventually(func(g Gomega) {
@@ -133,15 +136,51 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal(infrav1.ControlPlaneEndpointNotSetReason))
+				g.Expect(cond.Message).To(ContainSubstring("Beskar7 does not discover one"))
+				g.Expect(cond.Message).To(ContainSubstring(b7cluster.Name))
+				g.Expect(cond.Message).To(ContainSubstring(capiCluster.Name))
 				g.Expect(b7cluster.Status.Ready).To(BeFalse())
 				g.Expect(b7cluster.Status.ControlPlaneEndpoint.IsZero()).To(BeTrue())
+				g.Expect(b7cluster.Status.Initialization.Provisioned).To(BeNil())
 			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpointReady should be False")
 		})
 
-		// BUG-9: when the operator pre-sets Spec.ControlPlaneEndpoint (typical
-		// for VIP / load-balancer / external-DNS setups), the controller must
-		// honor it authoritatively instead of running discovery and overriding.
-		It("should honor user-set Spec.ControlPlaneEndpoint authoritatively (BUG-9)", func() {
+		// ClusterClass shape: the Beskar7ClusterTemplate's spec is normally {},
+		// so the only source is Cluster.spec.controlPlaneEndpoint — set by a
+		// ClusterClass variable patch or directly by a user (D-027).
+		It("should provision from Cluster.spec.controlPlaneEndpoint when Beskar7Cluster spec is empty", func() {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: capiCluster.Name, Namespace: testNs.Name}, capiCluster)).To(Succeed())
+			capiCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "cluster-endpoint.example.com", Port: 6443}
+			Expect(k8sClient.Update(ctx, capiCluster)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("cluster-endpoint.example.com"))
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
+				g.Expect(b7cluster.Status.Ready).To(BeTrue())
+				g.Expect(b7cluster.Status.Initialization.Provisioned).To(HaveValue(BeTrue()))
+				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(cond.Reason).To(Equal(infrav1.ControlPlaneEndpointSetReason))
+			}, "5s", "100ms").Should(Succeed())
+		})
+
+		// Falls back to Beskar7Cluster's own spec when Cluster carries none —
+		// the VIP / load-balancer case where the operator sets it directly on
+		// the infra cluster rather than on the topology-less Cluster.
+		It("should provision from Beskar7Cluster.spec.controlPlaneEndpoint when Cluster carries none", func() {
 			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
 				Host: "api.example.com",
 				Port: 8443,
@@ -149,20 +188,13 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 
 			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-
-			// First reconcile establishes the NotPaused condition (see the
-			// comment in "should add finalizer and wait for control plane
-			// machines" above); second adds finalizer.
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-
-			// Third reconcile should observe the user-supplied endpoint, mark
-			// Ready=true, and NOT requeue waiting for control-plane machines.
 			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeZero(), "user-supplied endpoint must not trigger discovery requeue")
+			Expect(result.RequeueAfter).To(BeZero())
 
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
@@ -175,19 +207,68 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			}, "5s", "100ms").Should(Succeed())
 		})
 
-		// BUG-9: when only the port is user-supplied, discovery should still find
-		// the host but the user's port wins.
-		It("should override default port 6443 with Spec.ControlPlaneEndpoint.Port when discovering host (BUG-9)", func() {
-			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{
-				// Host empty → discovery runs.
-				Port: 7443,
-			}
+		// When both are set, Cluster's own spec wins — it is what CAPI itself
+		// reads, and it is the value a topology or a direct user edit produced.
+		It("should prefer Cluster's endpoint when Cluster and Beskar7Cluster set different values", func() {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: capiCluster.Name, Namespace: testNs.Name}, capiCluster)).To(Succeed())
+			capiCluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "cluster-wins.example.com", Port: 6443}
+			Expect(k8sClient.Update(ctx, capiCluster)).To(Succeed())
+
+			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "should-be-ignored.example.com", Port: 9443}
 			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 
-			// Stand up a ready control-plane machine with an internal IP.
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("cluster-wins.example.com"))
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
+			}, "5s", "100ms").Should(Succeed())
+		})
+
+		// A host without a port is not a valid APIEndpoint (IsValid() requires
+		// both), so it must be treated as not set rather than defaulted — the
+		// old default-to-6443 behavior wrote a port-only-in-status value that
+		// CAPI's own copy-back (which reads spec, not status) never saw,
+		// because the webhook that would default the spec port is off by
+		// default (--enable-webhook=false).
+		It("should treat a host without a port as not set", func() {
+			b7cluster.Spec.ControlPlaneEndpoint = clusterv1.APIEndpoint{Host: "api.example.com"}
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
+
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
+				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(infrav1.ControlPlaneEndpointNotSetReason))
+				g.Expect(b7cluster.Status.Ready).To(BeFalse())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.IsZero()).To(BeTrue())
+			}, "5s", "100ms").Should(Succeed())
+		})
+
+		// A ready control-plane Machine with an address used to be enough to
+		// derive an endpoint (discovery); it is not anymore. This replaces the
+		// discovery specs this test used to sit alongside (D-027).
+		It("should remain NotSet with a ready control-plane Machine but no endpoint anywhere", func() {
 			cpMachine := &clusterv1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cp-bug9",
+					Name:      "cp-no-endpoint",
 					Namespace: testNs.Name,
 					Labels: map[string]string{
 						clusterv1.ClusterNameLabel:       capiCluster.Name,
@@ -207,269 +288,26 @@ var _ = Describe("Beskar7Cluster Reconciler", func() {
 			conditions.Set(cpMachine, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
 			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
 
-			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
+			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
 
-			// First reconcile establishes the NotPaused condition, second adds
-			// the finalizer, third discovers the control-plane endpoint.
+			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
 
 			Eventually(func(g Gomega) {
 				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("10.0.0.42"))
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(7443)),
-					"user-supplied Spec.ControlPlaneEndpoint.Port must override default 6443")
-			}, "5s", "100ms").Should(Succeed())
-		})
-
-		It("should derive endpoint when a ready control plane machine has an IP", func() {
-			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
-
-			// Create the CAPI Machine object (spec only first)
-			cpMachine := &clusterv1.Machine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "controlplane-0",
-					Namespace: testNs.Name,
-					Labels: map[string]string{
-						clusterv1.ClusterNameLabel:       capiCluster.Name,
-						"cluster.x-k8s.io/control-plane": "", // Mark as control plane
-					},
-				},
-				Spec: clusterv1.MachineSpec{
-					ClusterName: capiCluster.Name,
-					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef.
-					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
-					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
-				},
-				// Status will be updated below
-			}
-			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
-
-			By("Setting the Machine's Status to Ready with an IP")
-			cpMachineKey := client.ObjectKeyFromObject(cpMachine)
-			Eventually(func(g Gomega) error {
-				// Fetch the machine first to get the latest ResourceVersion for update
-				machineToUpdate := &clusterv1.Machine{}
-				if err := k8sClient.Get(ctx, cpMachineKey, machineToUpdate); err != nil {
-					return err
-				}
-				// Set the desired status fields
-				machineToUpdate.Status.Initialization.InfrastructureProvisioned = ptr.To(true)
-				machineToUpdate.Status.Addresses = []clusterv1.MachineAddress{
-					{Type: clusterv1.MachineExternalIP, Address: "1.1.1.1"},
-					{Type: clusterv1.MachineInternalIP, Address: "192.168.1.10"},
-				}
-				conditions.Set(machineToUpdate, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
-				// Attempt the status update
-				return k8sClient.Status().Update(ctx, machineToUpdate)
-			}, "10s", "100ms").Should(Succeed(), "Failed to update Machine status")
-
-			By("Ensuring the Machine status conditions are readable")
-			Eventually(func(g Gomega) {
-				updatedMachine := &clusterv1.Machine{}
-				g.Expect(k8sClient.Get(ctx, cpMachineKey, updatedMachine)).To(Succeed())
-				g.Expect(conditions.IsTrue(updatedMachine, clusterv1.InfrastructureReadyCondition)).To(BeTrue())
-			}, "10s", "100ms").Should(Succeed(), "Machine condition InfrastructureReady should be True after update")
-
-			reconciler := &Beskar7ClusterReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			// First reconcile establishes the NotPaused condition.
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Second reconcile adds finalizer
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Third reconcile should find the machine and set the endpoint
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeZero(), "Should not requeue once endpoint is derived")
-
-			// Check condition and status
-			Eventually(func(g Gomega) {
-				Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
 				cond := conditions.Get(b7cluster, infrav1.ControlPlaneEndpointReady)
 				g.Expect(cond).NotTo(BeNil())
-				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-				g.Expect(b7cluster.Status.Ready).To(BeTrue())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("192.168.1.10"))
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
-			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpoint should be derived correctly")
-		})
-
-		It("should handle machine ready but no address", func() {
-			// Create a machine that's ready but has no addresses
-			machineWithoutAddress := &clusterv1.Machine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "machine-no-address",
-					Namespace: testNs.Name,
-					Labels: map[string]string{
-						clusterv1.ClusterNameLabel:       b7cluster.Name,
-						"cluster.x-k8s.io/control-plane": "", // Required label for control plane detection
-					},
-				},
-				Spec: clusterv1.MachineSpec{
-					ClusterName: b7cluster.Name,
-					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef; nothing
-					// in envtest acts on them.
-					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
-					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
-				},
-				Status: clusterv1.MachineStatus{
-					Phase: string(clusterv1.MachinePhaseRunning),
-					Conditions: []metav1.Condition{
-						{
-							Type:   string(clusterv1.InfrastructureReadyCondition),
-							Status: metav1.ConditionTrue, Reason: "Ready",
-						},
-					},
-					// No addresses provided
-				},
-			}
-			Expect(k8sClient.Create(ctx, machineWithoutAddress)).To(Succeed())
-
-			// Create the Beskar7Cluster
-			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
-			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-
-			// First reconcile establishes the NotPaused condition.
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Second reconcile - should add finalizer
-			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(BeNumerically(">", 0), "Should requeue after adding finalizer")
-
-			// Third reconcile - should check for control plane endpoint (but not find one)
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify that control plane endpoint is not set due to missing address
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(BeEmpty())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(0)))
-			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpoint should remain unset without address")
-		})
-
-		// Converted from a long-pending PIt. The fallback path in
-		// findControlPlaneEndpoint (controllers/beskar7cluster_controller.go)
-		// picks the first address when no MachineInternalIP is present,
-		// which lets external-IP-only machines still feed the cluster
-		// control-plane endpoint.
-		It("should fall back to external IP when no internal address is present", func() {
-			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
-
-			// Stand up a control-plane Machine with ExternalIP only. Labels and
-			// Spec.ClusterName must reference the CAPI cluster, not the b7
-			// cluster — findControlPlaneEndpoint lists by ClusterNameLabel
-			// against the CAPI cluster's name.
-			cpMachine := &clusterv1.Machine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "cp-external-only",
-					Namespace: testNs.Name,
-					Labels: map[string]string{
-						clusterv1.ClusterNameLabel:       capiCluster.Name,
-						"cluster.x-k8s.io/control-plane": "",
-					},
-				},
-				Spec: clusterv1.MachineSpec{
-					ClusterName:       capiCluster.Name,
-					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
-					Bootstrap:         clusterv1.Bootstrap{DataSecretName: ptr.To("ignored")},
-				},
-			}
-			Expect(k8sClient.Create(ctx, cpMachine)).To(Succeed())
-			// Status is a subresource — set it AFTER Create.
-			cpMachine.Status.Addresses = []clusterv1.MachineAddress{
-				{Type: clusterv1.MachineExternalIP, Address: "203.0.113.10"},
-			}
-			conditions.Set(cpMachine, metav1.Condition{Type: clusterv1.InfrastructureReadyCondition, Status: metav1.ConditionTrue, Reason: "Ready"})
-			Expect(k8sClient.Status().Update(ctx, cpMachine)).To(Succeed())
-
-			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-
-			// First reconcile establishes the NotPaused condition, second adds
-			// the finalizer, third discovers the control-plane endpoint.
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(Equal("203.0.113.10"))
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(6443)))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(infrav1.ControlPlaneEndpointNotSetReason))
+				g.Expect(b7cluster.Status.Ready).To(BeFalse())
+				g.Expect(b7cluster.Status.ControlPlaneEndpoint.IsZero()).To(BeTrue())
 			}, "5s", "100ms").Should(Succeed())
-		})
-
-		It("should handle machine not ready", func() {
-			// Create a machine that's not ready
-			notReadyMachine := &clusterv1.Machine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "machine-not-ready",
-					Namespace: testNs.Name,
-					Labels: map[string]string{
-						clusterv1.ClusterNameLabel:       b7cluster.Name,
-						"cluster.x-k8s.io/control-plane": "", // Required label for control plane detection
-					},
-				},
-				Spec: clusterv1.MachineSpec{
-					ClusterName: b7cluster.Name,
-					// The v1beta2 Machine CRD requires bootstrap and infrastructureRef; nothing
-					// in envtest acts on them.
-					Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
-					InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
-				},
-				Status: clusterv1.MachineStatus{
-					Phase: string(clusterv1.MachinePhaseProvisioning),
-					Conditions: []metav1.Condition{
-						{
-							Type:   string(clusterv1.InfrastructureReadyCondition),
-							Status: metav1.ConditionFalse,
-							Reason: "ProvisioningInProgress",
-						},
-					},
-					Addresses: []clusterv1.MachineAddress{
-						{
-							Type:    clusterv1.MachineInternalIP,
-							Address: "192.168.1.15",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, notReadyMachine)).To(Succeed())
-
-			// Create the Beskar7Cluster
-			Expect(k8sClient.Create(ctx, b7cluster)).To(Succeed())
-			reconciler := &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
-
-			// First reconcile establishes the NotPaused condition; second adds the
-			// finalizer; third actually evaluates the not-ready control-plane machine.
-			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
-			Expect(err).NotTo(HaveOccurred())
-
-			// Verify that control plane endpoint is not set for non-ready machine
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, key, b7cluster)).To(Succeed())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Host).To(BeEmpty())
-				g.Expect(b7cluster.Status.ControlPlaneEndpoint.Port).To(Equal(int32(0)))
-			}, "5s", "100ms").Should(Succeed(), "ControlPlaneEndpoint should not be set for non-ready machine")
 		})
 
 		It("should discover FailureDomains from PhysicalHost labels", func() {

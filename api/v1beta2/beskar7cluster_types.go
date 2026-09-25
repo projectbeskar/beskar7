@@ -60,7 +60,9 @@ type Beskar7ClusterStatus struct {
 	// +optional
 	Initialization Beskar7ClusterInitializationStatus `json:"initialization,omitempty,omitzero"`
 
-	// ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+	// ControlPlaneEndpoint is the endpoint in effect: Cluster.spec.controlPlaneEndpoint
+	// when it is valid, otherwise this object's own spec.controlPlaneEndpoint.
+	// Beskar7 never discovers one and never writes either spec.
 	// +optional
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
 

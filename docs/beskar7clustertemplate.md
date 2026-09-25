@@ -41,10 +41,12 @@ spec:
 ### Why `spec` is empty
 
 `Beskar7ClusterSpec` has exactly one field, `controlPlaneEndpoint`, and that is precisely the field you should **not**
-template. Every cluster needs its own endpoint, and the `Beskar7Cluster` controller discovers one from the
-control-plane `Machine` objects when it is left unset (see
-[Beskar7Cluster → control-plane endpoint](beskar7cluster.md)). Setting it in the template would hand every cluster in
-the `ClusterClass` the same endpoint.
+template. Every cluster needs its own endpoint, and Beskar7 does not discover one (see
+[Beskar7Cluster → control-plane endpoint](beskar7cluster.md)) — setting it in the template would hand every cluster
+in the `ClusterClass` the same endpoint. Instead, each `Cluster` supplies its own value another way: a
+`controlPlaneEndpoint` `ClusterClass` variable, patched per-Cluster into the generated `Beskar7Cluster`'s
+`spec.controlPlaneEndpoint` (see [`examples/clusterclass.yaml`](../examples/clusterclass.yaml)), or
+`Cluster.spec.controlPlaneEndpoint` set directly on the topology `Cluster`.
 
 So `spec: {}` is the normal, correct content. The template earns its keep by existing, not by carrying configuration.
 If `Beskar7ClusterSpec` grows genuinely per-class fields later, they belong here.

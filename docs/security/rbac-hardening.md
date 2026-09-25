@@ -183,7 +183,7 @@ The manager pod does not need to be restarted between steps 2 and 4 — Kubernet
 |---|---|---|
 | `PhysicalHostReconciler` | `physicalhosts`, `physicalhosts/status`, `physicalhosts/finalizers`, `secrets` (get + list/watch via informer), `configmaps` (get + create/delete/patch/update + list/watch via informer), `events` | Manage the host's lifecycle, fetch BMC credentials, consume the inspection-result ConfigMap (handoff from the inspection HTTP handler). |
 | `Beskar7MachineReconciler` | `beskar7machines`, `beskar7machines/status`, `beskar7machines/finalizers`, `physicalhosts` (get + patch), `secrets` (get + create/update/patch/delete), `machines` / `machines/status` (read), `cluster.x-k8s.io` resources (read) | Claim a host, read bootstrap data, mint per-host token Secret, walk to owner Machine. |
-| `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `machines` (read), `physicalhosts` (read for failure-domain discovery) | Derive the control-plane endpoint and failure domains. |
+| `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `clusters` / `clusters/status` (read; also watched, so a Cluster edit wakes the reconciler), `physicalhosts` (read for failure-domain discovery) | Mirror the control-plane endpoint already set on `Cluster` or `Beskar7Cluster` spec and discover failure domains. |
 
 ## Residual cluster-wide scope
 
