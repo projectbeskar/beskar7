@@ -73,10 +73,10 @@ metadata:
   name: test-cluster
   namespace: default
 spec:
-  # The webhook rejects an empty controlPlaneEndpoint.host. In production
-  # the controller derives this from a control-plane Machine's IP; for a
-  # demo we set a placeholder. The PhysicalHost reconciliation does not
-  # depend on this value.
+  # Beskar7 does not discover a control-plane endpoint — set your real VIP or
+  # load-balancer address here (or on the Cluster below, which takes
+  # precedence if both are set). This is a placeholder for the demo; the
+  # PhysicalHost reconciliation does not depend on this value.
   controlPlaneEndpoint:
     host: "192.0.2.1"  # RFC 5737 documentation prefix; replace with your real VIP/load-balancer
     port: 6443

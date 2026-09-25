@@ -43,9 +43,11 @@ type Beskar7ClusterTemplateResource struct {
 	//
 	// It is normal for this to be empty. The only field Beskar7ClusterSpec has is
 	// controlPlaneEndpoint, and that is exactly the field you should NOT template:
-	// every cluster needs its own endpoint, and the Beskar7Cluster controller
-	// discovers one from the control-plane Machines when it is left unset. Setting
-	// it here would give every cluster in the ClusterClass the same endpoint.
+	// every cluster needs its own endpoint. Beskar7 does not discover one, so a
+	// ClusterClass using this template supplies it another way — a
+	// controlPlaneEndpoint ClusterClass variable patched into the generated
+	// Beskar7Cluster, or Cluster.spec.controlPlaneEndpoint set directly on the
+	// topology Cluster. See examples/clusterclass.yaml.
 	Spec Beskar7ClusterSpec `json:"spec"`
 }
 

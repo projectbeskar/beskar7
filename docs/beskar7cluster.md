@@ -19,24 +19,29 @@ For the full field reference, see [API Reference: Beskar7Cluster](api-reference.
 ```yaml
 spec:
   controlPlaneEndpoint:
-    host: "10.0.1.10"   # optional; controller derives if unset
-    port: 6443          # optional
+    host: "10.0.1.10"   # optional; see "Control-plane endpoint" below
+    port: 6443          # required if host is set
 ```
 
 ## What the reconciler does
 
 ### Control-plane endpoint
 
-The controller derives the endpoint by:
+**Beskar7 does not discover a control-plane endpoint.** It only mirrors the endpoint already in effect elsewhere to `Status.ControlPlaneEndpoint`:
 
-1. Listing CAPI `Machine` objects with the `cluster.x-k8s.io/cluster-name=<this-cluster>` label and the `cluster.x-k8s.io/control-plane` label.
-2. Skipping any `Machine` whose `InfrastructureReady` condition is not `True`, or that has no `status.addresses` yet.
-3. From the rest, taking the first `InternalIP` — or, if there is none, the first address of any type (which may be a hostname or DNS name, not necessarily an `ExternalIP`).
-4. Writing that address to `Status.ControlPlaneEndpoint`.
+1. If `Cluster.spec.controlPlaneEndpoint` is valid (host and port both set), that value is used — this is what a `ClusterClass` topology or a direct edit to the `Cluster` object produces.
+2. Otherwise, if this `Beskar7Cluster`'s own `Spec.ControlPlaneEndpoint` has both host and port set, that value is used instead.
+3. Otherwise the endpoint is not set. A host with no port does not count as set — `Spec.ControlPlaneEndpoint.Port` is never defaulted by the reconciler.
 
-If `Spec.ControlPlaneEndpoint.Host` is non-empty, the controller honors it authoritatively and skips discovery. If only `Spec.ControlPlaneEndpoint.Port` is set, discovery still finds the host but the user's port wins. The default port when neither is supplied is `6443`.
+The controller never writes `Cluster.spec` or `Beskar7Cluster.spec` — an operator or a `ClusterClass` patch supplies the value (see [Using it from a ClusterClass](#using-it-from-a-clusterclass) below, or [`examples/clusterclass.yaml`](../examples/clusterclass.yaml)).
 
 Once the endpoint is populated, the controller sets `Status.Ready=true` AND `Status.Initialization.Provisioned=true` together. The second field is the CAPI v1beta2 contract: CAPI core lifts it into `Cluster.status.initialization.infrastructureProvisioned`, which the KubeadmConfig + Machine controllers gate on. Without it the bootstrap data secret is never generated and downstream Machine reconcile stalls — this was the gap fixed in v0.4.0-alpha.4.
+
+When no endpoint is set anywhere, `ControlPlaneEndpointReady` is `False` with reason `ControlPlaneEndpointNotSet` and a message naming exactly what to set. There is no requeue timer for this case: the reconciler watches `Cluster`, so setting the endpoint on either object wakes it immediately instead of waiting on a poll.
+
+### Using it from a ClusterClass
+
+`Beskar7ClusterTemplate`'s `spec.template.spec` is normally `{}` (see [Beskar7ClusterTemplate](beskar7clustertemplate.md)), so the endpoint has to come from somewhere per-Cluster. `examples/clusterclass.yaml` shows the pattern: a required `controlPlaneEndpoint` `ClusterClass` variable, patched with a JSON Patch into the generated `Beskar7Cluster`'s `spec.controlPlaneEndpoint`, and set per-Cluster under `spec.topology.variables`. The alternative — bypassing Beskar7Cluster's spec entirely — is to set `Cluster.spec.controlPlaneEndpoint` directly on the topology `Cluster`; Beskar7 prefers that value over `Beskar7Cluster`'s when both are present.
 
 ### Failure domains
 

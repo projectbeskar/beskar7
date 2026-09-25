@@ -12,6 +12,13 @@
 # Prerequisites, same as any Beskar7 cluster: PhysicalHost objects registered and
 # Available, with the node-role labels the machine templates select on. See
 # examples/host-pools.yaml.
+#
+# Beskar7 does not discover a control-plane endpoint (see docs/beskar7cluster.md).
+# Every cluster built from this class needs its own, so it is supplied per-Cluster
+# through the controlPlaneEndpoint variable below, patched into the generated
+# Beskar7Cluster. The alternative — bypassing the variable entirely — is to set
+# Cluster.spec.controlPlaneEndpoint directly on the topology Cluster; Beskar7
+# prefers that value over Beskar7Cluster's when both are present.
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Beskar7ClusterTemplate
@@ -20,10 +27,9 @@ metadata:
   namespace: default
 spec:
   template:
-    # spec is deliberately empty. Beskar7ClusterSpec's only field is
-    # controlPlaneEndpoint, which must NOT be templated — every cluster needs its
-    # own, and the Beskar7Cluster controller discovers one from the control-plane
-    # Machines when it is unset. See docs/beskar7clustertemplate.md.
+    # spec starts empty and is filled in per-Cluster by the controlPlaneEndpoint
+    # patch below — it must NOT be a literal value here, or every cluster in the
+    # class would share the same endpoint.
     spec: {}
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -90,6 +96,34 @@ spec:
           apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
           kind: Beskar7MachineTemplate
           name: beskar7-worker-template
+  # Required: every Cluster built from this class must supply its own
+  # control-plane endpoint (Beskar7 does not discover one). matchResources
+  # scopes the patch to the infrastructure cluster template only.
+  variables:
+  - name: controlPlaneEndpoint
+    required: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          host:
+            type: string
+          port:
+            type: integer
+        required: ["host", "port"]
+  patches:
+  - name: controlPlaneEndpoint
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        kind: Beskar7ClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/controlPlaneEndpoint
+        valueFrom:
+          variable: controlPlaneEndpoint
 ---
 # The Cluster names the class instead of carrying an infrastructureRef of its own.
 # Cluster API's topology controller creates the Beskar7Cluster from the template.
@@ -113,3 +147,8 @@ spec:
       - class: beskar7-worker
         name: md-0
         replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.1.10" # replace with your real VIP/load-balancer
+        port: 6443

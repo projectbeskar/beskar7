@@ -149,11 +149,14 @@ graph TD
 **Responsibilities:**
 - Represents cluster-wide infrastructure concerns
 
-**Derives the Control Plane Endpoint:**
-1. Lists CAPI `Machine` resources with control plane label (`cluster.x-k8s.io/control-plane`)
-2. Finds a `Machine` marked as `InfrastructureReady`
-3. Extracts the address from `Machine`'s `status.addresses` — preferring `InternalIP`, otherwise falling back to the first address of any type
-4. Populates `Beskar7Cluster`'s `status.controlPlaneEndpoint` field
+**Mirrors the Control Plane Endpoint (does not discover one):**
+1. Uses `Cluster.spec.controlPlaneEndpoint` if it is valid (host and port both set)
+2. Otherwise uses this `Beskar7Cluster`'s own `spec.controlPlaneEndpoint`, if host and port are both set
+3. Otherwise leaves the endpoint unset and reports `ControlPlaneEndpointReady=False`, naming what to set
+4. Populates `Beskar7Cluster`'s `status.controlPlaneEndpoint` field with whichever source won
+
+The controller never writes either spec. It watches `Cluster` so that setting the endpoint, on either
+object, is picked up immediately rather than on the next poll.
 
 **Discovers Failure Domains:**
 1. Lists `PhysicalHost` resources in the same namespace
@@ -437,7 +440,7 @@ Conditions are native `metav1.Condition` — no `severity` field, and every cond
 ```yaml
 spec:
   controlPlaneEndpoint:
-    host: ""  # Filled by controller
+    host: "10.0.1.10"  # or leave unset and put it on Cluster.spec.controlPlaneEndpoint instead
     port: 6443
 
 status:

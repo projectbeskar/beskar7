@@ -78,6 +78,40 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   reaches `Deploying` instead of timing out. An `InUse` host, and one that has never reached a
   provisioning sub-state, still goes to `Error` unchanged. No Beskar7Machine controller change was
   needed.
+- **`Beskar7Cluster`'s control-plane endpoint discovery could never produce a working cluster.**
+  Discovery wrote only `status.controlPlaneEndpoint`, but Cluster API reads the endpoint from the
+  InfrastructureCluster's own `spec.controlPlaneEndpoint` (and only once the InfrastructureCluster
+  reports provisioned), so a discovered endpoint never reached `Cluster.spec.controlPlaneEndpoint`
+  and the workload cluster's control plane could never be created — every `ClusterClass` fixture
+  shipped with this repo demonstrated the deadlock. Two related bugs, fixed in the same change: a
+  `Beskar7Cluster.spec.controlPlaneEndpoint` with a host but no port used to default the port to
+  `6443` in status only, which CAPI's spec-reading copy-back never saw when the (opt-in, off by
+  default) webhook wasn't running to default the spec port too; and the reconciler had no watch on
+  `Cluster`, so unpausing or editing `Cluster.spec.controlPlaneEndpoint` was invisible until the
+  next 30s poll. The endpoint in effect is now `Cluster.spec.controlPlaneEndpoint` when valid,
+  otherwise `Beskar7Cluster.spec.controlPlaneEndpoint` when both host and port are set (a host with
+  no port counts as not set); either is mirrored to `status.controlPlaneEndpoint` for visibility.
+  Neither spec is ever written by the controller. A missing endpoint reports
+  `ControlPlaneEndpointReady=False` naming exactly what to set, with no requeue timer — the new
+  `Cluster` watch wakes the reconcile instead. See `docs/beskar7cluster.md` and the updated
+  `examples/clusterclass.yaml`.
+
+### Removed
+
+- **Control-plane endpoint discovery.** `Beskar7ClusterReconciler` no longer lists `Machine`
+  objects or derives an endpoint from a ready control-plane Machine's address — see the `Fixed`
+  entry above for why discovery could never produce a working cluster. Set
+  `Cluster.spec.controlPlaneEndpoint` or `Beskar7Cluster.spec.controlPlaneEndpoint` explicitly (a
+  `ClusterClass` variable patch, for topology-managed clusters). Beskar7's RBAC no longer requests
+  read access to `cluster.x-k8s.io` `machines` / `machines/status` for this controller (unchanged
+  for `Beskar7MachineReconciler`, which still needs it). **Upgrade note:** any pre-upgrade
+  `Beskar7Cluster` that reached `Ready` via discovery, with no endpoint ever set on `Cluster.spec`
+  or its own `spec`, reports `ControlPlaneEndpointReady=False` and `Status.Ready=false` on its
+  first post-upgrade reconcile until the endpoint is set explicitly on one of those two specs. The
+  one-shot `Status.Initialization.Provisioned` (what CAPI core itself gates the *initial*
+  provisioning wait on) is left untouched, so an already-running workload cluster's Machines are
+  not affected — but its `Beskar7Cluster` and the parent `Cluster`'s mirrored
+  `InfrastructureReady` condition will read `False` until you set the endpoint.
 
 ## [v0.8.0] - 2026-09-23
 
