@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.8.0` (latest) | ✅ |
+| `v0.9.0` (latest) | ✅ |
+| `v0.8.0` | ✅ |
 | `v0.7.0` | ✅ |
 | `v0.6.2` | ✅ |
 | `v0.6.1` | ✅ |
@@ -51,6 +52,12 @@ without conversion (see `docs/upgrading.md`).
 | `v0.4.0` | ⚠️ upgrade — also breaks `helm upgrade --reuse-values` |
 | earlier `v0.4.0-alpha.*` | ❌ upgrade first |
 | `v0.3.x` | ❌ end of life — not compatible with v0.4 ([CHANGELOG](CHANGELOG.md)) |
+
+**Every release before `v0.9.0`** lets anyone who can create or patch a `PhysicalHost` forge that
+host's callback credentials, and send a same-namespace Secret's `username`/`password` to an
+endpoint of their choosing (fixed in `v0.9.0`, see the [CHANGELOG](CHANGELOG.md)). Until you can
+upgrade, grant `create`/`patch` on `physicalhosts` only to people who may also read the Secrets in
+that namespace.
 
 ## Verifying what you run
 
@@ -68,13 +75,23 @@ release workflow — do not deploy it, and please report it.
 Context that may help when assessing a finding:
 
 - **BMC credentials** live in namespaced Secrets referenced by
-  `PhysicalHost.spec.redfishConnection.credentialsSecretRef`. They are never
-  logged; the controller logs a BMC address without credentials.
-- **The host callback endpoint** (`:8082`) is bearer-gated per host. Every route
-  matches the caller's token against the target `PhysicalHost`'s stored SHA-256.
-  Plaintext tokens live only in a per-host Secret; only the hash is in status.
-- **The `/boot` endpoint** is gated by a **single-use** boot nonce, distinct from
-  the bearer token and consumed on first fetch.
+  `PhysicalHost.spec.redfishConnection.credentialsSecretRef`. The Secret, not
+  the host, decides where they may be sent: it must list the BMC addresses in
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`, and opt in with
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` before they
+  travel over `http://` or unverified TLS (D-030). They are never logged; the
+  controller logs a BMC address without credentials.
+- **The host callback endpoint** (`:8082`) is bearer-gated per host. The per-host
+  `<host>-bootstrap-token` Secret is the only credential: every route compares
+  the caller's token, in constant time, against the one in that Secret, with an
+  expiry the manager wrote, and only while the host's `consumerRef` names the
+  machine the Secret was minted for, in the host's own namespace (D-029).
+  `status.bootstrap` shows the hashes as a mirror and is never used to
+  authenticate.
+- **The `/boot` endpoint** is gated by a boot nonce, distinct from the bearer
+  token and held in the same Secret. Its first fetch is recorded; the same
+  nonce renders the same script until it expires (10 minutes), and a new
+  claim always gets a new one.
 - **OS image integrity** is anchored by `targetImageDigest` (SHA-256), verified by
   the inspector during the write. The image may be served over plain HTTP: the
   digest, not TLS, is the trust anchor.

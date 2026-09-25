@@ -4,7 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [v0.9.0] - 2026-09-25
+
+Security and Cluster API conformance fixes found in a full review of `v0.8.0`, several of which
+affect every earlier release. No CRD-schema change to any existing resource, and no contract change
+(still `v4.2`: the inspector, `v0.3.2`, is unaffected).
+
+**Three things to do — two of them before you upgrade.** Details and commands are in
+[`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.9.0/docs/upgrading.md), section
+`v0.8.0` → `v0.9.0`.
+
+1. **Annotate every BMC credentials Secret** with
+   `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` (and
+   `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"` where a host uses
+   `http://` or `insecureSkipVerify`) **before upgrading**. `v0.8.0` ignores both. A Secret you miss
+   is not used: its hosts report `CredentialsNotAuthorized` until you annotate it, and nothing is
+   reprovisioned.
+2. **Set the control-plane endpoint explicitly** on the `Cluster` or the `Beskar7Cluster` if you
+   relied on endpoint discovery, which is removed.
+3. **Upgrade with no host `Inspecting` or `Deploying`.** Callback credentials moved to the per-host
+   Secret, and an in-flight run's callbacks are rejected until the new leader has reconciled its
+   machine; the inspector treats that as fatal.
 
 ### Security
 
@@ -17,8 +37,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   access, not from any normal reconcile path. `controllers/bootstrap_handler.go` and
   `controllers/boot_handler.go` now resolve the consumer through a shared helper that requires
   `ConsumerRef.Namespace` to be empty or equal to the host's own namespace; a mismatch is treated
-  exactly like no consumer at all — the same opaque `404` the handlers already return, logged at
-  `V(1)` with no secret material. The `Beskar7MachineReconciler`'s own host lookups (the ConsumerRef
+  exactly like no consumer at all, rejected with the same opaque response as an unclaimed host and
+  logged at `V(1)` with no secret material. The `Beskar7MachineReconciler`'s own host lookups (the ConsumerRef
   re-find on claim and the ConsumerRef scan on release) use the same helper, so a host claimed "by" a
   same-named machine in a different namespace is neither adopted nor released by the wrong machine,
   and deleting a machine whose `providerID` names another namespace's host no longer releases and
