@@ -296,8 +296,8 @@ osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
 
 1. **Create Release Tag** — the current release line is `v0.4.x` (GA); bump the patch for each release. Use a `vX.Y.Z` (or `vX.Y.Z-pre`) format the `release.yml` workflow recognises.
    ```bash
-   git tag v0.8.0
-   git push origin v0.8.0
+   git tag v0.9.0
+   git push origin v0.9.0
    ```
 
 2. **Automated Release** - GitHub Actions automatically:

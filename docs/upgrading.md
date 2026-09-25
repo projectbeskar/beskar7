@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.8.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.9.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.9.0` | `v4.2` **frozen** |
 | `v0.8.0` | `v4.2` **frozen** |
 | `v0.7.0` | `v4.2` **frozen** |
 | `v0.6.2` | `v4.2` **frozen** |
@@ -99,6 +100,123 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.8.0` → `v0.9.0` — security and Cluster API conformance fixes; three things to do first
+
+No CRD-schema change to any existing resource, and no contract change: still `v4.2`, so the inspector
+(`v0.3.2`) is unaffected. But three changes need something from you, and two of them should be done
+**before** you upgrade. They are listed in the order to do them.
+
+### 1. Annotate every BMC credentials Secret (required, before upgrading)
+
+A Secret named by a `PhysicalHost`'s `spec.redfishConnection.credentialsSecretRef` is used only if it
+says which BMCs its credentials may be sent to. Before this release, anyone who could create or
+patch a `PhysicalHost` could point `address` at their own endpoint and `credentialsSecretRef` at any
+Secret with `username`/`password` keys, and the controller sent those credentials there.
+
+- `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` (required): the addresses the credentials
+  may go to, separated by commas and/or whitespace. IP addresses, CIDRs (IPv4 no wider than `/8`,
+  IPv6 no wider than `/32`), hostnames, and `*.suffix` wildcards (not over a public suffix such as
+  `*.com`, `*.lab` or `*.svc`). One malformed entry makes the whole list authorise nothing.
+- `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`: also required when a
+  host using the Secret has an `http://` address or `insecureSkipVerify: true`.
+
+`v0.8.0` ignores both annotations, so add them first. Build each list from the addresses your BMCs
+really have, not by copying what the `PhysicalHost` objects say today: a host someone has already
+re-pointed would put their endpoint on the list. Prefer IP addresses, or fully-qualified names under
+a domain you control — a listed name is resolved through the cluster DNS search path when the
+manager connects (see [Where the credentials may go](security/configuration.md#where-the-credentials-may-go)).
+
+```bash
+# Which Secrets are in use, and by which hosts (review the addresses, don't paste them blindly):
+kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.spec.redfishConnection.credentialsSecretRef}{"\t"}{.spec.redfishConnection.address}{"\t"}{.spec.redfishConnection.insecureSkipVerify}{"\n"}{end}' | sort
+
+kubectl annotate secret <credentials-secret> -n <namespace> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses="10.20.0.0/24, bmc-07.example.com"
+# Only where a host uses http:// or insecureSkipVerify: true:
+kubectl annotate secret <credentials-secret> -n <namespace> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport="true"
+```
+
+A Secret you miss is not fatal. Its hosts report `RedfishConnectionReady=False`
+(`CredentialsNotAuthorized`) and are not contacted; an `Inspecting`, `Deploying` or `Ready` host keeps
+its state, a `Beskar7Machine` waits (`WaitingForBMC`) instead of failing, and nothing is
+reprovisioned. Annotating the Secret afterwards recovers its hosts within seconds. See
+[troubleshooting issue 17](troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized).
+
+### 2. Set the control-plane endpoint explicitly (required if you relied on discovery)
+
+`Beskar7Cluster` no longer derives an endpoint from a control-plane Machine's address. That discovery
+wrote only `status`, which Cluster API never reads, and it deadlocked under `KubeadmControlPlane` and
+the Kairos control plane, so it never produced a working cluster. The endpoint now comes from
+`Cluster.spec.controlPlaneEndpoint` when it is valid, otherwise from
+`Beskar7Cluster.spec.controlPlaneEndpoint`; both need a host **and** a port. Without either, the
+`Beskar7Cluster` reports `ControlPlaneEndpointReady=False` with a message saying what to set.
+
+```bash
+kubectl get beskar7clusters -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,HOST:.spec.controlPlaneEndpoint.host,PORT:.spec.controlPlaneEndpoint.port'
+kubectl get clusters -A -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,HOST:.spec.controlPlaneEndpoint.host,PORT:.spec.controlPlaneEndpoint.port'
+```
+
+A cluster set up with an endpoint on either object is unaffected. A cluster that only ever had a
+discovered one reads `ControlPlaneEndpointReady=False` after the upgrade until you set it; its
+running Machines are not affected (`status.initialization.provisioned` is one-shot). For a
+`ClusterClass`, template the endpoint through a variable, or set `Cluster.spec.controlPlaneEndpoint` on
+the topology Cluster — [`examples/clusterclass.yaml`](../examples/clusterclass.yaml) does the former.
+
+### 3. Upgrade with no host `Inspecting` or `Deploying`
+
+Callback credentials live in the per-host `<host>-bootstrap-token` Secret, which is now the only thing
+the callback server checks, bound to the claiming machine. A run in flight across the upgrade keeps
+working once the new leader has reconciled its `Beskar7Machine`, but until then its inspector's
+callbacks are rejected with `401` — and during a rolling update the new pod answers callbacks before
+it holds the lease. The inspector treats a `401` as fatal, so such a run fails with
+`InspectionTimedOut` or `DeploymentTimedOut` and its `MachineHealthCheck` replaces the machine.
+
+```bash
+kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing
+```
+
+Tokens minted before the upgrade stop working on hosts that were already `Ready`, which is harmless:
+no callback follows `Ready`. The `bootstrap-token` and `boot-nonce` annotations are removed from every
+`PhysicalHost` on sight. `status.bootstrap` still shows the hashes and expiries, but only as a mirror
+of the Secret; a tool that wrote those annotations, or read `status.bootstrap` as the authority, must
+use the Secret instead.
+
+### Then upgrade
+
+```bash
+# CRDs first, as always — Helm does not upgrade CRDs on `helm upgrade`.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.0/beskar7-manifests-v0.9.0.yaml
+# or, for a chart install: apply charts/beskar7/crds/*.yaml, then
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.0 --reset-then-reuse-values
+```
+
+Then check that no `PhysicalHost` reports `CredentialsNotAuthorized` and no `Beskar7Cluster` reports
+`ControlPlaneEndpointReady=False`:
+
+```bash
+kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="RedfishConnectionReady")].reason}{"\n"}{end}' | grep CredentialsNotAuthorized
+kubectl get beskar7clusters -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="ControlPlaneEndpointReady")].status}{"\n"}{end}' | grep False
+```
+
+### Also in this release (nothing to do)
+
+- **`clusterctl move` is safe for provisioned clusters.** A moved `PhysicalHost` rebuilds its `Ready`
+  state from its machine's `spec.providerID` instead of being inspected again, and the source side of
+  a move no longer powers hosts off. The inspection report and run timestamps are not carried across
+  a move; see [`clusterctl move`](installation.md#clusterctl-move).
+- **A BMC credential rotation or certificate renewal no longer fails a serving machine.** Any BMC
+  fault on a host that is `Inspecting`, `Deploying` or `Ready` is reported on
+  `RedfishConnectionReady` without changing the host's state.
+- **A callback can no longer reach another namespace's bootstrap data** through a `consumerRef` that
+  names a machine in a different namespace, and a machine recreated under the same name gets fresh
+  callback credentials.
+- **The size overlays under `config/overlays/` deploy** (`make deploy DEPLOY_KUSTOMIZATION=config/overlays/large`).
+- New condition reasons: `CredentialsNotAuthorized` (`PhysicalHost`, `RedfishConnectionReady`) and
+  `WaitingForHostAdoption` (`Beskar7Machine`, `InfrastructureReady`, briefly after a move).
+
+The [CHANGELOG](../CHANGELOG.md) has the details of every fix.
 
 ## `v0.7.0` → `v0.8.0` — additive; fixes a Redfish incompatibility, and a k0s image fix you must apply yourself
 
@@ -307,10 +425,12 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
+# 0. Going straight to v0.9.0: do its steps first (annotate BMC credentials Secrets,
+#    set the control-plane endpoint) — see the v0.8.0 → v0.9.0 section above.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.8.0/beskar7-manifests-v0.8.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.0/beskar7-manifests-v0.9.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.8.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).
