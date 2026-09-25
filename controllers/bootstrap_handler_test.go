@@ -382,6 +382,96 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 			"oversize bootstrap secret is operator-fault — must be 500, not 404")
 	})
 
+	It("returns 404 and never serves the consumer's data when ConsumerRef names a Beskar7Machine in a different namespace (SEC-12)", func() {
+		// A second namespace standing in for a different tenant. The host lives
+		// in testNs (namespace A); its ConsumerRef is forged to point at a
+		// Beskar7Machine in namespace B. Legitimate claims are always
+		// same-namespace (Beskar7MachineReconciler.findAndClaimOrGetAssociatedHost
+		// only lists hosts from its own namespace when claiming), so this
+		// ConsumerRef could only come from direct PhysicalHost patch access —
+		// exactly the SEC-12 threat model.
+		otherNs := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "bootstrap-handler-test-crossns-"},
+		}
+		Expect(k8sClient.Create(ctx, otherNs)).To(Succeed())
+		defer func() { Expect(k8sClient.Delete(ctx, otherNs)).To(Succeed()) }()
+
+		crossMachine := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "cross-ns-b7m",
+				Namespace: otherNs.Name,
+			},
+			Spec: infrav1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot-server/inspect.ipxe",
+				TargetImageURL:     "http://boot-server/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+		Expect(k8sClient.Create(ctx, crossMachine)).To(Succeed())
+
+		crossOwnerMachine := &clusterv1.Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "cross-ns-machine",
+				Namespace: otherNs.Name,
+			},
+			Spec: clusterv1.MachineSpec{
+				ClusterName:       "fake-cluster",
+				InfrastructureRef: clusterv1.ContractVersionedObjectReference{APIGroup: "infrastructure.cluster.x-k8s.io", Kind: "Beskar7Machine", Name: "fixture"},
+				Bootstrap:         clusterv1.Bootstrap{ConfigRef: clusterv1.ContractVersionedObjectReference{APIGroup: "bootstrap.cluster.x-k8s.io", Kind: "KairosConfig", Name: "fixture"}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, crossOwnerMachine)).To(Succeed())
+
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crossMachine.Name, Namespace: otherNs.Name}, crossMachine)).To(Succeed())
+		cmBase := crossMachine.DeepCopy()
+		crossMachine.OwnerReferences = append(crossMachine.OwnerReferences, metav1.OwnerReference{
+			APIVersion: clusterv1.GroupVersion.String(),
+			Kind:       "Machine",
+			Name:       crossOwnerMachine.Name,
+			UID:        crossOwnerMachine.UID,
+		})
+		Expect(k8sClient.Patch(ctx, crossMachine, client.MergeFrom(cmBase))).To(Succeed())
+
+		secretName := "cross-ns-secret"
+		secretPayload := []byte("#cloud-config\nSENSITIVE-NAMESPACE-B-CA-KEY-MATERIAL\n")
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: otherNs.Name},
+			Data:       map[string][]byte{bootstrapDataSecretKey: secretPayload},
+		})).To(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: crossOwnerMachine.Name, Namespace: otherNs.Name}, crossOwnerMachine)).To(Succeed())
+		crossOwnerMachine.Spec.Bootstrap.DataSecretName = &secretName
+		Expect(k8sClient.Update(ctx, crossOwnerMachine)).To(Succeed())
+
+		// Forge the host's ConsumerRef to point at namespace B. A real claim
+		// never produces this.
+		ph := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}, ph)).To(Succeed())
+		phBase := ph.DeepCopy()
+		ph.Spec.ConsumerRef = &corev1.ObjectReference{
+			Kind:       "Beskar7Machine",
+			APIVersion: InfrastructureAPIVersion,
+			Name:       crossMachine.Name,
+			Namespace:  otherNs.Name,
+		}
+		Expect(k8sClient.Patch(ctx, ph, client.MergeFrom(phBase))).To(Succeed())
+
+		// Valid token for the host itself (namespace A) — the attacker needs
+		// nothing from namespace B to reach this far.
+		plaintext, hash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootstrap(hash, 30*time.Minute)
+
+		resp := getBootstrap(plaintext)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound),
+			"a cross-namespace ConsumerRef must resolve to no consumer, the same opaque 404 as no consumer at all")
+		Expect(body).NotTo(ContainSubstring("SENSITIVE-NAMESPACE-B"),
+			"namespace B's bootstrap data must never be served for a host in namespace A")
+	})
+
 	It("returns 200 with the Secret bytes when the chain is intact", func() {
 		linkConsumer()
 		bindMachineOwner()

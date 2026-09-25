@@ -520,14 +520,17 @@ func (h *BootHandler) renderBootScript(
 	ph *infrav1.PhysicalHost,
 	macParam string,
 ) (string, error) {
-	// Walk to the consuming Beskar7Machine via Spec.ConsumerRef.
-	cr := ph.Spec.ConsumerRef
-	if cr == nil || cr.Kind != "Beskar7Machine" || cr.APIVersion != InfrastructureAPIVersion {
-		return "", fmt.Errorf("PhysicalHost %s/%s has no Beskar7Machine consumer", ph.Namespace, ph.Name)
+	// Walk to the consuming Beskar7Machine via Spec.ConsumerRef. Namespace-pinned
+	// (SEC-12, D-029): a ConsumerRef naming a different namespace resolves
+	// to no consumer, so a host cannot be pointed at another namespace's machine
+	// to have that machine's bearer token and CA rendered into its script.
+	consumerKey, ok := resolveConsumerBeskar7Machine(ph)
+	if !ok {
+		return "", fmt.Errorf("PhysicalHost %s/%s has no valid Beskar7Machine consumer", ph.Namespace, ph.Name)
 	}
 	b7m := &infrav1.Beskar7Machine{}
-	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: cr.Namespace, Name: cr.Name}, b7m); err != nil {
-		return "", fmt.Errorf("get Beskar7Machine %s/%s: %w", cr.Namespace, cr.Name, err)
+	if err := h.Client.Get(ctx, consumerKey, b7m); err != nil {
+		return "", fmt.Errorf("get Beskar7Machine %s/%s: %w", consumerKey.Namespace, consumerKey.Name, err)
 	}
 
 	// InspectionImageURL is the base URL for vmlinuz + initrd.img (contract v2:

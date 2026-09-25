@@ -188,7 +188,9 @@ inspector then uses its single NIC, or DHCP-races all links and applies the
 gatewayed winner on a multi-NIC host (§8.2).
 
 - `{InspectionImageURL}` is `Beskar7Machine.Spec.InspectionImageURL` (the
-  consuming machine, resolved via the host's `ConsumerRef`) — the HTTPS base URL
+  consuming machine, resolved via the host's `ConsumerRef` — always within the
+  host's own namespace; a `ConsumerRef` naming another namespace resolves to no
+  consumer, the same as an absent one, see SEC-12) — the HTTPS base URL
   of a location serving the inspector `vmlinuz` and `initrd.img`. (Contract v1
   re-purposes this field as the inspector image base; it was previously
   declared-but-unused.) If it is empty, `/boot` returns the opaque failure — the
@@ -250,7 +252,10 @@ gatewayed winner on a multi-NIC host (§8.2).
   `controllers/bootstrap_handler.go`. **It may contain cluster join secrets.**
 - **Failure**: opaque `404` for every resolution-chain failure (host → ConsumerRef
   → Beskar7Machine → owner Machine → `Spec.Bootstrap.DataSecretName` → Secret);
-  `500` only for an oversize secret.
+  `500` only for an oversize secret. The `ConsumerRef` step resolves only within
+  the host's own namespace: a `ConsumerRef.Namespace` naming a different
+  namespace is treated as no consumer at all, so a host can never serve another
+  namespace's bootstrap data (SEC-12).
 
 ### 4.4 `POST /api/v1/provisioned/{namespace}/{hostName}` — provisioning-complete signal
 
@@ -864,6 +869,20 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
 | **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (a terminal `InfrastructureReady=False` reason `DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
 | **v4.2** | **Per-host `ProviderID` delivery for templated pools/HA (D-014 P2) — §6 report schema and golden fixture unchanged. Additive and backward-compatible.** A shared `Beskar7MachineTemplate`/bootstrap-config template cannot pin a per-host `ProviderID` (P1's hand-authored, one-Machine-at-a-time pattern breaks for `MachineDeployment` pools and multi-replica control planes). Adds a new required cmdline param `beskar7.provider-id=b7://{ns}/{host}` (§5), rendered by `/boot` immediately after `beskar7.target-digest` and before `beskar7.ca`, and **always** rendered (the controller always knows the host's identity — no omitted form). The value is `providerID(ph.Namespace, ph.Name)`, the identical call `handleReadyHost` uses to stamp `Beskar7Machine.Spec.ProviderID`, so the rendered and stamped values cannot diverge by construction. Adds a new `COS_OEM` artifact `/oem/beskar7/provider-id` (§9.1 step 5.4): the inspector writes the cmdline value verbatim (no trailing newline, mode `0600`, root-owned) during the *same* mount session as `99_beskar7.yaml`, no new mount or fetch. A shared boot-time stage in the node's bootstrap config reads this file to set a per-host kubelet `--provider-id` before the k8s distro starts — the residual per-distro glue that lets a shared template still produce a correct, unique `Node.spec.providerID` per replica. **Backward-compatible:** a v4.1 inspector ignores the unknown cmdline param and never writes the new artifact (P1's single hand-authored Machine path is unaffected); a v4.2 controller tolerates a v4.1 inspector. **Controller side**: `controllers/boot_handler.go` — `validateProviderID` (anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth) + the `beskar7.provider-id` render in `buildBootIPXEScript`/`renderBootScript`; new golden fixtures `test/contract/golden_boot_cmdline.txt` and `test/contract/golden_provider_id_artifact.json` (§10); `controllers/deploy_contract_test.go` (new). Inspector side: `CONTRACT_VERSION="v4.2"`, cmdline parser + `COS_OEM` writer for `/oem/beskar7/provider-id`, per `.claude/context/GA-P2-VALIDATION.md` §1.5 (spec only from this repo's side — cross-repo). |
+
+### 10.2 Clarifications (no version bump)
+
+Wording fixes to sections above, recorded here because the wire format did not
+change. These are not new contract versions.
+
+- **SEC-12 (2026-09-25):** §4.1 and §4.3 always meant the `ConsumerRef` walk to
+  be scoped to the host's own namespace, but said only "resolved via the
+  host's `ConsumerRef`" without stating that a `ConsumerRef.Namespace` naming
+  a different namespace is rejected. The controller-side handlers
+  (`controllers/bootstrap_handler.go`, `controllers/boot_handler.go`) now
+  enforce this explicitly via a shared `resolveConsumerBeskar7Machine` helper.
+  No cmdline parameter, endpoint, status code, or report field changed — this
+  section is prose-only.
 
 ---
 

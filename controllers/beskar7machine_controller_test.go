@@ -460,6 +460,74 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(b7mBase))).To(Succeed())
 		})
 
+		// SEC-12: mirrors the re-find guard above, for the release path.
+		// findClaimedHostForRelease's fallback ConsumerRef.Name scan must not
+		// treat a same-named machine in a different namespace as this
+		// machine's host — otherwise deletion would release (and clear the
+		// ConsumerRef on) a host this machine never claimed.
+		It("Should NOT release a PhysicalHost whose ConsumerRef names a same-named machine in a different namespace (SEC-12)", func() {
+			otherNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "beskar7machine-test-crossns-"},
+			}
+			Expect(k8sClient.Create(ctx, otherNs)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, otherNs)).To(Succeed()) }()
+
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, physicalHost)).To(Succeed())
+			base := physicalHost.DeepCopy()
+			physicalHost.Spec.ConsumerRef = &corev1.ObjectReference{
+				Kind:       "Beskar7Machine",
+				APIVersion: InfrastructureAPIVersion,
+				Name:       beskar7Machine.Name,
+				Namespace:  otherNs.Name,
+			}
+			Expect(k8sClient.Patch(ctx, physicalHost, client.MergeFrom(base))).To(Succeed())
+			physicalHost.Status.State = infrav1.StateInUse
+			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+
+			got, err := reconciler.findClaimedHostForRelease(ctx, ctrl.Log.WithName("crossns-release-test"), beskar7Machine)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeNil(),
+				"a host claimed by a same-named machine in a different namespace must not be released by this machine")
+		})
+
+		// The ProviderID fast path fetches the host the ProviderID names, which
+		// can be in any namespace: a ProviderID written by hand, or copied from
+		// a same-named machine elsewhere, must not let this machine release (and
+		// power off) that other namespace's host on deletion.
+		It("Should NOT release another namespace's host that its ProviderID names (SEC-12)", func() {
+			otherNs := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "beskar7machine-test-crossns-pid-"},
+			}
+			Expect(k8sClient.Create(ctx, otherNs)).To(Succeed())
+			defer func() { Expect(k8sClient.Delete(ctx, otherNs)).To(Succeed()) }()
+
+			otherHost := &infrav1.PhysicalHost{
+				ObjectMeta: metav1.ObjectMeta{Name: "crossns-pid-host", Namespace: otherNs.Name},
+				Spec: infrav1.PhysicalHostSpec{
+					RedfishConnection: infrav1.RedfishConnection{
+						Address:              "https://mock-redfish.example.invalid:8443",
+						CredentialsSecretRef: "bmc-credentials",
+					},
+					// Claimed by the same-named machine in its own namespace.
+					ConsumerRef: &corev1.ObjectReference{
+						Kind:       "Beskar7Machine",
+						APIVersion: InfrastructureAPIVersion,
+						Name:       beskar7Machine.Name,
+						Namespace:  otherNs.Name,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, otherHost)).To(Succeed())
+
+			pointing := beskar7Machine.DeepCopy()
+			pointing.Spec.ProviderID = "b7://" + otherNs.Name + "/" + otherHost.Name
+
+			got, err := reconciler.findClaimedHostForRelease(ctx, ctrl.Log.WithName("crossns-pid-release-test"), pointing)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got).To(BeNil(),
+				"a ProviderID naming another namespace's host must not make this machine release it")
+		})
+
 		It("Should remove finalizer cleanly when the host is already gone", func() {
 			r := &Beskar7MachineReconciler{
 				Client: k8sClient,
@@ -1266,6 +1334,65 @@ var _ = Describe("findAndClaimOrGetAssociatedHost with no Available hosts", func
 		Expect(err).NotTo(HaveOccurred())
 		Expect(got).To(BeNil(), "no Available host means no host to return")
 		Expect(result).To(Equal(ctrl.Result{}), "the helper does not requeue itself; the caller does")
+	})
+
+	// SEC-12: a PhysicalHost's ConsumerRef.Name matching this machine's name is
+	// not sufficient — the ConsumerRef must also be scoped to the host's own
+	// namespace. A real claim always sets both together
+	// (findAndClaimOrGetAssociatedHost claims only hosts it has just listed
+	// from its own namespace), so a ConsumerRef naming a different namespace can
+	// only come from direct PhysicalHost patch access. Uses the same fake-client
+	// + field-index pattern as the spec above, since this also falls through to
+	// the StateAvailable-indexed list once the ConsumerRef match correctly fails.
+	It("Should NOT re-find a PhysicalHost whose ConsumerRef names a same-named machine in a different namespace (SEC-12)", func() {
+		host := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "crossns-host", Namespace: "team-a"},
+			Spec: infrav1.PhysicalHostSpec{
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "Beskar7Machine",
+					APIVersion: InfrastructureAPIVersion,
+					Name:       "crossns-machine",
+					// Forged: names the same machine name as machine below, but in a
+					// namespace that is not the host's own ("team-a").
+					Namespace: "team-b",
+				},
+			},
+			Status: infrav1.PhysicalHostStatus{State: infrav1.StateInUse},
+		}
+		machine := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{Name: "crossns-machine", Namespace: "team-a"},
+			Spec: infrav1.Beskar7MachineSpec{
+				InspectionImageURL: "http://boot/inspect.ipxe",
+				TargetImageURL:     "http://boot/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+
+		fakeC := fake.NewClientBuilder().
+			WithScheme(scheme.Scheme).
+			WithObjects(machine).
+			WithStatusSubresource(host).
+			WithIndex(&infrav1.PhysicalHost{}, PhysicalHostStateIndex, func(obj client.Object) []string {
+				h, ok := obj.(*infrav1.PhysicalHost)
+				if !ok {
+					return nil
+				}
+				return []string{string(h.Status.State)}
+			}).
+			Build()
+		Expect(fakeC.Create(context.Background(), host)).To(Succeed())
+		Expect(fakeC.Status().Update(context.Background(), host)).To(Succeed())
+
+		r := &Beskar7MachineReconciler{
+			Client: fakeC,
+			Scheme: scheme.Scheme,
+			Log:    ctrl.Log.WithName("crossns-refind-test"),
+		}
+
+		got, _, err := r.findAndClaimOrGetAssociatedHost(context.Background(), r.Log, machine, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(BeNil(),
+			"a host claimed by a same-named machine in a different namespace must not resolve as this machine's host")
 	})
 })
 

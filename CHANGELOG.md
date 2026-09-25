@@ -6,6 +6,24 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Security
+
+- **A `PhysicalHost`'s `ConsumerRef` was resolved without checking its namespace, so a host in one
+  namespace could be pointed at a `Beskar7Machine` in another and serve that namespace's CAPI
+  bootstrap data (cluster join secrets, including a first control-plane node's CA keys) and have that
+  machine's bearer token and CA rendered into its `/boot` iPXE script.** Legitimate claims are always
+  same-namespace — the machine controller only ever claims a host it has just listed from its own
+  namespace — so a cross-namespace `ConsumerRef` could only come from direct `patch physicalhosts`
+  access, not from any normal reconcile path. `controllers/bootstrap_handler.go` and
+  `controllers/boot_handler.go` now resolve the consumer through a shared helper that requires
+  `ConsumerRef.Namespace` to be empty or equal to the host's own namespace; a mismatch is treated
+  exactly like no consumer at all — the same opaque `404` the handlers already return, logged at
+  `V(1)` with no secret material. The `Beskar7MachineReconciler`'s own host lookups (the ConsumerRef
+  re-find on claim and the ConsumerRef scan on release) use the same helper, so a host claimed "by" a
+  same-named machine in a different namespace is neither adopted nor released by the wrong machine,
+  and deleting a machine whose `providerID` names another namespace's host no longer releases and
+  powers off that host.
+
 ### Fixed
 
 - **An inspection report, or any other annotation another writer set on a `PhysicalHost`, could be

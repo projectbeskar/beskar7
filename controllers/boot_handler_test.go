@@ -620,6 +620,74 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(body).To(ContainSubstring(bootHandlerOpaqueFailureBody))
 	})
 
+	It("opaque 404: ConsumerRef names a Beskar7Machine in a different namespace (SEC-12) — script never rendered", func() {
+		otherNs := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "boot-handler-test-crossns-"},
+		}
+		Expect(k8sClient.Create(ctx, otherNs)).To(Succeed())
+		defer func() { Expect(k8sClient.Delete(ctx, otherNs)).To(Succeed()) }()
+
+		By("creating a Beskar7Machine (would-be consumer) in the other namespace")
+		crossB7m := &infrav1.Beskar7Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "cross-ns-b7m",
+				Namespace: otherNs.Name,
+			},
+			Spec: infrav1.Beskar7MachineSpec{
+				InspectionImageURL: "https://namespace-b.example.com/inspect",
+				TargetImageURL:     "https://namespace-b.example.com/kairos.tar.gz",
+				TargetImageDigest:  bootTestDigest,
+			},
+		}
+		Expect(k8sClient.Create(ctx, crossB7m)).To(Succeed())
+
+		By("creating a PhysicalHost in testNs whose ConsumerRef is forged to the other namespace")
+		ph := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "boot-cross-ns-host",
+				Namespace: testNs.Name,
+			},
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
+					Address:              "https://192.168.99.3",
+					CredentialsSecretRef: "irrelevant",
+				},
+				ConsumerRef: &corev1.ObjectReference{
+					Kind:       "Beskar7Machine",
+					APIVersion: InfrastructureAPIVersion,
+					Name:       crossB7m.Name,
+					Namespace:  otherNs.Name,
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
+
+		noncePlaintext, nonceHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		_, tokenHash, err := auth.MintToken()
+		Expect(err).NotTo(HaveOccurred())
+		setHostBootNonce(ph.Name, testNs.Name, nonceHash, tokenHash, 10*time.Minute)
+
+		// The host's own bootstrap-token Secret is present, so the only thing
+		// standing between a valid nonce and a rendered script naming namespace
+		// B's InspectionImageURL is the ConsumerRef namespace check.
+		Expect(k8sClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      bootstrapTokenSecretName(ph.Name),
+				Namespace: testNs.Name,
+			},
+			Type: corev1.SecretTypeOpaque,
+			Data: map[string][]byte{"plaintext-token": []byte("host-a-token")},
+		})).To(Succeed())
+
+		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
+		body := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		Expect(body).To(ContainSubstring(bootHandlerOpaqueFailureBody))
+		Expect(body).NotTo(ContainSubstring("namespace-b.example.com"),
+			"namespace B's InspectionImageURL must never be rendered for a host claimed cross-namespace")
+	})
+
 	// Empty InspectionImageURL: CRD validation forbids an empty string at
 	// admission time, so we use a fake client (which skips API validation) to
 	// stage the object. Same technique as the oversize-bootstrap test.
