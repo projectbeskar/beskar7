@@ -94,6 +94,22 @@ const (
 	// Registered in SetupWithManager; used in findAndClaimOrGetAssociatedHost to filter
 	// Available hosts server-side instead of listing all hosts and filtering in Go.
 	PhysicalHostStateIndex = "status.state"
+
+	// clusterctlDeleteForMoveAnnotation is clusterctlv1.DeleteForMoveAnnotation
+	// (sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3/annotations.go).
+	// Beskar7 does not depend on the clusterctl client module, so the key is
+	// copied here rather than imported. The mover patches it onto the source
+	// object with an empty value immediately before Delete, and may
+	// force-strip finalizers itself moments later without waiting for this
+	// controller to react (mover.go deleteSourceObject) — Cluster.spec.paused
+	// is already true on the source by then, which normally keeps Reconcile
+	// from ever reaching reconcileDelete, but a stale cache read of that
+	// pause is the race this annotation guards against. Present, it marks
+	// this deletion as the source side of a move: reconcileDelete (D-028)
+	// must not power the host off or release its claim, because the same
+	// host is being force-moved to the target (its move-hierarchy label,
+	// physicalhost_types.go) with the claim still live in Spec.
+	clusterctlDeleteForMoveAnnotation = "clusterctl.cluster.x-k8s.io/delete-for-move"
 )
 
 // Beskar7MachineReconciler reconciles a Beskar7Machine object.
@@ -389,6 +405,22 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 		return r.handleInspectingHost(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateInUse:
+		// A ProviderID already set means this machine held this host at Ready
+		// before — findAndClaimOrGetAssociatedHost never reassociates a
+		// non-empty ProviderID with a different host, so the only host it can
+		// name is the one that produced it. InUse here is not a fresh claim:
+		// most commonly a clusterctl move landed the pair with status
+		// stripped (D-028), and the host has not yet run adoptProvisionedClaim
+		// to restore Ready. Booting the inspector would wipe and re-inspect
+		// hardware that is already serving. Wait instead — the host's own
+		// reconcile wakes this machine again through the existing
+		// PhysicalHostToBeskar7Machine watch the moment it adopts.
+		if b7machine.Spec.ProviderID != "" {
+			logger.Info("PhysicalHost claimed but already held by this machine's ProviderID; waiting for host adoption instead of re-inspecting", "physicalhost", physicalHost.Name)
+			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.WaitingForHostAdoptionReason,
+				"Waiting for PhysicalHost %q to reassert Ready (already held by this machine's ProviderID)", physicalHost.Name)
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		// Host claimed, need to trigger inspection
 		logger.Info("PhysicalHost claimed, triggering inspection")
 		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "Starting inspection of PhysicalHost %q", physicalHost.Name)
@@ -1482,24 +1514,34 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 		return ctrl.Result{}, err
 	}
 	if host != nil {
-		forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
-		if forceRelease {
-			logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
+		if _, movingAway := b7machine.Annotations[clusterctlDeleteForMoveAnnotation]; movingAway {
+			// The source side of a clusterctl move: this Beskar7Machine's
+			// deletion is only clearing the way for the pair now live on the
+			// target, which claims the same host with the same ProviderID
+			// (D-028). Powering it off or releasing the claim here would
+			// stop a node that must keep serving, for no benefit — the
+			// source object is going away either way.
+			logger.Info("Beskar7Machine carries the clusterctl delete-for-move annotation; leaving its PhysicalHost claimed and powered as-is", "host", host.Name)
 		} else {
-			// Best-effort Redfish cleanup. Errors are logged but do not block release.
-			r.bestEffortReleaseRedfish(ctx, logger, host)
-		}
-		// Always clear ConsumerRef on the host spec.
-		base := host.DeepCopy()
-		host.Spec.ConsumerRef = nil
-		if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-			if apierrors.IsConflict(err) {
-				return ctrl.Result{RequeueAfter: requeueShortly}, nil
+			forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
+			if forceRelease {
+				logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
+			} else {
+				// Best-effort Redfish cleanup. Errors are logged but do not block release.
+				r.bestEffortReleaseRedfish(ctx, logger, host)
 			}
-			logger.Error(err, "Failed to release host")
-			return ctrl.Result{}, err
+			// Always clear ConsumerRef on the host spec.
+			base := host.DeepCopy()
+			host.Spec.ConsumerRef = nil
+			if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+				if apierrors.IsConflict(err) {
+					return ctrl.Result{RequeueAfter: requeueShortly}, nil
+				}
+				logger.Error(err, "Failed to release host")
+				return ctrl.Result{}, err
+			}
+			logger.Info("Released PhysicalHost", "host", host.Name)
 		}
-		logger.Info("Released PhysicalHost", "host", host.Name)
 	}
 
 	if controllerutil.RemoveFinalizer(b7machine, Beskar7MachineFinalizer) {
