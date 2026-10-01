@@ -134,11 +134,13 @@ that runs inside the
 NIC to call the controller back, reports the hardware, and writes the OS image to
 a disk. It can only use the hardware it ships drivers for.
 
-**Use inspector `v0.3.3` or later on physical servers.** Earlier releases shipped
-only the `virtio`, `e1000` and `e1000e` NIC drivers and neither `nvme` nor
-`sd_mod`. On most physical servers they found no NIC at all, and SATA, SAS, RAID
-and NVMe disks stayed invisible
+**Use inspector `v0.3.4` or later on physical servers.** Releases before
+`v0.3.3` shipped only the `virtio`, `e1000` and `e1000e` NIC drivers and neither
+`nvme` nor `sd_mod`. On most physical servers they found no NIC at all, and SATA,
+SAS, RAID and NVMe disks stayed invisible
 ([beskar7-inspector#54](https://github.com/projectbeskar/beskar7-inspector/issues/54)).
+`v0.3.4` also reports a missing target disk to the controller at once, instead of
+leaving the machine to time out (see [When a driver is missing](#when-a-driver-is-missing)).
 Your boot server serves its own copy of `vmlinuz` and `initrd.img`, so an
 older copy keeps booting until you replace it. Take the new pair from the
 [inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases)
@@ -147,7 +149,7 @@ tracks the newest `v4.2` release.
 
 ### Supported drivers
 
-As of inspector `v0.3.3`. The authoritative list is the inspector's
+As of inspector `v0.3.4` (the set is unchanged since `v0.3.3`). The authoritative list is the inspector's
 [`modules.list`](https://github.com/projectbeskar/beskar7-inspector/blob/main/modules.list).
 
 | Kind | Families | Drivers |
@@ -188,7 +190,7 @@ inspector logs every step there, and the two failures look like this:
 | Missing driver | Host console | What Beskar7 shows |
 |---|---|---|
 | NIC | `beskar7-inspector: run failed: no network interface found` | No inspection report arrives. The Machine fails with `InspectionTimedOut` after `--inspection-timeout` (10 minutes by default). |
-| Storage controller | `beskar7-inspector: run failed: no eligible target disk found` | The inspection report arrives, but the disk is missing from `status.inspectionReport.disks` on the `PhysicalHost`. The Machine fails with `DeploymentTimedOut` after `--deployment-timeout` (20 minutes by default). |
+| Storage controller | `beskar7-inspector: run failed: no eligible target disk found` | The inspection report arrives, but the disk is missing from `status.inspectionReport.disks` on the `PhysicalHost`. The Machine fails at once with `DeploymentFailed`, and the host's `status.errorMessage` reads `inspector reported deploy failure: no eligible target disk`. An inspector older than `v0.3.4` reports nothing, so the Machine fails with `DeploymentTimedOut` after `--deployment-timeout` (20 minutes by default). |
 
 On a host with several NICs, a missing driver for the NIC it PXE-booted from
 can instead show as `BOOTIF MAC <mac> matched no interface`. When the boot
@@ -497,7 +499,7 @@ Before deploying to production:
 After verifying hardware compatibility:
 
 1. Set up iPXE infrastructure - See [iPXE Setup Guide](ipxe-setup.md)
-2. Deploy inspector image (`v0.3.3` or later for physical servers) - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
+2. Deploy inspector image (`v0.3.4` or later for physical servers) - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
 3. Register hosts - See [examples](../examples/)
 4. Start provisioning - See [README](../README.md)
 
