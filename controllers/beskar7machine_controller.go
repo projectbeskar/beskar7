@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -38,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
@@ -136,6 +138,31 @@ type Beskar7MachineReconciler struct {
 	// machine is marked terminally failed (DeploymentTimedOut, D-015). Zero means
 	// use DefaultDeploymentTimeout. Set from the --deployment-timeout manager flag.
 	DeploymentTimeout time.Duration
+
+	// booted records, per PhysicalHost UID, the claim (bootClaim) this
+	// controller last booted the host for in triggerInspection. A pass that
+	// reads the host from a cache which has not yet seen the inspect request of
+	// the pass before it must not restart the host again; the request annotation
+	// covers that once the cache catches up, and after a controller restart.
+	booted sync.Map
+}
+
+// bootClaim identifies the claim a host was booted for: the claiming machine,
+// by name and UID, so a machine recreated under the same name is a new claim.
+type bootClaim struct {
+	machine types.NamespacedName
+	uid     types.UID
+}
+
+func claimOf(b7machine *infrav1.Beskar7Machine) bootClaim {
+	return bootClaim{machine: client.ObjectKeyFromObject(b7machine), uid: b7machine.UID}
+}
+
+// bootedForClaim reports whether this controller has booted physicalHost for
+// b7machine's current claim.
+func (r *Beskar7MachineReconciler) bootedForClaim(physicalHost *infrav1.PhysicalHost, b7machine *infrav1.Beskar7Machine) bool {
+	claim, ok := r.booted.Load(physicalHost.UID)
+	return ok && claim == claimOf(b7machine)
 }
 
 // inspectionTimeout returns the configured inspection timeout, falling back to
@@ -540,13 +567,16 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 // triggerInspection initiates the inspection phase by booting the inspection image.
 //
 // Sequence:
-//  1. Configure BMC for PXE boot and ensure power-on.
+//  1. Configure BMC for PXE boot.
 //  2. Mint the per-host bearer token (D-004) and boot nonce (D-009) into the
-//     host's bootstrap-token Secret, bound to this machine (D-006, D-029). The
-//     Secret is written before the inspection-request annotation, so the host
-//     never starts inspecting without credentials.
-//  3. Signal the PhysicalHost controller to transition to Inspecting via the
+//     host's bootstrap-token Secret, bound to this machine (D-006, D-029), so
+//     the host never boots the inspector without credentials.
+//  3. Boot the host: power it on, or restart it if it is already on.
+//  4. Signal the PhysicalHost controller to transition to Inspecting via the
 //     inspection-request annotation (Pattern A; PhysicalHost owns its own status).
+//
+// The power action comes after everything that can fail but the annotation, so
+// a retry of a failed step does not restart a host that is already booting.
 //
 // We never write to PhysicalHost.Status here — the inspection-request travels
 // through metadata.annotations and is applied by the PhysicalHost reconciler on
@@ -568,23 +598,6 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		return ctrl.Result{}, err
 	}
 
-	// Power on the system
-	powerState, err := rfClient.GetPowerState(ctx)
-	if err != nil {
-		logger.Error(err, "Failed to get power state")
-		return ctrl.Result{}, err
-	}
-
-	if powerState != schemas.OnPowerState {
-		if err := rfClient.SetPowerState(ctx, schemas.OnPowerState); err != nil {
-			logger.Error(err, "Failed to power on system")
-			internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
-			return ctrl.Result{}, err
-		}
-		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
-		logger.Info("Powered on system for inspection")
-	}
-
 	// Mint the host's callback credentials unless the ones it has are still
 	// valid and bound to this machine (ensureBootstrapCredentials). Re-minting
 	// on every reconcile would invalidate a token or nonce the inspector or the
@@ -597,10 +610,60 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		return ctrl.Result{}, err
 	}
 
+	powerState, err := rfClient.GetPowerState(ctx)
+	if err != nil {
+		logger.Error(err, "Failed to get power state")
+		return ctrl.Result{}, err
+	}
+	switch {
+	case powerState == schemas.OnPowerState &&
+		(r.bootedForClaim(physicalHost, b7machine) || physicalHost.Annotations[InspectionRequestAnnotation] == "inspect"):
+		// An earlier pass booted the host for this claim, and the PhysicalHost
+		// reconciler has yet to apply its request (or this pass cannot see it
+		// yet): the host is booting the inspector, and a restart would
+		// interrupt it.
+	case powerState == schemas.OnPowerState:
+		// A host that is already on is running something else: a previous run's
+		// inspector, parked after a failure (a graceful shutdown at release
+		// leaves it on — nothing in it acts on the ACPI power button), or an
+		// OS. The PXE override only takes effect on a fresh boot.
+		if err := rfClient.Reset(ctx); err != nil {
+			logger.Error(err, "Failed to restart the host into the inspector")
+			return ctrl.Result{}, err
+		}
+		logger.Info("Restarted the host, which was already on, to boot the inspector")
+	default:
+		if err := rfClient.SetPowerState(ctx, schemas.OnPowerState); err != nil {
+			logger.Error(err, "Failed to power on system")
+			internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeFailed)
+			return ctrl.Result{}, err
+		}
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
+		logger.Info("Powered on system for inspection")
+	}
+	r.booted.Store(physicalHost.UID, claimOf(b7machine))
+
 	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
 	// spec/annotations — never status — so this controller does not violate the
 	// "each controller owns its resource's status" rule (BUG-1).
-	if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect"); err != nil {
+	//
+	// The host is booting now, so a conflict must not fail the pass: the next
+	// pass would restart it. Conflicts are routine here — the PhysicalHost
+	// reconciler mirrors the credentials minted above into the host's status —
+	// so retry with a fresh read, as long as the host is still ours.
+	attempt := 0
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if attempt++; attempt > 1 {
+			if err := r.Get(ctx, client.ObjectKeyFromObject(physicalHost), physicalHost); err != nil {
+				return err
+			}
+			if key, ok := resolveConsumerBeskar7Machine(physicalHost); !ok || key != client.ObjectKeyFromObject(b7machine) {
+				return fmt.Errorf("PhysicalHost %s is no longer claimed by this machine", physicalHost.Name)
+			}
+		}
+		return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect")
+	})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1334,6 +1397,7 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 				logger.Error(err, "Failed to release host")
 				return ctrl.Result{}, err
 			}
+			r.booted.Delete(host.UID)
 			logger.Info("Released PhysicalHost", "host", host.Name)
 		}
 	}
@@ -1419,9 +1483,10 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 	return nil, nil
 }
 
-// bestEffortReleaseRedfish issues ClearBootSourceOverride and a graceful power-off
-// against the host's BMC. All errors are logged at Info and swallowed so a
-// dead BMC cannot strand the Beskar7Machine finalizer.
+// bestEffortReleaseRedfish issues ClearBootSourceOverride and a power-off
+// against the host's BMC: graceful, unless the host was released mid-run. All
+// errors are logged at Info and swallowed so a dead BMC cannot strand the
+// Beskar7Machine finalizer.
 // Missing credentials, or a credentials Secret that does not authorise the
 // host's address (D-030), are treated identically — log and return.
 func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost) {
@@ -1435,12 +1500,32 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	if err := rfClient.ClearBootSourceOverride(ctx); err != nil {
 		logger.Info("Failed to clear boot source override during release; continuing", "err", err)
 	}
-	if err := rfClient.SetPowerState(ctx, schemas.OffPowerState); err != nil {
-		logger.Info("Failed to graceful power-off during release; continuing", "err", err)
+	how := "graceful"
+	if releasedMidRun(host) {
+		// The host is running the inspector, which has nothing that acts on the
+		// ACPI power button a graceful shutdown presses, so it would stay on.
+		// Nothing on it needs a clean shutdown: the run is abandoned.
+		how = "forced"
+		err = rfClient.ForcePowerOff(ctx)
+	} else {
+		err = rfClient.SetPowerState(ctx, schemas.OffPowerState)
+	}
+	if err != nil {
+		logger.Info("Failed to power off during release; continuing", "powerOff", how, "err", err)
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeFailed)
 	} else {
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
 	}
+}
+
+// releasedMidRun reports whether a host being released was in a provisioning
+// run that never finished, and so may be running the inspector.
+func releasedMidRun(host *infrav1.PhysicalHost) bool {
+	switch host.Status.State {
+	case infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateError:
+		return true
+	}
+	return false
 }
 
 // markTerminalFailure flips Status.Ready to false and Phase to Failed and

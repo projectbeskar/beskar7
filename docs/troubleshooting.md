@@ -225,6 +225,9 @@ kubectl get beskar7machine <name> -o jsonpath='{.status.phase}'
 - Inspection image not booting
 - Inspector can't reach Beskar7 API
 - Inspector script failure
+- The inspector has no driver for the host's NIC: the console shows
+  `run failed: no network interface found`. See
+  [When a driver is missing](hardware-compatibility.md#when-a-driver-is-missing).
 
 **Debug:**
 ```bash
