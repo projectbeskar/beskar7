@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -136,6 +137,31 @@ type Beskar7MachineReconciler struct {
 	// machine is marked terminally failed (DeploymentTimedOut, D-015). Zero means
 	// use DefaultDeploymentTimeout. Set from the --deployment-timeout manager flag.
 	DeploymentTimeout time.Duration
+
+	// booted records, per PhysicalHost UID, the claim (bootClaim) this
+	// controller last booted the host for in triggerInspection. A pass that
+	// reads the host from a cache which has not yet seen the inspect request of
+	// the pass before it must not restart the host again; the request annotation
+	// covers that once the cache catches up, and after a controller restart.
+	booted sync.Map
+}
+
+// bootClaim identifies the claim a host was booted for: the claiming machine,
+// by name and UID, so a machine recreated under the same name is a new claim.
+type bootClaim struct {
+	machine types.NamespacedName
+	uid     types.UID
+}
+
+func claimOf(b7machine *infrav1.Beskar7Machine) bootClaim {
+	return bootClaim{machine: client.ObjectKeyFromObject(b7machine), uid: b7machine.UID}
+}
+
+// bootedForClaim reports whether this controller has booted physicalHost for
+// b7machine's current claim.
+func (r *Beskar7MachineReconciler) bootedForClaim(physicalHost *infrav1.PhysicalHost, b7machine *infrav1.Beskar7Machine) bool {
+	claim, ok := r.booted.Load(physicalHost.UID)
+	return ok && claim == claimOf(b7machine)
 }
 
 // inspectionTimeout returns the configured inspection timeout, falling back to
@@ -585,10 +611,12 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		return ctrl.Result{}, err
 	}
 	switch {
-	case powerState == schemas.OnPowerState && physicalHost.Annotations[InspectionRequestAnnotation] == "inspect":
-		// An earlier pass booted the host and sent this request, which the
-		// PhysicalHost reconciler has yet to apply: the host is booting the
-		// inspector, and a restart would interrupt it.
+	case powerState == schemas.OnPowerState &&
+		(r.bootedForClaim(physicalHost, b7machine) || physicalHost.Annotations[InspectionRequestAnnotation] == "inspect"):
+		// An earlier pass booted the host for this claim, and the PhysicalHost
+		// reconciler has yet to apply its request (or this pass cannot see it
+		// yet): the host is booting the inspector, and a restart would
+		// interrupt it.
 	case powerState == schemas.OnPowerState:
 		// A host that is already on is running something else: a previous run's
 		// inspector, parked after a failure (a graceful shutdown at release
@@ -608,6 +636,7 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOn, physicalHost.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
 		logger.Info("Powered on system for inspection")
 	}
+	r.booted.Store(physicalHost.UID, claimOf(b7machine))
 
 	// Signal the PhysicalHost controller to transition to Inspecting. We patch only
 	// spec/annotations — never status — so this controller does not violate the
@@ -1363,6 +1392,7 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 				logger.Error(err, "Failed to release host")
 				return ctrl.Result{}, err
 			}
+			r.booted.Delete(host.UID)
 			logger.Info("Released PhysicalHost", "host", host.Name)
 		}
 	}

@@ -105,20 +105,62 @@ var _ = Describe("Host power across a release and the next claim", func() {
 			Expect(mockRf.SetPowerStateCalled).To(BeFalse())
 		})
 
-		It("does not restart a host an earlier pass has already booted", func() {
+		It("does not restart a host whose inspect request is pending, even after a controller restart", func() {
 			// The host stays InUse until the PhysicalHost reconciler applies the
-			// request, so the machine can pass through here again meanwhile.
+			// request, so the machine can pass through here again meanwhile; a
+			// restarted controller has only the request to go by.
 			setState(infrav1.StateInUse)
 			mockRf.PowerState = schemas.OnPowerState
 			Expect(trigger()).To(Succeed())
 			Expect(mockRf.ResetCalled).To(BeTrue())
 			Expect(getHost().Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect"))
 
+			r = &Beskar7MachineReconciler{
+				Client: r.Client, Scheme: r.Scheme, Log: r.Log,
+				RedfishClientFactory: r.RedfishClientFactory, BootstrapURLBase: r.BootstrapURLBase,
+			}
 			mockRf.ResetCalled = false
 			Expect(trigger()).To(Succeed())
 
 			Expect(mockRf.ResetCalled).To(BeFalse(), "a second restart would interrupt the inspector booting")
 			Expect(mockRf.SetPowerStateCalled).To(BeFalse())
+		})
+
+		It("does not restart a host it booted for this claim before the request is visible", func() {
+			// A pass can read the host from a cache that has not yet seen the
+			// request the pass before it sent (the lab showed three passes in one
+			// second); the controller's own record of the boot must hold then.
+			setState(infrav1.StateInUse)
+			mockRf.PowerState = schemas.OnPowerState
+			Expect(trigger()).To(Succeed())
+			Expect(mockRf.ResetCalled).To(BeTrue())
+
+			stale := getHost()
+			delete(stale.Annotations, InspectionRequestAnnotation)
+			mockRf.ResetCalled = false
+			machine := &infrav1.Beskar7Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: testNs.Name}}
+			_, err := r.triggerInspection(ctx, r.Log, machine, stale)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mockRf.ResetCalled).To(BeFalse(), "a second restart would interrupt the inspector booting")
+		})
+
+		It("restarts the host again for a new claim, even by a machine of the same name", func() {
+			setState(infrav1.StateInUse)
+			mockRf.PowerState = schemas.OnPowerState
+			Expect(trigger()).To(Succeed())
+
+			// The machine is recreated under the same name and claims the same
+			// host, which is still on: a new claim, told apart by its UID.
+			h := getHost()
+			delete(h.Annotations, InspectionRequestAnnotation)
+			Expect(k8sClient.Update(ctx, h)).To(Succeed())
+			mockRf.ResetCalled = false
+			successor := &infrav1.Beskar7Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: testNs.Name, UID: "successor-uid"}}
+			_, err := r.triggerInspection(ctx, r.Log, successor, getHost())
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(mockRf.ResetCalled).To(BeTrue())
 		})
 
 		It("rides out a routine conflict on the inspection request instead of failing the pass", func() {
