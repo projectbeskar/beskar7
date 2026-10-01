@@ -342,9 +342,10 @@ func (c *gofishClient) SetPowerState(ctx context.Context, state schemas.PowerSta
 	return nil
 }
 
-// ForcePowerOff forces an immediate power-off, bypassing OS shutdown.
-// Use only for unrecoverable error paths; prefer SetPowerState(Off) which
-// performs a graceful shutdown.
+// ForcePowerOff forces an immediate power-off, bypassing OS shutdown. Use it
+// only where nothing running needs a clean shutdown, or nothing would act on
+// one (an abandoned run's inspector); prefer SetPowerState(Off), which performs
+// a graceful shutdown.
 func (c *gofishClient) ForcePowerOff(ctx context.Context) error {
 	system, err := c.getSystemService(ctx)
 	if err != nil {
