@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
+	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -283,9 +284,13 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			infrav1.PhysicalHostAssociatedCondition,
 			infrav1.BootstrapDataReadyCondition,
 		}}); err != nil {
-			log.Error(err, "Failed to patch Beskar7Machine")
-			if reterr == nil {
-				reterr = err
+			if deletedBeforePatch(b7machine, err) {
+				log.V(1).Info("Beskar7Machine was already deleted; nothing left to patch")
+			} else {
+				log.Error(err, "Failed to patch Beskar7Machine")
+				if reterr == nil {
+					reterr = err
+				}
 			}
 		}
 		log.Info("Finished reconciliation")
@@ -1401,6 +1406,26 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 		logger.Info("Removing finalizer")
 	}
 	return ctrl.Result{}, nil
+}
+
+// deletedBeforePatch reports whether a failed patch of a Beskar7Machine that
+// is being deleted failed only because the object is already gone. A pass
+// working from a cached copy runs the deletion again after an earlier pass
+// removed the last finalizer; that is not an error.
+func deletedBeforePatch(b7machine *infrav1.Beskar7Machine, err error) bool {
+	if b7machine.DeletionTimestamp.IsZero() {
+		return false
+	}
+	var agg kerrors.Aggregate
+	if errors.As(err, &agg) {
+		for _, e := range agg.Errors() {
+			if !apierrors.IsNotFound(e) {
+				return false
+			}
+		}
+		return len(agg.Errors()) > 0
+	}
+	return apierrors.IsNotFound(err)
 }
 
 // findClaimedHostForRelease locates the PhysicalHost currently claimed by this
