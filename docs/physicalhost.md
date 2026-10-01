@@ -107,7 +107,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 
 ## Deletion
 
-`reconcileDelete` removes the finalizer and lets Kubernetes garbage-collect the host. The PhysicalHost reconciler does NOT call Redfish during deletion; that is the job of the consuming `Beskar7Machine` (best-effort `ClearBootSourceOverride` + graceful `SetPowerState(Off)` before clearing `ConsumerRef`). If a host is deleted while still claimed, the controller emits a warning event but does not block.
+`reconcileDelete` removes the finalizer and lets Kubernetes garbage-collect the host. The PhysicalHost reconciler does NOT call Redfish during deletion; that is the job of the consuming `Beskar7Machine` (best-effort `ClearBootSourceOverride` and a power-off before clearing `ConsumerRef`: graceful, or forced for a host released mid-run — see [Beskar7Machine → Deletion](beskar7machine.md#deletion)). If a host is deleted while still claimed, the controller emits a warning event but does not block.
 
 ## Operator escape hatches
 
