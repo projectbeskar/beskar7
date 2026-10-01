@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.9.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.9.1`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.9.1` | `v4.2` **frozen** |
 | `v0.9.0` | `v4.2` **frozen** |
 | `v0.8.0` | `v4.2` **frozen** |
 | `v0.7.0` | `v4.2` **frozen** |
@@ -100,6 +101,34 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.9.0` → `v0.9.1` — re-provisioning fixes; nothing to do
+
+No CRD-schema, RBAC or contract change (still `v4.2`). Coming from `v0.8.0` or earlier, do the
+`v0.8.0` → `v0.9.0` steps below first.
+
+```bash
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.1/beskar7-manifests-v0.9.1.yaml
+# or, for a chart install:
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.1 --reset-then-reuse-values
+```
+
+Two behaviours change, both on purpose:
+
+- **Claiming a host that is already on restarts it** (Redfish `ForceRestart`), so it boots the PXE
+  override. Before, such a host was left running whatever it ran — typically an earlier run's
+  inspector, parked after a failure — and its machine failed with `InspectionTimedOut`. A host that
+  is off is powered on as before.
+- **Releasing a host that was mid-run forces it off.** A host that is `Inspecting`, `Deploying` or in
+  `Error` when its machine is deleted is running the inspector, which ignored the graceful shutdown
+  sent before; it now gets `ForcePowerOff`. A provisioned (`Ready`) host is still shut down gracefully.
+
+**Inspector:** any `v4.2` release works with `v0.9.1`. On physical servers use `v0.3.4` or later:
+`v0.3.3` ships the bare-metal NIC and storage drivers (before it, most servers found no NIC and no
+disk), and `v0.3.4` reports a missing target disk at once, so its machine fails with
+`DeploymentFailed` instead of timing out. Your boot server keeps serving its own copy of
+`vmlinuz` and `initrd.img` until you replace it — see
+[Hardware Compatibility](hardware-compatibility.md#host-hardware-nics-and-storage).
 
 ## `v0.8.0` → `v0.9.0` — security and Cluster API conformance fixes; three things to do first
 
@@ -425,12 +454,12 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. Going straight to v0.9.0: do its steps first (annotate BMC credentials Secrets,
+# 0. Going straight to v0.9.1: do v0.9.0's steps first (annotate BMC credentials Secrets,
 #    set the control-plane endpoint) — see the v0.8.0 → v0.9.0 section above.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.0/beskar7-manifests-v0.9.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.1/beskar7-manifests-v0.9.1.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.1 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

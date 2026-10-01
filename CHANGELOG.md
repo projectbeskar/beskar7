@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.9.1] - 2026-10-01
+
+Fixes for re-provisioning a host, found while validating inspector `v0.3.4` on bare-metal-style
+lab hosts. No CRD-schema, RBAC or contract change (still `v4.2`), and nothing to do beyond upgrading
+— see [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.9.1/docs/upgrading.md),
+section `v0.9.0` → `v0.9.1`. Coming from `v0.8.0` or earlier, do the `v0.9.0` steps below first.
+
+### Fixed
+
+- **A host released in the middle of a run was left powered on, and its next claim never booted
+  it: that machine failed with `InspectionTimedOut` ten minutes later.** A host that is
+  `Inspecting`, `Deploying`, or in `Error` after a failed run is running the inspector, which parks
+  after a failure and has nothing that acts on the ACPI power button, so the graceful shutdown sent at
+  release left it on. The next claim set the PXE override but powered the host on only if it was off.
+  MachineHealthCheck remediation of a failed provisioning re-claims hosts exactly this way. A claim
+  now restarts a host that is already on (Redfish `ForceRestart`) so it boots the PXE override, and a
+  release forces off (`ForcePowerOff`) a host that was mid-run; a provisioned host is still shut down
+  gracefully. The host is restarted once per claim: its callback credentials are minted before it is
+  booted, a pass that finds the host already booted for the same claim leaves it alone, and the
+  inspection request — whose optimistic-locked patch routinely conflicted with the host controller
+  mirroring the new credentials — is retried within the pass instead of failing it.
+  ([#236](https://github.com/projectbeskar/beskar7/pull/236))
+- **Deleting a `Beskar7Machine` could log a false `Reconciler error`** (`failed to patch
+  Beskar7Machine … not found`) when a second pass ran from a cached copy after the first had already
+  finished the deletion. ([#237](https://github.com/projectbeskar/beskar7/pull/237))
+
+### Documentation
+
+- [`docs/hardware-compatibility.md`](https://github.com/projectbeskar/beskar7/blob/v0.9.1/docs/hardware-compatibility.md) now covers the host as well as
+  the BMC: the NIC and storage drivers the inspector ships, the minimum inspector version for physical
+  servers, what has been validated (emulated hardware only so far), and how a missing driver shows up
+  — `InspectionTimedOut` for a NIC, `DeploymentFailed` at once for a storage controller with inspector
+  `v0.3.4`. ([#235](https://github.com/projectbeskar/beskar7/pull/235))
+
+### Inspector
+
+Any `v4.2` inspector works. On physical servers use **`v0.3.4`** or later: `v0.3.3` ships the
+bare-metal NIC and storage drivers and the firmware they need (before it, most servers found no NIC
+and no disk), and `v0.3.4` reports a missing target disk at once instead of leaving the machine to
+time out.
+
+### Dependencies
+
+- Kubernetes libraries `v0.35.8` → `v0.35.9`
+  ([#233](https://github.com/projectbeskar/beskar7/pull/233)); gomega `v1.43.1` → `v1.44.0` and
+  `golang.org/x/net` `v0.58.0` → `v0.59.0`
+  ([#234](https://github.com/projectbeskar/beskar7/pull/234)).
+
 ## [v0.9.0] - 2026-09-25
 
 Security and Cluster API conformance fixes found in a full review of `v0.8.0`, several of which
@@ -1932,7 +1980,9 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.9.1...HEAD
+[v0.9.1]: https://github.com/projectbeskar/beskar7/compare/v0.9.0...v0.9.1
+[v0.9.0]: https://github.com/projectbeskar/beskar7/compare/v0.8.0...v0.9.0
 [v0.8.0]: https://github.com/projectbeskar/beskar7/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/projectbeskar/beskar7/compare/v0.6.2...v0.7.0
 [v0.6.2]: https://github.com/projectbeskar/beskar7/compare/v0.6.1...v0.6.2
