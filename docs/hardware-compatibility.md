@@ -6,7 +6,15 @@ This document describes Beskar7's hardware compatibility and requirements.
 
 ## Overview
 
-**Beskar7 works with ANY Redfish-compliant BMC** because it only uses universally-supported features:
+A host has to be compatible in two places:
+
+- **Its BMC**, which the controller drives over Redfish. See
+  [Vendor compatibility](#vendor-compatibility).
+- **Its NIC and storage controller**, which the inspector — the initramfs the
+  host network-boots into — needs a driver for. Without one it cannot call back,
+  or cannot find a disk to write. See [Host hardware](#host-hardware-nics-and-storage).
+
+**Beskar7 is designed to work with any Redfish-compliant BMC** because it only uses universally-supported features:
 
 - **Power Management** - On/Off/Reset operations
 - **PXE Boot Flag** - Setting boot source to network
@@ -34,6 +42,14 @@ That's it! These are universally supported across all Redfish implementations.
 3. **Optional:** Separate networks for management, provisioning, and production
 
 See [iPXE Setup Guide](ipxe-setup.md) for network architecture examples.
+
+### Host Requirements
+
+1. **Provisioning NIC** — must use a driver the inspector ships, and be able to
+   PXE-boot.
+2. **Target disk controller** — must use a driver the inspector ships.
+
+See [Host hardware](#host-hardware-nics-and-storage) for the list.
 
 ## Vendor compatibility
 
@@ -109,6 +125,81 @@ Validation reports are welcome and are the fastest way to move a row from
 "Not yet" to a real result — please
 [open an issue](https://github.com/projectbeskar/beskar7/issues) with the vendor,
 BMC model, firmware revision, and what did or did not work.
+
+## Host hardware: NICs and storage
+
+The BMC only powers the host and points it at the network. Everything after
+that runs inside the
+[inspector](https://github.com/projectbeskar/beskar7-inspector): it brings up a
+NIC to call the controller back, reports the hardware, and writes the OS image to
+a disk. It can only use the hardware it ships drivers for.
+
+**Use inspector `v0.3.4` or later on physical servers.** Releases before
+`v0.3.3` shipped only the `virtio`, `e1000` and `e1000e` NIC drivers and neither
+`nvme` nor `sd_mod`. On most physical servers they found no NIC at all, and SATA,
+SAS, RAID and NVMe disks stayed invisible
+([beskar7-inspector#54](https://github.com/projectbeskar/beskar7-inspector/issues/54)).
+`v0.3.4` also reports a missing target disk to the controller at once, instead of
+leaving the machine to time out (see [When a driver is missing](#when-a-driver-is-missing)).
+Your boot server serves its own copy of `vmlinuz` and `initrd.img`, so an
+older copy keeps booting until you replace it. Take the new pair from the
+[inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases)
+or from the image `ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2`, which
+tracks the newest `v4.2` release.
+
+### Supported drivers
+
+As of inspector `v0.3.4` (the set is unchanged since `v0.3.3`). The authoritative list is the inspector's
+[`modules.list`](https://github.com/projectbeskar/beskar7-inspector/blob/main/modules.list).
+
+| Kind | Families | Drivers |
+|---|---|---|
+| Storage | SATA (AHCI; legacy Intel PIIX/ICH) | `ahci`, `ata_piix` |
+| | NVMe | `nvme` |
+| | SAS HBAs and RAID: Broadcom/LSI MegaRAID (Dell PERC and others), SAS2/SAS3 HBAs, SAS4 Tri-Mode; Microchip SmartPQI (HPE Smart Array Gen10+); HPE Smart Array before Gen10; Adaptec | `megaraid_sas`, `mpt3sas`, `mpi3mr`, `smartpqi`, `hpsa`, `aacraid` |
+| | Virtual: virtio, VMware PVSCSI | `virtio_blk`, `virtio_scsi`, `vmw_pvscsi` |
+| Network | Intel 1/2.5/10/25/40/100GbE | `e1000`, `e1000e`, `igb`, `igc`, `ixgbe`, `i40e`, `ice` |
+| | Broadcom NetXtreme, NetXtreme II, NetXtreme-C/E | `tg3`, `bnx2`, `bnx2x`, `bnxt_en` |
+| | NVIDIA/Mellanox ConnectX-3 and ConnectX-4+ | `mlx4_en`, `mlx5_core` |
+| | Realtek | `r8169` |
+| | Marvell/QLogic FastLinQ, Emulex OneConnect, Marvell/Aquantia AQtion, AMD/Solarflare, Chelsio T4–T6, Cisco UCS VIC | `qede`, `be2net`, `atlantic`, `sfc`, `cxgb4`, `enic` |
+| | Virtual: virtio, VMware vmxnet3 | `virtio_net`, `vmxnet3` |
+
+SATA, SAS and RAID volumes all appear through `sd_mod`, which ships too. Drivers
+that need device firmware (Broadcom, QLogic, and some Realtek, Chelsio and Intel
+parts) get it from the image. The firmware's licence texts ship with it, at
+`/lib/firmware/LICENSES/` in `initrd.img`.
+
+To check a host before you enroll it, boot any Linux live image on it and run
+`lspci -k`. The `Kernel driver in use` line under its NIC and its storage
+controller should name a driver from the table.
+
+### What has been validated
+
+The same caveat as for BMCs applies: the inspector has been boot-tested only on
+QEMU's emulated hardware — NVMe, AHCI, PIIX, PVSCSI and MegaRAID controllers, and
+igb, e1000e, e1000, vmxnet3 and virtio NICs. The other drivers are the kernel's
+upstream drivers and **have not been validated on physical hardware**, and nor
+has firmware loading on a real card. Pilot on a few hosts first.
+
+### When a driver is missing
+
+Watch the host's console (the BMC's virtual console or serial-over-LAN). The
+inspector logs every step there, and the two failures look like this:
+
+| Missing driver | Host console | What Beskar7 shows |
+|---|---|---|
+| NIC | `beskar7-inspector: run failed: no network interface found` | No inspection report arrives. The Machine fails with `InspectionTimedOut` after `--inspection-timeout` (10 minutes by default). |
+| Storage controller | `beskar7-inspector: run failed: no eligible target disk found` | The inspection report arrives, but the disk is missing from `status.inspectionReport.disks` on the `PhysicalHost`. The Machine fails at once with `DeploymentFailed`, and the host's `status.errorMessage` reads `inspector reported deploy failure: no eligible target disk`. An inspector older than `v0.3.4` reports nothing, so the Machine fails with `DeploymentTimedOut` after `--deployment-timeout` (20 minutes by default). |
+
+On a host with several NICs, a missing driver for the NIC it PXE-booted from
+can instead show as `BOOTIF MAC <mac> matched no interface`. When the boot
+script passes the host's MAC (`BOOTIF`), the inspector uses only that NIC, even
+if another one came up.
+
+Please
+[open an inspector issue](https://github.com/projectbeskar/beskar7-inspector/issues)
+with the output of `lspci -nn` and `lspci -k` from the host.
 
 ## What's Different from Other Bare-Metal Tools?
 
@@ -221,7 +312,9 @@ kubectl get physicalhost test-server -w
 # test-server   Available   true
 ```
 
-If it becomes `Available`, your hardware is fully compatible!
+If it becomes `Available`, the BMC side is compatible. Whether the inspector can
+drive the host's NIC and disks shows at its first inspection — see
+[Host hardware](#host-hardware-nics-and-storage).
 
 ## Known Limitations
 
@@ -395,6 +488,8 @@ Before deploying to production:
 - [ ] BMC accessible from Kubernetes cluster
 - [ ] Firewall rules configured
 - [ ] BMC user accounts configured with proper permissions
+- [ ] Each host's provisioning NIC and disk controller use a driver the
+      inspector ships (see [Host hardware](#host-hardware-nics-and-storage))
 - [ ] Test PhysicalHost enrollment successful
 - [ ] Test power operations work
 - [ ] Test PXE boot works
@@ -404,10 +499,10 @@ Before deploying to production:
 After verifying hardware compatibility:
 
 1. Set up iPXE infrastructure - See [iPXE Setup Guide](ipxe-setup.md)
-2. Deploy inspector image - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
+2. Deploy inspector image (`v0.3.4` or later for physical servers) - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
 3. Register hosts - See [examples](../examples/)
 4. Start provisioning - See [README](../README.md)
 
 ---
 
-**The beauty of simplicity:** Any Redfish BMC works, no exceptions, no workarounds!
+**The design goal:** one code path for every Redfish BMC, with no vendor workarounds.
