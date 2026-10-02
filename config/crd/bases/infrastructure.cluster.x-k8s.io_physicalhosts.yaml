@@ -112,6 +112,8 @@ spec:
                   bootNonceConsumedAt:
                     format: date-time
                     type: string
+                  bootNonceConsumedClientHash:
+                    type: string
                   bootNonceConsumedHash:
                     type: string
                   bootNonceExpiresAt:

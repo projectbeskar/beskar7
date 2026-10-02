@@ -35,9 +35,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -79,9 +81,19 @@ func boundCredentialData(consumer, token string, tokenTTL time.Duration, nonce s
 	return data
 }
 
-// credentialSecret returns the bootstrap-token Secret of the host named
-// hostName holding data, for fake clients.
-func credentialSecret(namespace, hostName string, data map[string][]byte) *corev1.Secret {
+// credentialSecret returns host's bootstrap-token Secret holding data, owned by
+// host the way the manager writes it (a controller reference naming host's
+// UID). A fake client assigns no UIDs, so a host staged there needs one set.
+func credentialSecret(host *infrav1.PhysicalHost, data map[string][]byte) *corev1.Secret {
+	secret := unownedCredentialSecret(host.Namespace, host.Name, data)
+	Expect(controllerutil.SetControllerReference(host, secret, k8sClient.Scheme())).To(Succeed())
+	return secret
+}
+
+// unownedCredentialSecret returns a Secret under the bootstrap-token name of
+// the host named hostName that no controller owns: one anybody allowed to
+// create Secrets in the namespace could have put there.
+func unownedCredentialSecret(namespace, hostName string, data map[string][]byte) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: bootstrapTokenSecretName(hostName), Namespace: namespace},
 		Type:       corev1.SecretTypeOpaque,
@@ -89,14 +101,14 @@ func credentialSecret(namespace, hostName string, data map[string][]byte) *corev
 	}
 }
 
-// putCredentialSecret creates the host's bootstrap-token Secret with data, or
-// replaces the data of the one it has.
+// putCredentialSecret creates the host's bootstrap-token Secret with data,
+// owned by the host, or replaces the data of the one it has.
 func putCredentialSecret(host client.ObjectKey, data map[string][]byte) {
 	key := client.ObjectKey{Namespace: host.Namespace, Name: bootstrapTokenSecretName(host.Name)}
 	secret := &corev1.Secret{}
 	err := k8sClient.Get(ctx, key, secret)
 	if apierrors.IsNotFound(err) {
-		Expect(k8sClient.Create(ctx, credentialSecret(host.Namespace, host.Name, data))).To(Succeed())
+		Expect(k8sClient.Create(ctx, credentialSecret(getPhysicalHost(host), data))).To(Succeed())
 		return
 	}
 	Expect(err).NotTo(HaveOccurred())
@@ -383,6 +395,39 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 		Expect(body).To(ContainSubstring("Y-BOOTSTRAP-DATA"))
 	})
 
+	// D-031: the Secret's name is deterministic, so someone allowed to create
+	// Secrets but not to read them could put one there first, bound to the
+	// machine they expect to claim the host. A Secret the host does not own
+	// authenticates nothing, and the mint refuses to take it over.
+	It("a Secret the host does not own authenticates no callback, and the mint refuses to adopt it", func() {
+		victim, _ := consumerWithBootstrapData(ns.Name, "victim-machine", "VICTIM-BOOTSTRAP-DATA")
+		key := provisioningHost(ns.Name, "squatted-host", victim.Name, infrav1.StateInUse, nil)
+		squatterToken, _ := mint()
+		squatterNonce, _ := mint()
+		data := boundCredentialData(victim.Name, squatterToken, time.Hour, squatterNonce, 10*time.Minute)
+		data[bootstrapConsumerUIDSecretKey] = []byte(victim.UID)
+		Expect(k8sClient.Create(ctx, unownedCredentialSecret(ns.Name, key.Name, data))).To(Succeed())
+
+		code, body := callbackRequest(http.MethodGet, bootstrapURL(key), squatterToken)
+		Expect(body).NotTo(ContainSubstring("VICTIM-BOOTSTRAP-DATA"))
+		Expect(code).To(Equal(http.StatusUnauthorized))
+		code, _ = callbackRequest(http.MethodPost, inspectionURL(key), squatterToken)
+		Expect(code).To(Equal(http.StatusUnauthorized))
+		resp := doBoot(server.URL, key.Namespace, key.Name, squatterNonce)
+		Expect(readBody(resp)).NotTo(ContainSubstring(squatterToken))
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+
+		By("the machine's mint refusing to adopt it")
+		_, err := machineR.triggerInspection(ctx, machineR.Log, victim, getPhysicalHost(key))
+		Expect(err).To(HaveOccurred())
+		secret := getCredentialSecret(key)
+		Expect(secret.OwnerReferences).To(BeEmpty(), "never adopted")
+		Expect(string(secret.Data[bootstrapTokenSecretKey])).To(Equal(squatterToken), "never rewritten")
+		Expect(conditions.GetReason(victim, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.BootstrapCredentialsConflictReason),
+			"the machine says why it is stuck")
+		Expect(conditions.GetMessage(victim, infrav1.InfrastructureReadyCondition)).NotTo(ContainSubstring(squatterToken))
+	})
+
 	It("rejects every callback for a host nobody has claimed", func() {
 		holder, _ := consumerWithBootstrapData(ns.Name, "machine-x", "X-BOOTSTRAP-DATA")
 		key := provisioningHost(ns.Name, "unclaimed-host", holder.Name, infrav1.StateInUse, nil)
@@ -540,6 +585,24 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 			expiry, err := time.Parse(time.RFC3339, string(secret.Data[bootstrapTokenExpiresAtSecretKey]))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(expiry).To(BeTemporally("<=", statusExpiry), "the backfilled expiry never outlives the one status advertised")
+		})
+
+		It("neither backfills nor adopts a Secret the host does not own, and the machine carries on", func() {
+			b7m, machine := consumerWithBootstrapData(ns.Name, "unowned-machine", "UNOWNED-BOOTSTRAP-DATA")
+			key, token := legacyHost("unowned-host", b7m.Name, infrav1.StateInspecting)
+			By("replacing the host's Secret with the same plaintexts under no owner")
+			secret := getCredentialSecret(key)
+			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
+			Expect(k8sClient.Create(ctx, unownedCredentialSecret(ns.Name, key.Name, secret.Data))).To(Succeed())
+
+			reconcileMachine(b7m, machine)
+
+			after := getCredentialSecret(key)
+			Expect(after.OwnerReferences).To(BeEmpty(), "never adopted")
+			Expect(after.Data).NotTo(HaveKey(bootstrapConsumerSecretKey), "never bound")
+			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), token)
+			Expect(body).NotTo(ContainSubstring("UNOWNED-BOOTSTRAP-DATA"))
+			Expect(code).To(Equal(http.StatusUnauthorized))
 		})
 
 		It("backfills nothing on a Ready host, whose pre-upgrade token stops working", func() {

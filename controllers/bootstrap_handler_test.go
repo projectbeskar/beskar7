@@ -359,7 +359,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		// other objects: the test exercises only the size-check branch.
 		oversized := bytes.Repeat([]byte("x"), maxBootstrapDataSize+1)
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h", Namespace: "n", UID: "h-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				ConsumerRef: &corev1.ObjectReference{
 					Kind:       "Beskar7Machine",
@@ -398,7 +398,7 @@ var _ = Describe("Bootstrap GET handler (PR-5.3)", func() {
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
 			WithObjects(ph, b7m, owner, secret,
-				credentialSecret("n", "h", boundCredentialData("b7m", "token", time.Hour, "", 0))).
+				credentialSecret(ph, boundCredentialData("b7m", "token", time.Hour, "", 0))).
 			Build()
 		handler := &BootstrapHandler{
 			Client: fakeClient,

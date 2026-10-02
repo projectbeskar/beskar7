@@ -18,10 +18,17 @@ package controllers
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -150,17 +157,42 @@ func formatCredentialTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
+// bootstrapSecretOwnedBy reports whether secret's controller reference names
+// host by UID: whether it is the Secret the manager created for this host
+// object.
+//
+// The name is deterministic, so anyone allowed to create Secrets in the
+// namespace can put one there first, and a Secret a deleted host of the same
+// name left behind still sits there until garbage collection removes it.
+// Neither is the host's (D-031). The UID, not the name, is what tells them
+// apart. clusterctl move rewrites ownerRef UIDs to the recreated owner's, so a
+// moved Secret is still the moved host's.
+func bootstrapSecretOwnedBy(secret *corev1.Secret, host *infrav1.PhysicalHost) bool {
+	if host.UID == "" {
+		return false
+	}
+	owner := metav1.GetControllerOf(secret)
+	return owner != nil && owner.UID == host.UID
+}
+
+// errBootstrapSecretNotOwned is returned when the Secret under a host's
+// bootstrap-token name is not the host's (bootstrapSecretOwnedBy). The
+// controller never takes such a Secret over.
+var errBootstrapSecretNotOwned = errors.New("bootstrap-token Secret is not owned by its PhysicalHost")
+
 // boundBootstrapCredentials returns the credentials in host's bootstrap-token
 // Secret together with the Beskar7Machine they are bound to, but only while
 // host is claimed and its claim names that machine: host.Spec.ConsumerRef must
 // resolve to a Beskar7Machine in host's own namespace
-// (resolveConsumerBeskar7Machine) whose name is the Secret's consumer.
+// (resolveConsumerBeskar7Machine) whose name is the Secret's consumer. The
+// Secret itself must be the host's (bootstrapSecretOwnedBy).
 //
 // A host nobody claims, a claim naming a different machine than the one the
 // credentials were minted for (a re-pointed ConsumerRef, or a re-claim the new
-// machine has not minted for yet), and a Secret written before the binding
-// existed all fail here, so none of them authenticates a callback. The error
-// is for server-side logs only and carries no credential material.
+// machine has not minted for yet), a Secret written before the binding
+// existed, and a Secret the host does not own all fail here, so none of them
+// authenticates a callback. The error is for server-side logs only and
+// carries no credential material.
 func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
 	consumer, ok := resolveConsumerBeskar7Machine(host)
 	if !ok {
@@ -170,6 +202,9 @@ func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infra
 	key := types.NamespacedName{Namespace: host.Namespace, Name: bootstrapTokenSecretName(host.Name)}
 	if err := c.Get(ctx, key, secret); err != nil {
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("get bootstrap-token Secret %s: %w", key.Name, err)
+	}
+	if !bootstrapSecretOwnedBy(secret, host) {
+		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, key.Name)
 	}
 	creds := readBootstrapCredentials(secret)
 	if creds.consumer == "" || creds.consumer != consumer.Name {
@@ -215,4 +250,34 @@ func bootNonceConsumed(bs *infrav1.BootstrapStatus, nonceHash string) bool {
 // an earlier one.
 func bootNonceConsumeUnattributed(bs *infrav1.BootstrapStatus) bool {
 	return bs != nil && bs.BootNonceConsumedAt != nil && bs.BootNonceConsumedHash == ""
+}
+
+// bootNonceClientHash identifies clientIP as the client that consumed nonce,
+// for the consume record (BootNonceConsumedClientHash): the hex HMAC-SHA256 of
+// the address, keyed with the nonce. Keyed, because a plain hash of an IPv4
+// address is reversed by trying all 2^32 of them, and status is readable by
+// far more people than the Secret is.
+func bootNonceClientHash(nonce, clientIP string) string {
+	if ip := net.ParseIP(clientIP); ip != nil {
+		clientIP = ip.String()
+	}
+	mac := hmac.New(sha256.New, []byte(nonce))
+	mac.Write([]byte(clientIP))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// bootNonceRetryAllowed reports whether the consume record in bs lets the
+// consumed nonce be served once more to the client clientHash identifies:
+// only the client that consumed it, and only within auth.BootNonceRetryWindow
+// of the consume (D-031). The caller has already established that the record
+// names the nonce (bootNonceConsumed). A record that names no client, written
+// before D-031, allows nobody.
+func bootNonceRetryAllowed(bs *infrav1.BootstrapStatus, clientHash string, now time.Time) bool {
+	if bs == nil || bs.BootNonceConsumedAt == nil || bs.BootNonceConsumedClientHash == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(bs.BootNonceConsumedClientHash), []byte(clientHash)) != 1 {
+		return false
+	}
+	return now.Before(bs.BootNonceConsumedAt.Add(auth.BootNonceRetryWindow))
 }

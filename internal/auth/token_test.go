@@ -126,17 +126,6 @@ func TestVerify_BothBranches(t *testing.T) {
 	}
 }
 
-func TestLifetimeFor(t *testing.T) {
-	now := time.Now()
-	issued, expires := LifetimeFor(now)
-	if !issued.Time.Equal(now) {
-		t.Errorf("IssuedAt = %v, want %v", issued.Time, now)
-	}
-	if expires.Sub(now) != TokenLifetime {
-		t.Errorf("ExpiresAt - IssuedAt = %v, want %v", expires.Sub(now), TokenLifetime)
-	}
-}
-
 func TestNonceLifetimeFor(t *testing.T) {
 	now := time.Now()
 	expires := NonceLifetimeFor(now)
@@ -148,5 +137,18 @@ func TestNonceLifetimeFor(t *testing.T) {
 func TestBootNonceLifetime_ShorterThanTokenLifetime(t *testing.T) {
 	if BootNonceLifetime >= TokenLifetime {
 		t.Errorf("BootNonceLifetime (%v) must be shorter than TokenLifetime (%v)", BootNonceLifetime, TokenLifetime)
+	}
+}
+
+// D-031 fixed both windows; a change to either is a change to that decision.
+func TestD031Windows(t *testing.T) {
+	if BootNonceRetryWindow != 2*time.Minute {
+		t.Errorf("BootNonceRetryWindow = %v, want 2m (D-031)", BootNonceRetryWindow)
+	}
+	if TokenReadyGrace != 5*time.Minute {
+		t.Errorf("TokenReadyGrace = %v, want 5m (D-031)", TokenReadyGrace)
+	}
+	if BootNonceRetryWindow >= BootNonceLifetime {
+		t.Errorf("BootNonceRetryWindow (%v) must be shorter than BootNonceLifetime (%v)", BootNonceRetryWindow, BootNonceLifetime)
 	}
 }

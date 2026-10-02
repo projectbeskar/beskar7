@@ -47,7 +47,7 @@ The callback server (inspection POST, bootstrap GET, and the per-host `/boot` en
 
 For a real deployment, two things must line up:
 
-1. **Expose the callback Service externally.** Either set `callback.service.type` to `LoadBalancer` or `NodePort`, or leave it `ClusterIP` and front `:8082` with your own Ingress controller. **Scope this to the provisioning network — do not publish it to the public internet.** The `/boot` endpoint is gated only by an unguessable single-use nonce (rate-limited), so restrict reachability with `loadBalancerSourceRanges` / cloud source-range annotations, a `NetworkPolicy`, or an upstream firewall.
+1. **Expose the callback Service externally.** Either set `callback.service.type` to `LoadBalancer` or `NodePort`, or leave it `ClusterIP` and front `:8082` with your own Ingress controller. **Scope this to the provisioning network — do not publish it to the public internet.** The `/boot` endpoint is gated only by an unguessable single-use nonce (rate-limited; once consumed, served again only to the same client address within 2 minutes), so restrict reachability with `loadBalancerSourceRanges` / cloud source-range annotations, a `NetworkPolicy`, or an upstream firewall.
 2. **Cover the external address in the serving-cert SAN.** List the external DNS name(s) and/or IP(s) in `callback.externalNames` / `callback.externalIPs`. The host portion of `bootstrap.urlBase` **must** be one of these — the inspector verifies the callback certificate against the CA it is handed on the kernel cmdline and has no insecure-skip path, so a SAN mismatch is a hard failure.
 
 ```bash

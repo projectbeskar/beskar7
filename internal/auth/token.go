@@ -60,16 +60,33 @@ const (
 	// never sees the provisioned callback rejected as the token expires
 	// (SEC-D015-1). Keep TokenLifetime >= DefaultInspectionTimeout +
 	// DefaultDeploymentTimeout with margin if those defaults change.
+	//
+	// It is the most a token lives, not what it usually does: the
+	// Beskar7Machine controller cuts it to TokenReadyGrace once the host is
+	// Ready (D-031).
 	TokenLifetime = 60 * time.Minute
 
+	// TokenReadyGrace is how long a bearer token keeps authenticating once its
+	// host is Ready (D-031). Nothing in a run calls back after Ready but the
+	// inspector's own retries of POST /provisioned, which it makes over about
+	// two and a half minutes when a response is lost, and a 401 among them is
+	// fatal to the host. Five minutes covers those retries and little else.
+	TokenReadyGrace = 5 * time.Minute
+
 	// BootNonceLifetime is the validity window for per-host boot nonces (D-009).
-	// Shorter than TokenLifetime because the nonce is single-use and consumed at
-	// the first GET /api/v1/boot call: a long window only extends the race window
-	// for a co-located provisioning-L2 attacker (see D-009 residual accepted risk).
+	// Shorter than TokenLifetime because the nonce is consumed at the first
+	// GET /api/v1/boot call: a long window only extends the race window for a
+	// co-located provisioning-L2 attacker (see D-009 residual accepted risk).
 	// 10 minutes matches DefaultInspectionTimeout — by the time inspection runs,
 	// the nonce window has elapsed and a fresh nonce is minted on the next
 	// triggerInspection call.
 	BootNonceLifetime = 10 * time.Minute
+
+	// BootNonceRetryWindow is how long after its first fetch a consumed boot
+	// nonce still renders the script, and only for the client that consumed it
+	// (D-031): long enough for a NIC to retry a chainload, too short and too
+	// narrow for a nonce read off the provisioning network to be worth much.
+	BootNonceRetryWindow = 2 * time.Minute
 )
 
 // MintToken generates a fresh per-host bearer token.
@@ -120,21 +137,11 @@ func Verify(plaintext, storedHash string) bool {
 	return subtle.ConstantTimeCompare([]byte(Hash(plaintext)), []byte(storedHash)) == 1
 }
 
-// LifetimeFor returns the (issuedAt, expiresAt) pair a token minted at the
-// given instant is stored with in the host's bootstrap-token Secret (D-029).
-// Centralized here so every mint shares a single source of truth for the
-// validity window.
-func LifetimeFor(now time.Time) (issuedAt, expiresAt metav1.Time) {
-	issuedAt = metav1.NewTime(now)
-	expiresAt = metav1.NewTime(now.Add(TokenLifetime))
-	return issuedAt, expiresAt
-}
-
 // NonceLifetimeFor returns the expiresAt timestamp a boot nonce minted at the
 // given instant is stored with in the host's bootstrap-token Secret (D-029).
 // The nonce has no issuedAt — only expiresAt and the consume record matter for
 // the validity check. Uses BootNonceLifetime (10 min) rather than
-// TokenLifetime (60 min) because the nonce is single-use.
+// TokenLifetime (60 min) because the nonce is consumed at the first boot.
 func NonceLifetimeFor(now time.Time) (expiresAt metav1.Time) {
 	return metav1.NewTime(now.Add(BootNonceLifetime))
 }

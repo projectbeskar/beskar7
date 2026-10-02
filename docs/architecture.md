@@ -241,7 +241,8 @@ The inspection workflow is the core innovation in Beskar7. It provides reliable 
    controller's nonce-gated GET /api/v1/boot/{ns}/{host}/{nonce} endpoint
    |
    v
-4. The controller's /boot handler consumes the nonce (single-use) and
+4. The controller's /boot handler consumes the nonce (single-use: only the
+   same client may fetch it again, within 2 minutes) and
    renders the inspector's kernel cmdline: beskar7.api, beskar7.namespace,
    beskar7.host, beskar7.token, beskar7.target, beskar7.target-digest,
    beskar7.provider-id, beskar7.ca (docs/inspector-contract.md §5)
@@ -544,9 +545,9 @@ If the credentials Secret does not authorise the host's address (no matching `be
 The same per-host bearer token authenticates the inspection POST and the bootstrap GET on `:8082`:
 
 - 32 bytes from `crypto/rand`, encoded as base64-raw-url (43 chars).
-- Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`) with its expiry and the name of the claiming `Beskar7Machine`; GC'd on host delete via owner-ref. That Secret is the only credential the manager checks, and only while the host's `ConsumerRef` names that machine (D-029).
+- Plaintext stored in a per-host Secret named `<host>-bootstrap-token` (data key `plaintext-token`) with its expiry and the name of the claiming `Beskar7Machine`; GC'd on host delete via owner-ref. That Secret is the only credential the manager checks, only while the host's `ConsumerRef` names that machine (D-029), and only if its controller owner reference names the host by UID (D-031).
 - SHA-256 hash mirrored on `PhysicalHost.Status.Bootstrap.TokenHash` (64 hex chars) for operators; not an authentication input.
-- Lifetime: 60 minutes (`auth.TokenLifetime` in `internal/auth/token.go`).
+- Lifetime: 60 minutes (`auth.TokenLifetime` in `internal/auth/token.go`), plus however much `--inspection-timeout` exceeds its 10-minute default. Cut to 5 minutes (`auth.TokenReadyGrace`) once the claiming `Beskar7Machine` sees the host `Ready`, enough for the inspector's `/provisioned` retries. Never handed out again with less than the nonce lifetime plus the inspection timeout left (D-031).
 - Constant-time SHA-256 compare (`crypto/subtle`) on every request.
 - The plaintext travels on the iPXE kernel cmdline as `beskar7.token=<plaintext>`. See [iPXE Setup](ipxe-setup.md).
 

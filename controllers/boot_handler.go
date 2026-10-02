@@ -122,18 +122,20 @@ type ipEntry struct {
 // never read here. NOT bearer-gated — the booting host has no bearer token
 // yet; that token is delivered by this endpoint in the rendered cmdline.
 //
-// On success: records the nonce consumed if it is not yet (D-010) and returns
-// the rendered iPXE script. A second fetch with the same nonce (race loser or
-// NIC retry) returns identical content and records nothing (§4.1).
+// On success: records the nonce consumed if it is not yet (D-010), naming the
+// client that consumed it, and returns the rendered iPXE script. A later fetch
+// with the same nonce (race loser or NIC retry) returns identical content and
+// records nothing (§4.1), but only from that same client and only within
+// auth.BootNonceRetryWindow of the consume (D-031).
 //
 // Every failure returns the same opaque response so callers cannot distinguish
-// "host not found" from "wrong nonce" from "expired" (§4.1).
+// "host not found" from "wrong nonce" from "expired" from "consumed" (§4.1).
 //
 // Status ownership exception: this handler writes exactly one thing, the
 // consume record PhysicalHost.Status.Bootstrap.{BootNonceConsumedAt,
-// BootNonceConsumedHash}, via a single optimistic-locked Status().Patch. This
-// is the sole audited exception to the D-005 invariant. See D-010 in
-// PROJECT_CONTEXT.md for the rationale.
+// BootNonceConsumedHash, BootNonceConsumedClientHash}, via a single
+// optimistic-locked Status().Patch. This is the sole audited exception to the
+// D-005 invariant. See D-010 in PROJECT_CONTEXT.md for the rationale.
 //
 // INVARIANT (D-005 amendment): grep "client.Status().Update" controllers/*_handler.go
 // must remain empty. Only the single audited Status().Patch below is permitted.
@@ -212,18 +214,28 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Consume the nonce (D-010 — atomic single-use under optimistic lock).
 	//
-	// If this nonce is already consumed, this is a race loser or a legitimate
-	// NIC retry. Skip the patch and fall through to render identical content
-	// (§4.1 guarantees same response for same host regardless of order). The
-	// record must name this nonce: Status.Bootstrap outlives a claim, and the
-	// record an earlier nonce left says nothing about one minted after it.
+	// If this nonce is already consumed, this is a race loser, a NIC retry, or
+	// someone else presenting a nonce they saw. The record must name this
+	// nonce: Status.Bootstrap outlives a claim, and the record an earlier nonce
+	// left says nothing about one minted after it. A consumed nonce renders
+	// again only for the client that consumed it, within
+	// auth.BootNonceRetryWindow of the consume (D-031), and then identically
+	// (§4.1); anyone else gets the opaque failure. The client is the address
+	// the rate limiter keys on, so --trusted-proxies applies to both.
 	//
 	// D-010: this Status().Patch is the sole audited exception to D-005.
 	// The fields written (the consume record) are owned exclusively by this
 	// handler; no reconciler writes them, so the BUG-1 last-write-wins hazard
 	// does not apply. A Conflict is the desired outcome (the winner consumed;
-	// the loser confirms it and renders identically).
-	if !bootNonceConsumed(ph.Status.Bootstrap, auth.Hash(creds.nonce)) {
+	// the loser confirms it and renders identically if it is the same client).
+	clientHash := bootNonceClientHash(creds.nonce, clientIP)
+	if bootNonceConsumed(ph.Status.Bootstrap, auth.Hash(creds.nonce)) {
+		if !bootNonceRetryAllowed(ph.Status.Bootstrap, clientHash, time.Now()) {
+			log.V(1).Info("boot GET: nonce already consumed, and not re-served to this request")
+			h.opaqueFailure(w)
+			return
+		}
+	} else {
 		var consumeOK bool
 		for attempt := 0; attempt < bootNonceConsumeMaxRetries; attempt++ {
 			base := ph.DeepCopy()
@@ -234,6 +246,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ph.Status.Bootstrap.BootNonceConsumedAt = &now
 			// verifyBootNonce has matched the nonce to the Secret's.
 			ph.Status.Bootstrap.BootNonceConsumedHash = auth.Hash(creds.nonce)
+			ph.Status.Bootstrap.BootNonceConsumedClientHash = clientHash
 
 			// Status().Update is FORBIDDEN in handler files (D-005).
 			// This single Status().Patch is the audited D-010 exception.
@@ -269,8 +282,14 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Still this nonce, and a concurrent fetch consumed it first: we
-			// lost the race; render identical content below.
+			// lost the race. Render identical content below if that fetch was
+			// this client's; otherwise the nonce is spent for us.
 			if bootNonceConsumed(ph.Status.Bootstrap, auth.Hash(creds.nonce)) {
+				if !bootNonceRetryAllowed(ph.Status.Bootstrap, clientHash, time.Now()) {
+					log.V(1).Info("boot GET: lost the consume race to another client")
+					h.opaqueFailure(w)
+					return
+				}
 				consumeOK = true
 				break
 			}

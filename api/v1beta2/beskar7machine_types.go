@@ -118,6 +118,13 @@ const (
 	// (adoptProvisionedClaim) and wakes this machine through the existing
 	// PhysicalHost watch once it does.
 	WaitingForHostAdoptionReason string = "WaitingForHostAdoption"
+	// BootstrapCredentialsConflictReason (not terminal) indicates that a Secret
+	// the PhysicalHost does not own sits under the host's "<host>-bootstrap-token"
+	// name, so the controller cannot store the host's callback credentials. It
+	// never takes such a Secret over, and the callback server never accepts
+	// one (D-031). Deleting the Secret clears it: the next pass mints into a
+	// fresh one.
+	BootstrapCredentialsConflictReason string = "BootstrapCredentialsConflict"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.

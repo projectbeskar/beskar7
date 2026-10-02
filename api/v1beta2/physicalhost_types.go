@@ -378,8 +378,10 @@ type BootstrapStatus struct {
 	IssuedAt *metav1.Time `json:"issuedAt,omitempty"`
 
 	// ExpiresAt mirrors the time the current token stops being accepted, as
-	// stored in the bootstrap-token Secret (mint time + auth.TokenLifetime).
-	// Informational only; the manager reads the expiry from the Secret.
+	// stored in the bootstrap-token Secret: mint time + auth.TokenLifetime,
+	// cut to auth.TokenReadyGrace after the claiming Beskar7Machine sees the
+	// host Ready (D-031). Informational only; the manager reads the expiry
+	// from the Secret.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 
@@ -395,20 +397,23 @@ type BootstrapStatus struct {
 	// BootNonceExpiresAt mirrors the time the current boot nonce stops being
 	// accepted, as stored in the bootstrap-token Secret (mint time + 10 min,
 	// BootNonceLifetime, D-009). A shorter window than the bearer-token
-	// lifetime is intentional: the nonce is consumed at first boot and never
-	// reused for another boot, but /boot serves a retry of it until it
-	// expires (contract §4.1), so a long window only widens the race window
-	// for a co-located attacker. Informational only.
+	// lifetime is intentional: until the nonce is first fetched, anyone
+	// holding it can boot with it, so a long window only widens the race
+	// window for a co-located attacker. Once consumed, /boot serves it again
+	// only to the client that consumed it, for two minutes (D-031).
+	// Informational only.
 	// +optional
 	BootNonceExpiresAt *metav1.Time `json:"bootNonceExpiresAt,omitempty"`
 
 	// BootNonceConsumedAt is the timestamp at which the GET /api/v1/boot
 	// handler consumed the boot nonce named by BootNonceConsumedHash (D-010).
-	// Nil until that handler first fires. Neither field is ever cleared: a
-	// nonce minted afterwards has a different hash, so the record does not
-	// apply to it, and the handler records that nonce's consume over it on
-	// its first fetch. A consumed nonce is never reused: triggerInspection
-	// mints a fresh one. Written exclusively by the /boot handler (D-010).
+	// Nil until that handler first fires. None of the consume record's fields
+	// is ever cleared: a nonce minted afterwards has a different hash, so the
+	// record does not apply to it, and the handler records that nonce's
+	// consume over it on its first fetch. A consumed nonce is never reused:
+	// triggerInspection mints a fresh one. /boot re-serves the script for it
+	// only within two minutes of this time (D-031). Written exclusively by the
+	// /boot handler (D-010).
 	// +optional
 	BootNonceConsumedAt *metav1.Time `json:"bootNonceConsumedAt,omitempty"`
 
@@ -421,6 +426,17 @@ type BootstrapStatus struct {
 	// nonce it describes is then unknown.
 	// +optional
 	BootNonceConsumedHash string `json:"bootNonceConsumedHash,omitempty"`
+
+	// BootNonceConsumedClientHash identifies the client that consumed the
+	// nonce: the hex HMAC-SHA256 of its address, keyed with the nonce itself,
+	// so the field says nothing about the address to anyone without the nonce.
+	// /boot re-serves a consumed nonce only to that client (D-031). Written by
+	// the /boot handler in the same patch as BootNonceConsumedAt. Empty
+	// alongside a set BootNonceConsumedAt when a handler from before this
+	// field existed wrote the record; the nonce is then served to nobody
+	// again.
+	// +optional
+	BootNonceConsumedClientHash string `json:"bootNonceConsumedClientHash,omitempty"`
 }
 
 // Redfish conditions and reasons - simplified for power management only
