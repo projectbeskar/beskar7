@@ -60,23 +60,24 @@ Connection coordinates for the Redfish BMC.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`; the controller also rejects userinfo. Its host must be listed in the credentials Secret's `bmc-addresses` annotation (below), and an `http://` address also needs the Secret's `bmc-insecure-transport` annotation. |
+| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`; the controller also rejects userinfo, a query and a fragment. Its host must be listed in the credentials Secret's `bmc-addresses` annotation (below), and an `http://` address also needs the Secret's `bmc-insecure-transport` annotation. A hostname is resolved as an absolute DNS name, without the search path, so an in-cluster Service is written `<service>.<namespace>.svc.cluster.local`. Requests go only to this address's scheme, host and port; a redirect elsewhere is refused. |
 | `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys, annotated with the BMC addresses they may be sent to (below). Min length 1. |
 | `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. `true` also needs the credentials Secret's `bmc-insecure-transport` annotation. |
-| `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
+| `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. Must equal the credentials Secret's `bmc-ca-secret` annotation (below). |
 
 When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`. A host not yet `Inspecting`, `Deploying` or `Ready` (still `InUse` or unclaimed) is moved to `Error`; a host already in one of those states keeps it, and only the condition reports the conflict.
 
 #### Credentials Secret annotations
 
-The Secret `credentialsSecretRef` names decides where its credentials may be sent (decision D-030). Both annotations go on the **Secret**:
+The Secret `credentialsSecretRef` names decides where its credentials may be sent (decisions D-030, D-033). The annotations go on the **Secret**:
 
 | Annotation | Required | Value |
 |---|---|---|
 | `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` | yes | Comma- and/or whitespace-separated IP addresses, CIDRs (matched against IP addresses only), hostnames (exact, case-insensitive) and `*.suffix` wildcards (one or more labels under the suffix, never the suffix itself), matched against the host of `address` without DNS resolution. One malformed entry authorises no address at all. |
 | `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` | for `http://` or `insecureSkipVerify: true` | `"true"`, exactly. |
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` | for a host with `caBundleSecretRef` | The name of the CA Secret, in the same namespace, the BMCs present. A host's `caBundleSecretRef` must be exactly this name. |
 
-If the Secret does not authorise the address, no Redfish request is made and `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
+If the Secret does not authorise the address, or the host's `caBundleSecretRef`, no Redfish request is made and `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
 
 #### `spec.consumerRef`
 

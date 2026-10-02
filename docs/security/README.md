@@ -22,7 +22,9 @@ Out of scope: kernel exploits on the inspection image, BMC firmware vulnerabilit
 
 `insecureSkipVerify: true` and `caBundleSecretRef` are mutually exclusive. The reconciler rejects the combination terminally with `RedfishConnectionReady=False (InsecureCABundleConflict)`.
 
-Source: `controllers/redfish_tls.go:fetchRedfishCABundle`, `validateRedfishTLSCombination`.
+The CA is a trust anchor, so the host does not get to choose it alone: the credentials Secret must name the same CA Secret in `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` (decision D-033), or the credentials are not sent and the host reports `RedfishConnectionReady=False (CredentialsNotAuthorized)`. Hosts without `caBundleSecretRef` are unaffected.
+
+Source: `controllers/redfish_tls.go:fetchRedfishCABundle`, `validateRedfishTLSCombination`; `controllers/bmc_access.go:resolveBMCAccess` for the CA binding.
 
 Concrete cert-manager-issued example:
 
@@ -53,6 +55,10 @@ spec:
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false
     caBundleSecretRef: bmc-ca-bundle
+---
+# 3. Name it on the credentials Secret (D-033), alongside its bmc-addresses.
+#    kubectl annotate secret bmc-credentials -n default \
+#      beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=bmc-ca-bundle
 ```
 
 The Secret data must include either a `ca.crt` (preferred) or `tls.crt` key. If both are present, `ca.crt` wins. Empty values are rejected with `CABundleFetchFailed`.
@@ -61,9 +67,9 @@ The Secret data must include either a `ca.crt` (preferred) or `tls.crt` key. If 
 
 `PhysicalHost.spec.redfishConnection.credentialsSecretRef` names an Opaque Secret in the same namespace as the host. The Secret must contain `username` and `password` data keys. Beskar7 fetches by name only — there is no List/Watch on Secrets across the cluster outside the existing PhysicalHost-scoped informer.
 
-The Secret, not the host, decides which BMCs its credentials may be sent to (decision D-030). It must carry `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`, a comma- and/or whitespace-separated list of IP addresses, CIDRs (matched against IP addresses only), hostnames and `*.suffix` wildcards that names the host of `redfishConnection.address`. The host is matched as written; a listed name is trusted to resolve to the BMC through the cluster DNS search path, so prefer IP addresses or fully-qualified names (see [Where the credentials may go](configuration.md#where-the-credentials-may-go)). CIDRs wider than /8 (IPv4) or /32 (IPv6), and wildcards over a public suffix, are rejected. An `http://` address or `insecureSkipVerify: true` also needs `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"` on the same Secret. Both controllers run this check before they build a Redfish client, and it fails closed: a missing or malformed annotation, an address the list does not name, or an address that is not an `http(s)://` URL with a host and no userinfo sends nothing to the BMC, and the host reports `RedfishConnectionReady=False (CredentialsNotAuthorized)`. Someone who can patch a `PhysicalHost` but cannot write Secrets therefore cannot re-point a host to collect another host's BMC password. See [Where the credentials may go](configuration.md#where-the-credentials-may-go).
+The Secret, not the host, decides which BMCs its credentials may be sent to (decision D-030). It must carry `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`, a comma- and/or whitespace-separated list of IP addresses, CIDRs (matched against IP addresses only), hostnames and `*.suffix` wildcards that names the host of `redfishConnection.address`. The host is matched as written; a listed name is trusted to resolve to the BMC, and the manager resolves it as an absolute DNS name without the cluster search path (decision D-032), so an in-cluster name must be fully qualified; prefer IP addresses or fully-qualified names (see [Where the credentials may go](configuration.md#where-the-credentials-may-go)). CIDRs wider than /8 (IPv4) or /32 (IPv6), and wildcards over a public suffix, are rejected. An `http://` address or `insecureSkipVerify: true` also needs `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"` on the same Secret. A host with `caBundleSecretRef` also needs the Secret's `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` to name that CA Secret (decision D-033). Both controllers run this check before they build a Redfish client, and it fails closed: a missing or malformed annotation, an address the list does not name, a CA Secret the Secret does not name, or an address that is not an `http(s)://` URL with a host and no userinfo, query or fragment sends nothing to the BMC, and the host reports `RedfishConnectionReady=False (CredentialsNotAuthorized)`. Someone who can patch a `PhysicalHost` but cannot write Secrets therefore cannot re-point a host, or its CA, to collect another host's BMC password. The Redfish client then keeps to the authorised origin: it refuses any request to another scheme, host or port, including a redirect from the BMC and a link in a BMC response. See [Where the credentials may go](configuration.md#where-the-credentials-may-go).
 
-Source: `controllers/bmc_access.go:resolveBMCAccess`, called from `controllers/physicalhost_controller.go:reconcileNormal` and `controllers/beskar7machine_controller.go:getRedfishClientForHost`.
+Source: `controllers/bmc_access.go:resolveBMCAccess`, called from `controllers/physicalhost_controller.go:reconcileNormal` and `controllers/beskar7machine_controller.go:getRedfishClientForHost`; `internal/redfish/absolute_dial.go` and `internal/redfish/origin_pinning.go` for name resolution and origin pinning.
 
 Beskar7 does not log usernames or passwords at any verbosity level. The structured logger emits `passwordProvided` (a boolean) at V(1) when constructing the gofish client. See `internal/redfish/gofish_client.go`.
 

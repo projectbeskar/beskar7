@@ -35,8 +35,12 @@ type gofishClient struct {
 
 var log = logf.Log.WithName("redfish-client")
 
-// newHTTPClient builds an *http.Client that mirrors gofish's internal transport
-// defaults while adding a per-call Timeout and honouring TLS configuration.
+// newHTTPClient builds the *http.Client every request to the BMC at endpoint
+// goes through: gofish's internal transport defaults, a per-call Timeout, the
+// TLS configuration, a dialer that resolves the BMC's hostname as an absolute
+// name (dialAbsolute, D-032), and a transport that sends nothing outside
+// endpoint's origin (originPinnedTransport, SEC-17c). dial is the dialer
+// underneath; outside tests it is systemDial.
 //
 // When caBundle is non-empty, the returned client validates BMC certificates
 // against the supplied PEM bundle (system roots are NOT additionally trusted —
@@ -48,10 +52,10 @@ var log = logf.Log.WithName("redfish-client")
 // When caBundle is empty, behaviour is the prior contract: system roots, with
 // InsecureSkipVerify driven by the operator-opt-in flag.
 //
-// Returns an error only when caBundle is non-empty and contains no usable PEM
+// Returns an error when caBundle is non-empty and contains no usable PEM
 // certificates — silent fallback to system roots in that case would defeat the
-// operator's intent.
-func newHTTPClient(insecure bool, caBundle []byte) (*http.Client, error) {
+// operator's intent — or when endpoint has no origin to pin to.
+func newHTTPClient(endpoint *url.URL, insecure bool, caBundle []byte, dial dialContextFunc) (*http.Client, error) {
 	defaultTransport := http.DefaultTransport.(*http.Transport)
 	tlsConfig := &tls.Config{
 		// G402 — InsecureSkipVerify is operator-opt-in via Spec.RedfishConnection.InsecureSkipVerify.
@@ -71,16 +75,24 @@ func newHTTPClient(insecure bool, caBundle []byte) (*http.Client, error) {
 	}
 	transport := &http.Transport{
 		Proxy:                 defaultTransport.Proxy,
-		DialContext:           defaultTransport.DialContext,
+		DialContext:           dialAbsolute(endpoint.Hostname(), dial),
 		MaxIdleConns:          defaultTransport.MaxIdleConns,
 		IdleConnTimeout:       defaultTransport.IdleConnTimeout,
 		ExpectContinueTimeout: defaultTransport.ExpectContinueTimeout,
 		TLSHandshakeTimeout:   10 * time.Second,
 		TLSClientConfig:       tlsConfig,
+		// gofish set this on a bare *http.Transport; it leaves a wrapped one
+		// alone, and Go turns HTTP/2 off when DialContext or TLSClientConfig
+		// is set without it.
+		ForceAttemptHTTP2: true,
+	}
+	pinned, err := pinToOrigin(transport, endpoint)
+	if err != nil {
+		return nil, err
 	}
 	return &http.Client{
 		Timeout:   defaultHTTPTimeout,
-		Transport: transport,
+		Transport: pinned,
 	}, nil
 }
 
@@ -137,7 +149,7 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	// Use the validated and cleaned URL string
 	endpointURL := parsedURL.String()
 
-	httpClient, err := newHTTPClient(insecure, caBundle)
+	httpClient, err := newHTTPClient(parsedURL, insecure, caBundle, systemDial)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build HTTP client for %s: %w", endpointURL, err)
 	}
@@ -179,10 +191,11 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 // *http.Client wholesale. Used by integration tests that need to point at an
 // httptest.Server with a self-signed cert and full transport control.
 //
-// The supplied httpClient is passed straight to gofish.ClientConfig.HTTPClient;
-// the insecure flag is ignored beyond logging (caller has already configured
-// the transport's TLSClientConfig). httpClient must not be nil — the whole
-// point of this constructor is the explicit client.
+// The supplied httpClient's transport is used as is, under the same origin
+// pinning NewClient applies (originPinnedTransport), and its dialer is the
+// caller's; the insecure flag is ignored beyond logging (caller has already
+// configured the transport's TLSClientConfig). httpClient must not be nil —
+// the whole point of this constructor is the explicit client.
 func NewClientWithHTTPClient(
 	ctx context.Context,
 	address, username, password string,
@@ -208,13 +221,24 @@ func NewClientWithHTTPClient(
 	}
 	endpointURL := parsedURL.String()
 
+	base := httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	pinned, err := pinToOrigin(base, parsedURL)
+	if err != nil {
+		return nil, err
+	}
+	pinnedClient := *httpClient
+	pinnedClient.Transport = pinned
+
 	config := gofish.ClientConfig{
 		Endpoint:   endpointURL,
 		Username:   username,
 		Password:   password,
 		Insecure:   insecure,
 		BasicAuth:  true,
-		HTTPClient: httpClient,
+		HTTPClient: &pinnedClient,
 	}
 	logger.V(1).Info("Attempting gofish.ConnectContext with caller-supplied http.Client",
 		"Endpoint", config.Endpoint,

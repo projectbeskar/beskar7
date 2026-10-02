@@ -108,9 +108,24 @@ func TestDoWithCtx_DeadlineExceeded(t *testing.T) {
 // newHTTPClient
 // ---------------------------------------------------------------------------
 
+// bmcTransport returns the *http.Transport under the origin pinning that
+// newHTTPClient wraps it in.
+func bmcTransport(t *testing.T, c *http.Client) *http.Transport {
+	t.Helper()
+	pinned, ok := c.Transport.(*originPinnedTransport)
+	if !ok {
+		t.Fatalf("expected the transport to be pinned to the BMC's origin, got %T", c.Transport)
+	}
+	transport, ok := pinned.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport under the pinning, got %T", pinned.base)
+	}
+	return transport
+}
+
 func TestNewHTTPClient_Timeout(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(false, nil)
+	c, err := newHTTPClient(testEndpoint, false, nil, systemDial)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,14 +136,11 @@ func TestNewHTTPClient_Timeout(t *testing.T) {
 
 func TestNewHTTPClient_InsecureFalse(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(false, nil)
+	c, err := newHTTPClient(testEndpoint, false, nil, systemDial)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	transport, ok := c.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
+	transport := bmcTransport(t, c)
 	if transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("expected InsecureSkipVerify=false")
 	}
@@ -139,14 +151,11 @@ func TestNewHTTPClient_InsecureFalse(t *testing.T) {
 
 func TestNewHTTPClient_InsecureTrue(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(true, nil)
+	c, err := newHTTPClient(testEndpoint, true, nil, systemDial)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	transport, ok := c.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
+	transport := bmcTransport(t, c)
 	if !transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("expected InsecureSkipVerify=true")
 	}
@@ -159,14 +168,11 @@ func TestNewHTTPClient_InsecureTrue(t *testing.T) {
 func TestNewHTTPClient_CABundle_Valid(t *testing.T) {
 	t.Parallel()
 	caPEM, _ := generateSelfSignedCA(t)
-	c, err := newHTTPClient(false, caPEM)
+	c, err := newHTTPClient(testEndpoint, false, caPEM, systemDial)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	transport, ok := c.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
+	transport := bmcTransport(t, c)
 	if transport.TLSClientConfig.RootCAs == nil {
 		t.Fatal("expected RootCAs to be populated when CA bundle supplied")
 	}
@@ -182,14 +188,11 @@ func TestNewHTTPClient_CABundle_Valid(t *testing.T) {
 func TestNewHTTPClient_CABundle_InsecureForcedFalse(t *testing.T) {
 	t.Parallel()
 	caPEM, _ := generateSelfSignedCA(t)
-	c, err := newHTTPClient(true, caPEM)
+	c, err := newHTTPClient(testEndpoint, true, caPEM, systemDial)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	transport, ok := c.Transport.(*http.Transport)
-	if !ok {
-		t.Fatal("expected *http.Transport")
-	}
+	transport := bmcTransport(t, c)
 	if transport.TLSClientConfig.InsecureSkipVerify {
 		t.Fatal("expected InsecureSkipVerify=false even when insecure=true was passed alongside a CA bundle")
 	}
@@ -201,7 +204,7 @@ func TestNewHTTPClient_CABundle_InsecureForcedFalse(t *testing.T) {
 func TestNewHTTPClient_CABundle_MalformedPEM(t *testing.T) {
 	t.Parallel()
 	bogus := []byte("this is not a PEM-encoded certificate")
-	_, err := newHTTPClient(false, bogus)
+	_, err := newHTTPClient(testEndpoint, false, bogus, systemDial)
 	if err == nil {
 		t.Fatal("expected error for malformed PEM, got nil")
 	}
