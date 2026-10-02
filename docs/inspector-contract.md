@@ -303,6 +303,13 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   `StateReady`. This handler does NOT write `PhysicalHost.Status` directly (D-005
   invariant). The report is honoured on a host that is:
   - `StateDeploying` (or already `StateReady`: a duplicate);
+  - claimed and in a BMC-level `StateError` (credentials, certificate, TLS
+    configuration) that interrupted `StateDeploying`. The inspector does not need
+    the BMC, so the deployment went on and the report applies as it would on a
+    `StateDeploying` host: the host goes to `StateReady`, not back to `StateInUse`
+    once the BMC answers. Only a host that v0.8.0 or earlier left in that `Error`
+    reaches it; the current controller keeps a `StateDeploying` host
+    `StateDeploying` through a BMC failure;
   - claimed and still `StateInspecting` — the inspector does not wait for the host
     (§9.2), and the host reaches `StateDeploying` only once the controller has
     validated the inspection report, which can come after the whole deployment when
@@ -359,7 +366,8 @@ deployment-timeout.
     never gets there (the hardware fails `HardwareRequirementsNotMet`, the host is
     released), or if it arrived before the run's inspection report;
   - claimed and in a BMC-level `StateError` (credentials, certificate, TLS
-    configuration) that interrupted `StateDeploying`.
+    configuration) that interrupted `StateDeploying`. Only a host that v0.8.0 or
+    earlier left in that `Error` reaches it, as for §4.4.
 
   Any other host returns 202 but receives no state transition (no-op guard). The
   wire behaviour is unchanged from v4.1: the inspector sees `202` either way.
@@ -916,6 +924,16 @@ change. These are not new contract versions.
   the one the secret was minted for, is rejected with the same opaque
   `401`/`404` as any other bad credential, and a secret the controller minted
   before this change stops working on a host that was already `Ready`.
+- **PROV-1 (2026-10-02):** §4.4 listed the hosts a `/provisioned` report is
+  honoured on without the claimed host in a BMC-level `StateError` that
+  interrupted `StateDeploying`, which §4.5 already listed for `/provision-failed`.
+  The controller now takes `/provisioned` there too (`controllers/provisioned_handler.go`,
+  `applyProvisionedRequestAnnotation`): the inspector does not need the BMC and
+  finished the deployment, and a dropped report left the host to go back to
+  `StateInUse` once the BMC answered, where its machine booted the inspector again.
+  Only a host that v0.8.0 or earlier left in that `Error` reaches it. No
+  endpoint, status code, cmdline parameter or report field changed, and the
+  inspector sees `202` as before.
 
 ---
 

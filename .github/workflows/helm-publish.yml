@@ -32,12 +32,12 @@ jobs:
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         fetch-depth: 0
 
     - name: Install Helm
-      uses: azure/setup-helm@v4
+      uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       with:
         version: '3.12.1'
 
@@ -84,7 +84,7 @@ jobs:
         grep -A1 "controllerManager:" charts/beskar7/values.yaml | grep "tag:" || true
 
     - name: Checkout gh-pages branch
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         ref: gh-pages
         path: gh-pages-repo
@@ -138,7 +138,7 @@ jobs:
         grep -E "^\s+(version|urls):" .helm-repo/index.yaml || true
 
     - name: Deploy to GitHub Pages
-      uses: peaceiris/actions-gh-pages@v4
+      uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: .helm-repo

@@ -68,8 +68,7 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 - `Deploying`
 - `Ready`
 - `Error`
-- `Enrolling`
-- `Unknown`
+- `Enrolling` and `Unknown` — always 0: the API defines these states, but the controller never sets them
 
 #### `beskar7_controller_physicalhost_power_operations_total`
 **Type:** Counter  
