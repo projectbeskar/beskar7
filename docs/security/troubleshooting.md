@@ -49,7 +49,7 @@ If `openssl` is happy but Beskar7 isn't, check the manager pod's CA pool. The de
 
 ## BMC credentials
 
-### Symptom: `RedfishConnectionReady=False (MissingCredentials)` / `(SecretNotFound)` / `(MissingSecretData)`
+### Symptom: `RedfishConnectionReady=False (MissingCredentials)`
 
 ```bash
 kubectl get physicalhost <name> -o jsonpath='{.status.errorMessage}'
