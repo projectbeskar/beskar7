@@ -99,7 +99,7 @@ Every condition is a native `metav1.Condition` (`status.conditions[]`: `type`, `
 | `InfrastructureReady` | True once the host reaches `Ready` (the inspector's provisioned callback was received) and `ProviderID` is set. | `Provisioned` | `PhysicalHostNotReady` (a host is claimed and not provisioned yet: set from the claim on, through inspection and deployment, so `Ready` never reads `True` early); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address (`CredentialsNotAuthorized`) — not terminal, see [below](#a-bmc-outage-is-not-a-terminal-failure)); terminal — see [Terminal failures](#terminal-failures). |
 | `PhysicalHostAssociated` | A host has been claimed. | `PhysicalHostAssociated` | `WaitingForPhysicalHost`, `NoMatchingPhysicalHost`, `PhysicalHostAssociationFailed`, `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
-| `Paused` | Maintained by `sigs.k8s.io/cluster-api/util/paused`. See [Paused](#paused). | `NotPaused` | `Paused`. |
+| `Paused` | Maintained by `sigs.k8s.io/cluster-api/util/paused`. See [Paused](#paused). | `Paused` | `NotPaused`. |
 
 There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed from the API. Use `Ready` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) as the provisioned signal.
 

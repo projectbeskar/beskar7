@@ -10,9 +10,9 @@ The state constants are defined in `api/v1beta2/physicalhost_types.go`. The tran
 
 | Constant | Status string | Meaning |
 |---|---|---|
-| `StateNone` | `""` | Initial state before the first reconcile. |
-| `StateUnknown` | `"Unknown"` | The reconciler could not determine state (rare; transient). |
-| `StateEnrolling` | `"Enrolling"` | The reconciler is establishing the BMC connection for the first time. |
+| `StateNone` | `""` | A new host, until its first successful BMC contact moves it to `Available` (a failed one moves it to `Error`). |
+| `StateUnknown` | `"Unknown"` | Defined in the API but never set by the controller. |
+| `StateEnrolling` | `"Enrolling"` | Defined in the API but never set by the controller. |
 | `StateAvailable` | `"Available"` | BMC reachable; no consumer claim. Eligible for a Beskar7Machine to claim. |
 | `StateInUse` | `"InUse"` | A Beskar7Machine has claimed the host (`Spec.ConsumerRef` is set). |
 | `StateInspecting` | `"Inspecting"` | The inspection image is booting / running on the host. |
@@ -111,9 +111,9 @@ Annotations consumed by the `PhysicalHost` reconciler. None of them needs the BM
 
 ## Recovery
 
-### Stuck in `Enrolling`
+### Never reaches `Available`
 
-The reconciler is unable to complete the first BMC handshake.
+The reconciler cannot complete the first BMC handshake: the host's `state` stays `""` or goes to `Error`.
 
 ```bash
 kubectl describe physicalhost <name>
@@ -199,7 +199,7 @@ Full reason lists: [PhysicalHost → Conditions](physicalhost.md#conditions).
 kubectl get events --field-selector involvedObject.kind=PhysicalHost
 ```
 
-The controller emits events for major transitions and for warnings like deleting a still-claimed host.
+The controller emits two: `AdoptedProvisionedClaim` (Normal) when a host whose machine already holds it by `providerID` rebuilds its `Ready` state, as after `clusterctl move`, and `DeletingClaimedHost` (Warning) when a host is deleted while still claimed. Transitions otherwise show in the conditions.
 
 ### Metrics
 

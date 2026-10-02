@@ -10,16 +10,16 @@
 #
 # Use examples/kairos-k3s-node.yaml instead.
 #
-# That file contains the exact CR structure that was validated end-to-end on real
-# bare-metal (contract v4, beskar7-inspector v4): claim → PXE → inspection →
-# Deploying → whole-disk write → COS_OEM inject → /provisioned callback → Ready
-# k3s node with ProviderID set.
+# That file contains the CR structure validated end-to-end on the project's lab
+# (libvirt VMs whose BMCs are emulated by sushy-tools, not physical servers):
+# claim → PXE → inspection → Deploying → whole-disk write → COS_OEM inject →
+# /provisioned callback → Ready k3s node with ProviderID set.
 #
-# Multi-node / production path:
-# A maintained Kairos bootstrap provider (e.g. provider-kubeadm baked into the
-# Kairos image, or cluster-api-provider-kairos) can emit Kairos-compatible
-# cloud-config and pair with a KubeadmControlPlane or MachineDeployment. That
-# path has not been validated against Beskar7 end-to-end; do not treat it as a
-# confirmed working configuration. Track cluster-api-provider-kairos
-# (https://github.com/kairos-io/cluster-api-provider-kairos) for HA-capable
-# multi-node support.
+# Multi-node path:
+# cluster-api-provider-kairos (https://github.com/kairos-io/cluster-api-provider-kairos)
+# emits Kairos #cloud-config. On the same lab it has provisioned a k0s HA
+# cluster through Beskar7 from scratch — three control planes from a
+# KairosControlPlane behind a kube-vip VIP and two workers from a
+# MachineDeployment, all on Beskar7MachineTemplates (controller<->inspector
+# contract v4.2). That is emulated hardware, and no such example ships in this
+# repository yet.
