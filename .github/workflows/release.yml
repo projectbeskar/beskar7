@@ -23,13 +23,13 @@ jobs:
       image-url: ${{ steps.build.outputs.image-url }}
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -37,7 +37,7 @@ jobs:
         
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -48,7 +48,7 @@ jobs:
           
     - name: Build and push container image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
         platforms: linux/amd64
@@ -59,14 +59,14 @@ jobs:
         sbom: false
         
     - name: Generate SBOM
-      uses: anchore/sbom-action@v0
+      uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
       with:
         image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
         format: spdx-json
         output-file: sbom.spdx.json
         
     - name: Upload SBOM
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: sbom
         path: sbom.spdx.json
@@ -113,13 +113,13 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}/mock-redfish
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -127,7 +127,7 @@ jobs:
 
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -138,7 +138,7 @@ jobs:
 
     - name: Build and push mock-redfish image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
         file: Dockerfile.mock-redfish
@@ -178,13 +178,13 @@ jobs:
       IMAGE_NAME: ${{ github.repository }}/mock-inspector
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
@@ -192,7 +192,7 @@ jobs:
 
     - name: Extract metadata
       id: meta
-      uses: docker/metadata-action@v5
+      uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
       with:
         images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         tags: |
@@ -203,7 +203,7 @@ jobs:
 
     - name: Build and push mock-inspector image
       id: build
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
         file: Dockerfile.mock-inspector
@@ -287,7 +287,7 @@ jobs:
           --fail-on-vuln=false
 
     - name: Upload the ${{ matrix.image.name }} scan to the Security tab
-      uses: github/codeql-action/upload-sarif@v3
+      uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
       with:
         sarif_file: osv-image-results.sarif
         category: osv-scanner-release-${{ matrix.image.name }}
@@ -313,7 +313,7 @@ jobs:
         } > "osv-scanner-report-${{ matrix.image.name }}.txt"
 
     - name: Upload the ${{ matrix.image.name }} vulnerability report
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: vulnerability-report-${{ matrix.image.name }}
         path: osv-scanner-report-${{ matrix.image.name }}.txt
@@ -324,10 +324,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
         go-version: '1.27'
         
@@ -384,7 +384,7 @@ jobs:
         sha256sum beskar7-manifests-${{ github.ref_name }}.yaml infrastructure-components.yaml metadata.yaml > checksums.txt
         
     - name: Upload release artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: release-artifacts
         path: |
@@ -399,10 +399,10 @@ jobs:
   #   runs-on: ubuntu-latest
   #   steps:
   #   - name: Checkout repository
-  #     uses: actions/checkout@v4
+  #     uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
   #     
   #   - name: Install Helm
-  #     uses: azure/setup-helm@v4
+  #     uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
   #     with:
   #       version: '3.12.0'
   #       
@@ -419,7 +419,7 @@ jobs:
   #       helm package charts/beskar7 --destination ./charts/
   #       
   #   - name: Upload Helm chart
-  #     uses: actions/upload-artifact@v4
+  #     uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
   #     with:
   #       name: helm-chart
   #       path: charts/*.tgz
@@ -433,10 +433,10 @@ jobs:
       contents: write
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       
     - name: Download all artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       
     - name: Combine the per-image vulnerability reports into the release asset
       run: |
@@ -529,7 +529,7 @@ jobs:
         echo "All release artifacts are signed and include SBOMs for supply chain security." >> release-notes.md
         
     - name: Create Release
-      uses: softprops/action-gh-release@v2
+      uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
       with:
         name: Beskar7 ${{ github.ref_name }}
         body_path: release-notes.md
@@ -552,7 +552,7 @@ jobs:
     if: ${{ !contains(github.ref_name, '-') }} # Only for stable releases
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
         

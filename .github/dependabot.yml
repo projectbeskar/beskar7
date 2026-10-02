@@ -78,9 +78,10 @@ updates:
           - "version-update:semver-major"
           - "version-update:semver-minor"
 
-  # Workflow actions, including the ones pinned by commit (OSV-Scanner and
-  # cosign-installer); Dependabot rewrites the pin and its version comment
-  # together.
+  # Workflow actions. Every one is pinned by commit SHA with its version in a
+  # trailing comment, because several run in jobs that hold id-token or write
+  # permissions and a moved tag would run new code there; Dependabot rewrites
+  # the pin and its version comment together.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

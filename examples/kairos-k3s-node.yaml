@@ -1,7 +1,7 @@
 # Beskar7 — single-node Kairos k3s fixture (proven end-to-end)
 #
-# This file contains the exact CR structure validated on real bare-metal (a
-# libvirt VM with a Redfish-emulated BMC, contract v4, beskar7-inspector v4).
+# This file contains the CR structure validated on the project's lab: a libvirt
+# VM whose BMC is emulated by sushy-tools, not a physical server.
 # The full path — claim → PXE → inspection → Deploying → whole-disk write →
 # COS_OEM inject → /provisioned callback → Ready k3s node — was confirmed
 # working: the CAPI Machine advanced to Provisioned with ProviderID set and
@@ -13,7 +13,8 @@
 # Prerequisites:
 #   1. Beskar7 controller installed and --bootstrap-url-base set to an
 #      externally-reachable HTTPS address (see docs/ipxe-setup.md §beskar7.api).
-#   2. CAPI core controllers installed (cluster-api v1.10+).
+#   2. CAPI core controllers installed (cluster-api v1.11+; this file uses the
+#      cluster.x-k8s.io/v1beta2 API).
 #   3. iPXE boot infrastructure operational (dnsmasq + dynamic boot service).
 #   4. Kairos k3s whole-disk raw image available at <target-image-url>.
 #      Compute the digest: sha256sum <image.raw>
@@ -158,7 +159,7 @@ spec:
 # CAPI Cluster — references the Beskar7Cluster.
 # No controlPlaneRef: there is no KubeadmControlPlane here. k3s management is
 # handled entirely by the Kairos cloud-config delivered via the bootstrap Secret.
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: <cluster-name>
@@ -170,7 +171,7 @@ spec:
     services:
       cidrBlocks: ["10.43.0.0/16"]
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Cluster
     name: <cluster-name>
 
@@ -178,7 +179,7 @@ spec:
 # CAPI Machine — standalone (no KubeadmControlPlane, no MachineDeployment).
 # spec.bootstrap.dataSecretName points directly to the bootstrap Secret above.
 # This is the validated, working pattern for a single-node Kairos k3s cluster.
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
   name: <machine-name>
@@ -191,7 +192,7 @@ spec:
   bootstrap:
     dataSecretName: <machine-name>-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Machine
     name: <machine-name>
 

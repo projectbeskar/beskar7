@@ -118,9 +118,9 @@ kubectl delete validatingwebhookconfigurations <name>
 kubectl delete mutatingwebhookconfigurations <name>
 ```
 
-### 4. PhysicalHost Stuck in "Enrolling"
+### 4. PhysicalHost never reaches Available
 
-**Symptom:** Host never transitions to Available
+**Symptom:** The host's `state` stays empty or goes to `Error`, with `RedfishConnectionReady=False`
 
 **Common Causes:**
 
@@ -431,48 +431,56 @@ wireshark boot-debug.pcap
 
 ## Controller Logs Reference
 
-### Normal Startup
+The manager logs JSON, one object per line; the lines below show only the `msg` field, in the order a
+healthy run produces them. Filter with `jq -r .msg`, or `grep` for the text. The `callback-server`
+lines come from the instance serving the inspector's callbacks (the in-cluster manager, or a
+callback-only instance on the provisioning network).
+
+### Normal startup
 
 ```
-Starting Beskar7Controller Manager
-Starting EventSource controller=physicalhost
-Starting Controller controller=physicalhost
-Starting workers worker count=1
+starting manager
+Starting EventSource            (one per watched kind and controller)
+Starting Controller             (beskar7machine, physicalhost, beskar7cluster)
+Starting workers
 ```
 
-### Successful PhysicalHost Enrollment
+### A host enrolls
 
 ```
-Enrolling PhysicalHost host=server-01
-Connected to Redfish endpoint host=server-01
-PhysicalHost transitioned to Available host=server-01
+Host available, transitioning to Available
 ```
 
-### Successful Inspection
+### A machine provisions a host
 
 ```
-Starting inspection host=server-01 machine=worker-01
-Setting PXE boot source host=server-01
-Powering on host host=server-01
-Inspection report received host=server-01
-Hardware validation passed host=server-01
-PhysicalHost ready host=server-01
+Claiming available PhysicalHost
+PhysicalHost claimed, triggering inspection
+Successfully set boot source to PXE
+Powered on system for inspection          (or: Restarted the host, which was already on, to boot the inspector)
+Inspection boot triggered successfully
+Received inspection report                 (callback server)
+Inspection report accepted; signalled reconciler via annotation
+Hardware validation passed
+Applying inspection-request annotation: transitioning to Deploying
+Provisioned callback accepted; signalled reconciler via annotation   (callback server)
+Applying provisioned annotation: transitioning Deploying→Ready
 ```
 
-### Error Examples
+### Failures
+
+The reason a host or machine failed is in its conditions (`kubectl describe`); the log adds context.
 
 ```
-# Redfish connection failed
-Failed to connect to Redfish endpoint: dial tcp: i/o timeout
+# BMC unreachable: RedfishConnectionReady=False, reason BMCUnreachable; retried every 15 s
+BMC unreachable (connection refused)
 
-# Invalid credentials
-Failed to authenticate: 401 Unauthorized
+# Power operation rejected by the BMC
+Failed to set power state
 
-# Power operation failed
-Failed to set power state: operation not permitted
-
-# Inspection timeout
-Inspection timed out after 10m0s
+# Inspection timeout: the Beskar7Machine fails with InspectionTimedOut,
+# message "Inspection did not complete within 10m0s"
+Inspection timed out (terminal)
 ```
 
 ## Health Checks
@@ -759,7 +767,7 @@ the machine carries on by itself on the first attempt that connects. A host that
 and goes on with its provisioning, so a machine whose host got that far never shows this reason.
 
 **Solution:** nothing to delete. If the outage does not clear, check the path from the controller pod to
-the BMC (the checks under [PhysicalHost Stuck in "Enrolling"](#4-physicalhost-stuck-in-enrolling) → BMC
+the BMC (the checks under [PhysicalHost never reaches Available](#4-physicalhost-never-reaches-available) → BMC
 Not Reachable apply). A `MachineHealthCheck` cannot tell this reason from a terminal one, so its
 timeouts decide whether it waits. The recommended ones
 ([`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml)) wait as long as the machine
@@ -931,7 +939,7 @@ kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 
 ## FAQ
 
-**Q: Why is my PhysicalHost stuck in Enrolling for 5 minutes?**
+**Q: Why does my PhysicalHost stay in `Error` for minutes after I fixed its BMC settings?**
 A: A Redfish failure that needs something to change — a wrong address, wrong credentials, a rejected certificate — backs off exponentially, up to 30 minutes between attempts, so the host keeps the error for a while after you fix it. Edit the `PhysicalHost` or its credentials Secret to wake the controller at once. A BMC that is merely unreachable is different: it is retried every 15 seconds and enrols on the first attempt that connects.
 
 **Q: Inspection keeps timing out, can I increase the timeout?**

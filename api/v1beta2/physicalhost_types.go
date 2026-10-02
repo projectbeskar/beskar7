@@ -445,9 +445,6 @@ const (
 
 	// Reasons
 	MissingCredentialsReason      string = "MissingCredentials"
-	SecretGetFailedReason         string = "SecretGetFailed"
-	SecretNotFoundReason          string = "SecretNotFound"
-	MissingSecretDataReason       string = "MissingSecretData"
 	RedfishConnectionFailedReason string = "RedfishConnectionFailed"
 	RedfishQueryFailedReason      string = "RedfishQueryFailed"
 	PowerOnFailedReason           string = "PowerOnFailed"

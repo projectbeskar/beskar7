@@ -65,7 +65,7 @@ The BMC answered with a redirect, or a link, to another scheme, host or port tha
 
 ## BMC credentials
 
-### Symptom: `RedfishConnectionReady=False (MissingCredentials)` / `(SecretNotFound)` / `(MissingSecretData)`
+### Symptom: `RedfishConnectionReady=False (MissingCredentials)`
 
 ```bash
 kubectl get physicalhost <name> -o jsonpath='{.status.errorMessage}'
