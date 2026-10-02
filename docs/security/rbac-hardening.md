@@ -11,7 +11,7 @@ The deployed roles are generated from kubebuilder markers on the controllers in 
 | Topology | When applied | Resource shape |
 |---|---|---|
 | **Cluster-wide** (default) | `watchNamespaces` is empty | 1 `ClusterRole` + 1 `ClusterRoleBinding` covering all rules. Historical behavior, kept for compatibility. |
-| **Namespace-scoped** (SEC-2) | `watchNamespaces` is a non-empty list | 1 minimal `ClusterRole` + 1 `ClusterRoleBinding` (residual cluster-scoped reads only) + 1 `Role` + 1 `RoleBinding` in the operator's namespace (leader-election) + 1 `Role` + 1 `RoleBinding` in each watched namespace (the actual reconcile permissions). |
+| **Namespace-scoped** (SEC-2) | `watchNamespaces` is a non-empty list | 1 `Role` + 1 `RoleBinding` in the operator's namespace (leader-election) + 1 `Role` + 1 `RoleBinding` in each watched namespace (the actual reconcile permissions). Nothing cluster-scoped for the manager. |
 
 The namespace-scoped topology eliminates the cluster-wide `Secret` and `ConfigMap` access that an attacker reaching the controller's ServiceAccount could otherwise abuse. It is the recommended posture for any deployment where the manager runs alongside workloads from tenants other than the operator team.
 
@@ -77,13 +77,6 @@ rules:
 - apiGroups: ["infrastructure.cluster.x-k8s.io"]
   resources: ["beskar7machinetemplates"]
   verbs: ["get", "list", "watch"]
-
-# RBAC introspection: required for the controller to read its own ClusterRole at
-# startup (logged for diagnostics). Auto-generated from a kubebuilder marker in
-# cmd/manager/main.go.
-- apiGroups: ["rbac.authorization.k8s.io"]
-  resources: ["clusterrolebindings", "clusterroles"]
-  verbs: ["get", "list", "watch"]
 ```
 
 The Helm chart variant is identical apart from name templating; the chart does not relax any rule.
@@ -92,11 +85,10 @@ The Helm chart variant is identical apart from name templating; the chart does n
 
 ## Namespace-scoped topology (SEC-2)
 
-When `watchNamespaces` is set, the chart and kustomize variants both generate three pieces:
+When `watchNamespaces` is set, the chart and kustomize variants both generate two pieces, and nothing cluster-scoped for the manager:
 
-1. **Minimal `ClusterRole` + `ClusterRoleBinding`** — only the `rbac.authorization.k8s.io/clusterroles, clusterrolebindings` reads, which are the residual cluster-scoped permissions the manager has via a kubebuilder marker. Everything else is removed from cluster scope.
-2. **Leader-election `Role` + `RoleBinding`** in the operator's own namespace (`capb7-system` by default) covering `coordination.k8s.io/leases` (the leader-election lease) and operator-side `events` creation. The lease lives where the operator runs, regardless of which namespaces it watches.
-3. **Watch `Role` + `RoleBinding`** in each listed namespace covering everything the controller needs to reconcile a Beskar7 CR there: `Secrets`, `ConfigMaps`, `Events`, the Beskar7 CRDs, the CAPI `Machine` / `Cluster` reads.
+1. **Leader-election `Role` + `RoleBinding`** in the operator's own namespace (`capb7-system` by default) covering `coordination.k8s.io/leases` (the leader-election lease) and operator-side `events` creation. The lease lives where the operator runs, regardless of which namespaces it watches.
+2. **Watch `Role` + `RoleBinding`** in each listed namespace covering everything the controller needs to reconcile a Beskar7 CR there: `Secrets`, `ConfigMaps`, `Events`, the Beskar7 CRDs, the CAPI `Machine` / `Cluster` reads.
 
 The manager's `--watch-namespaces` flag must list the same namespaces — otherwise the controller-runtime cache will try to watch namespaces it has no RBAC for and the manager will fail at startup.
 
@@ -192,7 +184,7 @@ In the **cluster-wide topology** (default), two resources have cluster-wide `lis
 - **Secrets**: required by the controller-runtime informer registered by `PhysicalHostReconciler` to trigger reconciles on credential rotation. The data path of every controller fetches Secrets by name only; the cluster-wide scope is for the watch only.
 - **ConfigMaps**: required by the controller-runtime cache to populate the informer used by the inspection HTTP handler's `CreateOrUpdate` of the per-host inspection-result ConfigMap. Without `list, watch` the reflector loops on `configmaps is forbidden` and the first POST stalls waiting for an initial sync.
 
-In the **namespace-scoped topology**, both scopes are tightened to per-namespace. The only residual cluster-scoped reads are `rbac.authorization.k8s.io/clusterroles, clusterrolebindings`, kept for the kubebuilder-marker-generated rule in `cmd/manager/main.go` (the controller does not actually consult these resources at runtime; removing the marker is tracked separately).
+In the **namespace-scoped topology**, both scopes are tightened to per-namespace, and the manager holds no cluster-scoped permission at all. (Earlier releases also granted cluster-wide read on `clusterroles` and `clusterrolebindings` from a leftover kubebuilder marker that nothing used; it is gone.)
 
 The SEC-2 closure plan (now landed across PRs #80, #82, #83, and this one): make tightening to per-namespace scope an opt-in via `watchNamespaces`, retain cluster-wide as the default for backward compatibility. See `.claude/context/PROJECT_CONTEXT.md`.
 
@@ -214,9 +206,9 @@ kubectl get clusterrolebinding capb7-manager-rolebinding -o yaml
 **Namespace-scoped topology:**
 
 ```bash
-# Cluster-scoped piece (residual reads only):
+# Cluster-scoped roles: only the metrics ones (Helm: -metrics-auth-role and
+# -metrics-reader), none for the manager's reconcile permissions:
 kubectl get clusterrole -l app.kubernetes.io/name=beskar7
-# Should show one ClusterRole ending in -clusterscope-role
 
 # Leader-election Role in operator namespace:
 kubectl -n capb7-system get role,rolebinding

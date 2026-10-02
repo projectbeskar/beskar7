@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -372,8 +374,8 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 	return nil
 }
 
-// readCallbackCA reads the PEM CA bytes from certDir to populate the
-// BootHandler's BootHandlerConfig.CABytes (beskar7.ca= in the iPXE cmdline).
+// readCallbackCA reads the PEM CA bytes from certDir for the BootHandler's
+// BootHandlerConfig.CA (beskar7.ca= in the iPXE cmdline).
 //
 // The inspector uses this CA to verify the callback's TLS certificate on the
 // subsequent inspection POST and bootstrap GET (§8). Preference order:
@@ -387,8 +389,9 @@ func (h *InspectionHandler) setInspectionResultAnnotation(
 //     non-CA leaf in tls.crt — cert-manager and the chart's self-signed path
 //     (genCA + genSignedCert) both do. See docs/inspector-contract.md §8.
 //
-// Returns the raw PEM bytes. An error here blocks manager startup so
-// misconfiguration is loud (fail at setup, not at first /boot request).
+// Returns the raw PEM bytes. SetupCallbackServer calls it once so a missing CA
+// blocks manager startup (fail at setup, not at first /boot request), and the
+// /boot handler calls it on every render so the CA follows a renewal.
 func readCallbackCA(certDir string) ([]byte, error) {
 	candidates := []string{
 		filepath.Join(certDir, "ca.crt"),
@@ -458,15 +461,28 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		return fmt.Errorf("callback server key %q not readable: %w", keyPath, err)
 	}
 
-	// Read the CA bytes for the /boot handler's beskar7.ca= cmdline parameter.
-	// The inspector uses this CA to verify the callback TLS certificate on
-	// the subsequent inspection POST and bootstrap GET (§8).
-	// Preference: ca.crt (cert-manager and the chart's self-signed path both
-	// write a dedicated ca.crt alongside tls.crt/tls.key). Fallback: tls.crt
-	// itself (self-signed certificates are their own CA).
-	caBytes, err := readCallbackCA(certDir)
-	if err != nil {
+	// The /boot handler renders the CA into beskar7.ca= (§8); the inspector
+	// verifies the callback TLS certificate against it on the subsequent
+	// inspection POST and bootstrap GET. Preference: ca.crt (cert-manager and
+	// the chart's self-signed path both write a dedicated ca.crt alongside
+	// tls.crt/tls.key). Fallback: tls.crt itself (self-signed certificates are
+	// their own CA). Read once here so a missing CA fails setup, then again on
+	// every render so it follows a renewed certificate.
+	if _, err := readCallbackCA(certDir); err != nil {
 		return fmt.Errorf("read callback CA for /boot handler: %w", err)
+	}
+
+	// Serve the certificate through a certwatcher, as the webhook server does,
+	// so a renewal written into certDir — a Secret volume updated by the
+	// kubelet after cert-manager renews, or files copied in for a
+	// callback-only instance — is presented on new connections without a
+	// restart (SEC-14). It needs no leader election, so every replica reloads.
+	certWatcher, err := certwatcher.New(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("load callback server certificate: %w", err)
+	}
+	if err := mgr.Add(certWatcher); err != nil {
+		return fmt.Errorf("add callback certificate watcher to manager: %w", err)
 	}
 
 	// Pre-warm the informers the handlers read through the cached client.
@@ -532,7 +548,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Log:    bootLog,
 		Config: BootHandlerConfig{
 			APIBase:        bootstrapURLBase,
-			CABytes:        caBytes,
+			CA:             func() ([]byte, error) { return readCallbackCA(certDir) },
 			TrustedProxies: trustedProxies,
 		},
 	}
@@ -577,11 +593,21 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		// TLS 1.2 is the Go server default this server has always used; it is
+		// spelled out because a tls.Config is set now.
+		TLSConfig: &tls.Config{
+			GetCertificate: certWatcher.GetCertificate,
+			MinVersion:     tls.VersionTLS12,
+		},
 	}
 
 	go func() {
 		ctrl.Log.WithName("callback-server").Info("Starting callback HTTPS server", "port", port)
-		if err := server.ListenAndServeTLS(certPath, keyPath); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		// No file arguments: given any, net/http loads a static certificate
+		// into TLSConfig.Certificates, and crypto/tls serves that one instead
+		// of GetCertificate's to every client that sends no SNI — every
+		// inspector given an IP-literal beskar7.api, the recommended setup.
+		if err := server.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			ctrl.Log.WithName("callback-server").Error(err, "Failed to start callback HTTPS server")
 		}
 	}()

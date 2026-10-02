@@ -54,9 +54,9 @@ Bare-metal hosts must be able to reach the `bootstrap.urlBase` during PXE boot. 
 
 - `bootstrap.urlBase` — the callback-only instance's external address, e.g. `https://192.0.2.10:8082`. The in-cluster controller writes it into `PhysicalHost.Status.Bootstrap.URL`; start the callback-only instance with the same `--bootstrap-url-base`.
 - `callback.externalIPs` / `callback.externalNames` — include that address so the serving cert in `certManager.certificate.secretName` covers it; the callback-only instance can then use a copy of that Secret as its `--inspection-cert-dir`.
-- `watchNamespaces` — give the callback-only instance the same list (or, if empty here, cluster-wide read access).
+- `watchNamespaces` — give the callback-only instance the same list in `--watch-namespaces` (if empty here, list the namespaces your PhysicalHosts are in).
 
-Give it a kubeconfig whose identity holds the manager's RBAC; a token for the chart's ServiceAccount is the simplest. `callback.service.type` can stay `ClusterIP`, since hosts never talk to the in-cluster instance in this topology. Walk-through: [docs/ipxe-setup.md](../../docs/ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance).
+Give it an identity of its own, not this chart's ServiceAccount (which can create, change and delete Secrets): the repository's `config/rbac/callback-only` ships a ServiceAccount and a per-namespace Role holding only what the callback routes use, and the instance then needs `--watch-namespaces`. `callback.service.type` can stay `ClusterIP`, since hosts never talk to the in-cluster instance in this topology. Walk-through: [docs/ipxe-setup.md](../../docs/ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance).
 
 ## Configuration
 
