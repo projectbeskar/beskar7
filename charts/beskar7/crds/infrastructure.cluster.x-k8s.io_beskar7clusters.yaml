@@ -29,8 +29,8 @@ spec:
       jsonPath: .status.ready
       name: Ready
       type: string
-    - description: Control plane endpoint
-      jsonPath: .spec.controlPlaneEndpoint.host
+    - description: Control plane endpoint in effect
+      jsonPath: .status.controlPlaneEndpoint.host
       name: Endpoint
       type: string
     - description: Time duration since creation of Beskar7Cluster
