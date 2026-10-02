@@ -51,6 +51,13 @@ spec:
     caBundleSecretRef: bmc-ca-bundle
 ```
 
+The credentials Secret must name the same CA Secret in its `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` annotation (decision D-033), or the credentials are not sent and the host reports `RedfishConnectionReady=False (CredentialsNotAuthorized)`. The CA a host is verified against decides who can answer as its BMC, so it is chosen by whoever writes the credentials Secret, not by whoever writes the host:
+
+```bash
+kubectl annotate secret bmc-credentials -n default \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=bmc-ca-bundle
+```
+
 Cert-manager-driven equivalent (auto-rotates the CA Secret):
 
 ```yaml
@@ -99,6 +106,8 @@ metadata:
     beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "10.20.0.0/24, *.bmc.example.com"
     # Only for http:// addresses or insecureSkipVerify: true.
     # beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
+    # Only for hosts with caBundleSecretRef: the CA Secret they must name.
+    # beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret: "bmc-ca-bundle"
 type: Opaque
 stringData:
   username: "admin"
@@ -125,14 +134,17 @@ Anyone who can create or patch a `PhysicalHost` chooses its `redfishConnection.a
 
 - **`beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`** (required) lists the BMC addresses the credentials may be sent to, separated by commas and/or whitespace: IP addresses, CIDRs (matched against IP addresses only), hostnames (exact, case-insensitive) and `*.suffix` wildcards (one or more labels under the suffix, never the suffix itself). The address's host is matched as written; a listed name is resolved only when the manager connects (see below). CIDRs wider than /8 (IPv4) or /32 (IPv6), and wildcards over a public suffix such as `*.com`, `*.lab` or `*.svc`, are rejected. A single malformed entry makes the whole annotation authorise nothing.
 - **`beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`** is also required before the credentials travel over `http://` or to a host with `insecureSkipVerify: true`, since either lets whoever is on the path read them.
+- **`beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret`** names the Secret, in the same namespace, holding the CA the BMCs present (decision D-033). A host with `caBundleSecretRef` gets the credentials only if `caBundleSecretRef` is exactly that name; otherwise anyone who can edit the host could name a CA whose key they hold and answer as the BMC on a listed name. Hosts without `caBundleSecretRef` (system roots, or `insecureSkipVerify` with the opt-in above) do not consult it.
 
 Both readers of BMC credentials — the `PhysicalHost` controller and the `Beskar7Machine` controller's power and boot calls — check the Secret before they build a Redfish client, and nothing is sent when it does not authorise the address. The host reports `RedfishConnectionReady = False (CredentialsNotAuthorized)`, and its message names the annotation and the address's host to add; it never contains the credentials. See [PhysicalHost → Binding the credentials to their BMC](../physicalhost.md#binding-the-credentials-to-their-bmc) for the matching rules and how the host and its machine behave meanwhile.
 
 Keep the list to the addresses your BMCs really have. Copying every host's current address into it would also authorise a host someone has already re-pointed. What the list does not stop is re-pointing a host to *another* listed BMC: the credentials still go only to an address you listed, but the host then drives the wrong machine. Restrict who can patch `PhysicalHost` objects for that.
 
-A listed name is trusted to resolve to your BMC. The manager resolves it through its pod's resolver and the cluster DNS search path (`ndots:5`), so a short name such as `bmc1.lab` is tried as `bmc1.lab.<namespace>.svc.cluster.local` before the name itself, and a Service named `bmc1` in a namespace called `lab` would receive the connection. Prefer IP addresses and CIDRs; otherwise use fully-qualified names under a domain you control, and never wildcard a service that maps names to arbitrary IP addresses, such as nip.io or sslip.io.
+A listed name is trusted to resolve to your BMC. The manager resolves a BMC hostname as an absolute DNS name, without its pod's DNS search path (decision D-032): `bmc1.lab` is looked up as `bmc1.lab.` and never as `bmc1.lab.<namespace>.svc.cluster.local`, where a Service named `bmc1` in a namespace called `lab` would otherwise have received the connection first (pods resolve with `ndots:5`). So write an in-cluster BMC, such as an emulator behind a Service, fully qualified — `<service>.<namespace>.svc.cluster.local`, with your cluster's domain — in both `redfishConnection.address` and `bmc-addresses`; a short in-cluster name fails its DNS lookup and the host reports `BMCUnreachable`. If the manager reaches BMCs through an HTTP proxy from its environment (`HTTPS_PROXY`/`HTTP_PROXY`), the proxy resolves the name with its own resolver instead. Prefer IP addresses and CIDRs; otherwise use fully-qualified names under a domain you control, and never wildcard a service that maps names to arbitrary IP addresses, such as nip.io or sslip.io.
 
-`caBundleSecretRef` needs no such annotation: only its `ca.crt`/`tls.crt` keys are read, and they are not sent anywhere.
+The credentials go only to the origin — scheme, host and port — of `redfishConnection.address`. The Redfish client refuses, before sending anything, a request to any other origin: a redirect from the BMC to another port, to another host or a subdomain, or from `https://` to `http://` on the same host, and a link in a BMC response that names another host. The call then fails like any other bad BMC response (`RedfishConnectionFailed` or `RedfishQueryFailed`), with a message naming the refused origin. The address itself may not carry a query (`?`) or fragment (`#`); one that does is refused with `CredentialsNotAuthorized`.
+
+Only the `ca.crt`/`tls.crt` keys of the CA Secret are read, and they are not sent anywhere.
 
 ## Bearer-token authentication on the callback endpoint
 

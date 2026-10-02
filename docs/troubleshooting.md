@@ -757,6 +757,10 @@ instance renders it into the iPXE cmdline.
 
 **Cause:** the controller cannot reach the host's BMC at the network level — a refused or reset
 connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still starting.
+A DNS failure that persists can be a short in-cluster name: a BMC hostname is resolved as an
+absolute name, without the cluster search path (decision D-032), so `mock-redfish.my-ns.svc` must be
+written `mock-redfish.my-ns.svc.cluster.local`, in the host's address and in the credentials Secret's
+`bmc-addresses`.
 This is not a terminal failure: `status.phase` is not `Failed`, the host retries every 15 seconds, and
 the machine carries on by itself on the first attempt that connects. A host that was already
 `Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes)
@@ -824,7 +828,12 @@ which of these it is:
   authorises nothing; the message gives the entry's position).
 - The address is `http://`, or the host sets `insecureSkipVerify: true`, and the Secret lacks
   `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`.
-- The address is not an `http://`/`https://` URL with a host, or it carries `user:password@`.
+- The host sets `caBundleSecretRef`, and the Secret's
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` annotation is missing or names a different
+  CA Secret (decision D-033). The message names the host's `caBundleSecretRef`, never what the
+  annotation holds.
+- The address is not an `http://`/`https://` URL with a host, or it carries `user:password@`, a
+  query (`?`) or a fragment (`#`).
 
 **Solution:** first check that the address is really this host's BMC — someone able to edit
 `PhysicalHost` objects may have re-pointed it, and this refusal is what kept the password from them:
@@ -834,7 +843,9 @@ kubectl get physicalhost <host> -n <ns> -o jsonpath='{.spec.redfishConnection.ad
 ```
 
 If it is, annotate the Secret (list the BMC's IP, a CIDR, its hostname, or a `*.suffix` covering it;
-matching is literal; prefer IP addresses or fully-qualified names, because a listed name is resolved through the cluster DNS search path when the manager connects):
+matching is literal; prefer IP addresses or fully-qualified names — a listed name is resolved as an
+absolute DNS name, without the cluster search path, so an in-cluster Service must be written
+`<service>.<namespace>.svc.cluster.local` in both the address and the list):
 
 ```bash
 kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
@@ -842,7 +853,14 @@ kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
 # only for http:// addresses or insecureSkipVerify: true
 kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
   beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport=true
+# only for hosts with caBundleSecretRef: the CA Secret their BMCs present
+kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=<ca-secret>
 ```
+
+Check a host's `caBundleSecretRef` the same way you checked its address: someone able to edit the host
+may have pointed it at a CA whose key they hold. Name the CA Secret your BMCs really chain to, not the
+one the host names.
 
 The controller watches the Secret, so the host reconnects within seconds and a waiting machine
 carries on; nothing is reprovisioned and no machine needs deleting. If the address is not a BMC you

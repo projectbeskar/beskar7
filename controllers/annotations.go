@@ -39,26 +39,34 @@ func removeAnnotationsPatch(keys ...string) client.Patch {
 	return client.RawPatch(types.MergePatchType, data)
 }
 
-// BMCAddressesAnnotation and BMCInsecureTransportAnnotation live on the Secret a
-// PhysicalHost's redfishConnection.credentialsSecretRef names, never on the host
-// (D-030, SEC-16). The Secret's credentials are sent only to a host whose
-// redfishConnection.address hostname BMCAddressesAnnotation lists, and only over
-// verified TLS unless BMCInsecureTransportAnnotation is "true"
-// (resolveBMCAccess). They sit on the Secret because only someone who may write
-// that Secret should decide where its credentials go; anyone who may patch a
-// PhysicalHost can already choose its address.
+// BMCAddressesAnnotation, BMCInsecureTransportAnnotation and
+// BMCCASecretAnnotation live on the Secret a PhysicalHost's
+// redfishConnection.credentialsSecretRef names, never on the host (D-030,
+// SEC-16; D-033, SEC-17). The Secret's credentials are sent only to a host
+// whose redfishConnection.address hostname BMCAddressesAnnotation lists, only
+// over verified TLS unless BMCInsecureTransportAnnotation is "true", and, for a
+// host with a caBundleSecretRef, only if BMCCASecretAnnotation names that same
+// CA Secret (resolveBMCAccess). They sit on the Secret because only someone who
+// may write that Secret should decide where its credentials go; anyone who may
+// patch a PhysicalHost can already choose its address and its CA.
 //
 // BMCAddressesAnnotation's value is a comma- and/or whitespace-separated list of
 // IP addresses, CIDRs (matched against IP addresses only), hostnames (matched
 // exactly, case-insensitively) and *.suffix wildcards (one or more labels under
 // the suffix, never the suffix itself). Matching is literal; a listed name is
-// resolved only when the client connects, through the pod's resolver and the
-// cluster DNS search path. CIDRs wider than /8 (IPv4) or /32 (IPv6), wildcards
-// over a public suffix, and a single malformed entry each make the annotation
-// authorise no address at all.
+// resolved only when the client connects, as an absolute DNS name without the
+// pod's search path (D-032), so an in-cluster name must be fully qualified.
+// CIDRs wider than /8 (IPv4) or /32 (IPv6), wildcards over a public suffix, and
+// a single malformed entry each make the annotation authorise no address at
+// all.
+//
+// BMCCASecretAnnotation's value is the name of one Secret in the same
+// namespace, compared exactly with caBundleSecretRef. Hosts without a
+// caBundleSecretRef do not consult it.
 const (
 	BMCAddressesAnnotation         = "beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses"
 	BMCInsecureTransportAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport"
+	BMCCASecretAnnotation          = "beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret"
 )
 
 // BootstrapURLAnnotation is set by the Beskar7Machine controller on a PhysicalHost

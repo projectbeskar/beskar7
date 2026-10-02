@@ -61,6 +61,7 @@ type bmcCall struct {
 	username string
 	password string
 	insecure bool
+	caBundle string
 }
 
 // capturingBMC is a Redfish client factory that records every call and hands
@@ -71,9 +72,11 @@ type capturingBMC struct {
 }
 
 func (c *capturingBMC) factory() internalredfish.RedfishClientFactory {
-	return func(_ context.Context, address, username, password string, insecure bool, _ []byte) (internalredfish.Client, error) {
+	return func(_ context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 		c.mu.Lock()
-		c.calls = append(c.calls, bmcCall{address: address, username: username, password: password, insecure: insecure})
+		c.calls = append(c.calls, bmcCall{
+			address: address, username: username, password: password, insecure: insecure, caBundle: string(caBundle),
+		})
 		c.mu.Unlock()
 		return internalredfish.NewMockClient(), nil
 	}
@@ -103,6 +106,27 @@ func setSecretAnnotations(key client.ObjectKey, annotations map[string]string) {
 	edited := secret.DeepCopy()
 	edited.Annotations = annotations
 	Expect(k8sClient.Patch(ctx, edited, client.MergeFrom(secret))).To(Succeed())
+}
+
+// nameBMCCA sets the CA Secret a credentials Secret names (D-033), leaving its
+// other annotations as they are.
+func nameBMCCA(key client.ObjectKey, caSecret string) {
+	secret := &corev1.Secret{}
+	Expect(k8sClient.Get(ctx, key, secret)).To(Succeed())
+	edited := secret.DeepCopy()
+	if edited.Annotations == nil {
+		edited.Annotations = map[string]string{}
+	}
+	edited.Annotations[BMCCASecretAnnotation] = caSecret
+	Expect(k8sClient.Patch(ctx, edited, client.MergeFrom(secret))).To(Succeed())
+}
+
+// bmcCASecret returns a CA bundle Secret holding bundle.
+func bmcCASecret(namespace, name, bundle string) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Data:       map[string][]byte{"ca.crt": []byte(bundle)},
+	}
 }
 
 // bindingHost creates an unclaimed host that already carries the finalizer, so
@@ -239,6 +263,59 @@ var _ = Describe("BMC credentials leave only for the addresses their Secret list
 		Entry("an https:// address with insecureSkipVerify", "https://10.0.0.7", true),
 	)
 
+	// SEC-17(b), D-033: the CA a host's BMC is verified against decides who
+	// can answer as that BMC. Whoever may write the host must not be able to
+	// pick it, or they name a CA whose key they hold and re-point the host at
+	// an endpoint it signed, on an address the Secret lists.
+	It("verifies a host's BMC only against the CA its credentials Secret names", func() {
+		const (
+			fleetBundle    = "-----BEGIN CERTIFICATE-----\nFLEET\n-----END CERTIFICATE-----\n"
+			attackerBundle = "-----BEGIN CERTIFICATE-----\nATTACKER\n-----END CERTIFICATE-----\n"
+		)
+		Expect(k8sClient.Create(ctx, bmcCASecret(ns, "fleet-ca", fleetBundle))).To(Succeed())
+		Expect(k8sClient.Create(ctx, bmcCASecret(ns, "attacker-ca", attackerBundle))).To(Succeed())
+		Expect(k8sClient.Create(ctx, bmcCredentialsSecretWith(ns, "rack-credentials", map[string]string{
+			BMCAddressesAnnotation: "10.0.0.0/24",
+			BMCCASecretAnnotation:  "fleet-ca",
+		}))).To(Succeed())
+		bmc := &capturingBMC{}
+		r := hostReconciler(bmc)
+
+		By("connecting a host whose caBundleSecretRef is the CA the Secret names")
+		key := bindingHost(ns, "rack-host", "https://10.0.0.5", "rack-credentials", false)
+		editRedfishConnection(key, func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "fleet-ca" })
+		reconcileHost(r, key)
+		Expect(bmc.recorded()).To(ConsistOf(bmcCall{
+			address: "https://10.0.0.5", username: fixtureBMCUsername, password: fixtureBMCPassword, caBundle: fleetBundle,
+		}))
+		Expect(conditions.IsTrue(getPhysicalHost(key), infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
+
+		By("re-pointing that host's caBundleSecretRef at a CA the Secret does not name")
+		editRedfishConnection(key, func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "attacker-ca" })
+		reconcileHost(r, key)
+		Expect(bmc.recorded()).To(HaveLen(1), "no Redfish client may be built against a CA the Secret did not choose")
+		repointed := getPhysicalHost(key)
+		expectCredentialsNotAuthorized(repointed, BMCCASecretAnnotation, "attacker-ca")
+		Expect(conditions.GetMessage(repointed, infrav1.RedfishConnectionReadyCondition)).NotTo(ContainSubstring("fleet-ca"),
+			"the condition is readable by whoever can read the host; the CA the Secret names is not theirs to learn")
+
+		By("removing the annotation from the Secret")
+		editRedfishConnection(key, func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "fleet-ca" })
+		setSecretAnnotations(client.ObjectKey{Namespace: ns, Name: "rack-credentials"},
+			map[string]string{BMCAddressesAnnotation: "10.0.0.0/24"})
+		reconcileHost(r, key)
+		Expect(bmc.recorded()).To(HaveLen(1), "a CA bundle needs the Secret to name it")
+		expectCredentialsNotAuthorized(getPhysicalHost(key), "has no "+BMCCASecretAnnotation, "fleet-ca")
+
+		By("connecting a host without caBundleSecretRef, against the system roots, as before")
+		plain := bindingHost(ns, "system-roots-host", "https://10.0.0.6", "rack-credentials", false)
+		reconcileHost(r, plain)
+		Expect(bmc.sentTo("https://10.0.0.6")).To(ConsistOf(bmcCall{
+			address: "https://10.0.0.6", username: fixtureBMCUsername, password: fixtureBMCPassword,
+		}))
+		Expect(conditions.IsTrue(getPhysicalHost(plain), infrav1.RedfishConnectionReadyCondition)).To(BeTrue())
+	})
+
 	It("leaves a Ready host Ready, and its machine Provisioned, while its Secret lacks the annotations (an upgrade from v0.8.0)", func() {
 		Expect(k8sClient.Create(ctx, bmcCredentialsSecretWith(ns, "bmc-credentials", nil))).To(Succeed())
 		key := provisioningHost(ns, "upgraded-host", "upgraded-machine", infrav1.StateReady, nil)
@@ -346,6 +423,19 @@ var _ = Describe("BMC credentials leave only for the addresses their Secret list
 			Expect(err).NotTo(HaveOccurred())
 			expectNothingSent()
 			Expect(machine.Status.Ready).To(BeTrue(), "the boot-override clear is best effort; the machine is provisioned without it")
+		})
+
+		It("does not boot the inspector through it after its caBundleSecretRef is re-pointed", func() {
+			Expect(k8sClient.Create(ctx, bmcCASecret(ns, "attacker-ca",
+				"-----BEGIN CERTIFICATE-----\nATTACKER\n-----END CERTIFICATE-----\n"))).To(Succeed())
+			key := inUseHost(ns, "ca-repointed-host", machineName, nil)
+			editRedfishConnection(key, func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "attacker-ca" })
+
+			_, err := machineR.handlePhysicalHostState(ctx, machineR.Log, machine, getPhysicalHost(key))
+			Expect(bmc.recorded()).To(BeEmpty(), "the Beskar7Machine built a Redfish client against a CA its Secret does not name")
+			Expect(err).To(HaveOccurred(), "the inspection waits for the host")
+			Expect(isTerminallyFailed(machine)).To(BeFalse())
+			Expect(getPhysicalHost(key).Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 		})
 
 		It("releases it without a Redfish call when the machine is deleted", func() {

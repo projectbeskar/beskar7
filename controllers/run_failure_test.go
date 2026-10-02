@@ -352,13 +352,13 @@ var _ = Describe("Claimed PhysicalHost whose provisioning run failed", func() {
 		Entry("insecureSkipVerify is combined with a CA bundle", bmcFailure{
 			breakConnection: func(c *infrav1.RedfishConnection) {
 				c.InsecureSkipVerify = ptr.To(true)
-				c.CABundleSecretRef = "bmc-ca"
+				c.CABundleSecretRef = fixtureBMCCASecret
 			},
 			hostReason:   infrav1.InsecureCABundleConflictReason,
 			requeueAfter: 5 * time.Minute,
 		}),
 		Entry("the CA bundle Secret does not exist", bmcFailure{
-			breakConnection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
+			breakConnection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = fixtureBMCCASecret },
 			hostReason:      infrav1.CABundleFetchFailedReason,
 		}),
 	)
