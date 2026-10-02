@@ -63,7 +63,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 |---|---|---|---|
 | `Ready` | Summary of `ControlPlaneEndpointReady`. | Derived from it. | Same. |
 | `ControlPlaneEndpointReady` | The endpoint is populated. | `ControlPlaneEndpointSet` | `ControlPlaneEndpointNotSet`. |
-| `Paused` | See [Paused](#paused) below. | `NotPaused` | `Paused`. |
+| `Paused` | See [Paused](#paused) below. | `Paused` | `NotPaused`. |
 
 ## Paused
 
@@ -94,7 +94,7 @@ spec:
 Pair with a CAPI `Cluster`:
 
 ```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: production-cluster
@@ -106,11 +106,11 @@ spec:
     services:
       cidrBlocks: ["10.96.0.0/12"]
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Cluster
     name: production-cluster
   controlPlaneRef:
-    apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+    apiGroup: controlplane.cluster.x-k8s.io
     kind: KubeadmControlPlane
     name: production-cluster-control-plane
 ```

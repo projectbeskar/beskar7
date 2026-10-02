@@ -49,7 +49,7 @@ For the field reference, see [API Reference: Beskar7Machine](api-reference.md#be
 ### KubeadmControlPlane
 
 ```yaml
-apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
 metadata:
   name: production-control-plane
@@ -58,10 +58,11 @@ spec:
   replicas: 3
   version: v1.31.0
   machineTemplate:
-    infrastructureRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-      kind: Beskar7MachineTemplate
-      name: production-control-plane
+    spec:
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: Beskar7MachineTemplate
+        name: production-control-plane
   kubeadmConfigSpec:
     # ... cluster init/join config
 ---
@@ -88,7 +89,7 @@ spec:
 ### MachineDeployment
 
 ```yaml
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: MachineDeployment
 metadata:
   name: production-workers
@@ -110,11 +111,11 @@ spec:
       version: v1.31.0
       bootstrap:
         configRef:
-          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          apiGroup: bootstrap.cluster.x-k8s.io
           kind: KubeadmConfigTemplate
           name: production-workers
       infrastructureRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        apiGroup: infrastructure.cluster.x-k8s.io
         kind: Beskar7MachineTemplate
         name: production-workers
 ---

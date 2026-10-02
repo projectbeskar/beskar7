@@ -93,7 +93,7 @@ spec:
 
 ---
 # Step 4: Create Cluster API cluster
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: test-cluster
@@ -107,17 +107,15 @@ spec:
       cidrBlocks:
         - 10.96.0.0/16
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Cluster
     name: test-cluster
-    namespace: default
   # controlPlaneRef intentionally omitted — see the header comment. Add a
   # KubeadmControlPlane (and uncomment this block) for a complete CAPI setup.
   # controlPlaneRef:
-  #   apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+  #   apiGroup: controlplane.cluster.x-k8s.io
   #   kind: KubeadmControlPlane
   #   name: test-cluster-control-plane
-  #   namespace: default
 
 ---
 # Step 5: Create control plane machine
@@ -183,7 +181,7 @@ spec:
 
 ---
 # Step 7: Create corresponding Cluster API Machines
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
   name: control-plane-01
@@ -196,16 +194,16 @@ spec:
   version: v1.28.0
   bootstrap:
     configRef:
-      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      apiGroup: bootstrap.cluster.x-k8s.io
       kind: KubeadmConfig
       name: control-plane-01-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Machine
     name: control-plane-01
 
 ---
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
   name: worker-01
@@ -217,16 +215,16 @@ spec:
   version: v1.28.0
   bootstrap:
     configRef:
-      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      apiGroup: bootstrap.cluster.x-k8s.io
       kind: KubeadmConfig
       name: worker-01-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Machine
     name: worker-01
 
 ---
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: Machine
 metadata:
   name: worker-02
@@ -238,18 +236,18 @@ spec:
   version: v1.28.0
   bootstrap:
     configRef:
-      apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+      apiGroup: bootstrap.cluster.x-k8s.io
       kind: KubeadmConfig
       name: worker-02-bootstrap
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiGroup: infrastructure.cluster.x-k8s.io
     kind: Beskar7Machine
     name: worker-02
 
 ---
 # Bootstrap configurations (kubeadm)
 # Note: These should be customized for your environment
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfig
 metadata:
   name: control-plane-01-bootstrap
@@ -259,7 +257,8 @@ spec:
     nodeRegistration:
       criSocket: /run/containerd/containerd.sock
       kubeletExtraArgs:
-        cloud-provider: external
+      - name: cloud-provider
+        value: external
   clusterConfiguration:
     apiServer:
       certSANs:
@@ -267,10 +266,11 @@ spec:
         - 127.0.0.1
     controllerManager:
       extraArgs:
-        enable-hostpath-provisioner: "true"
+      - name: enable-hostpath-provisioner
+        value: "true"
 
 ---
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfig
 metadata:
   name: worker-01-bootstrap
@@ -280,10 +280,11 @@ spec:
     nodeRegistration:
       criSocket: /run/containerd/containerd.sock
       kubeletExtraArgs:
-        cloud-provider: external
+      - name: cloud-provider
+        value: external
 
 ---
-apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfig
 metadata:
   name: worker-02-bootstrap
@@ -293,5 +294,6 @@ spec:
     nodeRegistration:
       criSocket: /run/containerd/containerd.sock
       kubeletExtraArgs:
-        cloud-provider: external
+      - name: cloud-provider
+        value: external
 

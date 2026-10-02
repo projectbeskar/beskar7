@@ -359,9 +359,9 @@ Ensure PXE/network boot is enabled in BIOS:
 
 ## Troubleshooting
 
-### PhysicalHost Stuck in Enrolling
+### PhysicalHost never reaches Available
 
-**Symptom:** Host never transitions to Available
+**Symptom:** The host's `state` stays empty or goes to `Error`, with `RedfishConnectionReady=False`
 
 **Causes:**
 - BMC not reachable from controller

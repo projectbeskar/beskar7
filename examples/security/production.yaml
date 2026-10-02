@@ -116,7 +116,9 @@ spec:
 
 ---
 # Chart values pinned for production:
-#   bootstrap.urlBase            — match the Service DNS for your release name
+#   bootstrap.urlBase            — the address hosts reach while PXE-booting (not a
+#                                  cluster-internal .svc name), covered by the
+#                                  serving certificate via callback.externalNames
 #   webhook.enabled              — turn the Beskar7Cluster validating webhook on
 #   certManager.enabled          — webhook + callback endpoint serving certs
 #
@@ -129,10 +131,14 @@ spec:
 #     enabled: true
 #   certManager:
 #     enabled: true
+#   callback:
+#     service:
+#       type: LoadBalancer
+#     externalNames: ["beskar7-callback.example.com"]
 #   bootstrap:
-#     urlBase: "https://capb7-controller-manager.capb7-system.svc:8082"
+#     urlBase: "https://beskar7-callback.example.com:8082"
 #   controllerManager:
-#     replicaCount: 1                       # leader-elect=true; only one active
+#     replicas: 1                           # leader-elect=true; only one active
 #     resources:
 #       limits:
 #         cpu: "500m"

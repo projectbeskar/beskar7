@@ -91,7 +91,7 @@ There are no other spec fields. Provisioning is driven by the consumer (the `Bes
 | Field | Type | Description |
 |---|---|---|
 | `ready` | bool | True when the host is reachable via Redfish and has a current state. |
-| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go:10-33`: `""`, `"Unknown"`, `"Enrolling"`, `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"`, `"Error"`. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
+| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go`. The controller sets `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"` and `"Error"`; a host reads `""` until its first successful BMC contact. `"Unknown"` and `"Enrolling"` are defined but never set. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
 | `observedPowerState` | string | Last observed Redfish power state (e.g. `On`, `Off`). |
 | `errorMessage` | string | Set when state is `Error`; cleared when the host recovers. |
 | `hardwareDetails` | `HardwareDetails` | Manufacturer, model, serial, and BMC-reported health. Populated from `GetSystemInfo`. |
@@ -250,7 +250,7 @@ There is no `status.failureReason` or `status.failureMessage` — both were remo
 | `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address yet; not terminal — the machine carries on once the host does); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
 | `PhysicalHostAssociated` | `Beskar7Machine` | `PhysicalHostAssociated` | `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
-| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |
+| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `Paused` | `NotPaused`. |
 
 There is no `MachineProvisionedCondition` — the dead constant (declared but never set by any reconciler) has been removed from `api/v1beta2/beskar7machine_types.go`. `Ready`, backed by `Status.Ready` and `Status.Initialization.Provisioned`, is the provisioned signal.
 
@@ -342,7 +342,7 @@ kind: Beskar7Cluster
 
 | Field | Type | Description |
 |---|---|---|
-| `controlPlaneEndpoint.host` | string | Optional. If unset, the controller derives it from the control-plane `Beskar7Machine.Status.Addresses`. |
+| `controlPlaneEndpoint.host` | string | Optional. The endpoint in effect is `Cluster.spec.controlPlaneEndpoint` when that is set, otherwise this one; with neither, `ControlPlaneEndpointReady=False`. The controller never derives an endpoint (D-027). |
 | `controlPlaneEndpoint.port` | int32 | Optional. |
 
 ### `status`
@@ -351,8 +351,8 @@ kind: Beskar7Cluster
 |---|---|---|
 | `ready` | bool | True when `controlPlaneEndpoint` is populated. Set in lockstep with `initialization.provisioned`. |
 | `initialization` | `Beskar7ClusterInitializationStatus` | CAPI v1beta2 contract. A value type with `omitzero`, not a pointer — the whole `initialization` key is omitted from JSON until `provisioned` is set. `initialization.provisioned` is what CAPI core lifts into `Cluster.status.initialization.infrastructureProvisioned`. Without this field set, KubeadmConfig never generates bootstrap data and downstream `Machine` reconcile stalls. The controller writes it in lockstep with `status.ready=true`. |
-| `controlPlaneEndpoint` | `clusterv1.APIEndpoint` | Same shape as `spec.controlPlaneEndpoint`. |
-| `failureDomains` | `clusterv1.FailureDomains` | Map keyed by zone name; values discovered from `topology.kubernetes.io/zone` labels on `PhysicalHost` objects. Every discovered zone is written with `controlPlane: true` (the discovery logic treats all zones as control-plane-eligible) and an empty `attributes` map. |
+| `controlPlaneEndpoint` | `clusterv1.APIEndpoint` | The endpoint in effect (see `spec.controlPlaneEndpoint`); the `Endpoint` column of `kubectl get beskar7clusters` shows its host. |
+| `failureDomains` | `[]clusterv1.FailureDomain` | A list with one entry per zone, discovered from the `topology.kubernetes.io/zone` labels on `PhysicalHost` objects in the namespace. Each entry has the zone as `name` and `controlPlane: true` (every zone is treated as control-plane-eligible); `attributes` is not set. |
 | `conditions` | `[]metav1.Condition` | See below. Max 32 entries. |
 
 #### `Beskar7ClusterInitializationStatus`
@@ -369,7 +369,7 @@ kind: Beskar7Cluster
 |---|---|---|---|
 | `Ready` | `Beskar7Cluster` (summary) | Derived from `ControlPlaneEndpointReady`. | Same. |
 | `ControlPlaneEndpointReady` | `Beskar7Cluster` | `ControlPlaneEndpointSet` | `ControlPlaneEndpointNotSet`. |
-| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |
+| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `Paused` | `NotPaused`. |
 
 ### Webhooks
 
