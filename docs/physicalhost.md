@@ -69,6 +69,7 @@ Deploying → Error                              (inspector POSTs /api/v1/provis
 Inspecting → unchanged, then Ready             (claimed; /provisioned before Deploying: kept until Deploying)
 Inspecting → unchanged, then Error             (claimed; /provision-failed before Deploying: kept until Deploying)
 Error about the BMC → Error of a failed run    (claimed; /provision-failed on a host v0.8.0 or earlier left in a BMC Error over Deploying)
+Error about the BMC → Ready                    (claimed; /provisioned on a host v0.8.0 or earlier left in a BMC Error over Deploying)
 Inspecting → Error                             (inspection timeout, default 10 min)
 InUse or unclaimed → Error                     (BMC unreachable, TLS conflict, missing credentials, credentials not authorised for the address)
 Inspecting/Deploying/Ready → unchanged         (claimed; BMC unreachable, missing/refused credentials, credentials not authorised for the address, a rejected certificate, a malformed address, no ComputerSystem, or the insecureSkipVerify/CA-bundle conflict: only RedfishConnectionReady reports it, and the run goes on)

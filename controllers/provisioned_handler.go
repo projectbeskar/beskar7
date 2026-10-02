@@ -104,6 +104,9 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // The annotation is set on a host the report can be about:
 //   - Deploying: the expected case.
 //   - Ready: a duplicate, which the reconciler clears.
+//   - Claimed and in an Error about its BMC that overwrote the deployment
+//     (deployInterruptedByBMCError): the inspector does not need the BMC and finished
+//     deploying.
 //   - Claimed and still Inspecting. The inspector deploys as soon as /bootstrap answers
 //     (contract §9.2) and does not wait for the host, which goes to Deploying only once
 //     the Beskar7Machine has validated the inspection report: when the controllers were
@@ -132,6 +135,9 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 	case state == infrav1.StateInspecting && ph.Spec.ConsumerRef != nil:
 		log.Info("Provisioned callback on a host still Inspecting; the reconciler keeps it until the host is Deploying",
 			"host", hostName, "inspectionPhase", ph.Status.InspectionPhase)
+	case deployInterruptedByBMCError(ph):
+		log.Info("Provisioned callback on a host whose BMC failed during deployment; setting the provisioned annotation",
+			"host", hostName, "errorMessage", ph.Status.ErrorMessage)
 	default:
 		log.Info("Provisioned callback received but host is not deploying; ignoring",
 			"host", hostName, "state", state, "claimed", ph.Spec.ConsumerRef != nil)
