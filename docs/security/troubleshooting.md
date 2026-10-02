@@ -25,6 +25,18 @@ Causes and fixes:
 - The Secret has neither `ca.crt` nor `tls.crt` data keys. Add one (PEM-encoded, base64).
 - Both keys are empty. Populate `ca.crt`.
 
+### Symptom: `RedfishConnectionReady=False (CredentialsNotAuthorized)` on a host with `caBundleSecretRef`
+
+The credentials Secret does not name the host's CA Secret in `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` (decision D-033), so the credentials are not sent. Check that the host's `caBundleSecretRef` is the CA your BMCs really present — someone able to edit the host may have changed it — then set the annotation on the credentials Secret:
+
+```bash
+kubectl get physicalhost <name> -n <namespace> -o jsonpath='{.spec.redfishConnection.caBundleSecretRef}{"\n"}'
+kubectl annotate secret <credentials-secret> -n <namespace> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=<ca-secret>
+```
+
+See [Troubleshooting → 17](../troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized) for the other causes of this reason.
+
 ### Symptom: `RedfishConnectionReady=False (InsecureCABundleConflict)`
 
 The PhysicalHost has both `insecureSkipVerify: true` and `caBundleSecretRef` set. These are mutually exclusive — pick one:
@@ -46,6 +58,10 @@ openssl s_client -connect bmc.example.com:443 -showcerts -verify_return_error </
 ```
 
 If `openssl` is happy but Beskar7 isn't, check the manager pod's CA pool. The default `gcr.io/distroless/static:nonroot` image includes the standard Mozilla bundle; an internal CA must be provided via `caBundleSecretRef`.
+
+### Symptom: `RedfishConnectionFailed` / `RedfishQueryFailed` with "refused a request to … it is not the BMC's address"
+
+The BMC answered with a redirect, or a link, to another scheme, host or port than `redfishConnection.address`, and the manager refused to follow it: the credentials go only to the origin the Secret's `bmc-addresses` authorised. A BMC that redirects `http://` to `https://`, or to another port, is fixed by pointing the address at the origin it serves Redfish on. A redirect or link to another host is either a misconfigured BMC or something on the path that is not your BMC; find out which before you change the address.
 
 ## BMC credentials
 
@@ -69,7 +85,7 @@ If `curl` succeeds, the credentials are correct — the problem is elsewhere (BM
 
 ### Symptom: `RedfishConnectionReady=False (CredentialsNotAuthorized)`
 
-The credentials Secret does not authorise sending its credentials to the host's `redfishConnection.address`, so the controller sent nothing to the BMC. Check that the address really is this host's BMC before you change anything: someone able to edit `PhysicalHost` objects may have re-pointed it. Then add the address to the Secret's `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation (and `bmc-insecure-transport: "true"` for `http://` or `insecureSkipVerify: true`). Full procedure: [Troubleshooting → 17](../troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized).
+The credentials Secret does not authorise sending its credentials to the host's `redfishConnection.address`, so the controller sent nothing to the BMC. Check that the address really is this host's BMC before you change anything: someone able to edit `PhysicalHost` objects may have re-pointed it. Then add the address to the Secret's `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` annotation (and `bmc-insecure-transport: "true"` for `http://` or `insecureSkipVerify: true`, and `bmc-ca-secret` naming the CA Secret for a host with `caBundleSecretRef`). Full procedure: [Troubleshooting → 17](../troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized).
 
 ## Bearer-token failures (`401 Unauthorized` from `:8082`)
 

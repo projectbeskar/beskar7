@@ -40,7 +40,8 @@ const (
 // fetchRedfishCABundle returns PEM bytes from the BMC CA bundle Secret
 // referenced by host.Spec.RedfishConnection.CABundleSecretRef, or nil if no
 // such ref is set (empty string). The Secret must live in the same namespace
-// as the host.
+// as the host. It is only called from resolveBMCAccess, after the credentials
+// Secret has been found to name this CA Secret (D-033).
 //
 // Precedence: data["ca.crt"] is preferred; if absent, data["tls.crt"] is used.
 // If neither is present (or both are empty), returns an error so the caller

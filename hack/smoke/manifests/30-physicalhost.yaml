@@ -1,6 +1,8 @@
 ---
 # A PhysicalHost pointing at the in-cluster mock BMC. The controller will:
-#   1. Resolve mock-redfish.beskar7-smoke.svc via cluster DNS
+#   1. Resolve mock-redfish.beskar7-smoke.svc.cluster.local via cluster DNS, as
+#      an absolute name: BMC names skip the pod's DNS search path (D-032), so an
+#      in-cluster Service is written fully qualified
 #   2. Read the bmc-credentials Secret for HTTP Basic Auth
 #   3. Skip TLS verification (the mock generates a self-signed cert at startup)
 #   4. Query /redfish/v1/Systems/1 for power state + hardware details
@@ -15,6 +17,6 @@ metadata:
     app.kubernetes.io/component: smoke-test
 spec:
   redfishConnection:
-    address: https://mock-redfish.beskar7-smoke.svc:8443
+    address: https://mock-redfish.beskar7-smoke.svc.cluster.local:8443
     credentialsSecretRef: bmc-credentials
     insecureSkipVerify: true

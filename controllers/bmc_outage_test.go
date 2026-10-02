@@ -59,6 +59,10 @@ import (
 // controls.
 const fixtureBMCAddresses = "*.example.com, *.example.invalid, 192.168.0.0/16, 192.0.2.0/24"
 
+// fixtureBMCCASecret is the CA Secret the fixture credentials Secret names
+// (D-033): a fixture host with caBundleSecretRef names this one.
+const fixtureBMCCASecret = "bmc-ca"
+
 const (
 	fixtureBMCUsername = "fixture-bmc-user"
 	fixtureBMCPassword = "fixture-bmc-password"
@@ -77,13 +81,15 @@ func bmcCredentialsSecretWith(namespace, name string, annotations map[string]str
 }
 
 // bmcCredentialsSecretNamed returns a BMC credentials Secret authorised for
-// every fixture address, over any transport, as an operator would annotate one
-// for the hosts it serves (D-030). Specs about the authorisation itself build
-// their own with bmcCredentialsSecretWith.
+// every fixture address, over any transport, and with the fixture CA Secret,
+// as an operator would annotate one for the hosts it serves (D-030, D-033).
+// Specs about the authorisation itself build their own with
+// bmcCredentialsSecretWith.
 func bmcCredentialsSecretNamed(namespace, name string) *corev1.Secret {
 	return bmcCredentialsSecretWith(namespace, name, map[string]string{
 		BMCAddressesAnnotation:         fixtureBMCAddresses,
 		BMCInsecureTransportAnnotation: "true",
+		BMCCASecretAnnotation:          fixtureBMCCASecret,
 	})
 }
 
@@ -431,13 +437,13 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 		Entry("insecureSkipVerify is combined with a CA bundle", hostFault{
 			connection: func(c *infrav1.RedfishConnection) {
 				c.InsecureSkipVerify = ptr.To(true)
-				c.CABundleSecretRef = "bmc-ca"
+				c.CABundleSecretRef = fixtureBMCCASecret
 			},
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.InsecureCABundleConflictReason, machineReason: infrav1.PhysicalHostErrorReason, terminal: true,
 		}),
 		Entry("the CA bundle Secret does not exist", hostFault{
-			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
+			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = fixtureBMCCASecret },
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.CABundleFetchFailedReason, machineReason: infrav1.PhysicalHostErrorReason, terminal: true,
 		}),
@@ -624,14 +630,14 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 			name: "insecureSkipVerify is combined with a CA bundle",
 			connection: func(c *infrav1.RedfishConnection) {
 				c.InsecureSkipVerify = ptr.To(true)
-				c.CABundleSecretRef = "bmc-ca"
+				c.CABundleSecretRef = fixtureBMCCASecret
 			},
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.InsecureCABundleConflictReason,
 		},
 		{
 			name:       "the CA bundle Secret does not exist",
-			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
+			connection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = fixtureBMCCASecret },
 			factory:    failingBMC(errors.New("the factory must not be reached")),
 			hostReason: infrav1.CABundleFetchFailedReason,
 		},

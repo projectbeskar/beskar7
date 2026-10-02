@@ -25,7 +25,7 @@ metadata:
     app.kubernetes.io/component: smoke-test
 spec:
   redfishConnection:
-    address: https://mock-redfish.beskar7-smoke.svc:8443
+    address: https://mock-redfish.beskar7-smoke.svc.cluster.local:8443
     credentialsSecretRef: bmc-credentials
     insecureSkipVerify: true
 ---
@@ -39,7 +39,7 @@ metadata:
     app.kubernetes.io/component: smoke-test
 spec:
   redfishConnection:
-    address: https://mock-redfish-b.beskar7-smoke.svc:8443
+    address: https://mock-redfish-b.beskar7-smoke.svc.cluster.local:8443
     credentialsSecretRef: bmc-credentials
     insecureSkipVerify: true
 ---

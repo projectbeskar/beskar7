@@ -193,6 +193,14 @@ func TestParseBMCAddress(t *testing.T) {
 		"https://..example.com",
 		"https://[fe80::1%25eth0]",
 		"https://10.0.0.5:notaport",
+		// SEC-17(c): gofish appends each request path to the address as
+		// text, so a query or fragment would swallow every path after it.
+		"https://10.0.0.5?x=1",
+		"https://10.0.0.5/redfish/v1?x=1",
+		"https://10.0.0.5?",
+		"https://10.0.0.5#frag",
+		"https://10.0.0.5/#",
+		"https://bmc.example.com:8443/?@203.0.113.9",
 	} {
 		host, _, err := parseBMCAddress(address)
 		if err == nil {
@@ -228,8 +236,19 @@ func TestResolveBMCAccess(t *testing.T) {
 	listedInsecure := func(list, optIn string) map[string]string {
 		return map[string]string{BMCAddressesAnnotation: list, BMCInsecureTransportAnnotation: optIn}
 	}
+	listedWithCA := func(list, caSecret string) map[string]string {
+		return map[string]string{BMCAddressesAnnotation: list, BMCCASecretAnnotation: caSecret}
+	}
 	caBundle := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: "bmc-ca", Namespace: ns},
+		Data:       map[string][]byte{"ca.crt": []byte(bundle)},
+	}
+
+	// A CA Secret only someone who can read the credentials Secret knows of.
+	// What the credentials Secret names must never reach the host's status:
+	// whoever can patch a host cannot necessarily read the Secret.
+	fleetCA := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "fleet-issuing-ca", Namespace: ns},
 		Data:       map[string][]byte{"ca.crt": []byte(bundle)},
 	}
 
@@ -239,6 +258,8 @@ func TestResolveBMCAccess(t *testing.T) {
 		objects    []client.Object
 		wantReason string
 		want       bmcAccess
+		// unquoted are strings the refusal must not repeat.
+		unquoted []string
 	}{
 		{
 			name:       "an https address on the list",
@@ -251,8 +272,50 @@ func TestResolveBMCAccess(t *testing.T) {
 			connection: infrav1.RedfishConnection{
 				Address: "https://bmc.example.com", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
 			},
-			objects: []client.Object{credentials(listed("*.example.com"), nil), caBundle},
+			objects: []client.Object{credentials(listedWithCA("*.example.com", "bmc-ca"), nil), caBundle},
 			want:    bmcAccess{username: username, password: password, caBundle: []byte(bundle)},
+		},
+		// SEC-17(b), D-033: the CA a host is verified against is a trust
+		// anchor, and whoever writes the host could otherwise pick one whose
+		// key they hold, then point the host at their endpoint.
+		{
+			name: "a CA bundle the credentials Secret does not name",
+			connection: infrav1.RedfishConnection{
+				Address: "https://bmc.example.com", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
+			},
+			objects:    []client.Object{credentials(listed("*.example.com"), nil), caBundle},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
+			name: "a CA bundle other than the one the credentials Secret names",
+			connection: infrav1.RedfishConnection{
+				Address: "https://bmc.example.com", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
+			},
+			objects:    []client.Object{credentials(listedWithCA("*.example.com", "fleet-issuing-ca"), nil), caBundle, fleetCA},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+			unquoted:   []string{"fleet-issuing-ca"},
+		},
+		{
+			name: "a CA bundle named in a different case",
+			connection: infrav1.RedfishConnection{
+				Address: "https://bmc.example.com", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
+			},
+			objects:    []client.Object{credentials(listedWithCA("*.example.com", "BMC-CA"), nil), caBundle},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
+			name: "an empty bmc-ca-secret annotation",
+			connection: infrav1.RedfishConnection{
+				Address: "https://bmc.example.com", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
+			},
+			objects:    []client.Object{credentials(listedWithCA("*.example.com", ""), nil), caBundle},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
+			name:       "no caBundleSecretRef, whatever CA the credentials Secret names",
+			connection: infrav1.RedfishConnection{Address: "https://bmc.example.com", CredentialsSecretRef: "creds"},
+			objects:    []client.Object{credentials(listedWithCA("*.example.com", "fleet-issuing-ca"), nil), fleetCA},
+			want:       bmcAccess{username: username, password: password},
 		},
 		{
 			name: "insecureSkipVerify with the opt-in",
@@ -331,6 +394,18 @@ func TestResolveBMCAccess(t *testing.T) {
 			wantReason: infrav1.CredentialsNotAuthorizedReason,
 		},
 		{
+			name:       "an address with a query",
+			connection: infrav1.RedfishConnection{Address: "https://10.0.0.5/redfish/v1?x=1", CredentialsSecretRef: "creds"},
+			objects:    []client.Object{credentials(listed("10.0.0.5"), nil)},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
+			name:       "an address with a fragment",
+			connection: infrav1.RedfishConnection{Address: "https://10.0.0.5/#x", CredentialsSecretRef: "creds"},
+			objects:    []client.Object{credentials(listed("10.0.0.5"), nil)},
+			wantReason: infrav1.CredentialsNotAuthorizedReason,
+		},
+		{
 			name:       "an address that is not http(s)",
 			connection: infrav1.RedfishConnection{Address: "ftp://10.0.0.5", CredentialsSecretRef: "creds"},
 			objects:    []client.Object{credentials(listed("10.0.0.5"), nil)},
@@ -362,7 +437,7 @@ func TestResolveBMCAccess(t *testing.T) {
 			connection: infrav1.RedfishConnection{
 				Address: "https://10.0.0.5", CredentialsSecretRef: "creds", CABundleSecretRef: "bmc-ca",
 			},
-			objects:    []client.Object{credentials(listed("10.0.0.5"), nil)},
+			objects:    []client.Object{credentials(listedWithCA("10.0.0.5", "bmc-ca"), nil)},
 			wantReason: infrav1.CABundleFetchFailedReason,
 		},
 	}
@@ -400,7 +475,7 @@ func TestResolveBMCAccess(t *testing.T) {
 			if got.password != "" || got.username != "" {
 				t.Fatalf("a refusal must not hand back the credentials")
 			}
-			for _, leaked := range []string{password, username, "hunter2"} {
+			for _, leaked := range append([]string{password, username, "hunter2"}, tc.unquoted...) {
 				if strings.Contains(err.Error(), leaked) {
 					t.Fatalf("error %q leaks %q", err, leaked)
 				}
