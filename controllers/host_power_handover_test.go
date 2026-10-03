@@ -188,6 +188,8 @@ var _ = Describe("Host power across a release and the next claim", func() {
 
 			Expect(bumped.Load()).To(BeTrue(), "the host must change under the pass for this spec to mean anything")
 			Expect(getHost().Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect"))
+			Expect(callbackBinderFor(key).holds(getHost(), InspectionRequestAnnotation, "")).To(BeTrue(),
+				"the retried write carries a binding the reconciler can verify (D-037)")
 		})
 
 		It("powers on a host that is off, without a restart", func() {

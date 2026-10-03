@@ -120,15 +120,9 @@ func validateOnMachine(host *infrav1.PhysicalHost, reqs *infrav1.HardwareRequire
 }
 
 // requestInspectionStep sets the inspection-request annotation the way the
-// Beskar7Machine does.
+// Beskar7Machine does, signed (D-037).
 func requestInspectionStep(key client.ObjectKey, value string) {
-	host := getPhysicalHost(key)
-	requested := host.DeepCopy()
-	if requested.Annotations == nil {
-		requested.Annotations = map[string]string{}
-	}
-	requested.Annotations[InspectionRequestAnnotation] = value
-	Expect(k8sClient.Patch(ctx, requested, client.MergeFrom(host))).To(Succeed())
+	requestInspection(key, value)
 }
 
 var _ = Describe("The inspector's /provision-failed report when the host's BMC fails", func() {

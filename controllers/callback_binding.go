@@ -33,25 +33,29 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-// The callback handlers never write PhysicalHost.Status. They leave a signal in
-// an annotation (InspectionResultAnnotation, ProvisionedRequestAnnotation,
-// ProvisionFailedRequestAnnotation) and the PhysicalHost reconciler turns it
-// into state. Anyone allowed to patch PhysicalHosts could write the same
+// Neither the callback handlers nor the Beskar7Machine controller write
+// PhysicalHost.Status. They leave a signal in an annotation
+// (InspectionResultAnnotation, ProvisionedRequestAnnotation and
+// ProvisionFailedRequestAnnotation from the handlers; InspectionRequestAnnotation
+// from the machine controller) and the PhysicalHost reconciler turns it into
+// state. Anyone allowed to patch PhysicalHosts could write the same
 // annotations, and push a host to Ready, inject a hardware report or fail a run
-// without any inspector (SEC-15).
+// without any inspector or machine (SEC-15, D-037).
 //
 // Each signal therefore carries a binding in a sibling annotation, written in
 // the same patch: the hex HMAC-SHA256, keyed by the host's per-host bearer
 // token, of the signal's key and value together with the host and the claim
-// and boot cycle it is about (D-034). The handler can compute it because the
-// bearer middleware has just authenticated the caller with that token; the
-// reconciler recomputes it from the host's bootstrap-token Secret (D-029).
-// Forging a signal then takes the Secret, the same bar as reading the host's
-// bootstrap data.
+// and boot cycle it is about (D-034). A handler can compute it because the
+// bearer middleware has just authenticated the caller with that token
+// (newCallbackSigner); the machine controller, which mints the token, signs
+// with the credentials in the Secret (newRequestSigner). The reconciler
+// recomputes it from the host's bootstrap-token Secret (D-029). Forging a
+// signal then takes the Secret, the same bar as reading the host's bootstrap
+// data.
 //
 // No wire change: the inspector sends exactly what it always did. The callback
-// handlers and the reconciler have to run the same version, as they already did
-// for the annotations themselves.
+// handlers, the machine controller and the reconciler have to run the same
+// version, as they already did for the annotations themselves.
 
 // callbackBindingDomain separates these MACs from any other use of the token.
 // Changing the message layout means changing this string.
@@ -120,6 +124,27 @@ func newCallbackSigner(ctx context.Context, c client.Reader, host *infrav1.Physi
 	}
 	if !creds.tokenValid(now) || !auth.Verify(presentedToken, auth.Hash(creds.token)) {
 		return nil, errors.New("the callback's bearer token does not match the host's current credentials")
+	}
+	return newCallbackBinder(host, creds)
+}
+
+// newRequestSigner returns the binder the Beskar7Machine controller signs an
+// inspection request with when it did not just mint the credentials (D-037):
+// the credentials in the host's bootstrap-token Secret, under the checks
+// boundBootstrapCredentials makes (the host is claimed, the Secret is the
+// host's and was minted for the machine the claim names). Nothing is presented
+// here, since the machine controller is the one that wrote the credentials. The
+// token's expiry is not checked, because the verifier does not check it.
+//
+// A request written in the pass that mints or rotates the credentials signs
+// with the ones the mint returned (newCallbackBinder), never with a read of the
+// Secret made through a cache that may not have seen the mint. This one is for
+// the requests in the middle of a run, when nothing has changed the token, the
+// nonce or the consumer for longer than any cache lags.
+func newRequestSigner(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (*callbackBinder, error) {
+	creds, _, err := boundBootstrapCredentials(ctx, c, host)
+	if err != nil {
+		return nil, fmt.Errorf("read the credentials to bind the request to: %w", err)
 	}
 	return newCallbackBinder(host, creds)
 }
@@ -203,6 +228,12 @@ const (
 // the signal, and the token is cut to a few minutes at Ready (D-031) while a
 // /provisioned report may still be waiting.
 //
+// c has to read the Secret live. A signal is written right after the Secret
+// changes (the machine controller signs an inspect request in the pass that
+// mints or rotates the credentials), so a cache that has not caught up shows
+// credentials the signal was not bound to, and a genuine signal would be
+// rejected and removed. The PhysicalHost reconciler passes its APIReader.
+//
 // A signal is bound when the Secret is the host's (bootstrapSecretOwnedBy), is
 // bound to the machine the host's claim names, and the binding is the one the
 // Secret's token, consumer UID and current boot nonce give for this key, value
@@ -234,7 +265,7 @@ func verifyCallbackAnnotation(ctx context.Context, c client.Reader, logger logr.
 // rejectCallbackAnnotation drops an unbound signal. why is for the debug log
 // only; it carries no credential material by construction.
 func rejectCallbackAnnotation(logger logr.Logger, host *infrav1.PhysicalHost, key string, why error) callbackVerdict {
-	logger.Info("Ignoring a callback annotation that is not bound to the host's credentials; removing it",
+	logger.Info("Ignoring an annotation that is not bound to the host's credentials; removing it",
 		"host", host.Name, "annotation", key)
 	if why != nil {
 		logger.V(1).Info("Callback annotation not bound", "host", host.Name, "annotation", key, "reason", why.Error())

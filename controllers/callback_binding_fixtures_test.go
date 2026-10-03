@@ -29,14 +29,16 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-// Fixtures for the callback annotations the PhysicalHost reconciler acts on
-// (SEC-15, D-034). A signal counts only with the binding its handler wrote next
-// to it, so a spec that stages one without going through a handler has to bind
-// it the way the handler does: with the production binder, built from the
-// host's bootstrap-token Secret.
+// Fixtures for the annotations the PhysicalHost reconciler acts on (SEC-15,
+// D-034, D-037). A signal counts only with the binding its writer put next to
+// it, so a spec that stages one without going through the handler or the
+// Beskar7Machine controller has to bind it the way they do: with the production
+// binder, built from the host's bootstrap-token Secret.
 
-// callbackSignalKeys are the annotations the callback handlers write.
-var callbackSignalKeys = []string{InspectionResultAnnotation, ProvisionedRequestAnnotation, ProvisionFailedRequestAnnotation}
+// callbackSignalKeys are the annotations a spec may stage and expect to count:
+// the three the callback handlers write and the inspection request the
+// Beskar7Machine controller writes.
+var callbackSignalKeys = []string{InspectionResultAnnotation, ProvisionedRequestAnnotation, ProvisionFailedRequestAnnotation, InspectionRequestAnnotation}
 
 // fixtureConsumerUID is the consumer-uid the fixture Secret records. Nothing
 // resolves it: the Secret's value is what the binding covers.
@@ -82,9 +84,8 @@ func callbackBinderFor(host client.ObjectKey) *callbackBinder {
 }
 
 // bindCallbackAnnotation sets the signal annotation on the host to value, with
-// the binding the handler would have written next to it. digest is
-// contentDigest of the stored report for InspectionResultAnnotation, and empty
-// for the other two.
+// the binding its writer would have put next to it. digest is contentDigest of
+// the stored report for InspectionResultAnnotation, and empty for the others.
 func bindCallbackAnnotation(host client.ObjectKey, annotation, value, digest string) {
 	binder := callbackBinderFor(host)
 	current := getPhysicalHost(host)
@@ -95,8 +96,9 @@ func bindCallbackAnnotation(host client.ObjectKey, annotation, value, digest str
 
 // bindCallbackAnnotations adds the binding for each signal annotation the host
 // carries, creating the host's credentials if it has none: a host staged with a
-// signal in its annotations looks as the handler would have left it. An
-// inspection-result signal binds the report.json its ConfigMap holds.
+// signal in its annotations looks as the handler, or the Beskar7Machine
+// controller, would have left it. An inspection-result signal binds the
+// report.json its ConfigMap holds.
 func bindCallbackAnnotations(host client.ObjectKey) {
 	staged := getPhysicalHost(host)
 	var present []string
@@ -136,4 +138,57 @@ func stageCallbackBindings(host *infrav1.PhysicalHost) {
 	key := client.ObjectKeyFromObject(host)
 	bindCallbackAnnotations(key)
 	Expect(k8sClient.Get(ctx, key, host)).To(Succeed())
+}
+
+// requestInspection sets the inspection-request annotation on the claimed host
+// as the Beskar7Machine controller does: the value, signed with the host's
+// credentials (created if it has none) in the same patch.
+func requestInspection(host client.ObjectKey, value string) {
+	ensureCallbackCredentials(host)
+	bindCallbackAnnotation(host, InspectionRequestAnnotation, value, "")
+}
+
+// claimWithCredentials claims the host for the Beskar7Machine named machineName,
+// as a claim does, and gives it the credentials that machine would have minted,
+// so the machine controller can sign a request for it. It returns the host as
+// persisted.
+func claimWithCredentials(host client.ObjectKey, machineName string) *infrav1.PhysicalHost {
+	setHostConsumer(host, machineName)
+	ensureCallbackCredentials(host)
+	return getPhysicalHost(host)
+}
+
+// ensureCredentials runs the machine controller's ensureBootstrapCredentials
+// and expects it to succeed, returning the credentials it reports.
+func ensureCredentials(r *Beskar7MachineReconciler, machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost, now time.Time) bootstrapCredentials {
+	creds, err := r.ensureBootstrapCredentials(ctx, r.Log, machine, host, now)
+	Expect(err).NotTo(HaveOccurred())
+	return creds
+}
+
+// claimWithRequest claims the host for the Beskar7Machine named machineName and
+// sets a signed inspection request, in one patch: a claim and a request that
+// land together, so the host goes straight from Available to the state the
+// request names. The credentials the machine would have minted for the claim
+// replace whatever the host's Secret held (a new claim mints afresh), and the
+// request is signed with them.
+func claimWithRequest(host client.ObjectKey, machineName, value string) {
+	token, _, err := auth.MintToken()
+	Expect(err).NotTo(HaveOccurred())
+	nonce, _, err := auth.MintToken()
+	Expect(err).NotTo(HaveOccurred())
+	data := boundCredentialData(machineName, token, time.Hour, nonce, 10*time.Minute)
+	data[bootstrapConsumerUIDSecretKey] = []byte(fixtureConsumerUID)
+	putCredentialSecret(host, data)
+
+	current := getPhysicalHost(host)
+	claimed := current.DeepCopy()
+	claimed.Spec.ConsumerRef = &corev1.ObjectReference{
+		Kind: "Beskar7Machine", APIVersion: InfrastructureAPIVersion,
+		Name: machineName, Namespace: host.Namespace,
+	}
+	binder, err := newCallbackBinder(claimed, readBootstrapCredentials(getCredentialSecret(host)))
+	Expect(err).NotTo(HaveOccurred())
+	binder.setAnnotation(claimed, InspectionRequestAnnotation, value, "")
+	Expect(k8sClient.Patch(ctx, claimed, client.MergeFrom(current))).To(Succeed())
 }

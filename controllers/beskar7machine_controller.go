@@ -224,6 +224,8 @@ func (r *Beskar7MachineReconciler) deploymentTimeout() time.Duration {
 //   - ensureBootstrapCredentials: Get, then Create or Update at the read
 //     resourceVersion, on the per-host bootstrap-token Secret (deterministic
 //     name; PhysicalHost-owned).
+//   - setInspectionRequestWithCurrentCredentials (newRequestSigner): r.Get on
+//     the same Secret, to sign an inspection request (D-037).
 // No code path performs List or Watch over Secrets here, so list/watch
 // are intentionally omitted (SEC-2 / D-007). The aggregate ClusterRole
 // will still grant secrets:list,watch because PhysicalHostReconciler's
@@ -591,7 +593,8 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 //     the host never boots the inspector without credentials.
 //  3. Boot the host: power it on, or restart it if it is already on.
 //  4. Signal the PhysicalHost controller to transition to Inspecting via the
-//     inspection-request annotation (Pattern A; PhysicalHost owns its own status).
+//     inspection-request annotation (Pattern A; PhysicalHost owns its own status),
+//     signed with the credentials step 2 stored (D-037).
 //
 // The power action comes after everything that can fail but the annotation, so
 // a retry of a failed step does not restart a host that is already booting.
@@ -599,6 +602,11 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 // We never write to PhysicalHost.Status here — the inspection-request travels
 // through metadata.annotations and is applied by the PhysicalHost reconciler on
 // its next pass (BUG-1), which also mirrors the Secret into status.
+//
+// The request is signed with the credentials ensureBootstrapCredentials
+// returns, not with a read of the Secret: this pass has just minted or rotated
+// them, and this controller's cache may not have seen its own write yet. The
+// reconciler checks the signature against a live read for the same reason.
 func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
 	logger.Info("Triggering inspection boot")
 
@@ -623,7 +631,8 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	// (D-004) is comfortably above the 10-minute DefaultInspectionTimeout.
 	// The Secret is the only place they live (D-029), and the plaintext is
 	// never logged.
-	if err := r.ensureBootstrapCredentials(ctx, logger, b7machine, physicalHost, time.Now()); err != nil {
+	creds, err := r.ensureBootstrapCredentials(ctx, logger, b7machine, physicalHost, time.Now())
+	if err != nil {
 		logger.Error(err, "Failed to ensure the host's bootstrap credentials")
 		if errors.Is(err, errBootstrapSecretNotOwned) {
 			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.BootstrapCredentialsConflictReason,
@@ -631,6 +640,11 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 				bootstrapTokenSecretName(physicalHost.Name), physicalHost.Name)
 		}
 		return ctrl.Result{}, err
+	}
+	signer, err := newCallbackBinder(physicalHost, creds)
+	if err != nil {
+		logger.Error(err, "The host's bootstrap credentials cannot sign an inspection request")
+		return ctrl.Result{}, fmt.Errorf("sign the inspection request: %w", err)
 	}
 
 	powerState, err := rfClient.GetPowerState(ctx)
@@ -640,7 +654,7 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	}
 	switch {
 	case powerState == schemas.OnPowerState &&
-		(r.bootedForClaim(physicalHost, b7machine) || physicalHost.Annotations[InspectionRequestAnnotation] == "inspect"):
+		(r.bootedForClaim(physicalHost, b7machine) || inspectRequestPending(physicalHost, signer)):
 		// An earlier pass booted the host for this claim, and the PhysicalHost
 		// reconciler has yet to apply its request (or this pass cannot see it
 		// yet): the host is booting the inspector, and a restart would
@@ -684,7 +698,7 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 				return fmt.Errorf("PhysicalHost %s is no longer claimed by this machine", physicalHost.Name)
 			}
 		}
-		return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect")
+		return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect", signer)
 	})
 	if err != nil {
 		return ctrl.Result{}, err
@@ -718,19 +732,24 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 // from a stale cache therefore fails with a Conflict (or AlreadyExists) instead
 // of replacing a newer mint, and the reconcile retries from a fresh read (the
 // mint race of D-024). Neither plaintext is ever logged.
+//
+// It returns the credentials the Secret holds once the call has succeeded: the
+// ones it just wrote, or the ones it kept. The caller signs with these (D-037)
+// rather than reading the Secret again, which a cache that has not seen the
+// write yet would answer with the credentials before it.
 func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 	ctx context.Context,
 	logger logr.Logger,
 	b7machine *infrav1.Beskar7Machine,
 	physicalHost *infrav1.PhysicalHost,
 	now time.Time,
-) error {
+) (bootstrapCredentials, error) {
 	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
 	if err != nil {
-		return err
+		return bootstrapCredentials{}, err
 	}
 	if secret != nil && !bootstrapSecretOwnedBy(secret, physicalHost) {
-		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, secret.Name)
+		return bootstrapCredentials{}, fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, secret.Name)
 	}
 	creds := readBootstrapCredentials(secret)
 
@@ -753,7 +772,7 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 	if !bootstrapTokenReusable(creds, b7machine.Name, now, r.bootstrapTokenMinRemaining()) {
 		token, _, err := auth.MintToken()
 		if err != nil {
-			return fmt.Errorf("mint bootstrap token: %w", err)
+			return bootstrapCredentials{}, fmt.Errorf("mint bootstrap token: %w", err)
 		}
 		creds.token, creds.tokenIssuedAt, creds.tokenExpiresAt = token, now, now.Add(r.bootstrapTokenLifetime())
 		changed = true
@@ -761,20 +780,20 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 	if !bootNonceReusable(creds, physicalHost.Status.Bootstrap, b7machine.Name, now) {
 		nonce, _, err := auth.MintToken()
 		if err != nil {
-			return fmt.Errorf("mint boot nonce: %w", err)
+			return bootstrapCredentials{}, fmt.Errorf("mint boot nonce: %w", err)
 		}
 		creds.nonce, creds.nonceExpiresAt = nonce, auth.NonceLifetimeFor(now).Time
 		changed = true
 	}
 	if !changed {
 		logger.V(1).Info("Bootstrap credentials still valid and bound to this machine; skipping mint", "host", physicalHost.Name)
-		return nil
+		return creds, nil
 	}
 	creds.consumer, creds.consumerUID = b7machine.Name, string(b7machine.UID)
 	if err := r.writeBootstrapCredentials(ctx, logger, physicalHost, secret, creds); err != nil {
-		return fmt.Errorf("store bootstrap credentials: %w", err)
+		return bootstrapCredentials{}, fmt.Errorf("store bootstrap credentials: %w", err)
 	}
-	return nil
+	return creds, nil
 }
 
 // bootstrapTokenReusable reports whether the bearer token in creds may be kept
@@ -926,7 +945,7 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 			// Best-effort signal to the PhysicalHost controller. Don't block the
 			// terminal marking on the annotation patch — the PhysicalHost catches
 			// up on its next reconcile regardless.
-			if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "timeout"); err != nil {
+			if err := r.setInspectionRequestWithCurrentCredentials(ctx, logger, physicalHost, "timeout"); err != nil {
 				logger.Error(err, "Failed to set inspection timeout annotation")
 			}
 			msg := fmt.Sprintf("Inspection did not complete within %s", timeout)
@@ -1074,7 +1093,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 	// PhysicalHost owns its own status; we must not call r.Status().Update on it here (BUG-1 fix).
 	// The "inspect-complete" value tells the PhysicalHost controller to set StateReady and
 	// MarkTrue(HostInspectedCondition) on its next reconcile.
-	if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect-complete"); err != nil {
+	if err := r.setInspectionRequestWithCurrentCredentials(ctx, logger, physicalHost, "inspect-complete"); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1633,17 +1652,43 @@ func (r *Beskar7MachineReconciler) markTerminalFailure(b7machine *infrav1.Beskar
 // a state transition. The PhysicalHost controller reads the annotation on its next reconcile
 // and drives the Status transition, preserving status ownership (BUG-1 fix, Pattern A).
 // Uses optimistic locking via MergeFromWithOptions so a conflict causes a fast requeue.
-func (r *Beskar7MachineReconciler) setInspectionRequestAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost, value string) error {
+//
+// The request and its binding are written in this one patch, signed by signer (D-037): the
+// reconciler acts on a request only with a binding it can recompute from the host's
+// bootstrap-token Secret.
+func (r *Beskar7MachineReconciler) setInspectionRequestAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost, value string, signer *callbackBinder) error {
 	base := physicalHost.DeepCopy()
-	if physicalHost.Annotations == nil {
-		physicalHost.Annotations = make(map[string]string)
-	}
-	physicalHost.Annotations[InspectionRequestAnnotation] = value
+	signer.setAnnotation(physicalHost, InspectionRequestAnnotation, value, "")
 	if err := r.Patch(ctx, physicalHost, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return fmt.Errorf("failed to set inspection-request annotation %q on PhysicalHost %s: %w", value, physicalHost.Name, err)
 	}
 	logger.V(1).Info("Set inspection-request annotation", "host", physicalHost.Name, "value", value)
 	return nil
+}
+
+// setInspectionRequestWithCurrentCredentials writes an inspection request that does not
+// follow a mint (inspect-complete, timeout), signed with the credentials the host's
+// bootstrap-token Secret holds now (newRequestSigner). Nothing changes the token, the boot
+// nonce or the consumer while a run is Inspecting, so a read through this controller's
+// cache cannot have missed a change to them. A host whose credentials cannot sign (no
+// Secret, one the host does not own, one minted for another machine) is an error: the
+// request would only be removed unread.
+func (r *Beskar7MachineReconciler) setInspectionRequestWithCurrentCredentials(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost, value string) error {
+	signer, err := newRequestSigner(ctx, r.Client, physicalHost)
+	if err != nil {
+		return fmt.Errorf("cannot sign inspection-request %q for PhysicalHost %s: %w", value, physicalHost.Name, err)
+	}
+	return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, value, signer)
+}
+
+// inspectRequestPending reports whether physicalHost carries the "inspect" request this
+// controller signed under the credentials signer holds: a request an earlier pass wrote
+// for this boot cycle of this claim. One written by hand, or signed under credentials
+// since replaced, is not pending, because the PhysicalHost reconciler removes it unread
+// and the host would never be booted for it.
+func inspectRequestPending(physicalHost *infrav1.PhysicalHost, signer *callbackBinder) bool {
+	return physicalHost.Annotations[InspectionRequestAnnotation] == "inspect" &&
+		signer.holds(physicalHost, InspectionRequestAnnotation, "")
 }
 
 // ensureBootstrapDataReady verifies that the bootstrap Secret named by

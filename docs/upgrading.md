@@ -136,6 +136,25 @@ keeps showing the `v0.8.x` hashes and expiries until that claim mints new creden
 credentials they describe are rejected; see
 [troubleshooting issue 10](troubleshooting.md#10-inspection-or-bootstrap-callback-returns-401-unauthorized).
 
+### The annotations the controllers act on carry a binding
+
+`v0.10.0` binds the annotations the `PhysicalHost` reconciler turns into state to the host's per-host token:
+the three the inspector's callbacks leave (`inspection-result-ref`, `provisioned-request`,
+`provision-failed-request`) and the `inspection-request` the `Beskar7Machine` controller writes (decisions D-034
+and D-037, [control 3a](security/README.md#3a-callback--and-machine-written-annotations-are-bound-to-the-per-host-token)).
+No CRD change and no wire change, so nothing to do to the inspector, and no ordering constraint. What to know:
+
+- **Upgrade the controller and every callback-only instance (`--controllers=none`) together.** A callback written
+  by an older instance has no binding, so the new controller removes it unread and the machine waits out its
+  timeout.
+- **A request the `Beskar7Machine` controller had written and the host had not applied yet is removed and
+  written again.** An `inspect` is written again, signed, in the machine's next pass while the host is `InUse`
+  (a host the old controller had already booted is restarted at most once more, since the new controller keeps
+  no record of that boot); an `inspect-complete` while the host is `Inspecting` with its report in. A `timeout`
+  is not written again: its machine has already failed, and the host keeps its state until it is released.
+- The window is short either way (the host applies a request within moments), which is why the rule above
+  stands: upgrade with no host `Inspecting` or `Deploying`.
+
 ### The environment's proxy is no longer used for BMC connections
 
 Up to `v0.9.x`, a manager with `HTTP_PROXY`/`HTTPS_PROXY` in its environment (Helm `controllerManager.env`, or a

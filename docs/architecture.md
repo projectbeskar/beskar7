@@ -178,7 +178,7 @@ object, is picked up immediately rather than on the next poll.
 - Writes the validated report to a per-host ConfigMap and patches an
   `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the PhysicalHost,
   together with a binding to the caller's bearer token and the stored report
-  (`inspection-result-ref-binding`; D-034, [Security](security/README.md#3a-callback-written-annotations-are-bound-to-the-per-host-token))
+  (`inspection-result-ref-binding`; D-034, [Security](security/README.md#3a-callback--and-machine-written-annotations-are-bound-to-the-per-host-token))
 - Does **not** write `PhysicalHost.Status` itself. The `PhysicalHostReconciler` consumes the
   annotation and is the sole writer of `Status.InspectionReport`, `Status.InspectionPhase`
   and the inspection timestamp (D-005)

@@ -99,6 +99,10 @@ var _ = Describe("Beskar7Machine InfrastructureReady while its host is claimed o
 				}
 			}
 			Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+			if c.phase == infrav1.InspectionPhaseComplete {
+				// The machine signs its inspect-complete with the credentials it minted.
+				ensureCallbackCredentials(client.ObjectKeyFromObject(host))
+			}
 
 			// Associated and with its bootstrap data, as every machine is by the
 			// time it gets here. With InfrastructureReady missing, these two alone

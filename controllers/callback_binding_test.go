@@ -41,15 +41,17 @@ import (
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
-// Three PhysicalHost annotations drive the host's status, and only the callback
-// handlers are meant to write them: the inspection report's reference, the
-// /provisioned report and the /provision-failed report. Anyone allowed to patch
-// PhysicalHosts could write them too, and push a host to Ready, inject a
-// hardware report or fail a run without an inspector (SEC-15). Each now carries
-// a binding, an HMAC keyed by the host's bearer token, and the reconciler acts
-// only on a signal whose binding it can recompute from the host's
-// bootstrap-token Secret (D-034). These specs pin that, per signal, against the
-// real handlers and the real PhysicalHostReconciler.
+// Four PhysicalHost annotations drive the host's status, and only the callback
+// handlers and the Beskar7Machine controller are meant to write them: the
+// inspection report's reference, the /provisioned report and the
+// /provision-failed report from the handlers, and the machine's inspection
+// request. Anyone allowed to patch PhysicalHosts could write them too, and push
+// a host to Ready, inject a hardware report or fail a run without an inspector
+// or a machine (SEC-15, D-037). Each now carries a binding, an HMAC keyed by
+// the host's bearer token, and the reconciler acts only on a signal whose
+// binding it can recompute from the host's bootstrap-token Secret (D-034).
+// These specs pin that, per signal, against the real writers and the real
+// PhysicalHostReconciler.
 
 var _ = Describe("callbackBinder", func() {
 	newHost := func() *infrav1.PhysicalHost {
@@ -150,13 +152,14 @@ var _ = Describe("callbackBinder", func() {
 	})
 })
 
-// callbackSignal is one of the three annotations, with what it takes to
-// deliver it through its handler, forge it, and tell whether it took effect.
+// callbackSignal is one of the signals, with what it takes to deliver it
+// through its writer, forge it, and tell whether it took effect.
 type callbackSignal struct {
 	annotation string
 	// state the host is in when the signal arrives.
 	state string
-	// deliver posts the signal the way the inspector does, through the handler.
+	// deliver sends the signal the way its writer does: the inspector through its
+	// handler, the machine through the pass that writes the request.
 	deliver func(key client.ObjectKey)
 	// forge writes the same signal as someone allowed to patch the host would:
 	// the value, and no binding.
@@ -226,6 +229,54 @@ var callbackSignals = map[string]callbackSignal{
 		},
 		untouched: func(h *infrav1.PhysicalHost) {
 			Expect(h.Status.State).To(Equal(infrav1.StateDeploying), "a run must not fail without an inspector")
+			Expect(h.Status.ErrorMessage).To(BeEmpty())
+		},
+	},
+	// The machine controller's three inspection requests (D-037) are delivered
+	// by the machine controller itself, through the pass that writes each.
+	"inspect request": {
+		annotation: InspectionRequestAnnotation,
+		state:      infrav1.StateInUse,
+		deliver:    deliverInspect,
+		forge:      forgeInspectionRequest("inspect"),
+		digest:     func(client.ObjectKey) string { return "" },
+		applied: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateInspecting))
+			Expect(h.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseBooting))
+		},
+		untouched: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateInUse), "a host must not start inspecting without its machine's request")
+		},
+	},
+	"inspect-complete request": {
+		annotation: InspectionRequestAnnotation,
+		state:      infrav1.StateInspecting,
+		deliver:    deliverInspectComplete,
+		forge:      forgeInspectionRequest("inspect-complete"),
+		digest:     func(client.ObjectKey) string { return "" },
+		applied: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateDeploying))
+			Expect(h.Status.DeployingTimestamp).NotTo(BeNil())
+		},
+		untouched: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateInspecting), "a host must not start deploying without its machine's request")
+			Expect(h.Status.DeployingTimestamp).To(BeNil())
+		},
+	},
+	"timeout request": {
+		annotation: InspectionRequestAnnotation,
+		state:      infrav1.StateInspecting,
+		deliver:    deliverInspectionTimeout,
+		forge:      forgeInspectionRequest("timeout"),
+		digest:     func(client.ObjectKey) string { return "" },
+		applied: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateError))
+			Expect(h.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseTimeout))
+			Expect(h.Status.ErrorMessage).To(Equal(inspectionTimedOutMessage))
+		},
+		untouched: func(h *infrav1.PhysicalHost) {
+			Expect(h.Status.State).To(Equal(infrav1.StateInspecting), "a run must not time out without its machine's request")
+			Expect(h.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseBooting))
 			Expect(h.Status.ErrorMessage).To(BeEmpty())
 		},
 	},
@@ -329,13 +380,13 @@ var _ = Describe("Callback signals are bound to the host's per-host token (SEC-1
 				Expect(h.Annotations).NotTo(HaveKey(callbackBindingAnnotation(signal.annotation)))
 			}
 
-			It("is applied when the handler wrote it, and its binding goes with it", func() {
+			It("is applied when its writer bound it, and its binding goes with it", func() {
 				key := stage()
 				signal.deliver(key)
 				delivered := getPhysicalHost(key)
 				Expect(delivered.Annotations).To(HaveKey(signal.annotation))
 				Expect(delivered.Annotations).To(HaveKey(callbackBindingAnnotation(signal.annotation)),
-					"the handler writes the binding next to the signal")
+					"the writer puts the binding next to the signal")
 
 				applied := settlePhysicalHost(hostReconciler, key)
 				signal.applied(applied)
@@ -460,13 +511,19 @@ var _ = Describe("Callback signals are bound to the host's per-host token (SEC-1
 		})
 	})
 
-	Context("a hand-set inspection-request", func() {
-		It("takes a host to Deploying with inspect-complete, and no further without a bound /provisioned", func() {
+	Context("an inspection-request", func() {
+		It("takes a host to Deploying only when the machine signed it, and no further without a bound /provisioned", func() {
 			key := provisioningHost(ns.Name, "complete-host", "complete-machine", infrav1.StateInspecting, nil)
 			ensureCallbackCredentials(key)
 
 			By("a patcher setting inspect-complete by hand")
 			annotateHost(key, InspectionRequestAnnotation, "inspect-complete")
+			ignored := settlePhysicalHost(hostReconciler, key)
+			Expect(ignored.Status.State).To(Equal(infrav1.StateInspecting))
+			Expect(ignored.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
+
+			By("the machine's inspect-complete, signed with the host's credentials")
+			requestInspection(key, "inspect-complete")
 			deploying := settlePhysicalHost(hostReconciler, key)
 			Expect(deploying.Status.State).To(Equal(infrav1.StateDeploying))
 			Expect(deploying.Status.DeployingTimestamp).NotTo(BeNil())

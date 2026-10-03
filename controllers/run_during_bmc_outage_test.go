@@ -193,6 +193,8 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 		key := inUseHost(ns.Name, "booting-host", "booting-machine",
 			map[string]string{InspectionRequestAnnotation: "inspect"})
 		token, nonce := inspectionCredentials(key, "booting-machine")
+		// The machine stores the credentials first and signs its request with them.
+		bindCallbackAnnotations(key)
 
 		inspecting := reconcileInOutage(key)
 		Expect(inspecting.Status.State).To(Equal(infrav1.StateInspecting),

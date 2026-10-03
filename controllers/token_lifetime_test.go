@@ -97,7 +97,7 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 
 	Context("when the host is Ready", func() {
 		It("cuts the token's life to five minutes, keeps the token itself, and writes the Secret once", func() {
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			minted := readBootstrapCredentials(getSecret())
 			Expect(minted.tokenExpiresAt).To(BeTemporally(">", time.Now().Add(50*time.Minute)))
 
@@ -122,7 +122,7 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 		})
 
 		It("still accepts the inspector's /provisioned retry within the grace, and nothing once it has passed", func() {
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			token := readBootstrapCredentials(getSecret()).token
 			_, err := r.handleReadyHost(ctx, r.Log, machine, readyHost())
 			Expect(err).NotTo(HaveOccurred())
@@ -169,7 +169,7 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 		It("re-mints a token with less life left than a boot nonce plus an inspection", func() {
 			putCredentialSecret(hostKey, boundTo("nearly-spent-token", 15*time.Minute))
 			now := time.Now()
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), now)).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), now)
 			creds := readBootstrapCredentials(getSecret())
 			Expect(creds.token).NotTo(Equal("nearly-spent-token"),
 				"10 minutes of nonce plus 10 of inspection would outlast it: /boot must not render it")
@@ -178,32 +178,32 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 
 		It("keeps a token with more life left than that", func() {
 			putCredentialSecret(hostKey, boundTo("healthy-token", 25*time.Minute))
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			Expect(readBootstrapCredentials(getSecret()).token).To(Equal("healthy-token"))
 		})
 
 		It("measures the margin with the configured inspection timeout", func() {
 			r.InspectionTimeout = 30 * time.Minute
 			putCredentialSecret(hostKey, boundTo("thirty-five-minutes-left", 35*time.Minute))
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			Expect(readBootstrapCredentials(getSecret()).token).NotTo(Equal("thirty-five-minutes-left"),
 				"10 minutes of nonce plus a 30-minute inspection would outlast it")
 
 			putCredentialSecret(hostKey, boundTo("forty-five-minutes-left", 45*time.Minute))
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			Expect(readBootstrapCredentials(getSecret()).token).To(Equal("forty-five-minutes-left"))
 		})
 
 		It("mints a token that outlasts a long inspection timeout, and keeps it on the next pass", func() {
 			r.InspectionTimeout = 55 * time.Minute
 			now := time.Now()
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), now)).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), now)
 			minted := getSecret()
 			Expect(readBootstrapCredentials(minted).tokenExpiresAt).To(
 				BeTemporally("~", now.Add(auth.TokenLifetime+45*time.Minute), 2*time.Second),
 				"the mint lengthens the token by however much the inspection timeout exceeds its default")
 
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			Expect(getSecret().ResourceVersion).To(Equal(minted.ResourceVersion),
 				"a token re-minted on every pass would strand an inspector already holding it (D-024)")
 		})
@@ -220,7 +220,7 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 				Expect(k8sClient.Create(ctx, squatter)).To(Succeed())
 				before := getSecret()
 
-				err := r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())
+				_, err := r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())
 				Expect(err).To(HaveOccurred())
 
 				after := getSecret()
