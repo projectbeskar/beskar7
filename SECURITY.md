@@ -60,6 +60,15 @@ endpoint of their choosing (fixed in `v0.9.0`, see the [CHANGELOG](CHANGELOG.md)
 upgrade, grant `create`/`patch` on `physicalhosts` only to people who may also read the Secrets in
 that namespace.
 
+**Every release before `v0.10.0`** lets anyone who can patch a `PhysicalHost` mark it provisioned
+without an inspector, replace its hardware report, fail or stall its run, and delete any ConfigMap
+in its namespace. It also lets anyone who can write a `PhysicalHost` choose the CA its BMC is
+verified against, and lets anyone who can create a Service in the right namespace receive a BMC
+connection meant for a short host name (and, over `http://`, its credentials). All are fixed in
+`v0.10.0`, see the [CHANGELOG](CHANGELOG.md). Until you can upgrade, grant `patch` on
+`physicalhosts` only to people trusted to provision those hosts, and write BMC addresses as IP
+addresses or fully qualified names.
+
 ## Verifying what you run
 
 Container images published from `v0.4.0` onward are signed with

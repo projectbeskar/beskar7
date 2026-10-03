@@ -53,7 +53,9 @@ type RedfishConnection struct {
 	// RedfishConnectionReady is False with CredentialsNotAuthorized.
 	// A hostname is resolved as an absolute DNS name, without the search
 	// path, so an in-cluster Service is written fully qualified
-	// (name.namespace.svc.cluster.local). Requests go only to this address's
+	// (name.namespace.svc.cluster.local). When the manager runs with
+	// --bmc-proxy, the proxy resolves the name instead and the manager's
+	// absolute-name rule does not apply. Requests go only to this address's
 	// scheme, host and port: a redirect or a link from the BMC that leaves
 	// them is refused.
 	// +kubebuilder:validation:Required
