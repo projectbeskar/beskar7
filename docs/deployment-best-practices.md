@@ -58,13 +58,14 @@ graph TB
 - Dedicated network segment for BMC traffic
 - Proper VLAN isolation from production workloads
 - Firewall rules limiting BMC access to management cluster
-- DNS resolution for BMC hostnames (recommended)
+- BMC addresses written as IP addresses or fully qualified names. The manager resolves a BMC hostname as an absolute DNS name, without its pod's search path (decision D-032), so `bmc1.lab` must resolve as written and an in-cluster BMC is `<service>.<namespace>.svc.cluster.local`.
+- The manager reaches each BMC directly. Its `HTTP_PROXY`/`HTTPS_PROXY` environment is not used for BMC connections (decision D-035); if BMCs are reachable only through a proxy, set it explicitly with `--bmc-proxy` (chart value `bmcProxy`). See [Reaching BMCs through a proxy](security/configuration.md#reaching-bmcs-through-a-proxy).
 
 **Network Requirements:**
 ```
-Management Cluster -> BMC Network: HTTPS (443), SSH (22)
-BMCs -> Image Repository: HTTP/HTTPS (80/443)
-BMCs -> Configuration Server: HTTP/HTTPS (80/443)
+Management Cluster -> BMC Network: Redfish over HTTPS (443, or the port in each host's address)
+Hosts (inspector) -> Callback endpoint (beskar7.api): HTTPS (8082 by default)
+Hosts (iPXE, inspector) -> Boot and image servers: HTTP/HTTPS (80/443)
 ```
 
 **Recommended Network Topology:**
@@ -581,7 +582,9 @@ kubectl apply -f physicalhosts-backup.yaml
 
 ### 2. Upgrade Procedures
 
-**Rolling Upgrade (Helm):**
+Follow the section of the [upgrade guide](upgrading.md) for the versions you are moving between: most releases have steps to take before the controller changes, and a release that adds a field must have its CRDs applied first. `helm upgrade` alone is not enough for that. Helm installs the CRDs in a chart's `crds/` directory on the first install and never upgrades them, so a new status field would be pruned from every write until the CRDs are applied by hand (for `v0.10.0`, see [step 6](upgrading.md#6-apply-the-crds-then-upgrade-the-controller-and-every-callback-only-instance)).
+
+**Rolling Upgrade (Helm), once the guide's earlier steps and the CRDs are done:**
 ```bash
 # Update Helm repository
 helm repo update
