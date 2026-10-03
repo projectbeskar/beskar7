@@ -199,19 +199,14 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 			Log:    ctrl.Log.WithName("d015-phready"),
 			Scheme: k8sClient.Scheme(),
 		}
-		// Simulate the signal the provisioned handler would write.
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
-		if ph.Annotations == nil {
-			ph.Annotations = map[string]string{}
-		}
-		ph.Annotations[ProvisionedRequestAnnotation] = "provisioned"
-		// Claimed: a released host drops the report, since the claim it was about
-		// has ended.
-		ph.Spec.ConsumerRef = &corev1.ObjectReference{
-			Kind: "Beskar7Machine", Name: "b7m-deploying", Namespace: testNs.Name,
-			APIVersion: infrav1.GroupVersion.String(),
-		}
-		phR.applyProvisionedRequestAnnotation(phR.Log, ph)
+		// Simulate the signal the provisioned handler would write. Claimed: a
+		// released host drops the report, since the claim it was about has ended.
+		key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
+		setHostConsumer(key, "b7m-deploying")
+		ensureCallbackCredentials(key)
+		bindCallbackAnnotation(key, ProvisionedRequestAnnotation, "provisioned", "")
+		Expect(k8sClient.Get(ctx, key, ph)).To(Succeed())
+		phR.applyProvisionedRequestAnnotation(ctx, phR.Log, ph)
 
 		Expect(ph.Status.State).To(Equal(infrav1.StateReady),
 			"provisioned signal must drive Deploying→Ready")
@@ -219,7 +214,7 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 		Expect(ph.Annotations).To(HaveKey(ProvisionedRequestAnnotation),
 			"the annotation stays until a pass finds the status write carrying Ready has landed")
 
-		phR.applyProvisionedRequestAnnotation(phR.Log, ph)
+		phR.applyProvisionedRequestAnnotation(ctx, phR.Log, ph)
 		Expect(ph.Status.State).To(Equal(infrav1.StateReady))
 		Expect(ph.Annotations).NotTo(HaveKey(ProvisionedRequestAnnotation),
 			"annotation must be cleared once status shows it")
@@ -422,7 +417,7 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 		// bootstrap-token Secret, so the verifier accepts it (D-029).
 		setHostConsumer(client.ObjectKeyFromObject(ph), "deploying-machine")
 		putCredentialSecret(client.ObjectKeyFromObject(ph),
-			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "", 0))
+			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "d015-boot-nonce", auth.BootNonceLifetime))
 	})
 
 	AfterEach(func() {
@@ -525,7 +520,7 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 				Kind: "Beskar7Machine", Name: consumer, Namespace: testNs.Name,
 				APIVersion: infrav1.GroupVersion.String(),
 			}
-			putCredentialSecret(key, boundCredentialData(consumer, tokenPlain, auth.TokenLifetime, "", 0))
+			putCredentialSecret(key, boundCredentialData(consumer, tokenPlain, auth.TokenLifetime, "d015-boot-nonce", auth.BootNonceLifetime))
 		}
 		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
 		ph.Status.State = state
@@ -555,7 +550,7 @@ var _ = Describe("D-015 ProvisionedHandler HTTP", func() {
 				// (D-029), so the handler's own guard is exercised directly.
 				Expect(code).To(Equal(http.StatusUnauthorized))
 				log := ctrl.Log.WithName("provisioned-handler-direct")
-				Expect((&ProvisionedHandler{Client: k8sClient, Log: log}).signalProvisioned(ctx, log, key.Namespace, key.Name)).To(Succeed())
+				Expect((&ProvisionedHandler{Client: k8sClient, Log: log}).signalProvisioned(ctx, log, key.Namespace, key.Name, tokenPlain)).To(Succeed())
 			} else {
 				Expect(code).To(Equal(http.StatusAccepted), "the inspector gets 202 whatever the host's state")
 			}

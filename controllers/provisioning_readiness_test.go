@@ -425,7 +425,7 @@ var _ = Describe("Beskar7Machine provisioned under a running manager", func() {
 		Eventually(hostInState(infrav1.StateInspecting), 30*time.Second, 100*time.Millisecond).Should(Succeed())
 
 		By("posting the inspection report the way the inspector's callback does")
-		Expect((&InspectionHandler{Client: k8sClient, Log: log}).processInspectionReport(ctx, log, ns, host.Name,
+		Expect((&InspectionHandler{Client: k8sClient, Log: log}).processInspectionReport(ctx, log, ns, host.Name, callbackTokenOf(hostKey),
 			InspectionReportRequest{Manufacturer: "Dell Inc.", CPUs: []CPUData{{ID: "0", Cores: 8}}})).To(Succeed())
 		// Until the machine has seen its host deploying, the provisioned
 		// callback could move the host past Deploying before the machine ever
@@ -438,7 +438,7 @@ var _ = Describe("Beskar7Machine provisioned under a running manager", func() {
 		}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
 
 		By("posting the provisioned callback")
-		Expect((&ProvisionedHandler{Client: k8sClient, Log: log}).signalProvisioned(ctx, log, ns, host.Name)).To(Succeed())
+		Expect((&ProvisionedHandler{Client: k8sClient, Log: log}).signalProvisioned(ctx, log, ns, host.Name, callbackTokenOf(hostKey))).To(Succeed())
 		Eventually(func() bool {
 			mu.Lock()
 			defer mu.Unlock()

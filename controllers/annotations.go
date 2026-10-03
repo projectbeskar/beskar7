@@ -102,6 +102,10 @@ const (
 //
 // Value: the metadata.name of the ConfigMap (always in the same namespace as the
 // PhysicalHost).
+//
+// Like the two below, it counts only with the binding the handler writes in the
+// sibling annotation callbackBindingAnnotation(InspectionResultAnnotation)
+// (D-034); the binding of this one also covers the report.json the ConfigMap holds.
 const InspectionResultAnnotation = "infrastructure.cluster.x-k8s.io/inspection-result-ref"
 
 // ProvisionedRequestAnnotation is set by the provisioned HTTP handler on a PhysicalHost
@@ -114,6 +118,7 @@ const InspectionResultAnnotation = "infrastructure.cluster.x-k8s.io/inspection-r
 //
 // Value: "provisioned" — a fixed string, no data payload.
 // The authenticated POST itself is the signal; the body is advisory only (D-015).
+// The reconciler acts on it only with its binding (callback_binding.go, D-034).
 const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisioned-request"
 
 // ProvisionFailedRequestAnnotation is set by the provision-failed HTTP handler on a
@@ -129,4 +134,5 @@ const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisione
 // Value: a sanitized human-readable failure reason (≤256 chars, control-chars stripped,
 // prefixed with "inspector reported deploy failure: "). The authenticated POST itself is
 // the failure signal; the reason is advisory only and MUST be treated as untrusted input.
+// The reconciler acts on it only with its binding (callback_binding.go, D-034).
 const ProvisionFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provision-failed-request"

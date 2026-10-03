@@ -101,7 +101,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 		// bootstrap-token Secret, so the verifier accepts it (D-029).
 		setHostConsumer(client.ObjectKeyFromObject(ph), "deploying-machine")
 		putCredentialSecret(client.ObjectKeyFromObject(ph),
-			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "", 0))
+			boundCredentialData("deploying-machine", tokenPlain, auth.TokenLifetime, "d016-boot-nonce", auth.BootNonceLifetime))
 	})
 
 	AfterEach(func() {
@@ -251,7 +251,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 
 		By("the handler itself treating the report as a no-op, should anything let it through")
 		log := ctrl.Log.WithName("provision-failed-handler-direct")
-		Expect((&ProvisionFailedHandler{Client: k8sClient, Log: log}).signalProvisionFailed(ctx, log, testNs.Name, ph.Name, "fail")).To(Succeed())
+		Expect((&ProvisionFailedHandler{Client: k8sClient, Log: log}).signalProvisionFailed(ctx, log, testNs.Name, ph.Name, tokenPlain, "fail")).To(Succeed())
 
 		By("Verifying annotation was NOT set on a non-Deploying host")
 		updated := &infrav1.PhysicalHost{}
@@ -270,7 +270,7 @@ var _ = Describe("v4.1 ProvisionFailedHandler HTTP", func() {
 			APIVersion: infrav1.GroupVersion.String(),
 		}
 		Expect(k8sClient.Update(ctx, ph)).To(Succeed())
-		putCredentialSecret(key, boundCredentialData("b7m-pfail-http", tokenPlain, auth.TokenLifetime, "", 0))
+		putCredentialSecret(key, boundCredentialData("b7m-pfail-http", tokenPlain, auth.TokenLifetime, "d016-boot-nonce", auth.BootNonceLifetime))
 		ph.Status.State = infrav1.StateInspecting
 		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
@@ -338,14 +338,14 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateDeploying
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		stageCallbackBindings(ph)
 
 		r := &PhysicalHostReconciler{
 			Client: k8sClient,
 			Log:    ctrl.Log.WithName("d016-ph-test"),
 			Scheme: k8sClient.Scheme(),
 		}
-		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
+		r.applyProvisionFailedRequestAnnotation(ctx, r.Log, ph)
 
 		By("Verifying State == Error")
 		Expect(ph.Status.State).To(Equal(infrav1.StateError))
@@ -375,19 +375,25 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 					Address:              "https://192.168.2.221",
 					CredentialsSecretRef: "dummy-creds",
 				},
+				// Claimed, so that the report is bound and it is the state that
+				// decides: a host nobody claims has no credentials to bind to.
+				ConsumerRef: &corev1.ObjectReference{
+					Kind: "Beskar7Machine", Name: "b7m-pf-notdeploying", Namespace: testNs.Name,
+					APIVersion: infrav1.GroupVersion.String(),
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateReady // not Deploying
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		stageCallbackBindings(ph)
 
 		r := &PhysicalHostReconciler{
 			Client: k8sClient,
 			Log:    ctrl.Log.WithName("d016-notdeploying-test"),
 			Scheme: k8sClient.Scheme(),
 		}
-		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
+		r.applyProvisionFailedRequestAnnotation(ctx, r.Log, ph)
 
 		By("Verifying State remains Ready (no transition)")
 		Expect(ph.Status.State).To(Equal(infrav1.StateReady),
@@ -413,20 +419,25 @@ var _ = Describe("v4.1 PhysicalHost applyProvisionFailedRequestAnnotation", func
 					Address:              "https://192.168.2.222",
 					CredentialsSecretRef: "dummy-creds",
 				},
+				// Claimed, so that the report is bound; see the spec above.
+				ConsumerRef: &corev1.ObjectReference{
+					Kind: "Beskar7Machine", Name: "b7m-pf-already-error", Namespace: testNs.Name,
+					APIVersion: infrav1.GroupVersion.String(),
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, ph)).To(Succeed())
 		ph.Status.State = infrav1.StateError
 		ph.Status.ErrorMessage = errorMsg
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())
+		stageCallbackBindings(ph)
 
 		r := &PhysicalHostReconciler{
 			Client: k8sClient,
 			Log:    ctrl.Log.WithName("d016-already-error-test"),
 			Scheme: k8sClient.Scheme(),
 		}
-		r.applyProvisionFailedRequestAnnotation(r.Log, ph)
+		r.applyProvisionFailedRequestAnnotation(ctx, r.Log, ph)
 
 		By("Verifying State remains Error (no double-transition)")
 		Expect(ph.Status.State).To(Equal(infrav1.StateError))

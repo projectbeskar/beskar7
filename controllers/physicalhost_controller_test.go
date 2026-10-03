@@ -755,15 +755,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, cm)).To(Succeed())
 
-			By("Setting the inspection-result annotation pointing at the ConfigMap")
-			ph := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			phPatch := ph.DeepCopy()
-			if phPatch.Annotations == nil {
-				phPatch.Annotations = map[string]string{}
-			}
-			phPatch.Annotations[InspectionResultAnnotation] = cmName
-			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+			By("Setting the inspection-result annotation pointing at the ConfigMap, bound the way the handler binds it")
+			// The host has to be claimed: the binding is to the claim's credentials.
+			setHostConsumer(phLookupKey, "test-machine")
+			ensureCallbackCredentials(phLookupKey)
+			bindCallbackAnnotation(phLookupKey, InspectionResultAnnotation, cmName, contentDigest(string(body)))
 
 			By("Reconciling — controller should consume the result, persist to Status, and delete the CM")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)

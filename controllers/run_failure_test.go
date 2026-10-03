@@ -53,7 +53,9 @@ import (
 
 // provisioningHost creates a claimed host part-way through a run with a healthy
 // BMC connection, as the annotation handlers would have left it, carrying
-// annotations for its next reconcile.
+// annotations for its next reconcile. Callback signals among them (the three
+// annotations the handlers write) are bound to the host's credentials, which
+// are created for the purpose.
 func provisioningHost(namespace, name, machineName, state string, annotations map[string]string) client.ObjectKey {
 	host := claimedPhysicalHost(namespace, name, machineName)
 	host.Finalizers = []string{PhysicalHostFinalizer}
@@ -71,7 +73,11 @@ func provisioningHost(namespace, name, machineName, state string, annotations ma
 	}
 	setTrue(host, infrav1.RedfishConnectionReadyCondition, infrav1.RedfishConnectedReason)
 	Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
-	return client.ObjectKeyFromObject(host)
+	key := client.ObjectKeyFromObject(host)
+	// A signal among the annotations is one a handler wrote, so it carries its
+	// binding (SEC-15).
+	bindCallbackAnnotations(key)
+	return key
 }
 
 func reachableBMC() internalredfish.RedfishClientFactory {
@@ -220,7 +226,7 @@ var _ = Describe("Claimed PhysicalHost whose provisioning run failed", func() {
 		// The inspection handler does not look at the host's state, so a slow
 		// inspector's report still lands, and the host applies it.
 		handler := &InspectionHandler{Client: k8sClient, Log: ctrl.Log.WithName("run-failure-inspection")}
-		Expect(handler.processInspectionReport(ctx, handler.Log, ns.Name, key.Name,
+		Expect(handler.processInspectionReport(ctx, handler.Log, ns.Name, key.Name, ensureCallbackCredentials(key),
 			InspectionReportRequest{Manufacturer: "Acme", Model: "Slow-1000"})).To(Succeed())
 		_, err = reconcileHost(hostReconciler, key)
 		Expect(err).NotTo(HaveOccurred())
@@ -463,6 +469,8 @@ var _ = Describe("Deploy failure with both controllers under a running manager",
 		Expect(k8sClient.Create(ctx, b7m)).To(Succeed())
 		machineKey := client.ObjectKeyFromObject(b7m)
 		hostKey := provisioningHost(ns, "deploy-failure-host", b7m.Name, infrav1.StateDeploying, nil)
+		// Before the manager starts, so its cache has the credentials the report is bound to.
+		ensureCallbackCredentials(hostKey)
 
 		skipNameValidation := true
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
@@ -513,7 +521,7 @@ var _ = Describe("Deploy failure with both controllers under a running manager",
 
 		By("reporting a deploy failure the way the /provision-failed handler does")
 		handler := &ProvisionFailedHandler{Client: k8sClient, Log: ctrl.Log.WithName("run-failure-mgr-handler")}
-		Expect(handler.signalProvisionFailed(ctx, handler.Log, ns, hostKey.Name,
+		Expect(handler.signalProvisionFailed(ctx, handler.Log, ns, hostKey.Name, callbackTokenOf(hostKey),
 			sanitizeFailureReason("disk write I/O error"))).To(Succeed())
 
 		By("waiting for the machine to fail with the inspector's reason")

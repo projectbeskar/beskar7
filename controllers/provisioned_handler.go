@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
 const (
@@ -47,7 +49,8 @@ const (
 // has already passed the bearer middleware.
 //
 // Signal: the handler patches ProvisionedRequestAnnotation="provisioned" onto the
-// PhysicalHost metadata. The PhysicalHostReconciler reads this on its next pass,
+// PhysicalHost metadata, with the binding of that annotation to the caller's bearer
+// token next to it (D-034). The PhysicalHostReconciler reads this on its next pass,
 // transitions State from Deploying to Ready, and clears the annotation (D-015 / D-005
 // pattern) — at once for a host that is Deploying, and only once it is Deploying for a
 // host that is still Inspecting (see signalProvisioned). This handler does NOT write
@@ -79,9 +82,17 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = r.Body.Close()
 	}
 
+	// The bearer middleware has authenticated the request with this token, and
+	// the signal the handler leaves for the reconciler is bound to it (D-034).
+	token, ok := auth.BearerToken(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	ctx := r.Context()
 
-	if err := h.signalProvisioned(ctx, log, namespace, hostName); err != nil {
+	if err := h.signalProvisioned(ctx, log, namespace, hostName, token); err != nil {
 		log.Error(err, "Failed to signal provisioned state")
 		// Opaque error response — do not leak internal resource names or k8s details.
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -98,7 +109,8 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // signalProvisioned fetches the PhysicalHost and patches the ProvisionedRequestAnnotation
 // for the PhysicalHostReconciler, which decides what becomes of the report
-// (applyProvisionedRequestAnnotation). It does NOT write PhysicalHost.Status (D-005 /
+// (applyProvisionedRequestAnnotation), together with the binding of that annotation to
+// the caller's bearer token, token (D-034). It does NOT write PhysicalHost.Status (D-005 /
 // BUG-1 invariant).
 //
 // The annotation is set on a host the report can be about:
@@ -119,7 +131,7 @@ func (h *ProvisionedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 //     that did not.
 //
 // Any other state is logged and ignored; the inspector still gets its 202.
-func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Logger, namespace, hostName string) error {
+func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Logger, namespace, hostName, token string) error {
 	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, ph); err != nil {
@@ -144,11 +156,12 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 		return nil
 	}
 
-	base := ph.DeepCopy()
-	if ph.Annotations == nil {
-		ph.Annotations = map[string]string{}
+	signer, err := newCallbackSigner(ctx, h.Client, ph, token, time.Now())
+	if err != nil {
+		return fmt.Errorf("bind provisioned report to the host's credentials: %w", err)
 	}
-	ph.Annotations[ProvisionedRequestAnnotation] = "provisioned"
+	base := ph.DeepCopy()
+	signer.setAnnotation(ph, ProvisionedRequestAnnotation, "provisioned", "")
 
 	// Plain MergeFrom (no optimistic lock): this annotation key is unique to
 	// this handler, no other writer collides on it. Optimistic lock caused

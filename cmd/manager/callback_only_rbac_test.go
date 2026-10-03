@@ -123,6 +123,16 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 	if host().Annotations[controllers.InspectionResultAnnotation] == "" {
 		t.Fatal("POST /inspection succeeded without annotating the host")
 	}
+	// Each signal carries its binding in a sibling annotation (D-034): the
+	// instance computes it from the host's credentials Secret, which the Role
+	// already lets it read, and the controllers act on the signal only with it.
+	requireBinding := func(signal string) {
+		t.Helper()
+		if host().Annotations[signal+"-binding"] == "" {
+			t.Fatalf("the callback annotated the host with %s but without its binding", signal)
+		}
+	}
+	requireBinding(controllers.InspectionResultAnnotation)
 	// A second, different report before the controller consumes the first (an
 	// inspector retry) updates the ConfigMap. It must differ: CreateOrUpdate
 	// skips the update when nothing changed. Until the cache has seen the
@@ -161,12 +171,14 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 	if host().Annotations[controllers.ProvisionedRequestAnnotation] == "" {
 		t.Fatal("POST /provisioned succeeded without annotating the host")
 	}
+	requireBinding(controllers.ProvisionedRequestAnnotation)
 	if status, _ := callbackRequest(t, c, http.MethodPost, fx.route(base, "provision-failed"), fx.token, `{"reason":"disk write failed"}`); status != http.StatusAccepted {
 		t.Fatalf("POST /provision-failed: status %d, want 202", status)
 	}
 	if host().Annotations[controllers.ProvisionFailedRequestAnnotation] == "" {
 		t.Fatal("POST /provision-failed succeeded without annotating the host")
 	}
+	requireBinding(controllers.ProvisionFailedRequestAnnotation)
 }
 
 // applyCallbackOnlyRBAC applies the component as docs/ipxe-setup.md does:

@@ -20,8 +20,10 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -29,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -44,67 +47,42 @@ const (
 	eventuallyInterval = "200ms"
 )
 
-// simulateProvisioned sets the ProvisionedRequestAnnotation on the host,
-// mimicking what the ProvisionedHandler writes when the inspector signals
-// OS deployment complete (D-015). The PhysicalHostReconciler's
-// applyProvisionedRequestAnnotation then consumes it and transitions the
-// host from Deploying to Ready.
-func simulateProvisioned(ctx context.Context, ns, hostName string) {
-	hostKey := client.ObjectKey{Namespace: ns, Name: hostName}
-	currentHost := &infrav1.PhysicalHost{}
-	Expect(mgr.GetClient().Get(ctx, hostKey, currentHost)).To(Succeed())
-	base := currentHost.DeepCopy()
-	if currentHost.Annotations == nil {
-		currentHost.Annotations = make(map[string]string)
-	}
-	currentHost.Annotations[controllers.ProvisionedRequestAnnotation] = "provisioned"
-	Expect(k8sClient.Patch(ctx, currentHost, client.MergeFrom(base))).To(Succeed())
+// postCallback posts to one of the host-scoped callback routes the way the
+// inspector does, through the real handler, with the bearer token the
+// Beskar7Machine controller minted into the host's bootstrap-token Secret. The
+// handler leaves the signal on the host with its binding (D-034), and the
+// PhysicalHostReconciler acts on it only because the binding holds. The bearer
+// middleware is not mounted: the handlers check the token against the Secret
+// themselves before they bind a signal to it.
+func postCallback(ctx context.Context, route, ns, hostName, body string) {
+	secret := &corev1.Secret{}
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: hostName + "-bootstrap-token"}, secret)).To(Succeed(),
+		"the Beskar7Machine controller mints the callback credentials before it boots the inspector")
+	log := ctrl.Log.WithName("integration-callback-" + route)
+	mux := http.NewServeMux()
+	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}", &controllers.InspectionHandler{Client: k8sClient, Log: log})
+	mux.Handle("POST /api/v1/provisioned/{namespace}/{hostName}", &controllers.ProvisionedHandler{Client: k8sClient, Log: log})
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/v1/%s/%s/%s", route, ns, hostName), strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+string(secret.Data["plaintext-token"]))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req.WithContext(ctx))
+	Expect(rec.Code).To(Equal(http.StatusAccepted), "POST /%s: %s", route, rec.Body.String())
 }
 
-// simulateInspector creates the inspection-result ConfigMap and sets the
-// InspectionResultAnnotation on the host, mimicking what the real HTTPS
-// callback server writes (locked-decision 2). The PhysicalHostReconciler's
-// applyInspectionResultAnnotation then consumes it under real watches.
+// simulateProvisioned posts the inspector's /provisioned report (D-015). The
+// PhysicalHostReconciler's applyProvisionedRequestAnnotation then consumes it
+// and transitions the host from Deploying to Ready.
+func simulateProvisioned(ctx context.Context, ns, hostName string) {
+	postCallback(ctx, "provisioned", ns, hostName, "")
+}
+
+// simulateInspector posts the inspector's hardware report, which the handler
+// stores on a ConfigMap and points at from the host (locked-decision 2). The
+// PhysicalHostReconciler's applyInspectionResultAnnotation then consumes it
+// under real watches.
 func simulateInspector(ctx context.Context, ns, hostName string) {
-	report := &infrav1.InspectionReport{
-		Timestamp:    metav1.Now(),
-		Manufacturer: "MockInc",
-		Model:        "MockSystem",
-		SerialNumber: "MOCK12345",
-	}
-	reportJSON, err := json.Marshal(report)
-	Expect(err).NotTo(HaveOccurred())
-
-	cmName := fmt.Sprintf("%s-inspection-result", hostName)
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      cmName,
-			Namespace: ns,
-			Labels: map[string]string{
-				// Mirror the labels the real inspection handler writes.
-				"infrastructure.cluster.x-k8s.io/owned-by": "beskar7-controller-manager",
-				"infrastructure.cluster.x-k8s.io/host":     hostName,
-			},
-		},
-		Data: map[string]string{
-			// inspectionResultDataKey = "report.json" (unexported const).
-			// Hardcoded here per locked-decision 3 in the issue spec.
-			"report.json": string(reportJSON),
-		},
-	}
-	Expect(k8sClient.Create(ctx, cm)).To(Succeed())
-
-	// Patch the annotation on the host using the cache client so the version
-	// is current and we do not produce an optimistic-lock conflict.
-	hostKey := client.ObjectKey{Namespace: ns, Name: hostName}
-	currentHost := &infrav1.PhysicalHost{}
-	Expect(mgr.GetClient().Get(ctx, hostKey, currentHost)).To(Succeed())
-	base := currentHost.DeepCopy()
-	if currentHost.Annotations == nil {
-		currentHost.Annotations = make(map[string]string)
-	}
-	currentHost.Annotations[controllers.InspectionResultAnnotation] = cmName
-	Expect(k8sClient.Patch(ctx, currentHost, client.MergeFrom(base))).To(Succeed())
+	postCallback(ctx, "inspection", ns, hostName,
+		`{"manufacturer":"MockInc","model":"MockSystem","serialNumber":"MOCK12345"}`)
 }
 
 var _ = Describe("Full provision flow", func() {
@@ -113,10 +91,11 @@ var _ = Describe("Full provision flow", func() {
 	// the live manager's watch mappers (PhysicalHostToBeskar7Machine) and the
 	// cross-controller annotation/ConfigMap handoff pattern (D-005).
 	//
-	// Inspector simulation (per locked-decision 2): we create the inspection-
-	// result ConfigMap and set the InspectionResultAnnotation directly, mimicking
-	// what the real HTTPS callback server writes. The PhysicalHostReconciler's
-	// applyInspectionResultAnnotation then consumes it under real watches.
+	// Inspector simulation (per locked-decision 2): we post the callbacks to the
+	// real handlers, which write the inspection-result ConfigMap and annotate the
+	// host with its binding (D-034), as the HTTPS callback server does. The
+	// PhysicalHostReconciler's applyInspectionResultAnnotation then consumes it
+	// under real watches.
 
 	var (
 		specCtx   context.Context

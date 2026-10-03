@@ -28,6 +28,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -180,6 +181,13 @@ func bootstrapSecretOwnedBy(secret *corev1.Secret, host *infrav1.PhysicalHost) b
 // controller never takes such a Secret over.
 var errBootstrapSecretNotOwned = errors.New("bootstrap-token Secret is not owned by its PhysicalHost")
 
+// errBootstrapSecretUnreadable is returned (wrapped with the cause) when the
+// Secret under a host's bootstrap-token name could not be read for a reason
+// other than not existing. Unlike every other failure of
+// boundBootstrapCredentials it says nothing about the credentials, so a caller
+// that has to decide something permanent from them waits instead.
+var errBootstrapSecretUnreadable = errors.New("bootstrap-token Secret could not be read")
+
 // boundBootstrapCredentials returns the credentials in host's bootstrap-token
 // Secret together with the Beskar7Machine they are bound to, but only while
 // host is claimed and its claim names that machine: host.Spec.ConsumerRef must
@@ -201,6 +209,9 @@ func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infra
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: host.Namespace, Name: bootstrapTokenSecretName(host.Name)}
 	if err := c.Get(ctx, key, secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("get bootstrap-token Secret %s: %w: %w", key.Name, errBootstrapSecretUnreadable, err)
+		}
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("get bootstrap-token Secret %s: %w", key.Name, err)
 	}
 	if !bootstrapSecretOwnedBy(secret, host) {
