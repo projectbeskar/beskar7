@@ -79,8 +79,14 @@ Context that may help when assessing a finding:
   the host, decides where they may be sent: it must list the BMC addresses in
   `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses`, and opt in with
   `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` before they
-  travel over `http://` or unverified TLS (D-030). They are never logged; the
-  controller logs a BMC address without credentials.
+  travel over `http://` or unverified TLS (D-030). A host's `caBundleSecretRef`
+  must be the CA Secret the credentials Secret names in
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` (D-033). A listed
+  name is resolved as an absolute DNS name, never through the pod's search path
+  (D-032), and the Redfish client sends nothing outside the authorised
+  address's scheme, host and port, redirects and BMC-supplied links included.
+  The credentials are never logged; the controller logs a BMC address without
+  them.
 - **The host callback endpoint** (`:8082`) is bearer-gated per host. The per-host
   `<host>-bootstrap-token` Secret is the only credential: every route compares
   the caller's token, in constant time, against the one in that Secret, with an

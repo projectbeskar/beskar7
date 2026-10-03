@@ -89,9 +89,15 @@ func bmcAccessReason(err error) string {
 // address's host in BMCAddressesAnnotation, and opt in with
 // BMCInsecureTransportAnnotation before its credentials travel over http:// or
 // to a BMC whose certificate is not verified, since either lets whoever is on
-// the path read them. Every refusal fails closed: no Secret, no annotation, a
-// malformed list, an address the list does not name, or an address that is
-// not a plain http(s) URL all return a bmcAccessError and no credentials.
+// the path read them. A host's caBundleSecretRef, the CA its BMC is verified
+// against, must be the one BMCCASecretAnnotation names (D-033). Every refusal
+// fails closed: no Secret, no annotation, a malformed list, an address the list
+// does not name, an address that is not a plain http(s) URL, or a CA Secret the
+// Secret does not name all return a bmcAccessError and no credentials.
+//
+// What it authorises is an origin, and the Redfish client keeps to it: it
+// dials a listed name as an absolute DNS name (D-032) and refuses any request,
+// redirect included, to another scheme, host or port (SEC-17c).
 func resolveBMCAccess(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (bmcAccess, error) {
 	conn := host.Spec.RedfishConnection
 	secretName := conn.CredentialsSecretRef
@@ -151,6 +157,27 @@ func resolveBMCAccess(ctx context.Context, c client.Reader, host *infrav1.Physic
 		return bmcAccess{}, refuseBMCAccess(infrav1.InsecureCABundleConflictReason, "%s", err.Error())
 	}
 
+	// The CA decides who can answer as the BMC, so it is the Secret's to
+	// choose too (D-033): a host writer who could name any CA Secret would
+	// name one whose key they hold and serve a listed name with it.
+	if caSecret := conn.CABundleSecretRef; caSecret != "" {
+		named, annotated := secret.Annotations[BMCCASecretAnnotation]
+		if !annotated {
+			return bmcAccess{}, refuseBMCAccess(infrav1.CredentialsNotAuthorizedReason,
+				"BMC credentials not sent: redfishConnection.caBundleSecretRef names %q, and Secret %q has no %s annotation; "+
+					"if %q holds the CA this host's BMC presents, set the annotation to that name",
+				caSecret, secretName, BMCCASecretAnnotation, caSecret)
+		}
+		if named != caSecret {
+			// What the annotation names is not repeated: this message reaches
+			// the status of any host that names the Secret.
+			return bmcAccess{}, refuseBMCAccess(infrav1.CredentialsNotAuthorizedReason,
+				"BMC credentials not sent: redfishConnection.caBundleSecretRef names %q, which is not the CA Secret "+
+					"the %s annotation on Secret %q names; if %q holds the CA this host's BMC presents, set the annotation to that name",
+				caSecret, BMCCASecretAnnotation, secretName, caSecret)
+		}
+	}
+
 	username, hasUsername := secret.Data["username"]
 	password, hasPassword := secret.Data["password"]
 	switch {
@@ -177,12 +204,14 @@ func resolveBMCAccess(ctx context.Context, c client.Reader, host *infrav1.Physic
 
 // parseBMCAddress returns the lower-cased host of a redfishConnection.address
 // and whether it is plain http. It accepts only an absolute http or https URL
-// with a host and no userinfo, and a host that is an IP address without a zone
-// or a valid DNS name. The CRD pattern already narrows the field; this is what
-// the credentials depend on, so it does not rely on the schema. The Redfish
-// client parses the address with the same url.Parse, so the host checked here
-// is the host it connects to. Errors never repeat the address: it could carry
-// a password in its userinfo.
+// with a host, no userinfo and no query or fragment, and a host that is an IP
+// address without a zone or a valid DNS name. The CRD pattern already narrows
+// the field; this is what the credentials depend on, so it does not rely on
+// the schema. The Redfish client parses the address with the same url.Parse,
+// so the host checked here is the host it connects to. gofish appends each
+// request path to the address as text, so a query or fragment would swallow
+// every path after it (SEC-17c). Errors never repeat the address: it could
+// carry a password in its userinfo.
 func parseBMCAddress(address string) (string, bool, error) {
 	u, err := url.Parse(address)
 	if err != nil {
@@ -198,6 +227,12 @@ func parseBMCAddress(address string) (string, bool, error) {
 	}
 	if u.User != nil {
 		return "", false, errors.New("must not carry userinfo (user:password@)")
+	}
+	// url.Parse treats every raw "?" and "#" as a delimiter, and one with
+	// nothing after it leaves no trace in the parsed URL, so the raw address
+	// is what is checked.
+	if strings.ContainsAny(address, "?#") {
+		return "", false, errors.New("must not carry a query (?) or fragment (#)")
 	}
 	host := strings.ToLower(u.Hostname())
 	if host == "" {

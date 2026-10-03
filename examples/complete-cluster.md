@@ -12,7 +12,8 @@ all-zeros `targetImageDigest`, which blocks any real image download.
 ## Use this instead
 
 [`kairos-k3s-node.yaml`](kairos-k3s-node.yaml) — the CR structure validated
-end-to-end on real bare metal (contract v4, beskar7-inspector v4):
+end-to-end on the project's lab (libvirt VMs whose BMCs are emulated by
+sushy-tools, not physical servers):
 claim → PXE → inspection → `Deploying` → whole-disk write → `COS_OEM` inject →
 `/provisioned` callback → `Ready` k3s node with `ProviderID` set. Its inline
 comments cover the bootstrap-Secret-must-be-Kairos-`#cloud-config` invariant and
@@ -21,9 +22,9 @@ Node-association.
 
 ## Multi-node / production path
 
-A maintained Kairos bootstrap provider (e.g. `provider-kubeadm` baked into the
-Kairos image, or
-[`cluster-api-provider-kairos`](https://github.com/kairos-io/cluster-api-provider-kairos))
-can emit Kairos-compatible cloud-config and pair with a `KubeadmControlPlane` or
-`MachineDeployment` for HA/multi-node. **That path has not been validated against
-Beskar7 end-to-end** — do not treat it as a confirmed working configuration.
+[`cluster-api-provider-kairos`](https://github.com/kairos-io/cluster-api-provider-kairos)
+emits Kairos `#cloud-config`. On the same lab it has provisioned a k0s HA cluster
+through Beskar7 from scratch: three control planes from a `KairosControlPlane`
+behind a kube-vip VIP and two workers from a `MachineDeployment`, all on
+`Beskar7MachineTemplate`s (controller↔inspector contract v4.2). That is emulated
+hardware, not physical servers, and no such example ships in this repository yet.

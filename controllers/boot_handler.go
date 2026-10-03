@@ -81,16 +81,20 @@ const (
 
 // BootHandlerConfig carries the operator-supplied configuration needed to
 // render the iPXE cmdline. Populated once at SetupCallbackServer time and
-// shared (read-only) across all handler invocations.
+// shared (read-only) across all handler invocations; CA re-reads its source on
+// every call.
 type BootHandlerConfig struct {
 	// APIBase is the externally-reachable HTTPS base URL of the callback server,
 	// e.g. "https://beskar7.example.com:8082". Rendered into beskar7.api=.
 	APIBase string
 
-	// CABytes is the PEM-encoded CA certificate the inspector uses to verify the
-	// callback TLS certificate. Base64-encoded into beskar7.ca=. Sourced from
-	// the callback cert dir (ca.crt if present, else tls.crt).
-	CABytes []byte
+	// CA returns the PEM-encoded CA certificate the inspector uses to verify the
+	// callback TLS certificate. Base64-encoded into beskar7.ca=. It is called
+	// on every render: SetupCallbackServer reads the callback cert dir each time
+	// (ca.crt if present, else tls.crt), so the CA handed out follows the
+	// certificate the server reloads after a renewal (SEC-14) — with a
+	// selfSigned issuer, the default, every renewal changes the CA too.
+	CA func() ([]byte, error)
 
 	// TrustedProxies are the networks whose X-Forwarded-For header this handler
 	// will believe when attributing a request to a client IP for rate limiting.
@@ -575,8 +579,18 @@ func (h *BootHandler) renderBootScript(
 		return "", fmt.Errorf("bootstrap-token Secret of %s/%s has no plaintext-token key", ph.Namespace, ph.Name)
 	}
 
+	if h.Config.CA == nil {
+		return "", fmt.Errorf("no callback CA configured")
+	}
+	caBytes, err := h.Config.CA()
+	if err != nil {
+		// Operator-fault, not host-fault: every boot fails until the cert dir
+		// is fixed, so say so at default verbosity.
+		log.Error(err, "boot GET: cannot read the callback CA from the cert dir")
+		return "", fmt.Errorf("read callback CA: %w", err)
+	}
 	// base64-encode the CA PEM for inline delivery via beskar7.ca=.
-	caB64 := base64.StdEncoding.EncodeToString(h.Config.CABytes)
+	caB64 := base64.StdEncoding.EncodeToString(caBytes)
 
 	// Convert the optional ?mac= query param to the pxelinux BOOTIF form.
 	// formatBootif returns ("", false) for an empty or malformed MAC so a bad

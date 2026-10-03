@@ -272,13 +272,13 @@ var _ = Describe("The inspector's /provision-failed report when the host's BMC f
 		Entry("insecureSkipVerify is combined with a CA bundle", bmcFault{
 			breakConnection: func(c *infrav1.RedfishConnection) {
 				c.InsecureSkipVerify = ptr.To(true)
-				c.CABundleSecretRef = "bmc-ca"
+				c.CABundleSecretRef = fixtureBMCCASecret
 			},
 			hostReason:   infrav1.InsecureCABundleConflictReason,
 			requeueAfter: 5 * time.Minute,
 		}),
 		Entry("the CA bundle Secret does not exist", bmcFault{
-			breakConnection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = "bmc-ca" },
+			breakConnection: func(c *infrav1.RedfishConnection) { c.CABundleSecretRef = fixtureBMCCASecret },
 			hostReason:      infrav1.CABundleFetchFailedReason,
 		}),
 		// An outage keeps Deploying (bmc_outage_test.go), so nothing was lost here

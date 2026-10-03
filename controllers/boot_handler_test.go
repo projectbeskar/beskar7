@@ -74,8 +74,13 @@ func buildBootMux(cfg BootHandlerConfig) *http.ServeMux {
 func bootTestConfig() BootHandlerConfig {
 	return BootHandlerConfig{
 		APIBase: bootTestAPIBase,
-		CABytes: []byte(bootTestCABytes),
+		CA:      staticBootCA([]byte(bootTestCABytes)),
 	}
+}
+
+// staticBootCA is a BootHandlerConfig.CA that always returns ca.
+func staticBootCA(ca []byte) func() ([]byte, error) {
+	return func() ([]byte, error) { return ca, nil }
 }
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -1064,7 +1069,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		}
 		largeCfg := BootHandlerConfig{
 			APIBase: bootTestAPIBase,
-			CABytes: oversizedCA,
+			CA:      staticBootCA(oversizedCA),
 		}
 
 		noncePlaintext, _, err := auth.MintToken()

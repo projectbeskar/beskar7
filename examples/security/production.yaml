@@ -9,7 +9,8 @@
 #   2. PhysicalHost.spec.redfishConnection.insecureSkipVerify=false
 #   3. Strong BMC credentials in a Secret (operator-managed; no in-controller policy)
 #   4. The Secret's bmc-addresses annotation, which binds those credentials
-#      to the BMCs they belong to (D-030)
+#      to the BMCs they belong to (D-030), and its bmc-ca-secret annotation,
+#      which names the CA those BMCs are verified against (D-033)
 #   5. NetworkPolicy gating manager ingress
 #   6. cert-manager-issued certs for the webhook + callback endpoint
 #
@@ -35,6 +36,11 @@ metadata:
 # fleet's real BMCs, not whatever the hosts currently say. There is no
 # bmc-insecure-transport annotation: every host verifies its BMC's
 # certificate, so the credentials never travel unverified.
+#
+# bmc-ca-secret names the CA Secret those certificates chain to (D-033). A
+# host's caBundleSecretRef must be this same name, or its credentials are not
+# sent: otherwise whoever can edit a PhysicalHost could name a CA whose key
+# they hold and answer as the BMC.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -42,6 +48,7 @@ metadata:
   namespace: beskar7-prod
   annotations:
     beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "bmc.prod.example.com"
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret: "bmc-ca-bundle"
 type: Opaque
 data:
   username: YWRtaW4=                       # "admin"
@@ -116,7 +123,9 @@ spec:
 
 ---
 # Chart values pinned for production:
-#   bootstrap.urlBase            — match the Service DNS for your release name
+#   bootstrap.urlBase            — the address hosts reach while PXE-booting (not a
+#                                  cluster-internal .svc name), covered by the
+#                                  serving certificate via callback.externalNames
 #   webhook.enabled              — turn the Beskar7Cluster validating webhook on
 #   certManager.enabled          — webhook + callback endpoint serving certs
 #
@@ -129,10 +138,14 @@ spec:
 #     enabled: true
 #   certManager:
 #     enabled: true
+#   callback:
+#     service:
+#       type: LoadBalancer
+#     externalNames: ["beskar7-callback.example.com"]
 #   bootstrap:
-#     urlBase: "https://capb7-controller-manager.capb7-system.svc:8082"
+#     urlBase: "https://beskar7-callback.example.com:8082"
 #   controllerManager:
-#     replicaCount: 1                       # leader-elect=true; only one active
+#     replicas: 1                           # leader-elect=true; only one active
 #     resources:
 #       limits:
 #         cpu: "500m"

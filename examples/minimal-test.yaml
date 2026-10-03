@@ -1,10 +1,13 @@
-# Minimal Test Example for Beskar7
+# Minimal Test Example for Beskar7: BMC enrolment
 #
-# This is the simplest possible example to test Beskar7:
-# - 1 physical host
-# - 1 machine  
-# - Inspection enabled
-# - No hardware requirements
+# One PhysicalHost and one Beskar7Machine, no hardware requirements.
+#
+# What it shows: the controller reaches the host's BMC, and the host goes to
+# Available. The Beskar7Machine shows the controller accepting your spec, but
+# on its own it never claims the host: a Beskar7Machine is driven by the
+# Cluster API Machine that owns it, so it waits at "Waiting for Machine
+# Controller to set OwnerRef". For the whole provisioning flow on one host,
+# use kairos-k3s-node.yaml.
 
 ---
 apiVersion: v1

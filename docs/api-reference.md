@@ -60,23 +60,24 @@ Connection coordinates for the Redfish BMC.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`; the controller also rejects userinfo. Its host must be listed in the credentials Secret's `bmc-addresses` annotation (below), and an `http://` address also needs the Secret's `bmc-insecure-transport` annotation. |
+| `address` | string | yes | URL of the Redfish service. Validated against `^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$`; the controller also rejects userinfo, a query and a fragment. Its host must be listed in the credentials Secret's `bmc-addresses` annotation (below), and an `http://` address also needs the Secret's `bmc-insecure-transport` annotation. A hostname is resolved as an absolute DNS name, without the search path, so an in-cluster Service is written `<service>.<namespace>.svc.cluster.local`. Requests go only to this address's scheme, host and port; a redirect elsewhere is refused. |
 | `credentialsSecretRef` | string | yes | Name of a Secret in the same namespace holding `username` and `password` keys, annotated with the BMC addresses they may be sent to (below). Min length 1. |
 | `insecureSkipVerify` | `*bool` | no | Skip TLS verification of the BMC certificate. Defaults to `false`. Mutually exclusive with `caBundleSecretRef`. `true` also needs the credentials Secret's `bmc-insecure-transport` annotation. |
-| `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. |
+| `caBundleSecretRef` | string | no | Name of a Secret in the same namespace holding PEM CA certificates. Data key `ca.crt` is preferred; `tls.crt` is the fallback. Mutually exclusive with `insecureSkipVerify=true`. Must equal the credentials Secret's `bmc-ca-secret` annotation (below). |
 
 When `caBundleSecretRef` is set the manager builds an `*http.Client` whose root pool includes the supplied bundle and passes it to gofish. Setting both `insecureSkipVerify=true` and `caBundleSecretRef` is rejected by the controller with the `InsecureCABundleConflict` reason on `RedfishConnectionReady`. A host not yet `Inspecting`, `Deploying` or `Ready` (still `InUse` or unclaimed) is moved to `Error`; a host already in one of those states keeps it, and only the condition reports the conflict.
 
 #### Credentials Secret annotations
 
-The Secret `credentialsSecretRef` names decides where its credentials may be sent (decision D-030). Both annotations go on the **Secret**:
+The Secret `credentialsSecretRef` names decides where its credentials may be sent (decisions D-030, D-033). The annotations go on the **Secret**:
 
 | Annotation | Required | Value |
 |---|---|---|
 | `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses` | yes | Comma- and/or whitespace-separated IP addresses, CIDRs (matched against IP addresses only), hostnames (exact, case-insensitive) and `*.suffix` wildcards (one or more labels under the suffix, never the suffix itself), matched against the host of `address` without DNS resolution. One malformed entry authorises no address at all. |
 | `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport` | for `http://` or `insecureSkipVerify: true` | `"true"`, exactly. |
+| `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` | for a host with `caBundleSecretRef` | The name of the CA Secret, in the same namespace, the BMCs present. A host's `caBundleSecretRef` must be exactly this name. |
 
-If the Secret does not authorise the address, no Redfish request is made and `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
+If the Secret does not authorise the address, or the host's `caBundleSecretRef`, no Redfish request is made and `RedfishConnectionReady` is `False` with reason `CredentialsNotAuthorized`. See [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
 
 #### `spec.consumerRef`
 
@@ -91,7 +92,7 @@ There are no other spec fields. Provisioning is driven by the consumer (the `Bes
 | Field | Type | Description |
 |---|---|---|
 | `ready` | bool | True when the host is reachable via Redfish and has a current state. |
-| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go:10-33`: `""`, `"Unknown"`, `"Enrolling"`, `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"`, `"Error"`. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
+| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go`. The controller sets `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"` and `"Error"`; a host reads `""` until its first successful BMC contact. `"Unknown"` and `"Enrolling"` are defined but never set. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
 | `observedPowerState` | string | Last observed Redfish power state (e.g. `On`, `Off`). |
 | `errorMessage` | string | Set when state is `Error`; cleared when the host recovers. |
 | `hardwareDetails` | `HardwareDetails` | Manufacturer, model, serial, and BMC-reported health. Populated from `GetSystemInfo`. |
@@ -251,7 +252,7 @@ There is no `status.failureReason` or `status.failureMessage` — both were remo
 | `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address yet; not terminal — the machine carries on once the host does); `BootstrapCredentialsConflict` (a Secret the host does not own sits under its `<host>-bootstrap-token` name; not terminal — delete it and the next pass creates the host's own); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
 | `PhysicalHostAssociated` | `Beskar7Machine` | `PhysicalHostAssociated` | `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
-| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |
+| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `Paused` | `NotPaused`. |
 
 There is no `MachineProvisionedCondition` — the dead constant (declared but never set by any reconciler) has been removed from `api/v1beta2/beskar7machine_types.go`. `Ready`, backed by `Status.Ready` and `Status.Initialization.Provisioned`, is the provisioned signal.
 
@@ -343,7 +344,7 @@ kind: Beskar7Cluster
 
 | Field | Type | Description |
 |---|---|---|
-| `controlPlaneEndpoint.host` | string | Optional. If unset, the controller derives it from the control-plane `Beskar7Machine.Status.Addresses`. |
+| `controlPlaneEndpoint.host` | string | Optional. The endpoint in effect is `Cluster.spec.controlPlaneEndpoint` when that is set, otherwise this one; with neither, `ControlPlaneEndpointReady=False`. The controller never derives an endpoint (D-027). |
 | `controlPlaneEndpoint.port` | int32 | Optional. |
 
 ### `status`
@@ -352,8 +353,8 @@ kind: Beskar7Cluster
 |---|---|---|
 | `ready` | bool | True when `controlPlaneEndpoint` is populated. Set in lockstep with `initialization.provisioned`. |
 | `initialization` | `Beskar7ClusterInitializationStatus` | CAPI v1beta2 contract. A value type with `omitzero`, not a pointer — the whole `initialization` key is omitted from JSON until `provisioned` is set. `initialization.provisioned` is what CAPI core lifts into `Cluster.status.initialization.infrastructureProvisioned`. Without this field set, KubeadmConfig never generates bootstrap data and downstream `Machine` reconcile stalls. The controller writes it in lockstep with `status.ready=true`. |
-| `controlPlaneEndpoint` | `clusterv1.APIEndpoint` | Same shape as `spec.controlPlaneEndpoint`. |
-| `failureDomains` | `clusterv1.FailureDomains` | Map keyed by zone name; values discovered from `topology.kubernetes.io/zone` labels on `PhysicalHost` objects. Every discovered zone is written with `controlPlane: true` (the discovery logic treats all zones as control-plane-eligible) and an empty `attributes` map. |
+| `controlPlaneEndpoint` | `clusterv1.APIEndpoint` | The endpoint in effect (see `spec.controlPlaneEndpoint`); the `Endpoint` column of `kubectl get beskar7clusters` shows its host. |
+| `failureDomains` | `[]clusterv1.FailureDomain` | A list with one entry per zone, discovered from the `topology.kubernetes.io/zone` labels on `PhysicalHost` objects in the namespace. Each entry has the zone as `name` and `controlPlane: true` (every zone is treated as control-plane-eligible); `attributes` is not set. |
 | `conditions` | `[]metav1.Condition` | See below. Max 32 entries. |
 
 #### `Beskar7ClusterInitializationStatus`
@@ -370,7 +371,7 @@ kind: Beskar7Cluster
 |---|---|---|---|
 | `Ready` | `Beskar7Cluster` (summary) | Derived from `ControlPlaneEndpointReady`. | Same. |
 | `ControlPlaneEndpointReady` | `Beskar7Cluster` | `ControlPlaneEndpointSet` | `ControlPlaneEndpointNotSet`. |
-| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `NotPaused` | `Paused`. |
+| `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `Paused` | `NotPaused`. |
 
 ### Webhooks
 

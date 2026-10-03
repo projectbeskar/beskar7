@@ -574,15 +574,17 @@ func provisioningRunFailed(physicalHost *infrav1.PhysicalHost) bool {
 // about its BMC that was written over a deployment: the host got as far as
 // Deploying (DeployingTimestamp is set then and cleared only when the host is
 // released), and the Error is not the run's own. The inspector does not need
-// the BMC and carries on deploying, so its /provision-failed report still
-// applies to such a host. The host does not record whether it was Deploying
-// or already Ready when the BMC failed; the inspector reports a failure only
-// while it deploys.
+// the BMC and carries on deploying, so its /provision-failed and /provisioned
+// reports still apply to such a host. The host does not record whether it was
+// Deploying or already Ready when the BMC failed; the inspector reports a
+// failure only while it deploys.
 //
 // Neither setConnectionError nor retryTransientRedfishFailure writes Error
 // over a Deploying host, so only v0.8.0 and earlier leave this combination
-// behind. A host upgraded in that state must still take its /provision-failed
-// report rather than have it cleared as unexpected.
+// behind. A host upgraded in that state must still take both reports rather
+// than have them cleared as unexpected. A /provisioned report dropped there
+// leaves the host to go back to InUse once the BMC answers, where its machine
+// boots the inspector again on a disk that is already written.
 func deployInterruptedByBMCError(physicalHost *infrav1.PhysicalHost) bool {
 	return physicalHost.Spec.ConsumerRef != nil &&
 		physicalHost.Status.State == infrav1.StateError &&
@@ -974,9 +976,12 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 // and right after applyProvisionFailedRequestAnnotation, so a failure report that is
 // waiting as well is applied instead. What becomes of the report depends on the host:
 //
-//   - Deploying: applied, and the annotation stays until a pass finds the host Ready,
-//     so a status write that fails cannot lose the report and leave the host Deploying
-//     for a deployment that was over.
+//   - Deploying, or claimed and in an Error about its BMC that overwrote the deployment
+//     (deployInterruptedByBMCError): applied, and the annotation stays until a pass finds
+//     the host Ready, so a status write that fails cannot lose the report and leave the
+//     host Deploying for a deployment that was over. The inspector does not need the BMC
+//     and finished deploying; dropped, the report would leave the host to go back to
+//     InUse once the BMC answers, and its machine would boot the inspector again.
 //   - Ready: cleared. Status shows the report, or this is a duplicate of it.
 //   - Claimed, still Inspecting, and in possession of this run's inspection report
 //     (inspectionReportReceived): kept, and applied once the host is Deploying. The
@@ -990,8 +995,8 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 //     report was about has ended, and the host cannot be claimed again before a pass
 //     that clears it), a run that has failed (the failure stands, including one
 //     reported while this report was waiting), a host that is InUse or in an Error about
-//     its BMC, and a report that came before this run's inspection report, which is not
-//     about this run's deployment.
+//     its BMC that did not interrupt a deployment, and a report that came before this
+//     run's inspection report, which is not about this run's deployment.
 func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	if physicalHost.Annotations[ProvisionedRequestAnnotation] != "provisioned" {
 		return
@@ -1001,10 +1006,13 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 	case physicalHost.Spec.ConsumerRef == nil:
 		logger.Info("Provisioned annotation on a released host; clearing without transition",
 			"host", physicalHost.Name, "state", state)
-	case state == infrav1.StateDeploying:
-		logger.Info("Applying provisioned annotation: transitioning Deploying→Ready", "host", physicalHost.Name)
+	case state == infrav1.StateDeploying || deployInterruptedByBMCError(physicalHost):
+		logger.Info("Applying provisioned annotation: transitioning to Ready", "host", physicalHost.Name, "state", state)
 		physicalHost.Status.State = infrav1.StateReady
 		physicalHost.Status.Ready = true
+		// Empty on a Deploying host. On one a BMC Error was written over it is the
+		// BMC's message, which RedfishConnectionReady already reports.
+		physicalHost.Status.ErrorMessage = ""
 		return
 	case state == infrav1.StateReady:
 		logger.V(1).Info("Provisioned annotation on a Ready host; clearing", "host", physicalHost.Name)

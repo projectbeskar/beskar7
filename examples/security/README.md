@@ -23,8 +23,10 @@ For details, see [`docs/security/README.md`](../../docs/security/README.md) and 
 
 A production-style configuration:
 
-- BMC credentials in a Secret in the host namespace.
-- A cert-manager-issued CA bundle Secret (`bmc-ca-bundle`) referenced via `caBundleSecretRef`.
+- BMC credentials in a Secret in the host namespace, annotated with the BMC addresses they may go to
+  and the CA Secret those BMCs are verified against (`bmc-addresses`, `bmc-ca-secret`).
+- A cert-manager-issued CA bundle Secret (`bmc-ca-bundle`) referenced via `caBundleSecretRef`, the
+  same name the credentials Secret's `bmc-ca-secret` annotation gives.
 - `insecureSkipVerify: false`.
 - A NetworkPolicy that narrows the chart's default egress to a known BMC subnet.
 - Helm values for a production install (commented at the bottom of the YAML).

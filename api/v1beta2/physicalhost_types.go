@@ -44,13 +44,18 @@ const (
 // RedfishConnection contains the information needed to connect to a Redfish service
 type RedfishConnection struct {
 	// Address is the URL of the Redfish service: http:// or https://, a host,
-	// and no userinfo. The credentials are sent to it only if the Secret
-	// CredentialsSecretRef names lists its host in the
+	// and no userinfo, query or fragment. The credentials are sent to it only
+	// if the Secret CredentialsSecretRef names lists its host in the
 	// beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses annotation, and
 	// an http:// address also needs
 	// beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
 	// on that Secret. Otherwise no Redfish request is made and
 	// RedfishConnectionReady is False with CredentialsNotAuthorized.
+	// A hostname is resolved as an absolute DNS name, without the search
+	// path, so an in-cluster Service is written fully qualified
+	// (name.namespace.svc.cluster.local). Requests go only to this address's
+	// scheme, host and port: a redirect or a link from the BMC that leaves
+	// them is refused.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern="^(https?://)[a-zA-Z0-9.-]+(:[0-9]+)?(/.*)?$"
 	Address string `json:"address"`
@@ -62,7 +67,7 @@ type RedfishConnection struct {
 	// comma- or whitespace-separated list of the BMC addresses its credentials
 	// may be sent to, as IP addresses, CIDRs (matched against IP addresses
 	// only), hostnames (exact, case-insensitive) and *.suffix wildcards (any
-	// host under the suffix, not the suffix itself). Nothing is resolved
+	// host under the suffix, not the suffix itself). Matching resolves nothing
 	// through DNS, and one malformed entry authorises no address at all.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -82,6 +87,10 @@ type RedfishConnection struct {
 	// PhysicalHost containing PEM-encoded CA certificates used to verify
 	// the BMC's TLS server certificate. The Secret data must include either
 	// a "ca.crt" or "tls.crt" key. If both are present, "ca.crt" wins.
+	// The credentials Secret must name this same Secret in its
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret annotation;
+	// otherwise no Redfish request is made and RedfishConnectionReady is
+	// False with CredentialsNotAuthorized.
 	//
 	// When this field is set, the manager builds a custom *http.Client whose
 	// TLS roots include the supplied bundle and passes it to gofish.
@@ -452,9 +461,6 @@ const (
 
 	// Reasons
 	MissingCredentialsReason      string = "MissingCredentials"
-	SecretGetFailedReason         string = "SecretGetFailed"
-	SecretNotFoundReason          string = "SecretNotFound"
-	MissingSecretDataReason       string = "MissingSecretData"
 	RedfishConnectionFailedReason string = "RedfishConnectionFailed"
 	RedfishQueryFailedReason      string = "RedfishQueryFailed"
 	PowerOnFailedReason           string = "PowerOnFailed"
@@ -492,10 +498,12 @@ const (
 	// Address (D-030, SEC-16): it has no
 	// beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses annotation, the
 	// annotation is malformed or does not list Address's host, Address is not
-	// an http(s) URL with a host and no userinfo, or the connection is http://
-	// or InsecureSkipVerify without
+	// an http(s) URL with a host and no userinfo, query or fragment, the
+	// connection is http:// or InsecureSkipVerify without
 	// beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"
-	// on the Secret. No Redfish request is made. Only a change to the Secret or
+	// on the Secret, or CABundleSecretRef is set and the Secret's
+	// beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret annotation does
+	// not name it (D-033). No Redfish request is made. Only a change to the Secret or
 	// the spec clears it, but a Beskar7Machine holding the host waits rather
 	// than failing: every Secret written before the annotations existed reads
 	// this way, and annotating it recovers the host.

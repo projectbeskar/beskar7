@@ -87,7 +87,6 @@ graph TD
 - Performs cleanup actions when PhysicalHost is deleted (power off)
 
 **States:**
-- `Enrolling` - Establishing initial Redfish connection
 - `Available` - Ready to be claimed by a machine
 - `InUse` - Claimed by a Beskar7Machine
 - `Inspecting` - Running hardware inspection
@@ -355,7 +354,7 @@ spec:
     namespace: default
 
 status:
-  state: Available  # Enrolling, Available, InUse, Inspecting, Deploying, Ready, Error
+  state: Available  # Available, InUse, Inspecting, Deploying, Ready, Error ("" before the first BMC contact)
   ready: true
   inspectionPhase: Complete  # Pending, Booting, InProgress, Complete, Failed, Timeout
   inspectionReport:
@@ -450,10 +449,10 @@ status:
     host: "192.168.1.10"
     port: 6443
   failureDomains:
-    zone-a:
-      controlPlane: true
-    zone-b:
-      controlPlane: true
+  - name: zone-a
+    controlPlane: true
+  - name: zone-b
+    controlPlane: true
 ```
 
 ## Data Flow
@@ -582,12 +581,12 @@ Structured logging with contextual fields:
 
 ### Events
 
-Kubernetes events emitted for key operations:
-- Host claimed
-- Inspection started
-- Inspection complete
-- Hardware validation failed
-- Provisioning complete
+The controllers emit two events, both on the `PhysicalHost`:
+
+- `AdoptedProvisionedClaim` (Normal): a host whose machine already holds it by `providerID` rebuilds its `Ready` state instead of being inspected again, as after `clusterctl move`.
+- `DeletingClaimedHost` (Warning): a host is deleted while a machine still claims it.
+
+Every other transition is visible in the resources' conditions and the controller log.
 
 ## Future Enhancements
 

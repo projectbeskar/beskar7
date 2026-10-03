@@ -214,7 +214,7 @@ routinely, so anything that changes a contract stays a human decision:
 |---|---|---|
 | `gomod` | patch and minor updates, Kubernetes and Cluster API grouped because they must move together | all majors; and minors of `k8s.io/*`, `cluster-api` and `controller-runtime`, which are pre-1.0 so a minor is the breaking bump |
 | `docker` | digest refreshes for the pinned `golang` and `distroless` images in all three Dockerfiles | the Go minor version, which has to move with `go`/`toolchain` in `go.mod` and CI's `go-version` |
-| `github-actions` | minor and patch updates, including the commit-pinned actions | majors, since several of these actions carry the release assets and images |
+| `github-actions` | minor and patch updates to the actions, all of which are pinned by commit SHA | majors, since several of these actions carry the release assets and images |
 
 Image scanning covers **every image the repository publishes**, not just the manager: `Image Scan
 (manager)`, `Image Scan (mock-redfish)` and `Image Scan (mock-inspector)` run on each pull request,

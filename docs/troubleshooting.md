@@ -118,9 +118,9 @@ kubectl delete validatingwebhookconfigurations <name>
 kubectl delete mutatingwebhookconfigurations <name>
 ```
 
-### 4. PhysicalHost Stuck in "Enrolling"
+### 4. PhysicalHost never reaches Available
 
-**Symptom:** Host never transitions to Available
+**Symptom:** The host's `state` stays empty or goes to `Error`, with `RedfishConnectionReady=False`
 
 **Common Causes:**
 
@@ -432,48 +432,56 @@ wireshark boot-debug.pcap
 
 ## Controller Logs Reference
 
-### Normal Startup
+The manager logs JSON, one object per line; the lines below show only the `msg` field, in the order a
+healthy run produces them. Filter with `jq -r .msg`, or `grep` for the text. The `callback-server`
+lines come from the instance serving the inspector's callbacks (the in-cluster manager, or a
+callback-only instance on the provisioning network).
+
+### Normal startup
 
 ```
-Starting Beskar7Controller Manager
-Starting EventSource controller=physicalhost
-Starting Controller controller=physicalhost
-Starting workers worker count=1
+starting manager
+Starting EventSource            (one per watched kind and controller)
+Starting Controller             (beskar7machine, physicalhost, beskar7cluster)
+Starting workers
 ```
 
-### Successful PhysicalHost Enrollment
+### A host enrolls
 
 ```
-Enrolling PhysicalHost host=server-01
-Connected to Redfish endpoint host=server-01
-PhysicalHost transitioned to Available host=server-01
+Host available, transitioning to Available
 ```
 
-### Successful Inspection
+### A machine provisions a host
 
 ```
-Starting inspection host=server-01 machine=worker-01
-Setting PXE boot source host=server-01
-Powering on host host=server-01
-Inspection report received host=server-01
-Hardware validation passed host=server-01
-PhysicalHost ready host=server-01
+Claiming available PhysicalHost
+PhysicalHost claimed, triggering inspection
+Successfully set boot source to PXE
+Powered on system for inspection          (or: Restarted the host, which was already on, to boot the inspector)
+Inspection boot triggered successfully
+Received inspection report                 (callback server)
+Inspection report accepted; signalled reconciler via annotation
+Hardware validation passed
+Applying inspection-request annotation: transitioning to Deploying
+Provisioned callback accepted; signalled reconciler via annotation   (callback server)
+Applying provisioned annotation: transitioning Deploying→Ready
 ```
 
-### Error Examples
+### Failures
+
+The reason a host or machine failed is in its conditions (`kubectl describe`); the log adds context.
 
 ```
-# Redfish connection failed
-Failed to connect to Redfish endpoint: dial tcp: i/o timeout
+# BMC unreachable: RedfishConnectionReady=False, reason BMCUnreachable; retried every 15 s
+BMC unreachable (connection refused)
 
-# Invalid credentials
-Failed to authenticate: 401 Unauthorized
+# Power operation rejected by the BMC
+Failed to set power state
 
-# Power operation failed
-Failed to set power state: operation not permitted
-
-# Inspection timeout
-Inspection timed out after 10m0s
+# Inspection timeout: the Beskar7Machine fails with InspectionTimedOut,
+# message "Inspection did not complete within 10m0s"
+Inspection timed out (terminal)
 ```
 
 ## Health Checks
@@ -750,13 +758,17 @@ instance renders it into the iPXE cmdline.
 
 **Cause:** the controller cannot reach the host's BMC at the network level — a refused or reset
 connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that is still starting.
+A DNS failure that persists can be a short in-cluster name: a BMC hostname is resolved as an
+absolute name, without the cluster search path (decision D-032), so `mock-redfish.my-ns.svc` must be
+written `mock-redfish.my-ns.svc.cluster.local`, in the host's address and in the credentials Secret's
+`bmc-addresses`.
 This is not a terminal failure: `status.phase` is not `Failed`, the host retries every 15 seconds, and
 the machine carries on by itself on the first attempt that connects. A host that was already
 `Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes)
 and goes on with its provisioning, so a machine whose host got that far never shows this reason.
 
 **Solution:** nothing to delete. If the outage does not clear, check the path from the controller pod to
-the BMC (the checks under [PhysicalHost Stuck in "Enrolling"](#4-physicalhost-stuck-in-enrolling) → BMC
+the BMC (the checks under [PhysicalHost never reaches Available](#4-physicalhost-never-reaches-available) → BMC
 Not Reachable apply). A `MachineHealthCheck` cannot tell this reason from a terminal one, so its
 timeouts decide whether it waits. The recommended ones
 ([`examples/machinehealthcheck.yaml`](../examples/machinehealthcheck.yaml)) wait as long as the machine
@@ -817,7 +829,12 @@ which of these it is:
   authorises nothing; the message gives the entry's position).
 - The address is `http://`, or the host sets `insecureSkipVerify: true`, and the Secret lacks
   `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"`.
-- The address is not an `http://`/`https://` URL with a host, or it carries `user:password@`.
+- The host sets `caBundleSecretRef`, and the Secret's
+  `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` annotation is missing or names a different
+  CA Secret (decision D-033). The message names the host's `caBundleSecretRef`, never what the
+  annotation holds.
+- The address is not an `http://`/`https://` URL with a host, or it carries `user:password@`, a
+  query (`?`) or a fragment (`#`).
 
 **Solution:** first check that the address is really this host's BMC — someone able to edit
 `PhysicalHost` objects may have re-pointed it, and this refusal is what kept the password from them:
@@ -827,7 +844,9 @@ kubectl get physicalhost <host> -n <ns> -o jsonpath='{.spec.redfishConnection.ad
 ```
 
 If it is, annotate the Secret (list the BMC's IP, a CIDR, its hostname, or a `*.suffix` covering it;
-matching is literal; prefer IP addresses or fully-qualified names, because a listed name is resolved through the cluster DNS search path when the manager connects):
+matching is literal; prefer IP addresses or fully-qualified names — a listed name is resolved as an
+absolute DNS name, without the cluster search path, so an in-cluster Service must be written
+`<service>.<namespace>.svc.cluster.local` in both the address and the list):
 
 ```bash
 kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
@@ -835,7 +854,14 @@ kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
 # only for http:// addresses or insecureSkipVerify: true
 kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
   beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport=true
+# only for hosts with caBundleSecretRef: the CA Secret their BMCs present
+kubectl annotate secret <credentials-secret> -n <ns> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=<ca-secret>
 ```
+
+Check a host's `caBundleSecretRef` the same way you checked its address: someone able to edit the host
+may have pointed it at a CA whose key they hold. Name the CA Secret your BMCs really chain to, not the
+one the host names.
 
 The controller watches the Secret, so the host reconnects within seconds and a waiting machine
 carries on; nothing is reprovisioned and no machine needs deleting. If the address is not a BMC you
@@ -914,7 +940,7 @@ kubectl logs -n capb7-system deployment/capb7-controller-manager -f
 
 ## FAQ
 
-**Q: Why is my PhysicalHost stuck in Enrolling for 5 minutes?**
+**Q: Why does my PhysicalHost stay in `Error` for minutes after I fixed its BMC settings?**
 A: A Redfish failure that needs something to change — a wrong address, wrong credentials, a rejected certificate — backs off exponentially, up to 30 minutes between attempts, so the host keeps the error for a while after you fix it. Edit the `PhysicalHost` or its credentials Secret to wake the controller at once. A BMC that is merely unreachable is different: it is retried every 15 seconds and enrols on the first attempt that connects.
 
 **Q: Inspection keeps timing out, can I increase the timeout?**

@@ -1,0 +1,8 @@
+# Role + RoleBinding for the callback-only ServiceAccount in one watched
+# namespace. Carries no namespace: give it one at apply time,
+#
+#   kubectl apply -n <namespace> -k config/rbac/callback-only/watched-namespace
+#
+# or from an overlay that sets `namespace: <namespace>`. See ../kustomization.yaml.
+resources:
+- role.yaml

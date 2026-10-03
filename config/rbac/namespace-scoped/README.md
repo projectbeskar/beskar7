@@ -11,7 +11,6 @@ their own overlay to reference this dir instead of `../rbac`.
 
 | File | Purpose |
 |---|---|
-| `minimal-clusterrole.yaml` | Cluster-scoped reads only (`clusterroles`, `clusterrolebindings` — auto-generated from a kubebuilder marker in `cmd/manager/main.go`). |
 | `leader-election-role.yaml` | `Role` + `RoleBinding` in `capb7-system` for leader-election `Lease` access and operator-side `Event` creation. Leases live where the operator runs, not where its watched CRs live. |
 | `watch-role.template.yaml` | **Template** for the per-namespace `Role` + `RoleBinding`. Not included in `kustomization.yaml`. Copy and patch the `namespace:` fields once per watched namespace. |
 | `kustomization.yaml` | Resource list — references everything except `watch-role.template.yaml`. |

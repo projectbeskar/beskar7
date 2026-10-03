@@ -616,6 +616,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, caSecret)).To(Succeed())
+			nameBMCCA(client.ObjectKeyFromObject(credentialSecret), caSecret.Name)
 
 			By("Creating a host that references the CA bundle")
 			withBundlePh := physicalHost.DeepCopy()
@@ -653,6 +654,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			missingBundlePh := physicalHost.DeepCopy()
 			missingBundlePh.Name = "missing-ca-bundle-host"
 			missingBundlePh.Spec.RedfishConnection.CABundleSecretRef = "ghost-bundle"
+			nameBMCCA(client.ObjectKeyFromObject(credentialSecret), "ghost-bundle")
 
 			factoryCalled := false
 			missingBundleReconciler := &PhysicalHostReconciler{
