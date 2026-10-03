@@ -148,9 +148,9 @@ section `v0.9.x` → `v0.10.0`.
 - **Every third-party workflow action was referenced by a moving tag, including two in jobs that hold
   privileged credentials (SEC-14).** `anchore/sbom-action@v0` in the release job (`id-token: write`, which is
   cosign's signing identity) and `peaceiris/actions-gh-pages@v4` in the chart-publish job
-  (`contents: write`). All 69 references in `ci.yml`, `release.yml` and `helm-publish.yml` are now pinned to
-  the commit their tag pointed at, each with its version in a trailing comment, which Dependabot updates
-  together with the pin. ([#239](https://github.com/projectbeskar/beskar7/pull/239))
+  (`contents: write`). The 69 references to a tag in `ci.yml`, `release.yml` and `helm-publish.yml` are now
+  pinned to the commit their tag pointed at, each with its version in a trailing comment, which Dependabot
+  updates together with the pin; no `uses:` line in the workflows is pinned by tag any more. ([#239](https://github.com/projectbeskar/beskar7/pull/239))
 
 ### Added
 
