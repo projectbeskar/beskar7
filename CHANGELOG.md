@@ -4,6 +4,279 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.10.0] - 2026-10-03
+
+Callback integrity, BMC transport and RBAC hardening, from the review that followed `v0.9.0`, together with
+the re-provisioning fixes prepared as `v0.9.1`, which was never released. `PhysicalHost` gains one optional
+status field, `status.bootstrap.bootNonceConsumedClientHash`; no existing field changes. No contract change
+(still `v4.2`). On physical servers pair it with inspector `v0.3.4` or later.
+
+**Things to do — most of them before you upgrade, in this order.** Details and commands are in
+[`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.0/docs/upgrading.md#v09x--v0100--callback-integrity-bmc-transport-and-rbac-hardening-upgrade-in-this-order),
+section `v0.9.x` → `v0.10.0`.
+
+1. **Be on `v0.9.x`, not `v0.8.x`, and upgrade with no host `Inspecting` or `Deploying`.** The one-release
+   carry-over of an in-flight run's credentials is gone, and a callback signal written without the new
+   binding is dropped. A run caught mid-flight fails at its own timeout.
+2. **Write in-cluster BMC names fully qualified** (`<service>.<namespace>.svc.cluster.local`) in each host's
+   `redfishConnection.address` **and** in the credentials Secret's `bmc-addresses`, **before upgrading**. A
+   short name no longer resolves, and its host reports `BMCUnreachable` until you fix it (D-032).
+3. **Annotate the credentials Secret of every host that sets `caBundleSecretRef`** with
+   `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret: <the CA Secret's name>` **before upgrading**;
+   `v0.9.x` ignores it. A host you miss reports `CredentialsNotAuthorized` and no Redfish request is made
+   (D-033).
+4. **Apply the CRDs before the controller**, and upgrade the controller and every callback-only instance
+   (`--controllers=none`) in the same window.
+5. **If the manager reached BMCs through `HTTP_PROXY`/`HTTPS_PROXY`, set `--bmc-proxy`** (Helm `bmcProxy`)
+   with the upgrade. The environment's proxy is now ignored for BMC connections (D-035).
+6. **If you run a callback-only instance, move it to `config/rbac/callback-only/`. If you install the
+   namespace-scoped RBAC overlay, rebuild it from the recipe in its README.**
+
+### Security
+
+- **Anyone allowed to patch `PhysicalHost` objects could push a host to `Ready`, inject a hardware report or
+  fail a run without any inspector (SEC-15, D-034).** The inspector's callbacks leave their result on the
+  host in three annotations, `infrastructure.cluster.x-k8s.io/inspection-result-ref`, `provisioned-request`
+  and `provision-failed-request`, and the `PhysicalHost` reconciler turned each into state as it found it.
+  They were plain values, which anyone with `patch physicalhosts` could write; the reconciler also deleted
+  whatever ConfigMap the report reference named, so the same access could delete any ConfigMap in the host's
+  namespace. Each signal now carries a binding in a sibling annotation (`<annotation>-binding`), written by
+  the handler in the same patch: the hex HMAC-SHA256, keyed by the host's per-host bearer token, of the
+  annotation's key and value together with the host's namespace, name and UID, the claiming machine's UID,
+  the boot nonce's hash and, for the report, the digest of the stored report. The reconciler recomputes it
+  from the host's `<host>-bootstrap-token` Secret before it touches state, and a signal that is not bound is
+  removed and does nothing: no transition, no status write, a line at Info with the host and the annotation
+  key and never the token, the binding or the value. A pair captured in an earlier boot cycle or claim binds
+  a nonce, a machine or a token the Secret no longer holds, and a report ConfigMap rewritten after the
+  handler bound it is ignored. Forging a signal now takes the host's `<host>-bootstrap-token` Secret, the
+  same bar as reading its bootstrap data. The inspector sends what it always did: no wire change.
+  ([#251](https://github.com/projectbeskar/beskar7/pull/251))
+
+  **Upgrade note — upgrade with no host `Inspecting` or `Deploying`, and run the controller and every
+  callback-only instance at this version together.** A signal written by the previous release has no
+  binding, so one still waiting for the reconciler (an inspection report, a `/provisioned` or a
+  `/provision-failed`) is dropped, and its machine waits out its timeout. A callback-only instance left on
+  `v0.9.x` writes signals the new controller ignores. There is no CRD change for this, so no ordering
+  constraint.
+
+- **The `inspection-request` the `Beskar7Machine` controller leaves on a `PhysicalHost` could be written by
+  anyone allowed to patch the host, failing or stalling a run (D-037).** The `PhysicalHost` reconciler acted
+  on `inspection-request` (`inspect`, `inspect-complete`, `timeout`) as it found it, so `patch physicalhosts`
+  was enough to fail a run at once (`timeout`, then `InspectionTimedOut`) or move a host to `Deploying`
+  without a verified inspection report (`inspect-complete`, then `DeploymentTimedOut`). It could not reach
+  `Ready`, which takes a bound `/provisioned`. The request now carries a binding the same way the callback
+  signals do (`inspection-request-binding`, the same HMAC scheme keyed by the host's token), written by the
+  machine controller with the credentials it has just minted or read, and an unbound request is removed and
+  does nothing. The reconciler now checks every binding against a live read of the host's
+  `<host>-bootstrap-token` Secret, not its cache, so a request signed right after a fresh mint is never
+  judged against the previous credentials. ([#253](https://github.com/projectbeskar/beskar7/pull/253))
+
+  **Upgrade note.** A request the previous controller wrote and the host had not applied yet has no binding
+  and is removed. An `inspect` (host `InUse`) or an `inspect-complete` (host `Inspecting` with its report in)
+  is written again, signed, on the machine's next pass; a host the old controller had already booted may be
+  restarted once more. A pending `timeout` is not written again: its machine has already failed, and the host
+  keeps its state until it is released. Upgrading with no host `Inspecting` or `Deploying` avoids all of it.
+
+
+- **A BMC hostname was resolved through the manager pod's DNS search path, so a Service in the cluster could
+  receive a BMC connection, credentials included (SEC-17, D-032).** A pod's resolver (`ndots:5`) tried a
+  listed name such as `bmc1.lab` as `bmc1.lab.<namespace>.svc.cluster.local` first, so anyone who could
+  create a Service named `bmc1` in a namespace named `lab` received the connection and, with
+  `bmc-insecure-transport`, the credentials. The dialer now appends the trailing dot (`bmc1.lab.:443`), so no
+  search path applies. IP literals are unchanged, and the `Host` header and the name the BMC's certificate is
+  checked against stay as written. **In-cluster BMC names must be written fully qualified**, in both
+  `redfishConnection.address` and the credentials Secret's `bmc-addresses`; the long form also works on older
+  releases. A name you miss reports `BMCUnreachable` (a DNS failure) and is retried; it is not terminal.
+  ([#244](https://github.com/projectbeskar/beskar7/pull/244))
+- **A host's `caBundleSecretRef` chose the CA its BMC is verified against, so whoever could write a host
+  could make the manager trust a server of their own (SEC-17, D-033).** The credentials Secret now names the
+  CA Secret its BMCs present, in the new annotation `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret`.
+  A host whose `caBundleSecretRef` is not that name is refused with `CredentialsNotAuthorized`, and the
+  message never quotes the annotation's value. The existing insecure/CA conflict rule still wins, and a host
+  without `caBundleSecretRef` is unaffected. **Annotate the credentials Secret of every host that sets
+  `caBundleSecretRef` before upgrading** (`v0.9.x` ignores the annotation); hosts that share a credentials
+  Secret but name different CA Secrets need separate credentials Secrets, or one shared CA Secret.
+  ([#244](https://github.com/projectbeskar/beskar7/pull/244))
+- **The Redfish client followed redirects, and links the BMC returned, to other origins, with the
+  credentials (SEC-17).** Go re-sends `Authorization` on a same-host redirect across ports and schemes, an
+  https-to-http redirect sent it in plaintext, and gofish builds request URLs from the `@odata.id` values a
+  BMC returns. The client now refuses any request, redirect hops included, whose scheme, host, port or
+  userinfo differs from the authorised address, before it is dialed. An address with `?` or `#` is refused as
+  well, because gofish appends request paths to the address as text. A BMC that redirects to another origin
+  now fails the call: point `redfishConnection.address` at the final origin.
+  ([#244](https://github.com/projectbeskar/beskar7/pull/244))
+- **A proxy in the manager's environment decided who resolved a BMC's name and carried the credentials of any
+  `http://` BMC, and nothing on the `PhysicalHost` showed it (D-035).** BMC connections now ignore
+  `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY` and connect directly. The new manager flag
+  `--bmc-proxy=http://[user:password@]host[:port]` (or `https://`; Helm `bmcProxy`) sends **every** BMC
+  connection through that one proxy, with no `NO_PROXY` exemption. It is validated at startup with errors
+  that repeat nothing of the value, and rejected with `--controllers=none`. Startup logs the proxy's scheme
+  and host, and the names, never the values, of any proxy variables it is ignoring. Through a proxy, D-032
+  cannot apply, because the proxy resolves the name; the `bmc-addresses` allow-list and the origin pinning
+  above still do. Credentials for an `http://` BMC (already behind `bmc-insecure-transport`) cross the proxy
+  in clear, and an `https://` BMC is tunnelled with `CONNECT`, TLS end to end. An `https://` proxy is verified
+  against the system roots, on its own hop, whatever a host sets for `insecureSkipVerify` or
+  `caBundleSecretRef`, so a proxy behind a private CA must be reached as `http://`. **If your manager reached
+  BMCs through a proxy variable, set `--bmc-proxy` with the upgrade.**
+  ([#249](https://github.com/projectbeskar/beskar7/pull/249))
+- **A consumed boot nonce could be fetched again by anyone for the rest of its 10 minutes (SEC-13, D-031).**
+  The first `/boot` fetch now records the client that made it, as an HMAC-SHA256 of its address keyed with
+  the nonce, in the new `status.bootstrap.bootNonceConsumedClientHash`. The same nonce renders the same
+  script only for that client and only for 2 minutes after the consume; every other fetch gets the same
+  opaque `404` as a wrong nonce. The client is the peer address, or the `X-Forwarded-For` entry a
+  `--trusted-proxies` proxy added, the address the rate limiter already uses. A consume record with no
+  client, which is what `v0.9.x` wrote, re-serves to nobody. **Apply the CRDs before the controller:** while
+  the stored CRD lacks the new field, the API server prunes it from every write, and `/boot` would then
+  refuse the host's own retry. If something in front of the callback server hides the hosts' addresses, keep
+  the source address (Helm `callback.service.externalTrafficPolicy: Local`) or list the proxy that sets
+  `X-Forwarded-For` in `--trusted-proxies` (Helm `callback.trustedProxies`), or every host shares one client.
+  ([#245](https://github.com/projectbeskar/beskar7/pull/245))
+- **A host's callback token kept authenticating after its run was over (SEC-13, D-031; D-036).** Minted for
+  60 minutes (longer by the amount `--inspection-timeout` is raised above its default), it outlived the
+  host's `Ready` state and a machine's terminal failure. The `Beskar7Machine` controller now cuts its expiry to
+  5 minutes later (`auth.TokenReadyGrace`) once the host is `Ready` (D-031) and once the machine has failed
+  terminally (D-036). Five minutes covers the inspector's retries of `/provisioned` and `/provision-failed`,
+  which it makes over about two and a half minutes and treats a `401` as fatal. The expiry only moves
+  earlier, and is written at most once. The failure cut waits while the host is in an `Error` about its BMC,
+  because a `/provisioned` report still lands there (PROV-1) and authenticates with this token; it follows
+  when the host leaves the `Error`. A machine that failed before the upgrade is cut on the first reconcile
+  after the new manager starts. A token with less than a boot nonce plus an inspection left is no longer
+  handed out again, and a freshly minted one covers a raised `--inspection-timeout`.
+  ([#245](https://github.com/projectbeskar/beskar7/pull/245),
+  [#250](https://github.com/projectbeskar/beskar7/pull/250))
+- **The per-host credentials Secret was trusted by its name (SEC-13, D-031).** A Secret under
+  `<host>-bootstrap-token` now counts only if its controller owner reference names that `PhysicalHost` by
+  UID, and the manager never takes over a Secret someone else created under that name: the `Beskar7Machine`
+  reports `InfrastructureReady=False` with the new reason `BootstrapCredentialsConflict` until you delete it.
+  Secrets `v0.9.0` wrote carry the reference. ([#245](https://github.com/projectbeskar/beskar7/pull/245))
+- **A callback-only instance had to run with the manager's RBAC, and the manager held a cluster-wide read it
+  never used (SEC-14).** `config/rbac/callback-only/` is a least-privilege role for the second manager copy
+  started with `--controllers=none`: its own ServiceAccount, `capb7-callback` in `capb7-system`, and a
+  per-namespace Role and RoleBinding holding only what the callback routes use. It is not part of
+  `config/default`, and the instance must start with `--watch-namespaces` naming the namespaces you bound.
+  Separately, the `get`, `list` and `watch` grant on `clusterroles` and `clusterrolebindings`, left behind by
+  a kubebuilder marker that nothing read, is removed from the manager role, the Helm chart and the
+  namespace-scoped overlay. **Move a callback-only instance to the new role.**
+  ([#246](https://github.com/projectbeskar/beskar7/pull/246))
+- **Every third-party workflow action was referenced by a moving tag, including two in jobs that hold
+  privileged credentials (SEC-14).** `anchore/sbom-action@v0` in the release job (`id-token: write`, which is
+  cosign's signing identity) and `peaceiris/actions-gh-pages@v4` in the chart-publish job
+  (`contents: write`). The 69 references to a tag in `ci.yml`, `release.yml` and `helm-publish.yml` are now
+  pinned to the commit their tag pointed at, each with its version in a trailing comment, which Dependabot
+  updates together with the pin; no `uses:` line in the workflows is pinned by tag any more. ([#239](https://github.com/projectbeskar/beskar7/pull/239))
+
+### Added
+
+- `--bmc-proxy` manager flag and the Helm value `bmcProxy`: the one proxy every BMC connection goes through.
+  ([#249](https://github.com/projectbeskar/beskar7/pull/249))
+- `beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret` annotation on a credentials Secret: the name of the
+  CA Secret its BMCs present. ([#244](https://github.com/projectbeskar/beskar7/pull/244))
+- `PhysicalHost` `status.bootstrap.bootNonceConsumedClientHash` (optional): the client that consumed the boot
+  nonce. ([#245](https://github.com/projectbeskar/beskar7/pull/245))
+- `Beskar7Machine` condition reason `BootstrapCredentialsConflict` on `InfrastructureReady`.
+  ([#245](https://github.com/projectbeskar/beskar7/pull/245))
+- `config/rbac/callback-only/`: ServiceAccount, and a per-namespace Role and RoleBinding, for a callback-only
+  instance. ([#246](https://github.com/projectbeskar/beskar7/pull/246))
+
+### Changed
+
+- **`kubectl get beskar7clusters` shows the endpoint in effect.** The `Endpoint` print column read
+  `spec.controlPlaneEndpoint.host`; since D-027 the endpoint can come from `Cluster.spec`, and the column was
+  blank for such a working cluster. It now reads `status.controlPlaneEndpoint.host`. Display only: no schema
+  change. ([#240](https://github.com/projectbeskar/beskar7/pull/240))
+
+### Fixed
+
+- **A host released in the middle of a run was left powered on, and its next claim never booted it: that
+  machine failed with `InspectionTimedOut` ten minutes later.** A host that is `Inspecting`, `Deploying`, or
+  in `Error` after a failed run is running the inspector, which parks after a failure and has nothing that
+  acts on the ACPI power button, so the graceful shutdown sent at release left it on. The next claim set the
+  PXE override but powered the host on only if it was off. MachineHealthCheck remediation of a failed
+  provisioning re-claims hosts exactly this way. A claim now restarts a host that is already on (Redfish
+  `ForceRestart`) so it boots the PXE override, and a release forces off (`ForcePowerOff`) a host that was
+  mid-run; a provisioned host is still shut down gracefully. The host is restarted once per claim: its
+  callback credentials are minted before it is booted, a pass that finds the host already booted for the same
+  claim leaves it alone, and the inspection request — whose optimistic-locked patch routinely conflicted with
+  the host controller mirroring the new credentials — is retried within the pass instead of failing it.
+  ([#236](https://github.com/projectbeskar/beskar7/pull/236))
+- **Deleting a `Beskar7Machine` could log a false `Reconciler error`** (`failed to patch Beskar7Machine …
+  not found`) when a second pass ran from a cached copy after the first had already finished the deletion.
+  ([#237](https://github.com/projectbeskar/beskar7/pull/237))
+- **A `/provisioned` report was dropped for a claimed host that a BMC failure had put in `Error` during its
+  deployment, and the machine then booted the inspector again on a disk that was already written (PROV-1).**
+  Only `v0.8.0` and earlier leave a host in that state, so it concerns hosts upgraded in it. The handler and
+  the reconciler now treat such a host like a `Deploying` one: the report is applied, the host goes `Ready`,
+  and the BMC's error message is cleared; `RedfishConnectionReady` still reports the BMC.
+  ([#242](https://github.com/projectbeskar/beskar7/pull/242))
+- **The callback server kept presenting the certificate it started with, and `/boot` kept handing out the CA it
+  had read at startup (SEC-14).** After cert-manager renewed the certificate, or you copied a renewed one into
+  a callback-only instance's `--inspection-cert-dir`, hosts saw the old one until a restart. The server now
+  reloads the certificate, and re-reads the CA on every `/boot` render, without a restart.
+  ([#246](https://github.com/projectbeskar/beskar7/pull/246))
+- **The `config/rbac/namespace-scoped` overlay moved every per-namespace watch Role out of its namespace
+  (RBAC-OVERLAY).** Its kustomize `namespace: capb7-system` rewrote the namespace of each watch `Role` and
+  `RoleBinding` an operator added, so the manager held nothing in the namespaces it watched and failed
+  closed; with two watched namespaces the build stopped on a duplicate `Role`. The documented install overlay
+  was broken three further ways: it listed files outside its kustomization root, rebuilt `config/default` by
+  hand and so dropped the image pin and labels, and patched a Deployment named `capb7-manager` where the
+  Deployment is `capb7-controller-manager`, which kustomize accepts without a word, so `--watch-namespaces`
+  was never added. The overlay no longer sets a namespace, and its README and
+  `docs/security/rbac-hardening.md` carry an install overlay that layers on `config/default`. The wildcard
+  check in `rbac-hardening.md` now looks at the roles bound to the manager's ServiceAccount, instead of every
+  role in the cluster, which always reported `cluster-admin`.
+  ([#248](https://github.com/projectbeskar/beskar7/pull/248))
+
+### Removed
+
+- **The one-release carry-over of an in-flight run's credentials, the D-029 backfill (BACKFILL-1).**
+  `v0.9.0` bound the existing credentials of a run that was `Inspecting` or `Deploying` across the upgrade to
+  its machine; `v0.10.0` does not. A host whose credentials exist only in the `v0.8.x` form, upgraded
+  straight from `v0.8.x` or never reconciled by a `v0.9.x` manager, has credentials that authenticate
+  nothing: an `Inspecting` or `Deploying` host's callbacks get `401` and its machine fails at its own
+  timeout; an `InUse` host gets fresh credentials and is booted with them; a `Ready` host is unchanged. The
+  manager now logs at Info when it finds credentials with no consumer binding and mints fresh ones. Every
+  `v1beta2` field stays, including the `status.bootstrap` mirror fields the backfill read, since the API is
+  additive-only. **Upgrade from `v0.9.x`, not straight from `v0.8.x`.**
+  ([#247](https://github.com/projectbeskar/beskar7/pull/247))
+- The condition reasons `SecretGetFailed`, `SecretNotFound` and `MissingSecretData`, declared in
+  `api/v1beta2` and never set: a missing, unreadable or incomplete credentials Secret reports
+  `MissingCredentials`. Only a Go program importing `api/v1beta2` is affected.
+  ([#240](https://github.com/projectbeskar/beskar7/pull/240))
+
+### Documentation
+
+- [`docs/hardware-compatibility.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.0/docs/hardware-compatibility.md)
+  now covers the host as well as the BMC: the NIC and storage drivers the inspector ships, the minimum
+  inspector version for physical servers, what has been validated (emulated hardware only so far), and how a
+  missing driver shows up — `InspectionTimedOut` for a NIC, `DeploymentFailed` at once for a storage
+  controller with inspector `v0.3.4`. ([#235](https://github.com/projectbeskar/beskar7/pull/235))
+- **Documentation drift found in review, corrected against the code, and a test that reads the examples
+  (DOCS-2).** The `Paused` reason tables were reversed; `Enrolling` was documented as a state a host passes
+  through, though only `Available`, `InUse`, `Inspecting`, `Deploying`, `Ready` and `Error` are ever
+  assigned; `failureDomains` was shown as a map, and is a list; the control-plane endpoint was described as
+  derived, and is read from spec; the event list and the controller-log reference quoted things the code
+  never emits; the quick start and the minimal examples promised a provisioning flow from a
+  `Beskar7Machine` that has no owning `Machine`; CAPI `v1beta1` shapes in `simple-cluster.yaml`,
+  `kairos-k3s-node.yaml` and two reference pages are now `v1beta2`; and `examples/security/*.yaml` used
+  an in-cluster bootstrap URL and chart keys the chart does not have. `test/examples` now server-side
+  dry-run creates every example against envtest with the Beskar7 and Cluster API CRDs, and fails on
+  a CAPI `v1beta1` group. ([#241](https://github.com/projectbeskar/beskar7/pull/241))
+
+### Inspector
+
+Any `v4.2` inspector works. On physical servers use **`v0.3.4`** or later: `v0.3.3` ships the bare-metal NIC
+and storage drivers and the firmware they need (before it, most servers found no NIC and no disk), and
+`v0.3.4` reports a missing target disk at once instead of leaving the machine to time out.
+
+### Dependencies
+
+- Kubernetes libraries `v0.35.8` → `v0.35.9`
+  ([#233](https://github.com/projectbeskar/beskar7/pull/233)); gomega `v1.43.1` → `v1.44.0` and
+  `golang.org/x/net` `v0.58.0` → `v0.59.0`
+  ([#234](https://github.com/projectbeskar/beskar7/pull/234)).
+- CI: `helm/kind-action` `v1.14.0` → `v1.15.0` and `anchore/sbom-action` `v0.24.0` → `v0.24.2`
+  ([#243](https://github.com/projectbeskar/beskar7/pull/243)).
+
 ## [v0.9.0] - 2026-09-25
 
 Security and Cluster API conformance fixes found in a full review of `v0.8.0`, several of which
@@ -1932,7 +2205,9 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...HEAD
+[v0.10.0]: https://github.com/projectbeskar/beskar7/compare/v0.9.0...v0.10.0
+[v0.9.0]: https://github.com/projectbeskar/beskar7/compare/v0.8.0...v0.9.0
 [v0.8.0]: https://github.com/projectbeskar/beskar7/compare/v0.7.0...v0.8.0
 [v0.7.0]: https://github.com/projectbeskar/beskar7/compare/v0.6.2...v0.7.0
 [v0.6.2]: https://github.com/projectbeskar/beskar7/compare/v0.6.1...v0.6.2

@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.9.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.10.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.10.0` | `v4.2` **frozen** |
 | `v0.9.0` | `v4.2` **frozen** |
 | `v0.8.0` | `v4.2` **frozen** |
 | `v0.7.0` | `v4.2` **frozen** |
@@ -101,9 +102,26 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.9.x` → `v0.10.0` — upgrade from `v0.9.x`, with no host `Inspecting` or `Deploying`
+## `v0.9.x` → `v0.10.0` — callback integrity, BMC transport and RBAC hardening; upgrade in this order
 
-### Upgrade from `v0.9.x`, not straight from `v0.8.x`
+No schema change to any existing field, and no contract change: still `v4.2`. `PhysicalHost` gains one
+optional status field, `status.bootstrap.bootNonceConsumedClientHash`, which is why the CRDs go before the
+controller. This release also carries the re-provisioning fixes prepared as `v0.9.1`, which was never
+released (see [Also in this release](#also-in-this-release-nothing-to-do-unless-noted)).
+
+**Inspector:** nothing in this release needs a new one; any `v4.2` inspector works. On physical servers use
+`v0.3.4` or later: `v0.3.3` ships the bare-metal NIC and storage drivers (before it, most servers found no
+NIC and no disk), and `v0.3.4` reports a missing target disk at once, so its machine fails with
+`DeploymentFailed` instead of timing out. Your boot server keeps serving its own copy of `vmlinuz` and
+`initrd.img` until you replace it; see
+[Hardware Compatibility](hardware-compatibility.md#host-hardware-nics-and-storage).
+
+The steps are in the order to do them. Steps 1, 5 and 6 apply to every install. Steps 2, 3 and 4 apply if
+their headings describe your install, and are done **before** you upgrade: the fully qualified names and the
+new annotation are safe on `v0.9.x`. Steps 7 and 8 apply only to the installs named in their headings, and
+step 9 checks the result.
+
+### 1. Start from `v0.9.x`, not straight from `v0.8.x`
 
 `v0.9.0` moved the callback credentials into the per-host `<host>-bootstrap-token` Secret, bound to the
 claiming machine (see [`v0.8.0` → `v0.9.0`](#3-upgrade-with-no-host-inspecting-or-deploying)). For that one
@@ -119,16 +137,9 @@ ever reconciled — has credentials that authenticate nothing, and what that cos
 | `Ready` | Nothing. No callback follows `Ready`, so the old token is not needed. |
 | Not claimed | Nothing. The next claim mints fresh credentials over the old Secret. |
 
-So:
-
-1. If you are on `v0.8.x`, go to `v0.9.x` first, doing the three steps in
-   [`v0.8.0` → `v0.9.0`](#v080--v090--security-and-cluster-api-conformance-fixes-three-things-to-do-first),
-   and let `v0.9.x` reconcile every machine.
-2. Then wait until no host is `Inspecting` or `Deploying`, and upgrade to `v0.10.0`:
-
-```bash
-kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing
-```
+So if you are on `v0.8.x` or earlier, go to `v0.9.x` first: do the three steps in
+[`v0.8.0` → `v0.9.0`](#v080--v090--security-and-cluster-api-conformance-fixes-three-things-to-do-first), and
+let `v0.9.x` reconcile every machine. Then come back here.
 
 A run caught by the upgrade is not reprovisioned behind your back: it ends in the timeout above, and the
 host is inspected and provisioned again only when a new machine claims it. `status.bootstrap` on such a host
@@ -136,26 +147,66 @@ keeps showing the `v0.8.x` hashes and expiries until that claim mints new creden
 credentials they describe are rejected; see
 [troubleshooting issue 10](troubleshooting.md#10-inspection-or-bootstrap-callback-returns-401-unauthorized).
 
-### The annotations the controllers act on carry a binding
+### 2. Write in-cluster BMC names fully qualified (before upgrading)
 
-`v0.10.0` binds the annotations the `PhysicalHost` reconciler turns into state to the host's per-host token:
-the three the inspector's callbacks leave (`inspection-result-ref`, `provisioned-request`,
-`provision-failed-request`) and the `inspection-request` the `Beskar7Machine` controller writes (decisions D-034
-and D-037, [control 3a](security/README.md#3a-callback--and-machine-written-annotations-are-bound-to-the-per-host-token)).
-No CRD change and no wire change, so nothing to do to the inspector, and no ordering constraint. What to know:
+The manager now looks a BMC hostname up as an absolute DNS name, `bmc1.lab.`, and never through its pod's
+DNS search path (decision D-032). A pod's resolver (`ndots:5`) used to try `bmc1.lab` as
+`bmc1.lab.<namespace>.svc.cluster.local` first, so anyone who could create a Service named `bmc1` in a
+namespace named `lab` received the connection and, with `bmc-insecure-transport`, the credentials. IP
+addresses are unaffected, and so is a name that resolves as written (`bmc-07.example.com`). A name that only
+resolved through the search path does not any more: an in-cluster BMC such as an emulator behind a Service
+(`mock-redfish.my-ns.svc`), or a bare host name, must be written in full.
 
-- **Upgrade the controller and every callback-only instance (`--controllers=none`) together.** A callback written
-  by an older instance has no binding, so the new controller removes it unread and the machine waits out its
-  timeout.
-- **A request the `Beskar7Machine` controller had written and the host had not applied yet is removed and
-  written again.** An `inspect` is written again, signed, in the machine's next pass while the host is `InUse`
-  (a host the old controller had already booted is restarted at most once more, since the new controller keeps
-  no record of that boot); an `inspect-complete` while the host is `Inspecting` with its report in. A `timeout`
-  is not written again: its machine has already failed, and the host keeps its state until it is released.
-- The window is short either way (the host applies a request within moments), which is why the rule above
-  stands: upgrade with no host `Inspecting` or `Deploying`.
+Write it as `<service>.<namespace>.svc.cluster.local`, with your cluster's domain, in **both** places: each
+`PhysicalHost`'s `spec.redfishConnection.address`, and the credentials Secret's `bmc-addresses` annotation.
+The two must agree literally: an address is authorised only by an entry that lists its host, or a
+`*.suffix` that covers it. The long form also works on `v0.9.x`, so change both now.
 
-### The environment's proxy is no longer used for BMC connections
+```bash
+# Every host's address; look for in-cluster or bare names that are not fully qualified:
+kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.redfishConnection.address}{"\n"}{end}'
+# The allow-list of one credentials Secret:
+kubectl get secret <credentials-secret> -n <namespace> -o jsonpath='{.metadata.annotations.beskar7\.infrastructure\.cluster\.x-k8s\.io/bmc-addresses}{"\n"}'
+
+kubectl annotate secret <credentials-secret> -n <namespace> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses="mock-redfish.my-ns.svc.cluster.local, 10.20.0.0/24"
+kubectl patch physicalhost <host> -n <namespace> --type=merge \
+  -p '{"spec":{"redfishConnection":{"address":"https://mock-redfish.my-ns.svc.cluster.local:8443"}}}'
+```
+
+A name you miss is not fatal. Its host reports `RedfishConnectionReady=False` (`BMCUnreachable`, a DNS
+failure) and is retried every 15 seconds, a `Beskar7Machine` holding it waits (`WaitingForBMC`) instead of
+failing, and the host recovers on its own once the name is fixed. See
+[troubleshooting issue 15](troubleshooting.md#15-beskar7machine-reports-waitingforbmc).
+
+### 3. Name the CA Secret on the credentials Secret of every host that sets `caBundleSecretRef` (before upgrading)
+
+A host's `spec.redfishConnection.caBundleSecretRef` chose the CA its BMC's certificate is verified against,
+so anyone who could write the host could make the manager trust a server of their own. The credentials
+Secret now names that CA Secret (decision D-033), in
+`beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret`: the value is the name of the CA Secret, the same
+string the host's `caBundleSecretRef` holds. A host whose `caBundleSecretRef` is not what its credentials
+Secret names is refused: no Redfish request is made, and the host reports `RedfishConnectionReady=False`
+with `CredentialsNotAuthorized`. Hosts that set no `caBundleSecretRef` are unaffected. `v0.9.x` ignores the
+annotation, so add it first.
+
+```bash
+# Hosts that set caBundleSecretRef: namespace, host, credentials Secret, CA Secret
+kubectl get physicalhosts -A -o jsonpath='{range .items[?(@.spec.redfishConnection.caBundleSecretRef)]}{.metadata.namespace}{"\t"}{.metadata.name}{"\t"}{.spec.redfishConnection.credentialsSecretRef}{"\t"}{.spec.redfishConnection.caBundleSecretRef}{"\n"}{end}'
+
+kubectl annotate secret <credentials-secret> -n <namespace> --overwrite \
+  beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret=<ca-secret>
+```
+
+Name the CA Secret your BMCs really chain to, not whatever a host says today: a host someone has already
+re-pointed would put their CA on the Secret. Hosts that share a credentials Secret but name different CA
+Secrets need separate credentials Secrets, or one shared CA Secret. A host you miss is not fatal: it reports
+`CredentialsNotAuthorized` and is not contacted, an `Inspecting`, `Deploying` or `Ready` host keeps its
+state, a `Beskar7Machine` waits (`WaitingForBMC`) instead of failing, and annotating the Secret afterwards
+recovers its hosts within seconds. See
+[troubleshooting issue 17](troubleshooting.md#17-physicalhost-reports-credentialsnotauthorized).
+
+### 4. Check whether the manager reaches BMCs through a proxy variable (before upgrading)
 
 Up to `v0.9.x`, a manager with `HTTP_PROXY`/`HTTPS_PROXY` in its environment (Helm `controllerManager.env`, or a
 patched Deployment) sent its BMC connections through that proxy, because Go's HTTP transport reads them. From
@@ -164,38 +215,202 @@ patched Deployment) sent its BMC connections through that proxy, because Go's HT
 absolute-name resolution of D-032, and carried the credentials of any `http://` BMC, with nothing on the
 `PhysicalHost` showing it.
 
-**If you never set a proxy variable on the manager, there is nothing to do.** If you did, and your BMCs are
-reachable from the manager only through that proxy, set it explicitly, before or when you upgrade:
-
 ```bash
-# Helm
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.0 --reset-then-reuse-values \
-  --set bmcProxy=http://proxy.example.com:3128
-# kubectl-applied manifests: add the flag to the manager container's args
-#   - --bmc-proxy=http://proxy.example.com:3128
+# Prints nothing if no proxy variable is set on the Deployment:
+kubectl get deployment capb7-controller-manager -n capb7-system \
+  -o jsonpath='{range .spec.template.spec.containers[*].env[*]}{.name}{"\n"}{end}' | grep -i proxy
 ```
 
-The value is `http://[user:password@]host[:port]` or `https://[user:password@]host[:port]`. Three things differ
-from the environment variables:
+A variable that reaches the pod another way (`envFrom`, an injected configuration) is not in the Deployment's
+`env`; look at the running pod's spec as well. **If you never set a proxy variable on the manager, there is
+nothing to do.** If you did, and your BMCs are reachable from the manager only through that proxy, you set
+`--bmc-proxy` with the upgrade in step 6: a `v0.9.x` manager does not know the flag and will not start with
+it. The value is `http://[user:password@]host[:port]` or `https://[user:password@]host[:port]`. Four things
+differ from the environment variables:
 
 - **Every** BMC connection goes through it. There is no `NO_PROXY`, and a BMC on a local address is proxied too.
 - The proxy resolves the BMC's name, so D-032 does not apply to a proxied connection. Prefer IP addresses in
   `redfishConnection.address` and the Secret's `bmc-addresses`.
 - Credentials for an `http://` BMC (already behind `bmc-insecure-transport: "true"`) cross the proxy in clear;
   an `https://` BMC is tunnelled with `CONNECT`, TLS end to end.
+- An `https://` proxy is verified against the system roots, whatever your hosts set for `insecureSkipVerify` or
+  `caBundleSecretRef`. A proxy behind a private CA must therefore be reached as `http://`.
 
 See [Reaching BMCs through a proxy](security/configuration.md#reaching-bmcs-through-a-proxy). A callback-only
 instance (`--controllers=none`) never connects to a BMC and rejects `--bmc-proxy`.
 
-A manager that still has proxy variables in its environment logs which ones it is ignoring for BMCs when it
-starts (names only). If you missed this and BMCs went unreachable, hosts report `RedfishConnectionReady=False`
-(`BMCUnreachable`) and recover on their own once the flag is set; this is not a terminal failure
-([troubleshooting issue 15](troubleshooting.md#15-beskar7machine-reports-waitingforbmc)):
+### 5. Wait until no host is `Inspecting` or `Deploying`
 
 ```bash
-kubectl logs -n capb7-system deployment/capb7-controller-manager | grep 'proxy environment variables'
-kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="RedfishConnectionReady")].reason}{"\n"}{end}' | grep BMCUnreachable
+kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing
 ```
+
+A run in flight does not survive the upgrade intact:
+
+- **A callback signal that carries no binding is dropped** (decision D-034). `v0.10.0` acts on what a callback
+  leaves on a `PhysicalHost` (the inspection report, `/provisioned`, `/provision-failed`) only if it is bound
+  to the host's token; `v0.9.x` wrote no binding. A signal the old callback handler had written and the old
+  reconciler had not yet applied is removed and ignored, and its machine fails at its own timeout
+  (`InspectionTimedOut` or `DeploymentTimedOut`). The inspector was answered `202`, so it does not retry.
+- **A boot nonce consumed under `v0.9.x` is served to nobody again** (decision D-031). The consume record it
+  wrote names no client, so a host that fetched its script just before the upgrade and retries its chainload
+  is refused with `404`.
+- **A callback-only instance still on `v0.9.x` writes signals with no binding**, which a `v0.10.0` controller
+  drops. Upgrade the controller and every callback-only instance in the same window (step 6).
+
+- **A request the `Beskar7Machine` controller wrote and the host had not applied yet is removed** (decision
+  D-037): `v0.10.0` binds `inspection-request` the same way, and `v0.9.x` wrote it unbound. An `inspect` (host
+  `InUse`) or an `inspect-complete` (host `Inspecting` with its report in) is written again, signed, on the
+  machine's next pass, and a host the old controller had already booted may be restarted once more. A pending
+  `timeout` is not written again: its machine has already failed, and the host keeps its state until it is
+  released. This adds no new rule; waiting for no host `Inspecting` or `Deploying` covers it.
+
+
+A run caught by the upgrade is not reprovisioned behind your back: it ends in a timeout, and its
+`MachineHealthCheck` replaces the machine, or you delete it.
+
+### 6. Apply the CRDs, then upgrade the controller and every callback-only instance
+
+Apply the CRDs **before** the controller. The new `status.bootstrap.bootNonceConsumedClientHash` is what the
+`/boot` handler records alongside a consumed nonce. While the stored CRD lacks it, the API server prunes it
+from every write: the record names no client, `/boot` then serves the consumed nonce to nobody, and a host
+that retries its chainload is refused and ends in `InspectionTimedOut`. Helm does not upgrade CRDs on
+`helm upgrade`, so take them from the chart you are about to install:
+
+```bash
+# Helm install: CRDs first.
+helm repo update
+helm pull beskar7/beskar7 --version 0.10.0 --untar --untardir ./beskar7-0.10.0
+kubectl apply -f ./beskar7-0.10.0/beskar7/crds/
+# Check the stored CRD has the new field; this prints "string":
+kubectl get crd physicalhosts.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.status.properties.bootstrap.properties.bootNonceConsumedClientHash.type}{"\n"}'
+# Then the controller. Add --set bmcProxy=http://proxy.example.com:3128 if step 4 says so.
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.0 --reset-then-reuse-values
+```
+
+```bash
+# Release-manifest install: the manifest lists the five CRDs before the Deployment, and kubectl applies it
+# in that order, so one apply does both.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.0/beskar7-manifests-v0.10.0.yaml
+# A BMC proxy (step 4): add the flag to the manager's arguments. A later apply of a release manifest sets the
+# arguments back, so repeat this after every manifest upgrade, or keep it in a kustomize overlay.
+kubectl patch deployment capb7-controller-manager -n capb7-system --type=json \
+  -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--bmc-proxy=http://proxy.example.com:3128"}]'
+```
+
+Upgrade a separate callback-only instance (the second copy of the manager started with `--controllers=none`)
+to `v0.10.0` in the same window: it is the same manager image, started with the same flags, and an instance
+left on `v0.9.x` writes callback signals with no binding that the new controller drops (step 5).
+
+### 7. Move a separate callback-only instance to its own role (only if you run `--controllers=none`)
+
+The walk-through used to give a callback-only instance an identity that held the manager's RBAC. The
+repository now ships a least-privilege one, `config/rbac/callback-only/` (SEC-14): a ServiceAccount,
+`capb7-callback` in `capb7-system`, and a per-namespace Role and RoleBinding holding only what the callback
+routes use. The manager's own ServiceAccount can create, change and delete Secrets, and this process sits on
+the provisioning network, so move it. From a checkout of the `v0.10.0` tag:
+
+```bash
+kubectl apply -k config/rbac/callback-only
+kubectl apply -n <namespace> -k config/rbac/callback-only/watched-namespace   # once per namespace in --watch-namespaces
+kubectl -n capb7-system create token capb7-callback --duration=24h > /etc/beskar7/token
+```
+
+Point the instance's kubeconfig at that ServiceAccount (`users[].user.tokenFile: /etc/beskar7/token`,
+refreshed before it expires) and restart it. It **must** run with `--watch-namespaces` listing exactly the
+namespaces you bound: without the flag its cache lists cluster-wide, which the Role does not allow, and it
+never becomes ready. The full walk-through, including what the Role still allows, is in
+[iPXE setup](ipxe-setup.md#management-cluster-off-the-provisioning-network-a-callback-only-instance).
+
+Separately from the role: the callback server now reloads its serving certificate. After cert-manager renews
+it, or you copy a renewed certificate into a callback-only instance's `--inspection-cert-dir`, new
+connections get the new certificate and `/boot` hands out the new `ca.crt`, without a restart.
+
+### 8. If you installed with `config/rbac/namespace-scoped`, use its layered recipe (kustomize installs only)
+
+The Helm chart's `watchNamespaces` is not affected. The kustomize overlay set `namespace: capb7-system`, which
+moves every per-namespace watch `Role` and `RoleBinding` you add into `capb7-system`: the manager then holds
+nothing in the namespaces it watches and fails closed, and with two watched namespaces the build stops on the
+duplicate `Role` (RBAC-OVERLAY). The overlay no longer sets it, and the install overlay in its
+[README](../config/rbac/namespace-scoped/README.md) now layers on `config/default`: it deletes the
+cluster-wide `capb7-manager-role` and `capb7-manager-rolebinding`, adds `config/rbac/namespace-scoped`, and
+adds `--watch-namespaces` to the Deployment's real name, `capb7-controller-manager`. Rebuild your overlay from
+that recipe, set no `namespace:` in it, and check the result as in
+[RBAC hardening → Verification](security/rbac-hardening.md#verification).
+
+SEC-14 also removed the manager's cluster-wide read on `clusterroles` and `clusterrolebindings`, which
+nothing used. A chart install with `watchNamespaces` loses its `capb7-manager-clusterscope` pair on
+`helm upgrade`, and `capb7-manager-role` loses the rule when you re-apply the manifest or upgrade the chart.
+A kustomize install of the namespace-scoped topology also created a `manager-clusterscope-role` `ClusterRole`
+and a `manager-clusterscope-rolebinding` `ClusterRoleBinding` (with any name prefix your overlay adds).
+`kubectl apply` does not remove what a manifest no longer lists, so delete them:
+
+```bash
+kubectl delete clusterrolebinding manager-clusterscope-rolebinding
+kubectl delete clusterrole manager-clusterscope-role
+```
+
+### 9. Check the result
+
+```bash
+# No host should report CredentialsNotAuthorized (steps 2 and 3) or BMCUnreachable (steps 2 and 4):
+kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="RedfishConnectionReady")].reason}{"\n"}{end}' | grep -E 'CredentialsNotAuthorized|BMCUnreachable'
+# No machine should be stuck on a bootstrap-token Secret the host does not own:
+kubectl get beskar7machines -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="InfrastructureReady")].reason}{"\n"}{end}' | grep BootstrapCredentialsConflict
+# A manager that still has proxy variables in its environment logs which ones it ignores (names only):
+kubectl logs -n capb7-system deployment/capb7-controller-manager | grep 'proxy environment variables'
+```
+
+The first two print nothing when all is well. The last prints a line only if the manager's environment still
+holds proxy variables, which it now ignores for BMCs. If you missed a name (step 2) or the proxy (step 4) and
+BMCs went unreachable, the hosts report `RedfishConnectionReady=False` (`BMCUnreachable`) and recover on their
+own once it is fixed; this is not a terminal failure
+([troubleshooting issue 15](troubleshooting.md#15-beskar7machine-reports-waitingforbmc)).
+
+### Also in this release (nothing to do unless noted)
+
+- **`/boot` re-serves a consumed boot nonce only to the client that fetched it first, and only for 2
+  minutes** (decision D-031). Before, any client could fetch it again until the nonce's 10-minute expiry. The
+  client is the connection's peer address, or the right-most untrusted `X-Forwarded-For` entry when the peer is
+  listed in `--trusted-proxies` (Helm `callback.trustedProxies`). If something in front of the callback
+  server hides the hosts' addresses, every host shares one address and the rule cannot tell a host from its
+  neighbours. Preserve the source address (a LoadBalancer or NodePort Service with Helm
+  `callback.service.externalTrafficPolicy: Local`), or list the proxy that sets `X-Forwarded-For`. A host that
+  retries later than 2 minutes, or from another address, gets the opaque `404` and needs a new provisioning
+  attempt. See
+  [iPXE setup](ipxe-setup.md#preserve-the-client-address-or-the-rate-limiter-will-bite).
+- **The callback token is cut to 5 minutes once the host is `Ready`, and once its machine fails terminally**
+  (decisions D-031 and D-036). Nothing calls back after that except the inspector's own retries of
+  `/provisioned` or `/provision-failed`, which the 5 minutes cover. A tool of yours that keeps using a run's
+  token after the run is over gets `401`. A failed machine is never re-driven, so deleting its Secret does not
+  revive it. The failure cut waits while the host is in an `Error` about its BMC, so a `/provisioned` report
+  can still land there.
+- **A `<host>-bootstrap-token` Secret the host does not own is never used or taken over** (decision D-031). The
+  Secret counts only if its controller owner reference names that `PhysicalHost`. One you created by hand under
+  that name, or one a deleted host of the same name left behind, makes the `Beskar7Machine` report
+  `InfrastructureReady=False` with the new reason `BootstrapCredentialsConflict` until you delete it. Secrets
+  `v0.9.0` wrote carry the reference.
+- **A claim restarts a host that is already on, and a release forces off a host that was mid-run** (from the
+  unreleased `v0.9.1`). Claiming a host that is on sends a Redfish `ForceRestart`, so it boots the PXE
+  override; before, such a host kept running whatever it ran, typically an earlier run's inspector parked
+  after a failure, and its machine failed with `InspectionTimedOut`. A host that is off is powered on as
+  before. Releasing a host that is `Inspecting`, `Deploying` or in `Error` sends `ForcePowerOff`, because the
+  inspector has nothing that acts on the graceful shutdown; a `Ready` host is still shut down gracefully.
+  The restart is not a clean shutdown, so a machine running something you care about should not be an
+  available `PhysicalHost`.
+- **A host a BMC failure left in `Error` mid-deploy takes the inspector's `/provisioned` report** (PROV-1).
+  Only `v0.8.0` and earlier leave a host in that state.
+- **`kubectl get beskar7clusters` shows the endpoint in effect** in its `Endpoint` column
+  (`status.controlPlaneEndpoint.host`), which is the one taken from `Cluster.spec` when that is set. Before,
+  it read the `Beskar7Cluster`'s own spec and was blank for such a cluster. Display only.
+- **Removed:** the condition reasons `SecretGetFailed`, `SecretNotFound` and `MissingSecretData`, which
+  nothing ever set (a missing or incomplete credentials Secret reports `MissingCredentials`). Only a Go
+  program importing `api/v1beta2` is affected.
+- **Fixed:** deleting a `Beskar7Machine` no longer logs a false `Reconciler error` when a second pass finds it
+  already gone.
+
+The [CHANGELOG](../CHANGELOG.md) has the details of every fix.
 
 ## `v0.8.0` → `v0.9.0` — security and Cluster API conformance fixes; three things to do first
 
@@ -269,7 +484,7 @@ callbacks are rejected with `401` — and during a rolling update the new pod an
 it holds the lease. The inspector treats a `401` as fatal, so such a run fails with
 `InspectionTimedOut` or `DeploymentTimedOut` and its `MachineHealthCheck` replaces the machine.
 `v0.9.x` carries a run over once it has been reconciled; `v0.10.0` does not, so upgrade to `v0.9.x`
-before `v0.10.0` (see [`v0.9.x` → `v0.10.0`](#v09x--v0100--upgrade-from-v09x-with-no-host-inspecting-or-deploying)).
+before `v0.10.0` (see [`v0.9.x` → `v0.10.0`](#1-start-from-v09x-not-straight-from-v08x)).
 
 ```bash
 kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing
@@ -523,12 +738,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. Going straight to v0.9.0: do its steps first (annotate BMC credentials Secrets,
-#    set the control-plane endpoint) — see the v0.8.0 → v0.9.0 section above.
+# 0. These commands install the current release, v0.10.0. From v0.8.x or earlier, stop on v0.9.x first:
+#    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
+#    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
+#    v0.9.x → v0.10.0 section above to reach v0.10.0.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.0/beskar7-manifests-v0.9.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.0/beskar7-manifests-v0.10.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.9.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

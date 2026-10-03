@@ -120,10 +120,8 @@ rbac:
 # access to ALL Secrets/ConfigMaps/Beskar7 CRDs across all namespaces — the
 # historical behavior. When set to a non-empty list, RBAC narrows to
 # per-namespace Role/RoleBinding pairs in each listed namespace plus a
-# leader-election Role in the operator's own namespace; the cluster-wide
-# binding is replaced with a minimal ClusterRole covering only the genuinely
-# cluster-scoped reads (ClusterRoles/ClusterRoleBindings) that the manager
-# requires.
+# leader-election Role in the operator's own namespace; the manager then holds
+# no cluster-scoped permission (the metrics ClusterRoles aside).
 #
 # The same list is passed to the manager via --watch-namespaces so its cache
 # informers scope to these namespaces. Beskar7 CRs (PhysicalHost, Beskar7Machine,
