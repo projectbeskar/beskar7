@@ -45,6 +45,7 @@ import (
 	"github.com/projectbeskar/beskar7/api/v1beta2/webhooks"
 	"github.com/projectbeskar/beskar7/controllers"
 	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
+	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	//+kubebuilder:scaffold:imports
 )
 
@@ -86,6 +87,7 @@ func main() {
 	var maxConcurrentReconciles int
 	var trustedProxies string
 	var controllersRaw string
+	var bmcProxyRaw string
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -158,6 +160,16 @@ func main() {
 			"full manager would fight the first over host claims and the bootstrap-url "+
 			"annotation. 'none' turns leader election off and rejects --enable-webhook=true.")
 
+	flag.StringVar(&bmcProxyRaw, "bmc-proxy", "",
+		"URL of the one HTTP or HTTPS proxy every BMC (Redfish) connection goes through, as "+
+			"http://[user:password@]host[:port] or https://[user:password@]host[:port]. Empty (the "+
+			"default) connects directly. The environment's HTTP_PROXY/HTTPS_PROXY are never used for "+
+			"BMCs. The proxy resolves BMC names, so the manager's absolute-name dialing of BMC "+
+			"hostnames (D-032) does not apply through it, and credentials for an http:// BMC cross "+
+			"the proxy in clear (https:// BMCs are tunnelled with CONNECT, TLS end to end). The "+
+			"credentials in the URL are visible to anyone who can read the Deployment. Rejected "+
+			"with --controllers=none, which never connects to a BMC.")
+
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
 	// development-style output (console encoder, stack traces from Warn,
@@ -191,6 +203,15 @@ func main() {
 			"networks", len(parsedTrustedProxies))
 	}
 
+	// Parsed here for the same reason: a typo is a startup failure, not BMCs
+	// that silently connect directly. The value can hold the proxy's password,
+	// so nothing below logs or wraps it; parseBMCProxy's errors repeat none of it.
+	parsedBMCProxy, err := parseBMCProxy(bmcProxyRaw)
+	if err != nil {
+		setupLog.Error(err, "invalid --bmc-proxy")
+		os.Exit(1)
+	}
+
 	if maxConcurrentReconciles < 1 {
 		setupLog.Info("--max-concurrent-reconciles below 1; using the default",
 			"requested", maxConcurrentReconciles, "effective", controllers.DefaultMaxConcurrentReconciles)
@@ -205,6 +226,7 @@ func main() {
 		inspectionPort:          inspectionPort,
 		inspectionCertDir:       inspectionCertDir,
 		trustedProxies:          parsedTrustedProxies,
+		bmcProxy:                parsedBMCProxy,
 		inspectionTimeout:       inspectionTimeout,
 		deploymentTimeout:       deploymentTimeout,
 		maxConcurrentReconciles: maxConcurrentReconciles,
@@ -224,6 +246,19 @@ func main() {
 		setupLog.Info("Callback-only mode: serving the host-callback endpoints and health probes only; "+
 			"no reconciler or webhook will be registered and leader election is off",
 			"controllers", string(cfg.controllers))
+	}
+
+	if cfg.controllers == controllersAll {
+		if cfg.bmcProxy != nil {
+			// Scheme and host only: the URL may carry the proxy's credentials.
+			setupLog.Info("BMC connections go through the --bmc-proxy proxy",
+				"scheme", cfg.bmcProxy.Scheme, "host", cfg.bmcProxy.Host)
+		}
+		if ignored := proxyEnvironmentVariables(os.Getenv); len(ignored) > 0 {
+			setupLog.Info("Ignoring the proxy environment variables for BMC connections; "+
+				"BMCs are reached directly unless --bmc-proxy is set (D-035)",
+				"variables", ignored)
+		}
 	}
 
 	// H-1: Warn if --bootstrap-url-base is a cluster-internal .svc address.
@@ -361,12 +396,13 @@ func setupManager(mgr ctrl.Manager, cfg managerConfig) error {
 	return nil
 }
 
-// setupControllers registers the three reconcilers. RedfishClientFactory is
-// intentionally omitted; SetupWithManager defaults it to
-// internalredfish.NewClient and returns an error if it remains nil after
-// defaulting.
+// setupControllers registers the three reconcilers. The two that talk to BMCs
+// get their Redfish client factory here, from --bmc-proxy (D-035): with no
+// proxy it is internalredfish.NewClient, which connects directly, and either
+// way the environment's proxy is never used.
 func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", cfg.maxConcurrentReconciles)
+	redfishFactory := internalredfish.NewClientFactory(cfg.bmcProxy)
 
 	if err := (&controllers.Beskar7MachineReconciler{
 		Client:            mgr.GetClient(),
@@ -377,6 +413,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		DeploymentTimeout: cfg.deploymentTimeout,
 
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+		RedfishClientFactory:    redfishFactory,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
 	}
@@ -393,6 +430,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
+		RedfishClientFactory:    redfishFactory,
 		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"), //nolint:staticcheck // legacy recorder: moving to events.EventRecorder changes every Eventf call site; follow-up to D-023
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {

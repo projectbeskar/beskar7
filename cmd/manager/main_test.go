@@ -29,10 +29,12 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,6 +289,97 @@ func TestSetupManager(t *testing.T) {
 		// Start and stop it so the callback-server runnable shuts its listener
 		// down instead of leaking it for the rest of the test binary.
 		startManager(t, mgr)
+	})
+
+	// D-035: --bmc-proxy reaches the Redfish client factory of the reconcilers
+	// that connect to BMCs. The BMC's name is under .invalid, which never
+	// resolves, so the only way its host:port can appear at the proxy is a
+	// manager that sends the connection there.
+	t.Run("all sends BMC connections through --bmc-proxy", func(t *testing.T) {
+		const bmcHostPort = "bmc.invalid:8443"
+		var mu sync.Mutex
+		var connects []string
+		proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			connects = append(connects, r.Method+" "+r.Host)
+			mu.Unlock()
+			http.Error(w, "no route", http.StatusBadGateway)
+		}))
+		t.Cleanup(proxy.Close)
+		proxyURL, err := parseBMCProxy(proxy.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		callbackPort := freePort(t)
+		mgr := newManager(t, "0")
+		cfg := baseConfig(callbackPort)
+		cfg.controllers = controllersAll
+		cfg.bmcProxy = proxyURL
+		if err := setupManager(mgr, cfg); err != nil {
+			t.Fatalf("setupManager: %v", err)
+		}
+		startManager(t, mgr)
+
+		ctx := context.Background()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "bmc-proxy-"}}
+		if err := k8sClient.Create(ctx, ns); err != nil {
+			t.Fatalf("create namespace: %v", err)
+		}
+		creds := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "bmc-creds", Namespace: ns.Name,
+				Annotations: map[string]string{"beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses": "bmc.invalid"},
+			},
+			Data: map[string][]byte{"username": []byte("admin"), "password": []byte("pw")},
+		}
+		if err := k8sClient.Create(ctx, creds); err != nil {
+			t.Fatalf("create credentials Secret: %v", err)
+		}
+		host := &infrav1.PhysicalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: "host-1", Namespace: ns.Name},
+			Spec: infrav1.PhysicalHostSpec{
+				RedfishConnection: infrav1.RedfishConnection{
+					Address:              "https://" + bmcHostPort,
+					CredentialsSecretRef: creds.Name,
+				},
+			},
+		}
+		if err := k8sClient.Create(ctx, host); err != nil {
+			t.Fatalf("create PhysicalHost: %v", err)
+		}
+		// The reconciler gave the host a finalizer, and the BMC it would power
+		// off first does not exist. Registered after the manager's own cleanup,
+		// so it runs while the manager is still up.
+		t.Cleanup(func() {
+			current := &infrav1.PhysicalHost{}
+			if err := k8sClient.Get(context.Background(), client.ObjectKeyFromObject(host), current); err != nil {
+				return
+			}
+			patch := client.MergeFrom(current.DeepCopy())
+			current.Finalizers = nil
+			_ = k8sClient.Patch(context.Background(), current, patch)
+			_ = k8sClient.Delete(context.Background(), current)
+		})
+
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			mu.Lock()
+			seen := append([]string(nil), connects...)
+			mu.Unlock()
+			if len(seen) > 0 {
+				for _, c := range seen {
+					if c != "CONNECT "+bmcHostPort {
+						t.Fatalf("the proxy was asked for %q, want only CONNECT %s", c, bmcHostPort)
+					}
+				}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the PhysicalHost reconciler never connected to its BMC through --bmc-proxy")
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	})
 }
 

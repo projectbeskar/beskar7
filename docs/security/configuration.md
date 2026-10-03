@@ -140,11 +140,37 @@ Both readers of BMC credentials — the `PhysicalHost` controller and the `Beska
 
 Keep the list to the addresses your BMCs really have. Copying every host's current address into it would also authorise a host someone has already re-pointed. What the list does not stop is re-pointing a host to *another* listed BMC: the credentials still go only to an address you listed, but the host then drives the wrong machine. Restrict who can patch `PhysicalHost` objects for that.
 
-A listed name is trusted to resolve to your BMC. The manager resolves a BMC hostname as an absolute DNS name, without its pod's DNS search path (decision D-032): `bmc1.lab` is looked up as `bmc1.lab.` and never as `bmc1.lab.<namespace>.svc.cluster.local`, where a Service named `bmc1` in a namespace called `lab` would otherwise have received the connection first (pods resolve with `ndots:5`). So write an in-cluster BMC, such as an emulator behind a Service, fully qualified — `<service>.<namespace>.svc.cluster.local`, with your cluster's domain — in both `redfishConnection.address` and `bmc-addresses`; a short in-cluster name fails its DNS lookup and the host reports `BMCUnreachable`. If the manager reaches BMCs through an HTTP proxy from its environment (`HTTPS_PROXY`/`HTTP_PROXY`), the proxy resolves the name with its own resolver instead. Prefer IP addresses and CIDRs; otherwise use fully-qualified names under a domain you control, and never wildcard a service that maps names to arbitrary IP addresses, such as nip.io or sslip.io.
+A listed name is trusted to resolve to your BMC. The manager resolves a BMC hostname as an absolute DNS name, without its pod's DNS search path (decision D-032): `bmc1.lab` is looked up as `bmc1.lab.` and never as `bmc1.lab.<namespace>.svc.cluster.local`, where a Service named `bmc1` in a namespace called `lab` would otherwise have received the connection first (pods resolve with `ndots:5`). So write an in-cluster BMC, such as an emulator behind a Service, fully qualified — `<service>.<namespace>.svc.cluster.local`, with your cluster's domain — in both `redfishConnection.address` and `bmc-addresses`; a short in-cluster name fails its DNS lookup and the host reports `BMCUnreachable`. If the manager reaches BMCs through a proxy ([`--bmc-proxy`](#reaching-bmcs-through-a-proxy)), the proxy resolves the name with its own resolver instead, and none of this applies. Prefer IP addresses and CIDRs; otherwise use fully-qualified names under a domain you control, and never wildcard a service that maps names to arbitrary IP addresses, such as nip.io or sslip.io.
 
 The credentials go only to the origin — scheme, host and port — of `redfishConnection.address`. The Redfish client refuses, before sending anything, a request to any other origin: a redirect from the BMC to another port, to another host or a subdomain, or from `https://` to `http://` on the same host, and a link in a BMC response that names another host. The call then fails like any other bad BMC response (`RedfishConnectionFailed` or `RedfishQueryFailed`), with a message naming the refused origin. The address itself may not carry a query (`?`) or fragment (`#`); one that does is refused with `CredentialsNotAuthorized`.
 
 Only the `ca.crt`/`tls.crt` keys of the CA Secret are read, and they are not sent anywhere.
+
+### Reaching BMCs through a proxy
+
+The manager connects to every BMC directly. It does not use `HTTP_PROXY`, `HTTPS_PROXY` or `NO_PROXY` from its environment for BMC connections, however they are set (decision D-035, `v0.10.0`; earlier releases did). A proxy taken from the environment decided two things nothing on the `PhysicalHost` shows: who resolves a BMC's name, which defeats the absolute-name resolution above, and which intermediary carries the credentials. At startup the manager logs the names, never the values, of the proxy variables it is ignoring.
+
+If the manager can reach its BMCs only through a proxy, name it with `--bmc-proxy` (Helm: `bmcProxy`):
+
+```yaml
+args:
+- --bmc-proxy=http://proxy.example.com:3128   # or https://, with optional user:password@
+```
+
+```bash
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --reset-then-reuse-values --set bmcProxy=http://proxy.example.com:3128
+```
+
+The value is `http://[user:password@]host[:port]` or `https://[user:password@]host[:port]`. Empty, the default, is direct. With it set, **every** BMC connection goes through that one proxy: there is no `NO_PROXY`, and a BMC on a local address is proxied like any other. A scheme other than `http` or `https`, a missing host, a port outside 1–65535, and a path (other than `/`), query or fragment are a startup error, and the error does not repeat the value. A callback-only instance (`--controllers=none`) never connects to a BMC and rejects the flag.
+
+What the proxy changes, and what it does not:
+
+- **Still checked before anything is sent.** The credentials go only to an address the Secret's `bmc-addresses` lists (D-030), and the client still refuses any request to a scheme, host or port other than the BMC's, including a redirect or a link from the BMC (SEC-17c). Both are about the BMC's address, so the proxy does not weaken them.
+- **The proxy resolves the BMC's name.** D-032's absolute-name resolution is the manager's own lookup, so it cannot apply to a connection the proxy makes. A proxy whose resolver expands a name through a search path is exposed to what D-032 prevents, and a proxy that cannot see your cluster DNS cannot resolve an in-cluster BMC at all. The manager cannot check what the proxy does with a name; use IP addresses in `redfishConnection.address` and `bmc-addresses` where you can.
+- **`https://` BMCs are tunnelled with `CONNECT`.** The TLS session, and the credentials inside it, run between the manager and the BMC; the proxy sees the BMC's host and port. Certificate verification (system roots, `caBundleSecretRef`, `insecureSkipVerify`) is exactly what it is without a proxy.
+- **Credentials for an `http://` BMC cross the proxy in clear.** The proxy forwards the plain request, `Authorization` header included. An `http://` address is already behind the `bmc-insecure-transport: "true"` annotation on the credentials Secret (D-030), and that stays the one opt-in; it also covers the proxy. Do not send `http://` BMCs through a proxy you do not trust.
+- **An `https://` proxy is verified against the system roots.** A host's `insecureSkipVerify: true` does not skip verifying the proxy, and its `caBundleSecretRef` is not used for it. A proxy whose certificate those roots do not cover cannot be used over `https://`.
+- **`user:password@` is not secret from the cluster.** It is part of the flag, so anyone who can read the manager's Deployment can read it. It is sent to the proxy as a Basic `Proxy-Authorization` header (in clear to an `http://` proxy). The manager never logs the URL: at startup it logs the proxy's scheme and host only. Prefer a proxy that admits the manager by its network address.
 
 ## Bearer-token authentication on the callback endpoint
 
@@ -172,6 +198,7 @@ The manager flags that affect security posture (`cmd/manager/main.go`):
 | `--inspection-port` | `8082` | Port the callback HTTPS endpoint listens on. |
 | `--inspection-cert-dir` | `/tmp/k8s-webhook-server/serving-certs` | Directory containing `tls.crt` + `tls.key` for the callback endpoint. Defaults to the webhook cert dir; both endpoints share a cert covering the controller-manager Service DNS name when cert-manager issues the chart's Certificate. |
 | `--enable-webhook` | `false` | Run the Beskar7Cluster webhook server. |
+| `--bmc-proxy` | empty (direct) | The one `http://` or `https://` proxy every BMC connection goes through (D-035). The environment's `HTTP_PROXY`/`HTTPS_PROXY` are never used for BMCs. The proxy resolves BMC names, so D-032 does not apply through it; credentials for an `http://` BMC cross it in clear. Rejected with `--controllers=none`. See [Reaching BMCs through a proxy](#reaching-bmcs-through-a-proxy). |
 | `--webhook-port` | `9443` | Webhook server port. |
 | `--webhook-cert-dir` | `/tmp/k8s-webhook-server/serving-certs` | Webhook cert dir. |
 

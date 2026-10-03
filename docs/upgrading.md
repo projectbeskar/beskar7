@@ -101,6 +101,50 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
+## `v0.9.x` → `v0.10.0` — upgrade from `v0.9.x`, with no host `Inspecting` or `Deploying`
+
+### The environment's proxy is no longer used for BMC connections
+
+Up to `v0.9.x`, a manager with `HTTP_PROXY`/`HTTPS_PROXY` in its environment (Helm `controllerManager.env`, or a
+patched Deployment) sent its BMC connections through that proxy, because Go's HTTP transport reads them. From
+`v0.10.0` it does not: **BMC connections are direct unless you set the new `--bmc-proxy` flag** (Helm:
+`bmcProxy`), decision D-035. The environment's proxy decided who resolved a BMC's name, which defeated the
+absolute-name resolution of D-032, and carried the credentials of any `http://` BMC, with nothing on the
+`PhysicalHost` showing it.
+
+**If you never set a proxy variable on the manager, there is nothing to do.** If you did, and your BMCs are
+reachable from the manager only through that proxy, set it explicitly, before or when you upgrade:
+
+```bash
+# Helm
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.0 --reset-then-reuse-values \
+  --set bmcProxy=http://proxy.example.com:3128
+# kubectl-applied manifests: add the flag to the manager container's args
+#   - --bmc-proxy=http://proxy.example.com:3128
+```
+
+The value is `http://[user:password@]host[:port]` or `https://[user:password@]host[:port]`. Three things differ
+from the environment variables:
+
+- **Every** BMC connection goes through it. There is no `NO_PROXY`, and a BMC on a local address is proxied too.
+- The proxy resolves the BMC's name, so D-032 does not apply to a proxied connection. Prefer IP addresses in
+  `redfishConnection.address` and the Secret's `bmc-addresses`.
+- Credentials for an `http://` BMC (already behind `bmc-insecure-transport: "true"`) cross the proxy in clear;
+  an `https://` BMC is tunnelled with `CONNECT`, TLS end to end.
+
+See [Reaching BMCs through a proxy](security/configuration.md#reaching-bmcs-through-a-proxy). A callback-only
+instance (`--controllers=none`) never connects to a BMC and rejects `--bmc-proxy`.
+
+A manager that still has proxy variables in its environment logs which ones it is ignoring for BMCs when it
+starts (names only). If you missed this and BMCs went unreachable, hosts report `RedfishConnectionReady=False`
+(`BMCUnreachable`) and recover on their own once the flag is set; this is not a terminal failure
+([troubleshooting issue 15](troubleshooting.md#15-beskar7machine-reports-waitingforbmc)):
+
+```bash
+kubectl logs -n capb7-system deployment/capb7-controller-manager | grep 'proxy environment variables'
+kubectl get physicalhosts -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}{"\t"}{.status.conditions[?(@.type=="RedfishConnectionReady")].reason}{"\n"}{end}' | grep BMCUnreachable
+```
+
 ## `v0.8.0` → `v0.9.0` — security and Cluster API conformance fixes; three things to do first
 
 No CRD-schema change to any existing resource, and no contract change: still `v4.2`, so the inspector

@@ -88,7 +88,7 @@ func TestBMCHostnameIsDialedAsAnAbsoluteName(t *testing.T) {
 				t.Fatal(err)
 			}
 			rec := &dialRecorder{}
-			c, err := newHTTPClient(endpoint, false, nil, rec.dial)
+			c, err := newHTTPClient(endpoint, false, nil, rec.dial, nil)
 			if err != nil {
 				t.Fatalf("newHTTPClient: %v", err)
 			}
@@ -108,7 +108,7 @@ func TestAbsoluteDialAddress(t *testing.T) {
 		{"bmc1.lab", "bmc1.lab:443", "bmc1.lab.:443"},
 		{"BMC1.lab", "bmc1.LAB:443", "bmc1.LAB.:443"},
 		{"bmc1.lab", "bmc1.lab.:443", "bmc1.lab.:443"},
-		// An HTTP proxy from the environment is the operator's name to resolve.
+		// The --bmc-proxy proxy is the operator's name to resolve.
 		{"bmc1.lab", "proxy:3128", "proxy:3128"},
 		{"10.0.0.5", "10.0.0.5:443", "10.0.0.5:443"},
 		{"2001:db8::1", "[2001:db8::1]:443", "[2001:db8::1]:443"},
@@ -133,7 +133,7 @@ func TestBMCHostnameDialLeavesTheRequestAlone(t *testing.T) {
 
 	endpoint := &url.URL{Scheme: "http", Host: "bmc1.lab:8000"}
 	rec := &dialRecorder{target: srv.Listener.Addr().String()}
-	c, err := newHTTPClient(endpoint, false, nil, rec.dial)
+	c, err := newHTTPClient(endpoint, false, nil, rec.dial, nil)
 	if err != nil {
 		t.Fatalf("newHTTPClient: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestBMCHostnameIsNotExpandedWithTheSearchList(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			c, err := newHTTPClient(endpoint, false, nil, dialer.DialContext)
+			c, err := newHTTPClient(endpoint, false, nil, dialer.DialContext, nil)
 			if err != nil {
 				t.Fatalf("newHTTPClient: %v", err)
 			}

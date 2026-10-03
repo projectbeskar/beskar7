@@ -137,6 +137,35 @@ rbac:
 #     - tenant-b
 watchNamespaces: []
 
+# Proxy for BMC (Redfish) connections. Rendered into the manager's --bmc-proxy
+# flag, which the PhysicalHost and Beskar7Machine controllers read to build
+# their Redfish clients (D-035). Empty (the default) connects to every BMC
+# directly.
+#
+# The environment's HTTP_PROXY/HTTPS_PROXY (controllerManager.env) are never
+# used for BMC connections, so this is the only way to proxy them. When set,
+# EVERY BMC connection goes through this one proxy, with no NO_PROXY exemption.
+# Form: http://[user:password@]host[:port] or https://[user:password@]host[:port].
+#
+# Know before you set it:
+#   - The proxy resolves the BMC's name. The manager's absolute-name dialing of
+#     BMC hostnames (D-032) does not apply through it, so prefer IP addresses
+#     in redfishConnection.address and the credentials Secret's bmc-addresses.
+#     Which BMC addresses the credentials may reach is still checked first.
+#   - https:// BMCs are tunnelled with CONNECT, so TLS stays end to end.
+#     Credentials for an http:// BMC (already behind the Secret's
+#     bmc-insecure-transport opt-in) cross the proxy in clear.
+#   - An https:// proxy is verified against the system roots, whatever the
+#     hosts' insecureSkipVerify or caBundleSecretRef say about their BMCs.
+#   - user:password@ ends up in the Deployment's args, readable by anyone who
+#     can read the Deployment; prefer a proxy that does not need credentials.
+#
+# Not for the callback-only instance (--controllers=none), which never talks to
+# a BMC and rejects the flag; the chart does not deploy that instance.
+#
+#   bmcProxy: http://proxy.example.com:3128
+bmcProxy: ""
+
 # Network policies
 networkPolicy:
   enabled: false
