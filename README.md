@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.9.0 — security and Cluster API conformance fixes: callback credentials can no longer be forged by anyone who can patch a `PhysicalHost`, BMC credentials are sent only to the addresses their Secret lists, `clusterctl move` rebuilds provisioned hosts instead of re-inspecting them, and the control-plane endpoint comes from spec (discovery is removed). No CRD-schema change to existing resources and no contract change (still `v4.2`). **Three upgrade steps, two before upgrading** — annotate BMC credentials Secrets, set the endpoint, upgrade with no host mid-run: read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
+**Version:** v0.10.0 — callback integrity, BMC transport and RBAC hardening, plus the re-provisioning fixes held back from `v0.9.1`. What the inspector's callbacks leave on a `PhysicalHost` (the hardware report, `/provisioned`, `/provision-failed`) is applied only if it is bound to the host's own token; BMC credentials go only to the origin their Secret authorises (absolute names, a CA the Secret names, no environment proxy); a failed run's callback token is cut like a `Ready` one; and a claim restarts a host that is already on. One new optional `PhysicalHost` status field and no contract change (still `v4.2`); pair it with inspector `v0.3.4` on physical servers. **Upgrade from `v0.9.x`, apply the CRDs before the controller, and upgrade with no host mid-run**; three configuration changes may need action (fully qualified BMC names, the CA Secret annotation, `--bmc-proxy`): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.9.0/beskar7-manifests-v0.9.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.0/beskar7-manifests-v0.10.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
