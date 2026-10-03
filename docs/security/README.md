@@ -11,6 +11,7 @@ If you are looking for hardening recommendations, see [Configuration](configurat
 - A misconfigured operator: BMC with self-signed cert, weak credentials, lax NetworkPolicy, etc.
 - A compromised host on the management network attempting to talk to the manager's callback endpoint.
 - A multi-tenant control-plane cluster where tenants must not read each other's BMC credentials or bootstrap data.
+- A user allowed to patch `PhysicalHost` objects (and create ConfigMaps) but not to read Secrets, trying to push a host to `Ready`, inject a hardware report or fail a run by writing the annotations the inspector's callbacks leave (control 3a).
 
 Out of scope: kernel exploits on the inspection image, BMC firmware vulnerabilities, supply-chain attacks on the operator's iPXE image hosting.
 
@@ -98,6 +99,21 @@ Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decisions D-006, D-029.
 
 Source: `internal/auth/token.go`, `internal/auth/middleware.go`, `controllers/inspection_handler.go:newBearerTokenVerifier`, `controllers/bootstrap_handler.go`.
+
+### 3a. Callback-written annotations are bound to the per-host token
+
+The callback handlers never write `PhysicalHost.Status`. `POST /inspection`, `POST /provisioned` and `POST /provision-failed` each leave an annotation on the host (`infrastructure.cluster.x-k8s.io/inspection-result-ref`, `provisioned-request`, `provision-failed-request`) and the `PhysicalHost` reconciler turns it into state. Anyone allowed to patch `PhysicalHost` objects could write the same annotations, so without more they could push a host to `Ready`, inject a hardware report or fail a run with no inspector involved (SEC-15). That is an integrity problem, not a credential leak: it exposes no bootstrap data.
+
+Each annotation therefore carries a binding in a sibling annotation (`<annotation>-binding`), written in the same patch (decision D-034):
+
+- The binding is an HMAC-SHA256 keyed by the host's bearer token. The message is domain-separated (`beskar7-callback-binding-v1`) and covers the annotation's key and value, the host's namespace, name and UID, the UID of the `Beskar7Machine` the credentials were minted for, a hash of the boot nonce current in the Secret, and, for the inspection report, the SHA-256 of the `report.json` stored in the ConfigMap the annotation names.
+- The handler computes it from the token it has just authenticated. The reconciler recomputes it from the host's `<host>-bootstrap-token` Secret (D-029, owner-checked as in D-031) and compares with `hmac.Equal`. Forging an annotation therefore takes that Secret: the same bar as reading the host's bootstrap data.
+- An annotation that is missing its binding, has a wrong one, or was bound in an earlier boot cycle or claim (the nonce or the machine's UID is not the one in the Secret now), or an inspection report whose ConfigMap changed after it was bound, is removed by key and ignored: no transition, no status write, and the ConfigMap is not deleted. The log line names the host and the annotation key, never the token, the binding or the value.
+- Token expiry is not checked at that point. The handler authenticated the caller when it wrote the annotation, and the token is cut to 5 minutes at `Ready` while a `/provisioned` report may still be waiting.
+
+No wire change: the inspector sends what it always did. The controllers and any callback-only instance must run the same version.
+
+Source: `controllers/callback_binding.go`, and `applyInspectionResultAnnotation`, `applyProvisionedRequestAnnotation` and `applyProvisionFailedRequestAnnotation` in `controllers/physicalhost_controller.go`.
 
 ### 4. Body cap on inspection POST
 
@@ -187,6 +203,7 @@ To avoid cargo-cult security claims:
 - There is no built-in password-strength policy. The Secret can hold any bytes.
 - There is no automatic credential rotation. Operators rotate Secret values manually; the `PhysicalHost` reconciler watches Secrets and re-reconciles on change.
 - Nothing stops re-pointing a host to another BMC its Secret's `bmc-addresses` list names. The credentials still reach only a listed BMC, but the host then drives the wrong machine. Restrict who can patch `PhysicalHost` objects; there is no `PhysicalHost` admission webhook.
+- The `inspection-request` annotation (`inspect`, `inspect-complete`, `timeout`) is written by the `Beskar7Machine` controller, not by a callback, and carries no binding (control 3a covers the inspector's callbacks only). Someone allowed to patch `PhysicalHost` objects can still, by hand, start inspection on a claimed host, take it to `Deploying` with `inspect-complete`, or record an inspection timeout, which fails the machine. They cannot make it `Ready`, which takes a bound `/provisioned` report; but a host taken to `Deploying` this way fails its machine with `DeploymentTimedOut` unless a real report arrives. The same people can already re-point or release hosts; restrict who can patch `PhysicalHost` objects.
 - There is no CIS / NIST / SOC 2 / ISO 27001 audit. Don't claim compliance you haven't measured.
 - There is no security-scanning CronJob shipped with the chart. Use your platform's standard tooling.
 

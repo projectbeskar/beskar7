@@ -363,6 +363,8 @@ kubectl logs -n capb7-system deployment/capb7-controller-manager -f | grep "reje
 
 Clock skew (> 60 min) between the manager pod and the BMC-managed host can also cause `expired` results — verify NTP on both sides.
 
+A callback the manager answered with `202` but the host never acted on is logged by the PhysicalHost controller, at Info, as `Ignoring a callback annotation that is not bound to the host's credentials; removing it`, with the host and the annotation key (`inspection-result-ref`, `provisioned-request` or `provision-failed-request`; decision D-034). Nothing else is logged: never the token, the binding or the value. The annotation had no binding, or a binding that does not match the host's `<host>-bootstrap-token` Secret: someone wrote it by hand; the boot nonce or the claiming machine changed between the callback and the reconcile (a callback from an earlier boot cycle or claim); the inspection report's ConfigMap was edited after the handler stored it; or the controller and a callback-only instance run different versions, so the callback wrote an annotation with no binding. Run the controller and every callback-only instance at the same version and, when upgrading, wait until no host is `Inspecting` or `Deploying`. The inspector got its `202` and does not send the report again, so the machine times out (`InspectionTimedOut`, `DeploymentTimedOut`) as it would for a callback that never arrived.
+
 ### 11. PhysicalHost in Error: `InsecureCABundleConflict` or `CABundleFetchFailed`
 
 **Symptom:**
