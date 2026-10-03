@@ -206,22 +206,59 @@ beskar7 \
 
 What the instance needs:
 
-- **A kubeconfig whose identity holds the manager's RBAC.** The handlers read
-  PhysicalHosts, Beskar7Machines, Machines and Secrets and write the
-  inspection-result ConfigMap and the PhysicalHost annotations, through the same
-  cached client the full manager uses. A token for the chart's ServiceAccount is
-  the simplest identity. `--kubeconfig` (or `KUBECONFIG`) points at it.
+- **An identity of its own that holds only what the callbacks use.** Do not
+  give it the manager's ServiceAccount: that one can create, change and delete
+  Secrets (in every namespace, in the default install), and this process sits
+  on the provisioning network. `config/rbac/callback-only`, which the default
+  install does not include, ships a ServiceAccount, `capb7-callback` in
+  `capb7-system`, and a namespaced Role and RoleBinding granting it exactly
+  what the handlers do through the cached client: read PhysicalHosts, Beskar7Machines, Machines, Secrets and
+  ConfigMaps; create and update the inspection-result ConfigMap; patch
+  PhysicalHosts (the request annotations) and `physicalhosts/status` (the
+  `/boot` nonce consume); and update `physicalhosts/finalizers`, which only
+  clusters running the `OwnerReferencesPermissionEnforcement` admission plugin
+  check. Apply the ServiceAccount once and the Role in every namespace
+  `--watch-namespaces` lists:
+
+  ```bash
+  kubectl apply -k config/rbac/callback-only
+  kubectl apply -n b7e2e -k config/rbac/callback-only/watched-namespace
+  ```
+
+  `--watch-namespaces` is required with this RBAC: without it the instance's
+  cache lists cluster-wide, which the Role does not allow, and it never becomes
+  ready. Bind it only where hosts live. Even so, the identity can read every
+  Secret in those namespaces (CAPI keeps each cluster's CA and kubeconfig
+  Secrets there) and patch any PhysicalHost, so guard its kubeconfig like the
+  cluster credential it is.
+- **A kubeconfig for that ServiceAccount.** A token from `kubectl create token`
+  expires (`--duration`, capped by the API server's
+  `--service-account-max-token-expiration`). Write it to a file, point the
+  kubeconfig's `users[].user.tokenFile` at that file, and refresh the file
+  before it expires: client-go re-reads it, so the instance needs no restart.
+
+  ```bash
+  kubectl -n capb7-system create token capb7-callback --duration=24h > /etc/beskar7/token
+  ```
+
+  `--kubeconfig` (or `KUBECONFIG`) points at the kubeconfig.
 - **`tls.crt`, `tls.key` and `ca.crt` in `--inspection-cert-dir`** with a SAN
   covering the address in `--bootstrap-url-base`. Hosts only ever talk to this
   instance, so only this certificate matters to the inspector. If you add the
   address to `callback.externalIPs` / `callback.externalNames` in the chart, the
-  serving-cert Secret it issues covers it and can be copied out as-is.
+  serving-cert Secret it issues covers it and can be copied out as-is. When it
+  renews, copy it over again: new connections get the new certificate, and
+  `/boot` hands out the new `ca.crt`, without a restart. Replace the three
+  files together (for example, write them to a new directory and repoint a
+  symlink at it), so a host is not handed a CA that does not match the
+  certificate it is then shown.
 - **The same `--bootstrap-url-base` on both instances.** The in-cluster
   controller writes it into `PhysicalHost.Status.Bootstrap.URL` and the
   callback-only instance renders it into `beskar7.api=` on the `/boot` response;
   set `bootstrap.urlBase` in the chart to the callback-only instance's address.
-- **The same `--watch-namespaces`**, or none with cluster-wide read access, so
-  its cache covers every namespace hosts live in.
+- **`--watch-namespaces` covering every namespace hosts live in**: the
+  in-cluster manager's list, or, if that one watches all namespaces, the
+  namespaces your PhysicalHosts are in. Each needs the Role above.
 
 Leader election is off in this mode without being asked (there is nothing to
 lead, and a callback-only instance holding the lease would idle the real

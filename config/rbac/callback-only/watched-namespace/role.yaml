@@ -1,0 +1,99 @@
+# What a callback-only manager (--controllers=none) does in a watched
+# namespace, and nothing more. Hand-maintained: no reconciler runs in that mode,
+# so there are no kubebuilder markers to generate it from. test/rbac pins these
+# rules exactly; cmd/manager's TestCallbackOnlyRoleServesEveryRoute proves they
+# serve every callback route.
+#
+# The handlers read through the manager's cache, whose informers list and
+# watch; get rides along with them because list already returns every object.
+#
+# What this still allows, by design: reading every Secret in the namespace (the
+# Secret informer caches them all, and CAPI keeps a cluster's CA and kubeconfig
+# Secrets next to its Machines), and patching any PhysicalHost or its status.
+# Bind it only in namespaces this instance must serve.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: capb7-callback-role
+rules:
+# The bearer verifier and /boot read <host>-bootstrap-token; /bootstrap reads
+# the Secret Machine.spec.bootstrap.dataSecretName names.
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+# /inspection writes the report to <host>-inspection-result (CreateOrUpdate:
+# create the first time, update on a retry the controller has not consumed).
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch
+# /bootstrap walks the host's Beskar7Machine to its owner Machine.
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
+  - machines
+  verbs:
+  - get
+  - list
+  - watch
+# /boot renders from the host's Beskar7Machine; /bootstrap walks through it.
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - beskar7machines
+  verbs:
+  - get
+  - list
+  - watch
+# Every route reads the host; /inspection, /provisioned and /provision-failed
+# patch their request annotations onto it.
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhosts
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+# /boot records the nonce consume in status (D-010).
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhosts/status
+  verbs:
+  - patch
+# The inspection-result ConfigMap's owner reference to the host sets
+# blockOwnerDeletion, which clusters running the
+# OwnerReferencesPermissionEnforcement admission plugin (OpenShift among them)
+# allow only to a caller that may update the host's finalizers.
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhosts/finalizers
+  verbs:
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: capb7-callback-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: capb7-callback-role
+subjects:
+- kind: ServiceAccount
+  name: capb7-callback
+  namespace: capb7-system

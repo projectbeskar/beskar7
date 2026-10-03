@@ -1,0 +1,30 @@
+# Least-privilege RBAC for a callback-only manager (--controllers=none), the
+# copy placed on the provisioning network when the management cluster has no
+# interface there (docs/ipxe-setup.md). SEC-14.
+#
+# NOT part of the default install (config/default does not reference it); apply
+# it only for that second instance. Two parts, applied separately because they
+# live in different namespaces:
+#
+#   1. This directory: the ServiceAccount the instance authenticates as,
+#      capb7-callback in capb7-system. Apply once:
+#
+#        kubectl apply -k config/rbac/callback-only
+#
+#   2. watched-namespace/: a Role and a RoleBinding granting that ServiceAccount
+#      what the callback handlers use, in ONE namespace. Apply once per
+#      namespace the instance's --watch-namespaces lists:
+#
+#        kubectl apply -n <namespace> -k config/rbac/callback-only/watched-namespace
+#
+#      or reference it from an overlay that sets `namespace: <namespace>`.
+#
+# The Role is namespaced on purpose: start the instance with --watch-namespaces
+# naming exactly the namespaces bound here. Without that flag its cache lists
+# cluster-wide, which this RBAC does not allow, and it never becomes ready.
+#
+# No namespace transformer here: it would move the ServiceAccount. A consuming
+# overlay's own `namespace:` moves the Role and RoleBinding but leaves the
+# binding's subject in capb7-system (test/rbac builds such an overlay).
+resources:
+- service_account.yaml

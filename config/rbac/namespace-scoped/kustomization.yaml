@@ -7,10 +7,8 @@
 # wanting tightened RBAC swap the base to this directory in their own
 # overlay.
 #
-# What's here:
-#   - minimal-clusterrole.yaml      Cluster-scoped reads only (clusterroles,
-#                                   clusterrolebindings auto-generated from
-#                                   a kubebuilder marker).
+# What's here (nothing cluster-scoped: every manager permission is
+# namespaced in this topology):
 #   - leader-election-role.yaml     Role + RoleBinding in capb7-system for
 #                                   leader-election leases + operator events.
 #   - watch-role.template.yaml      TEMPLATE for the per-namespace Role +
@@ -27,7 +25,6 @@
 namespace: capb7-system
 
 resources:
-- minimal-clusterrole.yaml
 - leader-election-role.yaml
 # watch-role.template.yaml is intentionally NOT listed — it's a template.
 # Copy it to watch-role.<namespace>.yaml per watched namespace, edit the

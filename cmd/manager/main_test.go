@@ -315,8 +315,9 @@ func expectStatus(t *testing.T, c *http.Client, method, url, authorization strin
 
 // startEnvtest boots an envtest control plane with the Beskar7 CRDs and the
 // minimal CAPI CRDs, resolving assets the same way controllers/suite_test.go
-// does when KUBEBUILDER_ASSETS is unset.
-func startEnvtest(t *testing.T) *rest.Config {
+// does when KUBEBUILDER_ASSETS is unset. Each configure func runs on the
+// environment before it starts.
+func startEnvtest(t *testing.T, configure ...func(*envtest.Environment)) *rest.Config {
 	t.Helper()
 	if os.Getenv("KUBEBUILDER_ASSETS") == "" {
 		out, err := exec.Command("bash", "-lc",
@@ -333,6 +334,9 @@ func startEnvtest(t *testing.T) *rest.Config {
 		},
 		ErrorIfCRDPathMissing: true,
 		BinaryAssetsDirectory: os.Getenv("KUBEBUILDER_ASSETS"),
+	}
+	for _, c := range configure {
+		c(env)
 	}
 	restCfg, err := env.Start()
 	if err != nil {
@@ -367,6 +371,39 @@ func freePort(t *testing.T) int {
 // into dir as ca.crt, tls.crt and tls.key — the layout SetupCallbackServer
 // reads — and returns a pool that trusts the CA.
 func writeServingCert(t *testing.T, dir string) *x509.CertPool {
+	t.Helper()
+	cert := newServingCert(t)
+	cert.writeTo(t, dir)
+	return cert.pool(t)
+}
+
+// servingCert is a CA and a leaf serving certificate for 127.0.0.1 signed by
+// it, as the files SetupCallbackServer reads.
+type servingCert struct {
+	files map[string][]byte // ca.crt, tls.crt, tls.key
+	leaf  []byte            // DER of the leaf, to recognise it on the wire
+}
+
+func (c servingCert) writeTo(t *testing.T, dir string) {
+	t.Helper()
+	for name, data := range c.files {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+}
+
+// pool returns a pool that trusts the CA.
+func (c servingCert) pool(t *testing.T) *x509.CertPool {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(c.files["ca.crt"]) {
+		t.Fatal("append CA to pool")
+	}
+	return pool
+}
+
+func newServingCert(t *testing.T) servingCert {
 	t.Helper()
 	now := time.Now()
 
@@ -414,21 +451,12 @@ func writeServingCert(t *testing.T, dir string) *x509.CertPool {
 		t.Fatalf("marshal leaf key: %v", err)
 	}
 
-	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
-	files := map[string][]byte{
-		"ca.crt":  caPEM,
-		"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
-		"tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyDER}),
+	return servingCert{
+		files: map[string][]byte{
+			"ca.crt":  pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}),
+			"tls.crt": pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}),
+			"tls.key": pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: leafKeyDER}),
+		},
+		leaf: leafDER,
 	}
-	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-	}
-
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(caPEM) {
-		t.Fatal("append CA to pool")
-	}
-	return pool
 }

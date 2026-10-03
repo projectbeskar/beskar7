@@ -274,27 +274,43 @@ func loadGeneratedManagerRole(t *testing.T, root string) map[ruleTriple]struct{}
 	return triplesFromRules(crs[0].Rules)
 }
 
+// TestManagerRoleGrantsNoRBACAPIAccess pins that the manager holds no
+// permission on rbac.authorization.k8s.io. Nothing in the manager reads
+// ClusterRoles or bindings; a scaffolding marker in cmd/manager/main.go once
+// granted cluster-wide get/list/watch on both, and it was the only rule the
+// namespace-scoped topology could not narrow (SEC-14). The parity tests below
+// carry this to the chart and the kustomize overlay.
+func TestManagerRoleGrantsNoRBACAPIAccess(t *testing.T) {
+	root := repoRoot(t)
+	var found []string
+	for tr := range loadGeneratedManagerRole(t, root) {
+		if tr.Group == "rbac.authorization.k8s.io" {
+			found = append(found, tr.String())
+		}
+	}
+	sort.Strings(found)
+	if len(found) > 0 {
+		t.Errorf("config/rbac/role.yaml grants the manager RBAC-API access nothing in it uses:\n  %s", strings.Join(found, "\n  "))
+	}
+}
+
 // TestKustomizeRBACMatchesGeneratedRole is invariant (C): the union of the
-// kustomize namespace-scoped overlay's three role files must equal
-// config/rbac/role.yaml. This is pure Go (no external tooling) and must
-// always run — it is the one guard in this package that CI can never skip.
+// kustomize namespace-scoped overlay's two role files must equal
+// config/rbac/role.yaml, and the overlay must ship nothing cluster-scoped.
+// This is pure Go (no external tooling) and must always run — it is the one
+// guard in this package that CI can never skip.
 func TestKustomizeRBACMatchesGeneratedRole(t *testing.T) {
 	root := repoRoot(t)
 	want := loadGeneratedManagerRole(t, root)
 
 	overlayDir := filepath.Join(root, "config", "rbac", "namespace-scoped")
-	minimalRaw := mustReadFile(t, filepath.Join(overlayDir, "minimal-clusterrole.yaml"))
 	leaderRaw := mustReadFile(t, filepath.Join(overlayDir, "leader-election-role.yaml"))
 	watchRaw := mustReadFile(t, filepath.Join(overlayDir, "watch-role.template.yaml"))
 	watchRaw = bytes.ReplaceAll(watchRaw, []byte("REPLACE_WITH_WATCHED_NAMESPACE"), []byte("dummy-namespace"))
 
-	minimalCRs, _ := collectRoles(t, minimalRaw)
 	_, leaderRoles := collectRoles(t, leaderRaw)
 	_, watchRoles := collectRoles(t, watchRaw)
 
-	if len(minimalCRs) != 1 {
-		t.Fatalf("minimal-clusterrole.yaml: expected exactly 1 ClusterRole, found %d", len(minimalCRs))
-	}
 	if len(leaderRoles) != 1 {
 		t.Fatalf("leader-election-role.yaml: expected exactly 1 Role, found %d", len(leaderRoles))
 	}
@@ -303,12 +319,29 @@ func TestKustomizeRBACMatchesGeneratedRole(t *testing.T) {
 	}
 
 	got := unionTriples(
-		triplesFromRules(minimalCRs[0].Rules),
 		triplesFromRules(leaderRoles[0].Rules),
 		triplesFromRules(watchRoles[0].Rules),
 	)
 
-	assertTriplesEqual(t, "kustomize overlay config/rbac/namespace-scoped/ (minimal-clusterrole + leader-election-role + watch-role.template)", want, got)
+	assertTriplesEqual(t, "kustomize overlay config/rbac/namespace-scoped/ (leader-election-role + watch-role.template)", want, got)
+
+	// The overlay exists to take the manager off cluster scope. Every manifest
+	// in it, listed or template, must be namespaced.
+	files, err := filepath.Glob(filepath.Join(overlayDir, "*.yaml"))
+	if err != nil {
+		t.Fatalf("glob overlay manifests: %v", err)
+	}
+	for _, f := range files {
+		if filepath.Base(f) == "kustomization.yaml" {
+			continue
+		}
+		crs, _ := collectRoles(t, mustReadFile(t, f))
+		_, crbs := collectBindings(t, mustReadFile(t, f))
+		if len(crs) > 0 || len(crbs) > 0 {
+			t.Errorf("%s: the namespace-scoped overlay ships %d ClusterRole(s) and %d ClusterRoleBinding(s); it must ship none",
+				filepath.Base(f), len(crs), len(crbs))
+		}
+	}
 }
 
 func helmAvailable() bool {
@@ -362,8 +395,10 @@ func TestHelmChartClusterWideRBACMatchesGeneratedRole(t *testing.T) {
 
 // TestHelmChartNamespacedRBACMatchesGeneratedRole is invariant (B): with
 // watchNamespaces set to one namespace, the union of the rendered
-// "*-manager-clusterscope" ClusterRole, "*-manager-leaderelection" Role, and
-// "*-manager-watch" Role must equal config/rbac/role.yaml.
+// "*-manager-leaderelection" Role and "*-manager-watch" Role must equal
+// config/rbac/role.yaml, and no ClusterRole is rendered for the manager — the
+// only cluster-scoped roles left are the metrics ones, which authenticate
+// scrapes rather than reconcile anything.
 //
 // Same helm-availability caveat as TestHelmChartClusterWideRBACMatchesGeneratedRole.
 func TestHelmChartNamespacedRBACMatchesGeneratedRole(t *testing.T) {
@@ -376,17 +411,22 @@ func TestHelmChartNamespacedRBACMatchesGeneratedRole(t *testing.T) {
 	rendered := renderHelmTemplate(t, root, "--set", "watchNamespaces={rbac-driftguard-test-ns}")
 	crs, roles := collectRoles(t, rendered)
 
-	clusterscope := findClusterRoleBySuffix(t, crs, "-manager-clusterscope")
 	leaderelection := findRoleBySuffix(t, roles, "-manager-leaderelection")
 	watch := findRoleBySuffix(t, roles, "-manager-watch")
 
 	got := unionTriples(
-		triplesFromRules(clusterscope.Rules),
 		triplesFromRules(leaderelection.Rules),
 		triplesFromRules(watch.Rules),
 	)
 
-	assertTriplesEqual(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns]: *-manager-clusterscope + *-manager-leaderelection + *-manager-watch)", want, got)
+	assertTriplesEqual(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns]: *-manager-leaderelection + *-manager-watch)", want, got)
+
+	for _, cr := range crs {
+		if strings.HasSuffix(cr.Name, "-metrics-auth-role") || strings.HasSuffix(cr.Name, "-metrics-reader") {
+			continue
+		}
+		t.Errorf("Helm chart namespaced branch renders ClusterRole %s; with watchNamespaces set the manager must hold no cluster-scoped role", cr.Name)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +674,6 @@ func TestKustomizeRBACBindingsWireToManagerSA(t *testing.T) {
 
 	t.Run("namespace-scoped", func(t *testing.T) {
 		overlayDir := filepath.Join(root, "config", "rbac", "namespace-scoped")
-		minimalRaw := mustReadFile(t, filepath.Join(overlayDir, "minimal-clusterrole.yaml"))
 		leaderRaw := mustReadFile(t, filepath.Join(overlayDir, "leader-election-role.yaml"))
 		watchRaw := mustReadFile(t, filepath.Join(overlayDir, "watch-role.template.yaml"))
 		watchRaw = bytes.ReplaceAll(watchRaw, []byte("REPLACE_WITH_WATCHED_NAMESPACE"), []byte("dummy-namespace"))
@@ -643,7 +682,7 @@ func TestKustomizeRBACBindingsWireToManagerSA(t *testing.T) {
 		var roles []rbacv1.Role
 		var rbs []rbacv1.RoleBinding
 		var crbs []rbacv1.ClusterRoleBinding
-		for _, raw := range [][]byte{minimalRaw, leaderRaw, watchRaw} {
+		for _, raw := range [][]byte{leaderRaw, watchRaw} {
 			c, r := collectRoles(t, raw)
 			crs = append(crs, c...)
 			roles = append(roles, r...)
