@@ -125,9 +125,17 @@ func createCallbackFixture(t *testing.T, c client.Client, namespace string) call
 		t.Fatalf("mint nonce: %v", err)
 	}
 	expires := []byte(time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
-	// The data keys are the manager's (controllers package, D-029).
+	// The data keys are the manager's (controllers package, D-029). The Secret
+	// counts only as the host's own, controlled by the host (D-031).
+	isController := true
 	mustCreate(t, c, &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: fx.host + "-bootstrap-token", Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fx.host + "-bootstrap-token", Namespace: namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: infrav1.GroupVersion.String(), Kind: "PhysicalHost",
+				Name: host.Name, UID: host.UID, Controller: &isController,
+			}},
+		},
 		Data: map[string][]byte{
 			"plaintext-token":       []byte(fx.token),
 			"token-expires-at":      expires,
