@@ -22,8 +22,17 @@
 # To enable, point your own overlay's `resources:` at this dir instead of
 # ../rbac, AND set --watch-namespaces=<csv> on the manager Deployment so
 # the controller-runtime cache matches the RBAC.
-namespace: capb7-system
-
+#
+# No namespace transformer here, and none in the overlay that consumes this
+# directory. A `namespace:` field rewrites the namespace of every namespaced
+# object it covers, which would pull each per-namespace watch Role and
+# RoleBinding out of its watched namespace and into the one it names: the
+# manager would then hold nothing in the namespaces it watches (and with two
+# watched namespaces the build fails on the duplicate Role). So every object
+# here names its own namespace: capb7-system for the leader-election pair and
+# for the RoleBinding subjects (the manager ServiceAccount lives there), the
+# watched namespace for each watch Role and RoleBinding.
+# test/rbac builds this directory the way the README describes and pins it.
 resources:
 - leader-election-role.yaml
 # watch-role.template.yaml is intentionally NOT listed — it's a template.
