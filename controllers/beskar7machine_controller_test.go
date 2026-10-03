@@ -1945,92 +1945,6 @@ var _ = Describe("bootNonceReusable", func() {
 	})
 })
 
-// The one-release upgrade backfill (D-029): a run in flight across the upgrade
-// keeps its credentials once they are bound to its machine. Pure unit tests;
-// the envtest specs in callback_credentials_test.go run it through the
-// reconciler.
-var _ = Describe("backfillLegacyCredentials", func() {
-	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	const machine = "inflight-machine"
-	token, tokenHash := "legacy-token", auth.Hash("legacy-token")
-	nonce, nonceHash := "legacy-nonce", auth.Hash("legacy-nonce")
-
-	legacyHost := func(state string, tokenExpiry, nonceExpiry time.Time) *infrav1.PhysicalHost {
-		issued := metav1.NewTime(now.Add(-5 * time.Minute))
-		te, ne := metav1.NewTime(tokenExpiry), metav1.NewTime(nonceExpiry)
-		host := claimedPhysicalHost("ns", "host", machine)
-		host.Status.State = state
-		host.Status.Bootstrap = &infrav1.BootstrapStatus{
-			TokenHash: tokenHash, IssuedAt: &issued, ExpiresAt: &te,
-			BootNonceHash: nonceHash, BootNonceExpiresAt: &ne,
-		}
-		return host
-	}
-	legacyCreds := func() bootstrapCredentials {
-		return bootstrapCredentials{token: token, nonce: nonce}
-	}
-
-	for _, state := range []string{infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying} {
-		It("binds both credentials of a host in "+state+" with the lifetimes status carried", func() {
-			creds := legacyCreds()
-			host := legacyHost(state, now.Add(40*time.Minute), now.Add(4*time.Minute))
-			Expect(backfillLegacyCredentials(&creds, host, machine, now)).To(BeTrue())
-			Expect(creds.consumer).To(Equal(machine))
-			Expect(creds.token).To(Equal(token))
-			Expect(creds.tokenExpiresAt).To(Equal(host.Status.Bootstrap.ExpiresAt.Time))
-			Expect(creds.tokenIssuedAt).To(Equal(host.Status.Bootstrap.IssuedAt.Time))
-			Expect(creds.nonce).To(Equal(nonce))
-			Expect(creds.nonceExpiresAt).To(Equal(host.Status.Bootstrap.BootNonceExpiresAt.Time))
-		})
-	}
-
-	It("caps a lifetime status carried beyond a fresh one", func() {
-		creds := legacyCreds()
-		host := legacyHost(infrav1.StateInspecting, now.Add(24*time.Hour), now.Add(24*time.Hour))
-		Expect(backfillLegacyCredentials(&creds, host, machine, now)).To(BeTrue())
-		Expect(creds.tokenExpiresAt).To(Equal(now.Add(auth.TokenLifetime)))
-		Expect(creds.nonceExpiresAt).To(Equal(now.Add(auth.BootNonceLifetime)))
-	})
-
-	It("leaves a Ready host alone: no callback follows Ready", func() {
-		creds := legacyCreds()
-		Expect(backfillLegacyCredentials(&creds, legacyHost(infrav1.StateReady, now.Add(time.Hour), now.Add(time.Hour)), machine, now)).To(BeFalse())
-		Expect(creds.consumer).To(BeEmpty())
-		Expect(creds.tokenExpiresAt.IsZero()).To(BeTrue())
-	})
-
-	It("never backfills a credential whose plaintext does not hash to what status carries", func() {
-		creds := legacyCreds()
-		host := legacyHost(infrav1.StateInspecting, now.Add(time.Hour), now.Add(time.Minute))
-		host.Status.Bootstrap.TokenHash = auth.Hash("forged-through-an-annotation")
-		Expect(backfillLegacyCredentials(&creds, host, machine, now)).To(BeTrue(), "the nonce still matches")
-		Expect(creds.tokenExpiresAt.IsZero()).To(BeTrue(), "a token without an expiry never verifies")
-		Expect(creds.nonceExpiresAt).To(Equal(now.Add(time.Minute)))
-	})
-
-	It("never backfills a credential status gave no expiry", func() {
-		creds := legacyCreds()
-		host := legacyHost(infrav1.StateInspecting, now.Add(time.Hour), now.Add(time.Minute))
-		host.Status.Bootstrap.ExpiresAt = nil
-		host.Status.Bootstrap.BootNonceExpiresAt = nil
-		Expect(backfillLegacyCredentials(&creds, host, machine, now)).To(BeFalse())
-		Expect(creds.consumer).To(BeEmpty())
-	})
-
-	It("leaves a Secret that already carries a binding alone", func() {
-		creds := legacyCreds()
-		creds.consumer = "someone"
-		Expect(backfillLegacyCredentials(&creds, legacyHost(infrav1.StateInspecting, now.Add(time.Hour), now.Add(time.Minute)), machine, now)).To(BeFalse())
-		Expect(creds.consumer).To(Equal("someone"))
-	})
-
-	It("binds only to the machine the host's claim names", func() {
-		creds := legacyCreds()
-		Expect(backfillLegacyCredentials(&creds, legacyHost(infrav1.StateInspecting, now.Add(time.Hour), now.Add(time.Minute)), "other-machine", now)).To(BeFalse())
-		Expect(creds.consumer).To(BeEmpty())
-	})
-})
-
 var _ = Describe("Host claim honours placement: failure domain and hostSelector", func() {
 	// CAPI places a Machine into one of the failure domains Beskar7Cluster
 	// publishes, which it derives from the topology.kubernetes.io/zone label on
@@ -2608,16 +2522,15 @@ var _ = Describe("Beskar7Machine credential reuse is judged by the bound Secret 
 		})
 	})
 
-	// The one-release upgrade backfill (D-029) for InUse, which
-	// triggerInspection covers; callback_credentials_test.go covers Inspecting
-	// and Ready through the full reconcile.
+	// A Secret written before the consumer binding (D-029) is not carried
+	// across the upgrade (BACKFILL-1): it is not bound to this machine, so it
+	// is replaced like any other credential that is not. callback_credentials_test.go
+	// runs the same host through the full reconcile, in every state.
 	Context("a Secret written before the consumer binding", func() {
-		It("binds an InUse host's credentials to this machine instead of minting", func() {
+		It("mints fresh credentials for this machine, however valid status says the old ones are", func() {
 			token, tokenHash := mustMint()
 			nonce, nonceHash := mustMint()
 			seedSecret(map[string][]byte{bootstrapTokenSecretKey: []byte(token), bootNonceSecretKey: []byte(nonce)})
-			// More than a nonce plus an inspection left, or the token is not
-			// handed out again however it was bound (D-031).
 			tokenExpiry := metav1.NewTime(time.Now().Add(40 * time.Minute).Truncate(time.Second))
 			nonceExpiry := metav1.NewTime(time.Now().Add(3 * time.Minute).Truncate(time.Second))
 			seedStatus(infrav1.StateInUse, &infrav1.BootstrapStatus{
@@ -2627,30 +2540,11 @@ var _ = Describe("Beskar7Machine credential reuse is judged by the bound Secret 
 			trigger()
 
 			creds := getCreds()
-			Expect(creds.token).To(Equal(token), "the operator's boot service may already have handed these out")
-			Expect(creds.nonce).To(Equal(nonce))
-			Expect(creds.consumer).To(Equal(b7machine.Name))
-			Expect(creds.tokenExpiresAt).To(BeTemporally("==", tokenExpiry.Time))
-			Expect(creds.nonceExpiresAt).To(BeTemporally("==", nonceExpiry.Time))
-		})
-
-		It("mints fresh credentials when the plaintexts do not hash to what status carries", func() {
-			token, _ := mustMint()
-			nonce, _ := mustMint()
-			seedSecret(map[string][]byte{bootstrapTokenSecretKey: []byte(token), bootNonceSecretKey: []byte(nonce)})
-			_, forgedToken := mustMint()
-			_, forgedNonce := mustMint()
-			future := metav1.NewTime(time.Now().Add(time.Hour))
-			seedStatus(infrav1.StateInUse, &infrav1.BootstrapStatus{
-				TokenHash: forgedToken, ExpiresAt: &future, BootNonceHash: forgedNonce, BootNonceExpiresAt: &future,
-			})
-
-			trigger()
-
-			creds := getCreds()
 			Expect(creds.token).NotTo(Equal(token))
 			Expect(creds.nonce).NotTo(Equal(nonce))
 			Expect(creds.consumer).To(Equal(b7machine.Name))
+			Expect(creds.tokenValid(time.Now())).To(BeTrue())
+			Expect(creds.nonceValid(time.Now())).To(BeTrue())
 		})
 	})
 })

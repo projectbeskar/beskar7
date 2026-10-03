@@ -1028,7 +1028,7 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).To(BeNil())
 	})
 
-	It("leaves status alone for a Secret written before the consumer binding (the upgrade backfill reads it)", func() {
+	It("leaves status alone for a Secret written before the consumer binding, which authenticates nothing", func() {
 		ph := hostWithStatus()
 		before := ph.Status.DeepCopy()
 		mirror(ph, credentialSecret(ph, map[string][]byte{bootstrapTokenSecretKey: []byte("token")}))

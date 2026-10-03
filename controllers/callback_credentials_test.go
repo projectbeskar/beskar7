@@ -44,6 +44,7 @@ import (
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
+	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
 // Callback credentials used to be read from PhysicalHost.Status.Bootstrap, and
@@ -539,12 +540,15 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 		Expect(host.Status.Bootstrap.BootNonceHash).To(BeEmpty(), "a nonce the Secret no longer holds is not mirrored")
 	})
 
-	// Upgrade from a release that promoted the annotations: the Secret holds
-	// only the plaintexts, and the hash and lifetime are in status. A run in
-	// flight keeps its credentials for one release; a host already Ready does
-	// not, since no callback follows Ready.
-	Context("a host whose Secret predates the consumer binding", func() {
-		legacyHost := func(name, machineName, state string) (client.ObjectKey, string) {
+	// Upgrade straight from a release that promoted the annotations (v0.8.x and
+	// earlier), or a host no v0.9.x manager reconciled: the Secret holds only
+	// the plaintexts, and their hashes and lifetimes are in status. v0.9.x
+	// bound a run in flight to its machine for one release; BACKFILL-1 removed
+	// that, so credentials that exist only in this form authenticate nothing.
+	// The machine controller leaves a run past InUse alone until its own
+	// timeout ends it, and a claim still at InUse mints afresh.
+	Context("a host whose credentials exist only in the form written before the consumer binding (BACKFILL-1)", func() {
+		legacyHost := func(name, machineName, state string) (client.ObjectKey, string, string) {
 			key := provisioningHost(ns.Name, name, machineName, state, nil)
 			token, tokenHash := mint()
 			nonce, nonceHash := mint()
@@ -561,60 +565,107 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 				BootNonceHash: nonceHash, BootNonceExpiresAt: &nonceExpiresAt,
 			}
 			Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
-			return key, token
+			return key, token, nonce
 		}
 		reconcileMachine := func(b7m *infrav1.Beskar7Machine, machine *clusterv1.Machine) {
 			b7m.Finalizers = []string{Beskar7MachineFinalizer}
 			_, err := machineR.reconcileNormal(ctx, machineR.Log, b7m, machine)
 			Expect(err).NotTo(HaveOccurred())
 		}
+		// recordingBMC makes every Redfish client the machine reconciler builds
+		// the one returned, so a spec can tell whether the host was touched.
+		recordingBMC := func() *internalredfish.MockClient {
+			bmc := internalredfish.NewMockClient()
+			machineR.RedfishClientFactory = func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
+				return bmc, nil
+			}
+			return bmc
+		}
+		expectHostUntouched := func(bmc *internalredfish.MockClient) {
+			Expect(bmc.SetBootSourcePXECalled).To(BeFalse(), "no boot override")
+			Expect(bmc.SetPowerStateCalled).To(BeFalse(), "no power-on")
+			Expect(bmc.ResetCalled).To(BeFalse(), "no restart")
+			Expect(bmc.ForcePowerOffCalled).To(BeFalse(), "no power-off")
+		}
+		expectLegacyCredentialsRejected := func(key client.ObjectKey, token, nonce, marker string) {
+			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), token)
+			Expect(body).NotTo(ContainSubstring(marker))
+			Expect(code).To(Equal(http.StatusUnauthorized))
+			code, _ = callbackRequest(http.MethodPost, inspectionURL(key), token)
+			Expect(code).To(Equal(http.StatusUnauthorized))
+			resp := doBoot(server.URL, key.Namespace, key.Name, nonce)
+			Expect(readBody(resp)).NotTo(ContainSubstring(token))
+			Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
+		}
 
-		It("keeps an Inspecting host's token working by binding it to its machine", func() {
-			b7m, machine := consumerWithBootstrapData(ns.Name, "inflight-machine", "INFLIGHT-BOOTSTRAP-DATA")
-			key, token := legacyHost("inflight-host", b7m.Name, infrav1.StateInspecting)
-			statusExpiry := getPhysicalHost(key).Status.Bootstrap.ExpiresAt.Time
+		DescribeTable("a run in flight has every callback rejected, and is left to its own timeout",
+			func(state, phase, timedOutReason string) {
+				b7m, machine := consumerWithBootstrapData(ns.Name, "inflight-machine", "INFLIGHT-BOOTSTRAP-DATA")
+				key, token, nonce := legacyHost("inflight-host", b7m.Name, state)
+				before := getCredentialSecret(key)
+				bmc := recordingBMC()
+
+				reconcileMachine(b7m, machine)
+
+				By("rejecting every callback the run's inspector makes with its pre-upgrade credentials")
+				expectLegacyCredentialsRejected(key, token, nonce, "INFLIGHT-BOOTSTRAP-DATA")
+
+				By("binding nothing and minting nothing: the Secret is not written at all")
+				after := getCredentialSecret(key)
+				Expect(after.ResourceVersion).To(Equal(before.ResourceVersion))
+				Expect(after.Data).NotTo(HaveKey(bootstrapConsumerSecretKey))
+
+				By("neither moving the host nor reprovisioning it")
+				Expect(getPhysicalHost(key).Status.State).To(Equal(state))
+				expectHostUntouched(bmc)
+				Expect(ptr.Deref(b7m.Status.Phase, "")).To(Equal(phase))
+
+				By("failing the machine once its own timeout passes, which Cluster API remediates")
+				machineR.InspectionTimeout, machineR.DeploymentTimeout = 30*time.Second, 30*time.Second
+				reconcileMachine(b7m, machine)
+				Expect(ptr.Deref(b7m.Status.Phase, "")).To(Equal(infrav1.PhaseFailed))
+				Expect(conditions.GetReason(b7m, infrav1.InfrastructureReadyCondition)).To(Equal(timedOutReason))
+				Expect(getCredentialSecret(key).ResourceVersion).To(Equal(before.ResourceVersion), "the failure does not touch the Secret either")
+				expectHostUntouched(bmc)
+			},
+			Entry("Inspecting", infrav1.StateInspecting, "Inspecting", infrav1.InspectionTimedOutReason),
+			Entry("Deploying", infrav1.StateDeploying, "Provisioning", DeploymentTimedOutReason),
+		)
+
+		It("mints fresh credentials for a claim still at InUse instead of binding the old ones", func() {
+			b7m, machine := consumerWithBootstrapData(ns.Name, "claimed-machine", "CLAIMED-BOOTSTRAP-DATA")
+			key, oldToken, oldNonce := legacyHost("claimed-host", b7m.Name, infrav1.StateInUse)
 
 			reconcileMachine(b7m, machine)
+			host := reconcileHost(key, 2)
 
-			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), token)
-			Expect(code).To(Equal(http.StatusOK))
-			Expect(body).To(ContainSubstring("INFLIGHT-BOOTSTRAP-DATA"))
 			secret := getCredentialSecret(key)
-			Expect(string(secret.Data[bootstrapTokenSecretKey])).To(Equal(token), "the backfill keeps the token")
+			newToken, newNonce := string(secret.Data[bootstrapTokenSecretKey]), string(secret.Data[bootNonceSecretKey])
+			Expect(newToken).NotTo(Equal(oldToken))
+			Expect(newNonce).NotTo(Equal(oldNonce))
 			Expect(string(secret.Data[bootstrapConsumerSecretKey])).To(Equal(b7m.Name))
-			expiry, err := time.Parse(time.RFC3339, string(secret.Data[bootstrapTokenExpiresAtSecretKey]))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(expiry).To(BeTemporally("<=", statusExpiry), "the backfilled expiry never outlives the one status advertised")
+			Expect(string(secret.Data[bootstrapConsumerUIDSecretKey])).To(Equal(string(b7m.UID)))
+			Expect(auth.Verify(newToken, host.Status.Bootstrap.TokenHash)).To(BeTrue(), "the mirror follows the fresh token")
+
+			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), newToken)
+			Expect(code).To(Equal(http.StatusOK))
+			Expect(body).To(ContainSubstring("CLAIMED-BOOTSTRAP-DATA"))
+			expectLegacyCredentialsRejected(key, oldToken, oldNonce, "CLAIMED-BOOTSTRAP-DATA")
 		})
 
-		It("neither backfills nor adopts a Secret the host does not own, and the machine carries on", func() {
-			b7m, machine := consumerWithBootstrapData(ns.Name, "unowned-machine", "UNOWNED-BOOTSTRAP-DATA")
-			key, token := legacyHost("unowned-host", b7m.Name, infrav1.StateInspecting)
-			By("replacing the host's Secret with the same plaintexts under no owner")
-			secret := getCredentialSecret(key)
-			Expect(k8sClient.Delete(ctx, secret)).To(Succeed())
-			Expect(k8sClient.Create(ctx, unownedCredentialSecret(ns.Name, key.Name, secret.Data))).To(Succeed())
-
-			reconcileMachine(b7m, machine)
-
-			after := getCredentialSecret(key)
-			Expect(after.OwnerReferences).To(BeEmpty(), "never adopted")
-			Expect(after.Data).NotTo(HaveKey(bootstrapConsumerSecretKey), "never bound")
-			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), token)
-			Expect(body).NotTo(ContainSubstring("UNOWNED-BOOTSTRAP-DATA"))
-			Expect(code).To(Equal(http.StatusUnauthorized))
-		})
-
-		It("backfills nothing on a Ready host, whose pre-upgrade token stops working", func() {
+		It("leaves a Ready host Ready, though its pre-upgrade token stops working", func() {
 			b7m, machine := consumerWithBootstrapData(ns.Name, "ready-machine", "READY-BOOTSTRAP-DATA")
-			key, token := legacyHost("ready-host", b7m.Name, infrav1.StateReady)
+			key, token, nonce := legacyHost("ready-host", b7m.Name, infrav1.StateReady)
+			before := getCredentialSecret(key)
+			bmc := recordingBMC()
 
 			reconcileMachine(b7m, machine)
 
-			code, body := callbackRequest(http.MethodGet, bootstrapURL(key), token)
-			Expect(body).NotTo(ContainSubstring("READY-BOOTSTRAP-DATA"))
-			Expect(code).To(Equal(http.StatusUnauthorized))
-			Expect(getCredentialSecret(key).Data).NotTo(HaveKey(bootstrapConsumerSecretKey))
+			Expect(b7m.Status.Ready).To(BeTrue(), "no callback follows Ready, so nothing is lost")
+			Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateReady))
+			expectHostUntouched(bmc)
+			expectLegacyCredentialsRejected(key, token, nonce, "READY-BOOTSTRAP-DATA")
+			Expect(getCredentialSecret(key).ResourceVersion).To(Equal(before.ResourceVersion))
 		})
 	})
 })

@@ -847,9 +847,9 @@ func (r *PhysicalHostReconciler) dropRetiredCredentialAnnotations(logger logr.Lo
 // mirror follows the Secret.
 //
 // A Secret with no consumer binding was written before D-029 and is left
-// unmirrored. Its hashes and lifetimes are already in status from the release
-// that wrote it, and the Beskar7Machine's one-release upgrade backfill reads
-// that lifetime to bind a run still in flight (backfillLegacyCredentials). A
+// unmirrored: it authenticates nothing (boundBootstrapCredentials), so there is
+// no live credential to show, and status keeps what the release that wrote it
+// put there until the next claim mints fresh credentials over the Secret. A
 // missing Secret clears the mirror. The consume record the /boot handler owns
 // (D-010) and the bootstrap URL are left alone; the plaintexts never leave the
 // Secret.
