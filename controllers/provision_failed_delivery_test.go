@@ -90,14 +90,14 @@ func editRedfishConnection(key client.ObjectKey, edit func(*infrav1.RedfishConne
 // handler does once the bearer token has been checked.
 func reportDeployFailure(key client.ObjectKey, report string) {
 	handler := &ProvisionFailedHandler{Client: k8sClient, Log: ctrl.Log.WithName("report-delivery-handler")}
-	Expect(handler.signalProvisionFailed(ctx, handler.Log, key.Namespace, key.Name, report)).To(Succeed())
+	Expect(handler.signalProvisionFailed(ctx, handler.Log, key.Namespace, key.Name, ensureCallbackCredentials(key), report)).To(Succeed())
 }
 
 // postInspectionReport posts an 8-core inspection report the way the
 // inspection handler does.
 func postInspectionReport(key client.ObjectKey) {
 	handler := &InspectionHandler{Client: k8sClient, Log: ctrl.Log.WithName("report-delivery-inspection")}
-	Expect(handler.processInspectionReport(ctx, handler.Log, key.Namespace, key.Name, InspectionReportRequest{
+	Expect(handler.processInspectionReport(ctx, handler.Log, key.Namespace, key.Name, ensureCallbackCredentials(key), InspectionReportRequest{
 		Manufacturer: "Acme", Model: "Fast-1000", CPUs: []CPUData{{ID: "cpu0", Cores: 8}},
 	})).To(Succeed())
 }

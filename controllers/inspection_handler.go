@@ -75,8 +75,9 @@ const (
 //
 // Status ownership: this handler does NOT write to PhysicalHost.Status. It writes
 // the validated InspectionReport to a ConfigMap and patches an annotation onto
-// the PhysicalHost; the PhysicalHostReconciler is the sole writer of
-// Status.InspectionReport / Status.InspectionPhase (D-005).
+// the PhysicalHost, with the binding of that annotation to the caller's bearer
+// token and to the stored report next to it (D-034); the PhysicalHostReconciler
+// is the sole writer of Status.InspectionReport / Status.InspectionPhase (D-005).
 type InspectionHandler struct {
 	Client client.Client
 	Log    logr.Logger
@@ -179,12 +180,20 @@ func (h *InspectionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log.Info("Received inspection report")
 
+	// The bearer middleware has authenticated the request with this token, and
+	// the signal the handler leaves for the reconciler is bound to it (D-034).
+	token, ok := auth.BearerToken(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	// Use the request context — the manager will cancel it on shutdown so
 	// in-flight handlers don't block graceful drain. (Replaces the previous
 	// context.Background() that ignored shutdown signals.)
 	ctx := r.Context()
 
-	if err := h.processInspectionReport(ctx, log, namespace, hostName, req); err != nil {
+	if err := h.processInspectionReport(ctx, log, namespace, hostName, token, req); err != nil {
 		log.Error(err, "Failed to process inspection report")
 		// Do not echo internal error text to the client — could leak resource
 		// names or k8s API details. Generic 500.
@@ -206,12 +215,13 @@ func (h *InspectionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // processInspectionReport stores the validated InspectionReport on a ConfigMap
-// and patches an annotation onto the PhysicalHost. It does NOT write to
+// and patches an annotation onto the PhysicalHost, bound to the caller's bearer
+// token and to the stored report (D-034). It does NOT write to
 // PhysicalHost.Status — the PhysicalHostReconciler owns that (D-005).
 func (h *InspectionHandler) processInspectionReport(
 	ctx context.Context,
 	log logr.Logger,
-	namespace, hostName string,
+	namespace, hostName, token string,
 	req InspectionReportRequest,
 ) error {
 	// Get PhysicalHost — verifies it exists and gives us a UID for owner-ref
@@ -228,16 +238,23 @@ func (h *InspectionHandler) processInspectionReport(
 		return fmt.Errorf("failed to get PhysicalHost: %w", err)
 	}
 
+	// Before the ConfigMap is written, so a callback that cannot be bound leaves
+	// nothing behind.
+	signer, err := newCallbackSigner(ctx, h.Client, physicalHost, token, time.Now())
+	if err != nil {
+		return fmt.Errorf("bind inspection report to the host's credentials: %w", err)
+	}
+
 	report := buildInspectionReport(req)
 
-	cmName, err := h.upsertResultConfigMap(ctx, log, physicalHost, report)
+	cmName, stored, err := h.upsertResultConfigMap(ctx, log, physicalHost, report)
 	if err != nil {
 		return fmt.Errorf("upsert inspection-result ConfigMap: %w", err)
 	}
 
 	// Signal the PhysicalHost controller to consume the result. Patch the spec
 	// annotations only — never status.
-	if err := h.setInspectionResultAnnotation(ctx, log, physicalHost, cmName); err != nil {
+	if err := h.setInspectionResultAnnotation(ctx, log, physicalHost, signer, cmName, stored); err != nil {
 		return fmt.Errorf("set inspection-result annotation: %w", err)
 	}
 	return nil
@@ -296,16 +313,17 @@ func buildInspectionReport(req InspectionReportRequest) *infrav1.InspectionRepor
 // upsertResultConfigMap writes the JSON-encoded InspectionReport to a per-host
 // ConfigMap, creating or updating idempotently. The ConfigMap is owned by the
 // PhysicalHost so it is GC'd if the host is deleted before the controller reads
-// the result. Returns the ConfigMap name.
+// the result. Returns the ConfigMap name and the report.json it now holds, which
+// the annotation that points at the ConfigMap binds (D-034).
 func (h *InspectionHandler) upsertResultConfigMap(
 	ctx context.Context,
 	log logr.Logger,
 	physicalHost *infrav1.PhysicalHost,
 	report *infrav1.InspectionReport,
-) (string, error) {
+) (string, string, error) {
 	body, err := json.Marshal(report)
 	if err != nil {
-		return "", fmt.Errorf("marshal inspection report: %w", err)
+		return "", "", fmt.Errorf("marshal inspection report: %w", err)
 	}
 
 	cmName := inspectionResultConfigMapName(physicalHost.Name)
@@ -335,10 +353,12 @@ func (h *InspectionHandler) upsertResultConfigMap(
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	log.V(1).Info("Inspection-result ConfigMap upsert", "configmap", cmName, "op", op)
-	return cmName, nil
+	// What the ConfigMap holds, not what was marshalled: with two reports in
+	// flight the stored one is the one the reconciler will read.
+	return cmName, cm.Data[inspectionResultDataKey], nil
 }
 
 // inspectionResultConfigMapName returns the deterministic name used for the
@@ -349,19 +369,19 @@ func inspectionResultConfigMapName(hostName string) string {
 }
 
 // setInspectionResultAnnotation patches PhysicalHost metadata.annotations with the
-// ConfigMap reference. Optimistic locking ensures concurrent annotation churn
+// ConfigMap reference and its binding, which covers the ConfigMap's name and the
+// digest of the report it holds (stored): a ConfigMap rewritten after this patch
+// no longer matches it. Optimistic locking ensures concurrent annotation churn
 // from the Beskar7Machine controller never silently overwrites the result ref.
 func (h *InspectionHandler) setInspectionResultAnnotation(
 	ctx context.Context,
 	log logr.Logger,
 	physicalHost *infrav1.PhysicalHost,
-	cmName string,
+	signer *callbackBinder,
+	cmName, stored string,
 ) error {
 	base := physicalHost.DeepCopy()
-	if physicalHost.Annotations == nil {
-		physicalHost.Annotations = map[string]string{}
-	}
-	physicalHost.Annotations[InspectionResultAnnotation] = cmName
+	signer.setAnnotation(physicalHost, InspectionResultAnnotation, cmName, contentDigest(stored))
 	// Plain MergeFrom (no optimistic lock): this annotation key is unique to
 	// this handler, no other writer collides on it, and
 	// MergeFromWithOptimisticLock against a concurrently-mutating PhysicalHost

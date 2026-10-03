@@ -137,7 +137,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 	setHostBootstrap := func(plaintext string, expiresIn time.Duration) {
 		key := client.ObjectKeyFromObject(physicalHost)
 		setHostConsumer(key, consumer)
-		putCredentialSecret(key, boundCredentialData(consumer, plaintext, expiresIn, "", 0))
+		putCredentialSecret(key, boundCredentialData(consumer, plaintext, expiresIn, "insp-handler-nonce", auth.BootNonceLifetime))
 	}
 
 	It("rejects POST without a bearer token (401)", func() {

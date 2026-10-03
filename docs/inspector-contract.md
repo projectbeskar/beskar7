@@ -172,6 +172,20 @@ is not made while the host is in an `Error` about its BMC rather than one the
 run reported, because a `/provisioned` report lands on such a host (§4.4) and
 authenticates with this token; it follows once the host leaves that `Error`.
 
+What the bearer-gated callbacks leave for the controller to act on is bound to
+the bearer token as well (D-034, SEC-15). `POST /inspection`, `POST /provisioned`
+and `POST /provision-failed` do not write status: each leaves an annotation on
+the `PhysicalHost`, and the PhysicalHost reconciler turns it into state. Next to
+each annotation the handler writes, in the same patch, a binding: an
+HMAC-SHA256 keyed by the token the caller presented, over the annotation's key
+and value, the host, the machine and boot nonce of the claim, and, for the
+hardware report, the digest of the stored report. The reconciler recomputes it
+from the Secret and acts on the annotation only if it matches, so the right to
+patch `PhysicalHost` objects does not let anyone mark a host `Ready`, inject a
+hardware report or fail a run. **This is controller-side only; the wire is
+unchanged** and an inspector needs no change. The controller and any
+callback-only instance (`--controllers=none`) must run the same version.
+
 ---
 
 ## 4. Endpoints
@@ -283,6 +297,11 @@ gatewayed winner on a multi-NIC host (§8.2).
   `Status.InspectionReport`/`InspectionPhase` are written asynchronously by the
   PhysicalHost reconciler (D-005), which does so whether or not it can reach the
   host's BMC at the network level. The inspector MUST treat **202** as success.
+- **Controller action**: stores the report on a ConfigMap and annotates the host
+  with a reference to it and a binding that covers the stored report (§3, D-034).
+  The reconciler ignores and removes a reference whose binding does not hold,
+  including one whose ConfigMap was rewritten after the handler bound it. No
+  wire change.
 - `namespace`/`hostName` come from the URL path. The JSON body MAY also carry
   `namespace`/`hostName` for legacy compatibility but they are ignored.
 
@@ -333,7 +352,9 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   host's BMC, which the report does not need — transitions `State` from
   `StateDeploying` to `StateReady`, and clears the annotation once status shows
   `StateReady`. This handler does NOT write `PhysicalHost.Status` directly (D-005
-  invariant). The report is honoured on a host that is:
+  invariant). The annotation carries a binding to the caller's bearer token (§3,
+  D-034), and the reconciler ignores and removes one without it. The report is
+  honoured on a host that is:
   - `StateDeploying` (or already `StateReady`: a duplicate);
   - claimed and in a BMC-level `StateError` (credentials, certificate, TLS
     configuration) that interrupted `StateDeploying`. The inspector does not need
@@ -389,7 +410,9 @@ deployment-timeout.
   `PhysicalHostReconciler` reads this on its next pass — before it contacts the
   host's BMC, which the report does not need — transitions `State` to
   `StateError`, sets `Status.ErrorMessage`, and clears the annotation (D-005
-  invariant). The `Beskar7MachineReconciler` then marks a terminal failure
+  invariant). The annotation carries a binding to the caller's bearer token (§3,
+  D-034), and the reconciler ignores and removes one without it. The
+  `Beskar7MachineReconciler` then marks a terminal failure
   (`status.phase=Failed`, `InfrastructureReady=False` reason `DeploymentFailed`).
   The report is honoured on a host that is:
   - `StateDeploying`;
@@ -992,6 +1015,21 @@ change. These are not new contract versions.
   Only a host that v0.8.0 or earlier left in that `Error` reaches it. No
   endpoint, status code, cmdline parameter or report field changed, and the
   inspector sees `202` as before.
+- **SEC-15 / D-034 (2026-10-03):** §3, §4.2, §4.4 and §4.5 did not say that what
+  a callback leaves on the `PhysicalHost` can be written by anyone allowed to
+  patch `PhysicalHost` objects. The three annotations the callbacks write
+  (`inspection-result-ref`, `provisioned-request`, `provision-failed-request`)
+  now carry a binding in a sibling `<annotation>-binding` annotation: an
+  HMAC-SHA256, keyed by the bearer token the caller presented, over the
+  annotation's key and value, the host, the machine and boot nonce of the claim,
+  and, for the hardware report, the digest of the stored `report.json`. The
+  reconciler acts on an annotation only if the binding matches what the host's
+  bootstrap-token Secret gives. **The wire is unchanged** — no endpoint, status
+  code, header, cmdline parameter or report field — and an inspector needs no
+  change. Observable server-side differences only: a callback annotation without
+  a valid binding is removed and does nothing, and a controller and a
+  callback-only instance of different versions no longer interoperate for these
+  three callbacks (a report written by an older callback instance is dropped).
 - **D-036 (2026-10-03):** §3 gave the bearer token its full mint lifetime
   whatever became of the run, except that D-031 cut it once the host was
   `Ready`; a machine that failed terminally while still claiming its host kept a

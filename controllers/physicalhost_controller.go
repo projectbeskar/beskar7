@@ -272,8 +272,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// was reported broken would stay. Weighed after inspect-complete, a success
 	// report kept while the host was Inspecting would be applied in the pass that
 	// moves the host to Deploying, one pass ahead of a failure report kept with it.
-	r.applyProvisionFailedRequestAnnotation(logger, physicalHost)
-	r.applyProvisionedRequestAnnotation(logger, physicalHost)
+	r.applyProvisionFailedRequestAnnotation(ctx, logger, physicalHost)
+	r.applyProvisionedRequestAnnotation(ctx, logger, physicalHost)
 
 	// The credentials, and whether they may go to this host's address at all
 	// (D-030): nothing below may build a Redfish client without them.
@@ -599,6 +599,11 @@ func deployInterruptedByBMCError(physicalHost *infrav1.PhysicalHost) bool {
 // condition first, then drops the annotation, then writes the phase (CAPI's
 // patch.Helper), and a version in between must not read as "no report yet".
 // Releasing the host sets HostInspected False, so a new claim starts without it.
+//
+// The annotation counts whether or not its binding holds (D-034): the pass that
+// finds it unbound removes it, after the /provisioned and /provision-failed
+// reports have been weighed, and a report it kept is weighed again without it
+// on the next pass.
 func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 	return physicalHost.Status.InspectionPhase == infrav1.InspectionPhaseComplete ||
 		conditions.IsTrue(physicalHost, infrav1.HostInspectedCondition) ||
@@ -904,13 +909,23 @@ func mirroredTime(t time.Time) *metav1.Time {
 // marks HostInspectedCondition true, and best-effort deletes the ConfigMap and
 // clears the annotation so the result is consumed exactly once (D-005).
 //
+// The annotation counts only with the binding the inspection handler wrote next
+// to it (D-034), and the binding covers the report: it is checked against the
+// digest of the report.json read here, the very bytes decoded below, so a
+// ConfigMap rewritten after the handler bound it is ignored. An annotation that
+// is not bound is removed and does nothing else; in particular its ConfigMap is
+// left alone, because the name is the annotation's to choose, and the one-shot
+// deletion below must not be a way to delete any ConfigMap in the namespace.
+//
 // Errors fetching/decoding the ConfigMap are logged but not returned: the
 // reconcile's deferred patch still proceeds. The annotation is cleared only
 // after a successful read, so a missing or malformed ConfigMap doesn't strand
 // the state machine — the inspector can re-POST and replace it.
 func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	cmName := physicalHost.Annotations[InspectionResultAnnotation]
-	if cmName == "" {
+	cmName, present := physicalHost.Annotations[InspectionResultAnnotation]
+	if !present {
+		// A binding with no signal next to it was not written by the handler.
+		dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 		return
 	}
 
@@ -923,7 +938,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 			// trying to consume it; the inspector can re-POST.
 			logger.Info("Inspection-result ConfigMap not found; clearing annotation",
 				"configmap", cmName)
-			delete(physicalHost.Annotations, InspectionResultAnnotation)
+			dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 			return
 		}
 		logger.Error(err, "Failed to fetch inspection-result ConfigMap; will retry on next reconcile",
@@ -933,10 +948,14 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 
 	raw, ok := cm.Data[inspectionResultDataKey]
 	if !ok {
-		logger.Info("Inspection-result ConfigMap missing report.json; ignoring", "configmap", cmName)
-		// Drop the bad CM and clear the annotation so the state machine is unblocked.
-		_ = r.Delete(ctx, cm)
-		delete(physicalHost.Annotations, InspectionResultAnnotation)
+		// The handler always stores report.json, so there is nothing here a
+		// binding could cover. Not deleted: until the binding has been checked
+		// the ConfigMap is only something the annotation names.
+		logger.Info("Inspection-result ConfigMap missing report.json; clearing annotation", "configmap", cmName)
+		dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
+		return
+	}
+	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, InspectionResultAnnotation, contentDigest(raw)) != callbackBound {
 		return
 	}
 
@@ -945,7 +964,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 		logger.Error(err, "Failed to decode inspection report from ConfigMap; deleting bad ConfigMap",
 			"configmap", cmName)
 		_ = r.Delete(ctx, cm)
-		delete(physicalHost.Annotations, InspectionResultAnnotation)
+		dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 		return
 	}
 
@@ -963,7 +982,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 		logger.V(1).Info("Failed to delete inspection-result ConfigMap (will be retried by GC)",
 			"configmap", cmName, "err", err.Error())
 	}
-	delete(physicalHost.Annotations, InspectionResultAnnotation)
+	dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 }
 
 // applyProvisionedRequestAnnotation acts on the ProvisionedRequestAnnotation: the
@@ -974,7 +993,12 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 //
 // reconcileNormal calls it before it tries the BMC, which the report does not need,
 // and right after applyProvisionFailedRequestAnnotation, so a failure report that is
-// waiting as well is applied instead. What becomes of the report depends on the host:
+// waiting as well is applied instead.
+//
+// The annotation counts only with the binding the handler wrote next to it (D-034):
+// one that is not bound is removed, and nothing else happens. A report whose binding
+// cannot be checked because the host's credentials cannot be read just now is left for
+// the next pass. What becomes of a bound report depends on the host:
 //
 //   - Deploying, or claimed and in an Error about its BMC that overwrote the deployment
 //     (deployInterruptedByBMCError): applied, and the annotation stays until a pass finds
@@ -997,8 +1021,17 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 //     reported while this report was waiting), a host that is InUse or in an Error about
 //     its BMC that did not interrupt a deployment, and a report that came before this
 //     run's inspection report, which is not about this run's deployment.
-func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	if physicalHost.Annotations[ProvisionedRequestAnnotation] != "provisioned" {
+func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	val, present := physicalHost.Annotations[ProvisionedRequestAnnotation]
+	if !present {
+		// A binding with no signal next to it was not written by the handler.
+		dropCallbackAnnotation(physicalHost, ProvisionedRequestAnnotation)
+		return
+	}
+	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, ProvisionedRequestAnnotation, "") != callbackBound {
+		return
+	}
+	if val != "provisioned" {
 		return
 	}
 
@@ -1028,7 +1061,7 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 			"host", physicalHost.Name, "state", state, "inspectionPhase", physicalHost.Status.InspectionPhase)
 	}
 
-	delete(physicalHost.Annotations, ProvisionedRequestAnnotation)
+	dropCallbackAnnotation(physicalHost, ProvisionedRequestAnnotation)
 }
 
 // applyProvisionFailedRequestAnnotation acts on the ProvisionFailedRequestAnnotation:
@@ -1039,7 +1072,12 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 // the Beskar7Machine controller see the reason and fail with DeploymentFailed.
 //
 // reconcileNormal calls it before it tries the BMC, so a connection failure cannot
-// get in first; what becomes of the report depends on the host:
+// get in first.
+//
+// The annotation counts only with the binding the handler wrote next to it (D-034):
+// one that is not bound is removed, and nothing else happens. A report whose binding
+// cannot be checked because the host's credentials cannot be read just now is left for
+// the next pass. What becomes of a bound report depends on the host:
 //
 //   - Deploying, or claimed and in an Error about its BMC that overwrote the
 //     deployment (deployInterruptedByBMCError): applied.
@@ -1057,9 +1095,14 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(logger logr.L
 //     host that is InUse or Ready, an Error that did not interrupt a deployment, and
 //     a report that came before this run's inspection report, which is not about
 //     this run's deployment.
-func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	val, ok := physicalHost.Annotations[ProvisionFailedRequestAnnotation]
 	if !ok {
+		// A binding with no signal next to it was not written by the handler.
+		dropCallbackAnnotation(physicalHost, ProvisionFailedRequestAnnotation)
+		return
+	}
+	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, ProvisionFailedRequestAnnotation, "") != callbackBound {
 		return
 	}
 
@@ -1070,10 +1113,9 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger lo
 	case state == infrav1.StateDeploying || deployInterruptedByBMCError(physicalHost):
 		logger.Info("Applying provision-failed annotation: transitioning to Error",
 			"host", physicalHost.Name, "state", state)
-		// The handler stores the reason sanitized and prefixed. A value without
-		// the prefix comes from a hand edit or from a callback-only instance
-		// older than this controller, whose generic report lacked it; the prefix
-		// is what keeps this Error on a claimed host, so add it here.
+		// The handler stores the reason sanitized and prefixed. The prefix is
+		// what keeps this Error on a claimed host, so a bound value that lacks
+		// it gets it here.
 		if !strings.HasPrefix(val, provisionFailedReasonPrefix) {
 			val = sanitizeFailureReason(val)
 		}
@@ -1093,7 +1135,7 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(logger lo
 			"host", physicalHost.Name, "state", state, "inspectionPhase", physicalHost.Status.InspectionPhase)
 	}
 
-	delete(physicalHost.Annotations, ProvisionFailedRequestAnnotation)
+	dropCallbackAnnotation(physicalHost, ProvisionFailedRequestAnnotation)
 }
 
 // reconcileDelete handles PhysicalHost deletion.

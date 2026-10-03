@@ -67,7 +67,7 @@ import (
 // handler does once the bearer token has been checked.
 func reportProvisioned(key client.ObjectKey) {
 	handler := &ProvisionedHandler{Client: k8sClient, Log: ctrl.Log.WithName("provisioned-delivery-handler")}
-	Expect(handler.signalProvisioned(ctx, handler.Log, key.Namespace, key.Name)).To(Succeed())
+	Expect(handler.signalProvisioned(ctx, handler.Log, key.Namespace, key.Name, ensureCallbackCredentials(key))).To(Succeed())
 }
 
 // provisionOnMachine hands a host, exactly as published, to the Beskar7Machine

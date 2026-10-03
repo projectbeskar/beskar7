@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/go-logr/logr"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
 const (
@@ -68,7 +70,8 @@ const (
 //
 // Signal: the handler extracts and sanitizes the "reason" field from the advisory JSON
 // body, then patches ProvisionFailedRequestAnnotation carrying the sanitized message
-// onto the PhysicalHost metadata. The PhysicalHostReconciler reads this on its next
+// onto the PhysicalHost metadata, with the binding of that annotation to the caller's
+// bearer token next to it (D-034). The PhysicalHostReconciler reads this on its next
 // pass, transitions State to Error, sets Status.ErrorMessage, and clears the annotation
 // (v4.1 / D-005 pattern) — at once for a host that is Deploying, and only once it is
 // Deploying for a host that is still Inspecting (see signalProvisionFailed). This
@@ -106,9 +109,17 @@ func (h *ProvisionFailedHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	// slow-loris body cannot keep a goroutine alive unbounded.
 	reason := h.extractReason(log, r, w)
 
+	// The bearer middleware has authenticated the request with this token, and
+	// the signal the handler leaves for the reconciler is bound to it (D-034).
+	token, ok := auth.BearerToken(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	ctx := r.Context()
 
-	if err := h.signalProvisionFailed(ctx, log, namespace, hostName, reason); err != nil {
+	if err := h.signalProvisionFailed(ctx, log, namespace, hostName, token, reason); err != nil {
 		log.Error(err, "Failed to signal provision-failed state")
 		// Opaque error response — do not leak internal resource names or k8s details.
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -185,8 +196,9 @@ func sanitizeFailureReason(reason string) string {
 
 // signalProvisionFailed fetches the PhysicalHost and patches the
 // ProvisionFailedRequestAnnotation for the PhysicalHostReconciler, which decides what
-// becomes of the report (applyProvisionFailedRequestAnnotation). It does NOT write
-// PhysicalHost.Status (D-005 invariant).
+// becomes of the report (applyProvisionFailedRequestAnnotation), together with the
+// binding of that annotation to the caller's bearer token, token (D-034). It does NOT
+// write PhysicalHost.Status (D-005 invariant).
 //
 // The annotation is set on a host the report can be about:
 //   - Deploying: the expected case.
@@ -207,7 +219,7 @@ func sanitizeFailureReason(reason string) string {
 // annotation. Any other state is logged and ignored; we do not force such a host into
 // Error. The Beskar7Machine controller will observe the ErrorMessage on its next
 // reconcile regardless of which path set it.
-func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log logr.Logger, namespace, hostName, sanitizedReason string) error {
+func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log logr.Logger, namespace, hostName, token, sanitizedReason string) error {
 	ph := &infrav1.PhysicalHost{}
 	key := types.NamespacedName{Namespace: namespace, Name: hostName}
 	if err := h.Client.Get(ctx, key, ph); err != nil {
@@ -231,8 +243,10 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		// POST after reconcile acted, or a BMC failure before the host was deploying).
 		// Clear any stale annotation so the reconciler doesn't double-process, then return.
 		log.V(1).Info("Provision-failed callback on already-errored host; clearing annotation idempotently", "host", hostName)
-		if _, ok := ph.Annotations[ProvisionFailedRequestAnnotation]; ok {
-			if err := h.Client.Patch(ctx, ph, removeAnnotationsPatch(ProvisionFailedRequestAnnotation)); err != nil {
+		_, hasReport := ph.Annotations[ProvisionFailedRequestAnnotation]
+		_, hasBinding := ph.Annotations[callbackBindingAnnotation(ProvisionFailedRequestAnnotation)]
+		if hasReport || hasBinding {
+			if err := h.Client.Patch(ctx, ph, removeAnnotationsPatch(ProvisionFailedRequestAnnotation, callbackBindingAnnotation(ProvisionFailedRequestAnnotation))); err != nil {
 				log.V(1).Info("Failed to clear stale provision-failed annotation; continuing", "err", err.Error())
 			}
 		}
@@ -245,11 +259,12 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		return nil
 	}
 
-	base := ph.DeepCopy()
-	if ph.Annotations == nil {
-		ph.Annotations = map[string]string{}
+	signer, err := newCallbackSigner(ctx, h.Client, ph, token, time.Now())
+	if err != nil {
+		return fmt.Errorf("bind provision-failed report to the host's credentials: %w", err)
 	}
-	ph.Annotations[ProvisionFailedRequestAnnotation] = sanitizedReason
+	base := ph.DeepCopy()
+	signer.setAnnotation(ph, ProvisionFailedRequestAnnotation, sanitizedReason, "")
 
 	// Plain MergeFrom (no optimistic lock). Same reasoning as signalProvisioned:
 	// this annotation key is unique to this handler; no other writer can collide on it.

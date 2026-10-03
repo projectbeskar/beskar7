@@ -116,7 +116,7 @@ var _ = Describe("A PhysicalHost reconcile that clears the host's last annotatio
 			},
 		})
 		handler := &ProvisionFailedHandler{Client: racing, Log: ctrl.Log.WithName("annotation-clear-race-handler")}
-		Expect(handler.signalProvisionFailed(ctx, handler.Log, key.Namespace, key.Name, "second report")).To(Succeed())
+		Expect(handler.signalProvisionFailed(ctx, handler.Log, key.Namespace, key.Name, callbackTokenOf(key), "second report")).To(Succeed())
 		Expect(otherWrote.Load()).To(BeTrue(), "the handler must patch the host for this spec to mean anything")
 
 		after := getPhysicalHost(key)

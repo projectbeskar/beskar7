@@ -176,7 +176,9 @@ object, is picked up immediately rather than on the next poll.
 - Receives hardware inspection reports from inspection images
 - Validates report structure
 - Writes the validated report to a per-host ConfigMap and patches an
-  `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the PhysicalHost
+  `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the PhysicalHost,
+  together with a binding to the caller's bearer token and the stored report
+  (`inspection-result-ref-binding`; D-034, [Security](security/README.md#3a-callback-written-annotations-are-bound-to-the-per-host-token))
 - Does **not** write `PhysicalHost.Status` itself. The `PhysicalHostReconciler` consumes the
   annotation and is the sole writer of `Status.InspectionReport`, `Status.InspectionPhase`
   and the inspection timestamp (D-005)
@@ -268,11 +270,12 @@ The inspection workflow is the core innovation in Beskar7. It provides reliable 
 8. Inspection Handler validates the report, writes it to a per-host
    ConfigMap (`<host>-inspection-result`), and patches an
    `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto
-   the PhysicalHost. The handler itself does NOT touch PhysicalHost
+   the PhysicalHost, with a binding to the caller's token and the stored
+   report (D-034). The handler itself does NOT touch PhysicalHost
    status (D-005: each controller owns its resource's status).
    |
    v
-8a. PhysicalHost reconciler reads the annotation, fetches the
+8a. PhysicalHost reconciler checks the binding, reads the annotation, fetches the
     ConfigMap, persists the InspectionReport to Status, transitions
     InspectionPhase to Complete, then GCs the ConfigMap and clears
     the annotation.
