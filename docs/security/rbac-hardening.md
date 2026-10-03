@@ -114,45 +114,66 @@ The chart automatically:
 
 The kustomize equivalent is the `config/rbac/namespace-scoped/` overlay (SEC-2 PR 3). Because kustomize has no templating loop, the per-namespace `Role` + `RoleBinding` is supplied as a **template** that operators copy once per watched namespace:
 
-1. **Swap the RBAC base.** In your top-level overlay, reference `../rbac/namespace-scoped` instead of `../rbac`. List the shared bits (`service_account.yaml`, `metrics_auth_*`, `metrics_reader_role.yaml`) individually because the namespace-scoped dir doesn't bundle them:
+1. **Generate one watch `Role` per watched namespace.** Copy `config/rbac/namespace-scoped/watch-role.template.yaml` to `watch-role.<namespace>.yaml`, patch both `namespace:` fields, and append the filename to `config/rbac/namespace-scoped/kustomization.yaml`'s `resources:` list. Then check where everything landed:
 
-    ```yaml
-    namespace: capb7-system
-    resources:
-    - ../../rbac/namespace-scoped
-    - ../../rbac/service_account.yaml
-    - ../../rbac/metrics_auth_role.yaml
-    - ../../rbac/metrics_auth_role_binding.yaml
-    - ../../rbac/metrics_reader_role.yaml
-    - ../../manager
-    - ../../crd
-    - ../../webhook
-    - ../../certmanager
-    - ../../security
+    ```bash
+    kustomize build config/rbac/namespace-scoped
     ```
 
-2. **Generate one watch `Role` per watched namespace.** Copy `config/rbac/namespace-scoped/watch-role.template.yaml` to `watch-role.<namespace>.yaml`, patch both `namespace:` fields, and append the filename to `config/rbac/namespace-scoped/kustomization.yaml`'s `resources:` list.
+    Each watch `Role` and `RoleBinding` must be in the namespace you wrote it for, the leader-election pair in `capb7-system`, and every `RoleBinding` subject must be the `capb7-manager` ServiceAccount in `capb7-system`.
 
-3. **Add the manager flag.** Patch the manager Deployment to include `--watch-namespaces=<csv>`:
+2. **Install through an overlay of your own.** `config/default/` ships the cluster-wide `ClusterRole` and `ClusterRoleBinding` this overlay replaces, so layer on top of it, delete those two objects, add the namespace-scoped directory, and pass `--watch-namespaces` with the same list. Create the overlay outside `config/overlays/` (which `test/contract` holds to "resize `config/default`, nothing else"), for example as `deploy/namespace-scoped/kustomization.yaml`:
 
     ```yaml
+    resources:
+    - ../../config/default
+    - ../../config/rbac/namespace-scoped
     patches:
+    # The ClusterRole and ClusterRoleBinding in config/default are the cluster-wide
+    # topology this overlay replaces.
+    - target:
+        group: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: capb7-manager-role
+      patch: |-
+        $patch: delete
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: capb7-manager-role
+    - target:
+        group: rbac.authorization.k8s.io
+        kind: ClusterRoleBinding
+        name: capb7-manager-rolebinding
+      patch: |-
+        $patch: delete
+        apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: capb7-manager-rolebinding
+    # The manager's cache must cover exactly the namespaces bound above.
     - target:
         kind: Deployment
-        name: capb7-manager
+        name: capb7-controller-manager
       patch: |-
         - op: add
           path: /spec/template/spec/containers/0/args/-
           value: --watch-namespaces=default,tenant-a,tenant-b
     ```
 
-See `config/rbac/namespace-scoped/README.md` for the worked example.
+    ```bash
+    kustomize build deploy/namespace-scoped | kubectl apply -f -
+    ```
+
+    Everything else (ServiceAccount, the Deployment with its pinned image, the metrics RBAC, webhook, cert-manager and security objects) comes from `config/default/` unchanged. The metrics `ClusterRole`s stay cluster-scoped on purpose: they let the manager authenticate scrapes through the apiserver and grant nothing on Beskar7 objects.
+
+Do not set `namespace:` in this overlay or in the namespace-scoped `kustomization.yaml`. A kustomize `namespace:` field rewrites every namespaced object it covers, which would move each watch `Role` and `RoleBinding` out of its watched namespace and into the one the field names: the manager would hold nothing in the namespaces it watches, and the build would stop on the duplicate `Role` as soon as two namespaces are listed. Every object in the overlay names its own namespace for that reason. See `config/rbac/namespace-scoped/README.md` for the details.
 
 ### Migration from cluster-wide → namespace-scoped
 
 Backward-compatible in-place migration:
 
-1. Apply the namespace-scoped RBAC alongside the existing cluster-wide RBAC (i.e. don't delete `capb7-manager-role` / `capb7-manager-rolebinding` yet). The controller's ServiceAccount is now bound by both — no permission is lost.
+1. Apply the namespace-scoped RBAC alongside the existing cluster-wide RBAC (i.e. don't delete `capb7-manager-role` / `capb7-manager-rolebinding` yet), with `kustomize build config/rbac/namespace-scoped | kubectl apply -f -` once you have generated the watch `Role`s as above. The controller's ServiceAccount is now bound by both — no permission is lost.
 2. Set `--watch-namespaces=<csv>` on the manager Deployment. The cache scopes to those namespaces; Beskar7 CRs elsewhere stop being reconciled.
 3. Verify reconciles in the watched namespaces still work. Look for `Scoping informers to namespaces` in the manager log.
 4. Delete the old cluster-wide `ClusterRole` (`capb7-manager-role`) and `ClusterRoleBinding` (`capb7-manager-rolebinding`).
@@ -220,12 +241,18 @@ for ns in default tenant-a tenant-b; do
 done
 ```
 
-Confirm no wildcards or unexpected verbs anywhere:
+Confirm that no role bound to the manager's ServiceAccount carries a wildcard or `impersonate`. (Scanning every role in the cluster instead would always report Kubernetes' own `cluster-admin` and controller roles.)
 
 ```bash
-kubectl get clusterrole,role -A -o json \
-  | jq -r '.items[].rules[]? | select(any(.apiGroups[]? + " / " + .resources[]? + " / " + .verbs[]?; test("\\*|impersonate"))) | input_filename' \
-  | sort -u
+kubectl get clusterrole,role,clusterrolebinding,rolebinding -A -o json | jq -r '
+  .items as $all
+  | [$all[] | select(.kind | endswith("Binding"))
+            | select(any(.subjects[]?; .kind == "ServiceAccount" and .name == "capb7-manager"))
+            | {kind: .roleRef.kind, name: .roleRef.name, ns: (.metadata.namespace // "")}] as $bound
+  | $all[] | select(.kind == "Role" or .kind == "ClusterRole")
+  | . as $r | select(any($bound[]; .kind == $r.kind and .name == $r.metadata.name and .ns == ($r.metadata.namespace // "")))
+  | select(any(.rules[]?; any(.apiGroups[]?, .resources[]?, .verbs[]?; . == "*" or . == "impersonate")))
+  | "\(.kind) \(.metadata.namespace // "-")/\(.metadata.name)"'
 ```
 
 That command should return nothing.

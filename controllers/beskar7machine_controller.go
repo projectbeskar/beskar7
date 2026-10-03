@@ -221,9 +221,9 @@ func (r *Beskar7MachineReconciler) deploymentTimeout() time.Duration {
 //     and on the CA bundle Secret named by CABundleSecretRef.
 //   - reconcileBootstrapData: r.Get on the bootstrap-data Secret named by
 //     machine.Spec.Bootstrap.DataSecretName.
-//   - ensureBootstrapCredentials / backfillBootstrapCredentials: Get, then
-//     Create or Update at the read resourceVersion, on the per-host
-//     bootstrap-token Secret (deterministic name; PhysicalHost-owned).
+//   - ensureBootstrapCredentials: Get, then Create or Update at the read
+//     resourceVersion, on the per-host bootstrap-token Secret (deterministic
+//     name; PhysicalHost-owned).
 // No code path performs List or Watch over Secrets here, so list/watch
 // are intentionally omitted (SEC-2 / D-007). The aggregate ClusterRole
 // will still grant secrets:list,watch because PhysicalHostReconciler's
@@ -424,16 +424,6 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 			internalmetrics.RecordError("beskar7machine", b7machine.Namespace, internalmetrics.ErrorTypeTransient)
 		}
 		return result, err
-	}
-
-	// A run that was past InUse when the manager was upgraded to D-029 keeps
-	// its credentials only once they are bound to this machine; triggerInspection
-	// does the same for InUse. Removed in the next minor release.
-	if physicalHost.Status.State == infrav1.StateInspecting || physicalHost.Status.State == infrav1.StateDeploying {
-		if err := r.backfillBootstrapCredentials(ctx, logger, b7machine, physicalHost); err != nil {
-			logger.Error(err, "Failed to backfill the host's bootstrap credentials")
-			return ctrl.Result{}, err
-		}
 	}
 
 	// Handle based on PhysicalHost state and inspection status
@@ -734,12 +724,12 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, secret.Name)
 	}
 	creds := readBootstrapCredentials(secret)
-	changed := backfillLegacyCredentials(&creds, physicalHost, b7machine.Name, now)
-	if changed {
-		creds.consumerUID = string(b7machine.UID)
-	}
 
+	var changed bool
 	switch {
+	case creds.consumer == "" && (creds.token != "" || creds.nonce != ""):
+		logger.Info("Bootstrap credentials carry no consumer binding (written before D-029); minting fresh ones",
+			"host", physicalHost.Name)
 	case creds.consumer != "" && creds.consumer != b7machine.Name:
 		logger.Info("Bootstrap credentials belong to an earlier claim of the host; minting fresh ones",
 			"host", physicalHost.Name)
@@ -799,97 +789,6 @@ func bootNonceReusable(creds bootstrapCredentials, bs *infrav1.BootstrapStatus, 
 	return creds.consumer == consumer && creds.nonceValid(now) &&
 		!bootNonceConsumed(bs, auth.Hash(creds.nonce)) &&
 		!bootNonceConsumeUnattributed(bs)
-}
-
-// backfillBootstrapCredentials is the Inspecting/Deploying half of the D-029
-// upgrade backfill; triggerInspection covers InUse through
-// ensureBootstrapCredentials. It never mints: a run already past InUse keeps
-// the credentials its inspector booted with, or has none that work.
-//
-// Removed in the next minor release, together with backfillLegacyCredentials.
-func (r *Beskar7MachineReconciler) backfillBootstrapCredentials(
-	ctx context.Context,
-	logger logr.Logger,
-	b7machine *infrav1.Beskar7Machine,
-	physicalHost *infrav1.PhysicalHost,
-) error {
-	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
-	if err != nil || secret == nil {
-		return err
-	}
-	if !bootstrapSecretOwnedBy(secret, physicalHost) {
-		// Every release that wrote these Secrets made the host their
-		// controller, so this one is not a pre-upgrade run's: it authenticates
-		// nothing, and there is nothing to keep working. Erroring here instead
-		// would stop the run's timeout from ever being judged.
-		logger.Info("Not backfilling a bootstrap-token Secret the host does not own", "host", physicalHost.Name, "secret", secret.Name)
-		return nil
-	}
-	creds := readBootstrapCredentials(secret)
-	if !backfillLegacyCredentials(&creds, physicalHost, b7machine.Name, time.Now()) {
-		return nil
-	}
-	creds.consumerUID = string(b7machine.UID)
-	if err := r.writeBootstrapCredentials(ctx, logger, physicalHost, secret, creds); err != nil {
-		return fmt.Errorf("backfill bootstrap credentials: %w", err)
-	}
-	return nil
-}
-
-// backfillLegacyCredentials binds a run that was in flight across the upgrade
-// to D-029 to its machine, so its inspector keeps authenticating. Releases
-// before D-029 kept only the plaintexts in the Secret; the hash and expiry
-// lived in Status.Bootstrap, promoted there from an annotation.
-//
-// It applies only to a Secret without a consumer, on a host in InUse,
-// Inspecting or Deploying whose claim names consumer. Each credential is kept
-// only if its plaintext hashes to the hash status carries — a status hash that
-// came from a forged annotation matches no plaintext in the Secret — and only
-// with an expiry status carries, capped at a fresh lifetime from now. A host
-// already Ready is left alone: no callback follows Ready, so its pre-upgrade
-// credentials simply stop working. Reports whether it changed creds.
-//
-// Removed in the next minor release: by then no run can still be in flight
-// from before D-029.
-func backfillLegacyCredentials(creds *bootstrapCredentials, physicalHost *infrav1.PhysicalHost, consumer string, now time.Time) bool {
-	if creds.consumer != "" {
-		return false
-	}
-	switch physicalHost.Status.State {
-	case infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying:
-	default:
-		return false
-	}
-	if key, ok := resolveConsumerBeskar7Machine(physicalHost); !ok || key.Name != consumer {
-		return false
-	}
-	bs := physicalHost.Status.Bootstrap
-	if bs == nil {
-		return false
-	}
-	backfilled := false
-	if creds.token != "" && creds.tokenExpiresAt.IsZero() && bs.ExpiresAt != nil && auth.Verify(creds.token, bs.TokenHash) {
-		creds.tokenExpiresAt = earliest(bs.ExpiresAt.Time, now.Add(auth.TokenLifetime))
-		if bs.IssuedAt != nil {
-			creds.tokenIssuedAt = bs.IssuedAt.Time
-		}
-		backfilled = true
-	}
-	if creds.nonce != "" && creds.nonceExpiresAt.IsZero() && bs.BootNonceExpiresAt != nil && auth.Verify(creds.nonce, bs.BootNonceHash) {
-		creds.nonceExpiresAt = earliest(bs.BootNonceExpiresAt.Time, now.Add(auth.BootNonceLifetime))
-		backfilled = true
-	}
-	if backfilled {
-		creds.consumer = consumer
-	}
-	return backfilled
-}
-
-func earliest(a, b time.Time) time.Time {
-	if a.Before(b) {
-		return a
-	}
-	return b
 }
 
 // getBootstrapTokenSecret returns the host's bootstrap-token Secret, or nil

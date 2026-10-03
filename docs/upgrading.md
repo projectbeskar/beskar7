@@ -103,6 +103,39 @@ inspector one minor version behind — it simply does not get the newer capabili
 
 ## `v0.9.x` → `v0.10.0` — upgrade from `v0.9.x`, with no host `Inspecting` or `Deploying`
 
+### Upgrade from `v0.9.x`, not straight from `v0.8.x`
+
+`v0.9.0` moved the callback credentials into the per-host `<host>-bootstrap-token` Secret, bound to the
+claiming machine (see [`v0.8.0` → `v0.9.0`](#3-upgrade-with-no-host-inspecting-or-deploying)). For that one
+release, a run that was in flight across the upgrade was carried over: the `Beskar7Machine` controller bound
+its existing credentials to the machine. `v0.10.0` no longer does. A host whose credentials still exist
+only in the `v0.8.x` form — one you upgrade from `v0.8.x` straight to `v0.10.0`, or one no `v0.9.x` manager
+ever reconciled — has credentials that authenticate nothing, and what that costs depends on the host's state:
+
+| Host state at the upgrade | What happens |
+|---|---|
+| `Inspecting` or `Deploying` | The inspector's callbacks are rejected with `401`, and it treats a `401` as fatal. The manager mints no credentials and does not power-cycle the host, so the machine fails at its own timeout (`InspectionTimedOut` or `DeploymentTimedOut`) and its `MachineHealthCheck` replaces it, or you delete it. A deploy that had finished writing the image still fails: its `/provisioned` report is rejected. |
+| `InUse` (claimed, inspector not booted yet) | Nothing is lost. The next reconcile mints fresh credentials for the machine and boots the host into the inspector with them; a host that is already on is restarted. |
+| `Ready` | Nothing. No callback follows `Ready`, so the old token is not needed. |
+| Not claimed | Nothing. The next claim mints fresh credentials over the old Secret. |
+
+So:
+
+1. If you are on `v0.8.x`, go to `v0.9.x` first, doing the three steps in
+   [`v0.8.0` → `v0.9.0`](#v080--v090--security-and-cluster-api-conformance-fixes-three-things-to-do-first),
+   and let `v0.9.x` reconcile every machine.
+2. Then wait until no host is `Inspecting` or `Deploying`, and upgrade to `v0.10.0`:
+
+```bash
+kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing
+```
+
+A run caught by the upgrade is not reprovisioned behind your back: it ends in the timeout above, and the
+host is inspected and provisioned again only when a new machine claims it. `status.bootstrap` on such a host
+keeps showing the `v0.8.x` hashes and expiries until that claim mints new credentials, although the
+credentials they describe are rejected; see
+[troubleshooting issue 10](troubleshooting.md#10-inspection-or-bootstrap-callback-returns-401-unauthorized).
+
 ### The environment's proxy is no longer used for BMC connections
 
 Up to `v0.9.x`, a manager with `HTTP_PROXY`/`HTTPS_PROXY` in its environment (Helm `controllerManager.env`, or a
@@ -216,6 +249,8 @@ working once the new leader has reconciled its `Beskar7Machine`, but until then 
 callbacks are rejected with `401` — and during a rolling update the new pod answers callbacks before
 it holds the lease. The inspector treats a `401` as fatal, so such a run fails with
 `InspectionTimedOut` or `DeploymentTimedOut` and its `MachineHealthCheck` replaces the machine.
+`v0.9.x` carries a run over once it has been reconciled; `v0.10.0` does not, so upgrade to `v0.9.x`
+before `v0.10.0` (see [`v0.9.x` → `v0.10.0`](#v09x--v0100--upgrade-from-v09x-with-no-host-inspecting-or-deploying)).
 
 ```bash
 kubectl get physicalhosts -A | grep -E 'Inspecting|Deploying'   # wait until this prints nothing

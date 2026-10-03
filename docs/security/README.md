@@ -117,7 +117,7 @@ The controllers' RBAC markers grant Secret read access only as needed:
 
 Source: `controllers/physicalhost_controller.go:97`, `controllers/beskar7machine_controller.go:87-103`, `controllers/inspection_handler.go` (`SetupCallbackServer` pre-warm), `config/rbac/role.yaml`.
 
-The cluster-wide `list, watch` on Secret AND ConfigMap is the default RBAC topology. For multi-tenant deployments where the manager runs alongside workloads from other teams, set `--watch-namespaces=<csv>` on the manager (Helm: `watchNamespaces` in values; kustomize: the `config/rbac/namespace-scoped/` overlay) — the chart and overlay then generate per-namespace `Role` + `RoleBinding` pairs that scope Secret/ConfigMap access to exactly the listed namespaces, and the cluster-scoped binding shrinks to a residual reads-only ClusterRole. SEC-2 closure across PRs #80, #82, #83, and the security-docs follow-up. See [RBAC Hardening](rbac-hardening.md) for the full picture and the migration steps.
+The cluster-wide `list, watch` on Secret AND ConfigMap is the default RBAC topology. For multi-tenant deployments where the manager runs alongside workloads from other teams, set `--watch-namespaces=<csv>` on the manager (Helm: `watchNamespaces` in values; kustomize: the `config/rbac/namespace-scoped/` overlay) — the chart and overlay then generate per-namespace `Role` + `RoleBinding` pairs that scope Secret/ConfigMap access to exactly the listed namespaces, and no cluster-scoped role is left for the manager's reconcile permissions (only the metrics-authentication ClusterRole stays). SEC-2 closure across PRs #80, #82, #83, and the security-docs follow-up. See [RBAC Hardening](rbac-hardening.md) for the full picture and the migration steps.
 
 ### 6. Pod security context
 
