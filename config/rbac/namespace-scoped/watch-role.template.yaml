@@ -7,6 +7,9 @@
 #   1. Copy this file to watch-role.<namespace>.yaml for every namespace
 #      you want the manager to reconcile in.
 #   2. Edit the two `namespace:` fields below to the target namespace name.
+#      The kustomization sets no namespace transformer, so this is the
+#      namespace the Role and RoleBinding are created in; the RoleBinding's
+#      subject stays in capb7-system, where the manager's ServiceAccount lives.
 #   3. Add the resulting filenames to kustomization.yaml's `resources:` list.
 #   4. Set --watch-namespaces=<comma-separated-list> on the manager
 #      Deployment so the controller-runtime cache matches the RBAC.
