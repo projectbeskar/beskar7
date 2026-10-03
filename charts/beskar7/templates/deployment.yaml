@@ -50,6 +50,9 @@ spec:
         {{- with .Values.watchNamespaces }}
         - --watch-namespaces={{ join "," . }}
         {{- end }}
+        {{- with .Values.bmcProxy }}
+        - {{ printf "--bmc-proxy=%s" . | quote }}
+        {{- end }}
         {{- with (.Values.callback | default dict).trustedProxies }}
         - --trusted-proxies={{ join "," . }}
         {{- end }}

@@ -26,9 +26,9 @@ var systemDial dialContextFunc = http.DefaultTransport.(*http.Transport).DialCon
 // the BMC's certificate is checked against stay as written.
 //
 // Addresses other than bmcHost are left alone because the only one the
-// transport dials is an HTTP proxy from the environment, which the operator
-// names, and which then resolves bmcHost itself. An IP literal has nothing to
-// resolve.
+// transport dials is the --bmc-proxy proxy (D-035), which the operator names,
+// and which then resolves bmcHost itself: D-032 cannot reach a proxied
+// connection, and the docs say so. An IP literal has nothing to resolve.
 func dialAbsolute(bmcHost string, dial dialContextFunc) dialContextFunc {
 	return func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dial(ctx, network, absoluteDialAddress(bmcHost, address))

@@ -340,6 +340,15 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if isTerminallyFailed(b7machine) {
 		log.Info("Beskar7Machine is in a terminal failure state; skipping reconciliation",
 			"reason", conditions.GetReason(b7machine, infrav1.InfrastructureReadyCondition))
+		// The run is over, so the host's callback token stops outliving it (D-036).
+		// Done here, not where the failure is marked, because this runs on every
+		// pass of a failed machine: it also reaches a failure recorded before an
+		// upgrade, and a write that fails is retried. The error is returned with
+		// the machine's status untouched, so the retry never un-fails it.
+		if err := r.limitBootstrapTokenAfterFailure(ctx, log, b7machine, time.Now()); err != nil {
+			log.Error(err, "Failed to shorten the bootstrap token of a failed run")
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -772,8 +781,10 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 // for the Beskar7Machine named consumer: the Secret is bound to that machine
 // and the token has an expiry more than minRemaining away. A token with less
 // left could be rendered by /boot and then expire while the inspector still
-// needs it (D-031). Nothing on the PhysicalHost is consulted — its status only
-// mirrors the Secret.
+// needs it (D-031). A token the machine's run has cut (limitBootstrapTokenAfterReady,
+// limitBootstrapTokenAfterFailure) has at most auth.TokenReadyGrace left, far
+// below that margin, so it is never handed out again. Nothing on the
+// PhysicalHost is consulted — its status only mirrors the Secret.
 func bootstrapTokenReusable(creds bootstrapCredentials, consumer string, now time.Time, minRemaining time.Duration) bool {
 	return creds.consumer == consumer && creds.tokenValid(now.Add(minRemaining))
 }
@@ -1143,13 +1154,8 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 // /provisioned report; without this the token kept authenticating callbacks,
 // and fetching the host's bootstrap data, for the rest of its mint lifetime.
 //
-// The token itself stays: replacing it would turn a lost-then-retried
-// /provisioned into a 401, which the inspector treats as fatal. The expiry is
-// only ever brought forward, never extended or created, so a token that
-// expires sooner, has no expiry (and so never verifies), or is bound to
-// another machine is left alone, and the Secret is written at most once: the
-// next pass finds the expiry already inside the grace. A Secret the host does
-// not own authenticates nothing (bootstrapSecretOwnedBy) and is left alone too.
+// The token is bound to the machine by name, as the bearer verifier binds it.
+// See cutBootstrapToken for what the cut does and does not touch.
 func (r *Beskar7MachineReconciler) limitBootstrapTokenAfterReady(
 	ctx context.Context,
 	logger logr.Logger,
@@ -1157,22 +1163,101 @@ func (r *Beskar7MachineReconciler) limitBootstrapTokenAfterReady(
 	physicalHost *infrav1.PhysicalHost,
 	now time.Time,
 ) error {
+	cut, err := r.cutBootstrapToken(ctx, logger, physicalHost, now, func(creds bootstrapCredentials) bool {
+		return creds.consumer == b7machine.Name
+	})
+	if cut {
+		logger.Info("Bootstrap token now expires shortly after the host became Ready", "host", physicalHost.Name, "grace", auth.TokenReadyGrace)
+	}
+	return err
+}
+
+// limitBootstrapTokenAfterFailure ends the bearer token's life
+// auth.TokenReadyGrace after this controller first sees the machine terminally
+// failed (D-036), the same grace the Ready cut gives: the run is over, and the
+// inspector may still be retrying its /provision-failed report. Without it a
+// failed machine whose host stays claimed kept a usable token for the rest of
+// its mint lifetime, up to an hour.
+//
+// Called on every pass over a failed machine, so it is idempotent (see
+// cutBootstrapToken) and needs nothing but the machine: the host is found the
+// way release finds it. A machine that holds no host has no token to cut.
+//
+// The cut waits while the host is in an Error about its BMC. PROV-1 applies a
+// /provisioned report to such a host, because the inspector does not need the
+// BMC and finishes the deployment regardless, and the report authenticates with
+// this token: cutting it would strand a deployment that finished. The machine
+// can be failed in that state (a BMC failure that is not an outage is terminal
+// for it), and the cut follows once the host leaves the Error; every change to
+// the host reaches this machine through the PhysicalHost watch. An Error the run
+// itself reported (provisioningRunFailed) is not one of these.
+//
+// Unlike the Ready cut, the token must be bound to this very machine, UID
+// included, as ensureBootstrapCredentials decides when it keeps one: a Secret
+// minted for an earlier machine of the same name belongs to another claim and
+// is left alone.
+func (r *Beskar7MachineReconciler) limitBootstrapTokenAfterFailure(
+	ctx context.Context,
+	logger logr.Logger,
+	b7machine *infrav1.Beskar7Machine,
+	now time.Time,
+) error {
+	physicalHost, err := r.findClaimedHostForRelease(ctx, logger, b7machine)
+	if err != nil {
+		return fmt.Errorf("find the host of a failed machine: %w", err)
+	}
+	if physicalHost == nil {
+		return nil
+	}
+	if physicalHost.Status.State == infrav1.StateError && !provisioningRunFailed(physicalHost) {
+		logger.V(1).Info("PhysicalHost is in an Error about its BMC; leaving the bootstrap token alone so a /provisioned report can still land",
+			"host", physicalHost.Name)
+		return nil
+	}
+	cut, err := r.cutBootstrapToken(ctx, logger, physicalHost, now, func(creds bootstrapCredentials) bool {
+		return creds.consumer == b7machine.Name && creds.consumerUID == string(b7machine.UID)
+	})
+	if cut {
+		logger.Info("Bootstrap token now expires shortly after the machine failed", "host", physicalHost.Name, "grace", auth.TokenReadyGrace)
+	}
+	return err
+}
+
+// cutBootstrapToken brings the expiry of the bearer token in the host's
+// bootstrap-token Secret forward to now + auth.TokenReadyGrace, if issuedTo
+// accepts the Secret's credentials, and reports whether it wrote the Secret.
+//
+// The token itself stays: replacing it would turn a lost-then-retried callback
+// into a 401, which the inspector treats as fatal. The expiry is only ever
+// brought forward, never extended or created, so a token that already expires
+// within the grace, has no expiry (and so never verifies), or is not the
+// caller's is left alone, and the Secret is written at most once: the next pass
+// finds the expiry already inside the grace and writes nothing. A Secret the
+// host does not own authenticates nothing (bootstrapSecretOwnedBy) and is left
+// alone too. Only the Secret is written; the PhysicalHost reconciler mirrors it
+// into status.
+func (r *Beskar7MachineReconciler) cutBootstrapToken(
+	ctx context.Context,
+	logger logr.Logger,
+	physicalHost *infrav1.PhysicalHost,
+	now time.Time,
+	issuedTo func(bootstrapCredentials) bool,
+) (bool, error) {
 	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
 	if err != nil || secret == nil || !bootstrapSecretOwnedBy(secret, physicalHost) {
-		return err
+		return false, err
 	}
 	creds := readBootstrapCredentials(secret)
 	limit := now.Add(auth.TokenReadyGrace)
-	if creds.consumer != b7machine.Name || creds.token == "" ||
+	if !issuedTo(creds) || creds.token == "" ||
 		creds.tokenExpiresAt.IsZero() || !creds.tokenExpiresAt.After(limit) {
-		return nil
+		return false, nil
 	}
 	creds.tokenExpiresAt = limit
 	if err := r.writeBootstrapCredentials(ctx, logger, physicalHost, secret, creds); err != nil {
-		return fmt.Errorf("shorten bootstrap token: %w", err)
+		return false, fmt.Errorf("shorten bootstrap token: %w", err)
 	}
-	logger.Info("Bootstrap token now expires shortly after the host became Ready", "host", physicalHost.Name, "grace", auth.TokenReadyGrace)
-	return nil
+	return true, nil
 }
 
 // errInvalidHostSelector marks a hostSelector that cannot be parsed. That is a
