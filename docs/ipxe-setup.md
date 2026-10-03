@@ -62,9 +62,9 @@ When `Beskar7MachineReconciler` claims a `PhysicalHost`, `triggerInspection`:
 
 1. Mints a **bearer token** (32-byte random, 60-minute lifetime) into the Secret
    `<hostName>-bootstrap-token`, data key `plaintext-token`, with its expiry
-   under `token-expires-at`. Once the host is `Ready`, the controller brings that
-   expiry forward to 5 minutes later, which covers the inspector's retries of its
-   last callback.
+   under `token-expires-at`. Once the host is `Ready`, or the `Beskar7Machine`
+   has failed terminally, the controller brings that expiry forward to 5 minutes
+   later, which covers the inspector's retries of its last callback.
 2. Mints a **boot nonce** (256-bit random, ~10-minute lifetime) into the same
    Secret, data key `plaintext-boot-nonce`, with its expiry under
    `boot-nonce-expires-at`.

@@ -97,10 +97,13 @@ Context that may help when assessing a finding:
   created under that name (D-031). `status.bootstrap` shows the hashes as a
   mirror and is never used to authenticate.
 - **The bearer token** is minted for 60 minutes (longer if `--inspection-timeout`
-  is raised above its default, by the same amount). Once the host is `Ready`, its
-  expiry is brought forward to at most 5 minutes later, which covers the
-  inspector's retries of its `/provisioned` report and nothing else. A token is
-  handed out again only while it has more life left than a boot nonce plus an
+  is raised above its default, by the same amount). Once the host is `Ready`, or
+  its `Beskar7Machine` has failed terminally, its expiry is brought forward to
+  at most 5 minutes later, which covers the inspector's retries of its
+  `/provisioned` or `/provision-failed` report and nothing else (D-031, D-036).
+  The failure cut waits while the host is in an Error about its BMC, because a
+  `/provisioned` report still lands there (PROV-1) and needs the token. A token
+  is handed out again only while it has more life left than a boot nonce plus an
   inspection (D-031).
 - **The `/boot` endpoint** is gated by a boot nonce, distinct from the bearer
   token and held in the same Secret. Its first fetch is recorded together with
