@@ -234,7 +234,9 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					return mockRf, nil
 				},
 			}
-			Expect(r.setInspectionRequestAnnotation(ctx, r.Log, physicalHost, "inspect")).To(Succeed())
+			hostKey := client.ObjectKeyFromObject(physicalHost)
+			ensureCallbackCredentials(hostKey)
+			Expect(r.setInspectionRequestAnnotation(ctx, r.Log, physicalHost, "inspect", callbackBinderFor(hostKey))).To(Succeed())
 
 			By("Verifying PhysicalHost.Status is unchanged after annotation call")
 			after := &infrav1.PhysicalHost{}
@@ -248,8 +250,11 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(after.Status.InspectionTimestamp).To(Equal(statusBefore.InspectionTimestamp),
 				"Beskar7Machine controller must not write to PhysicalHost.Status.InspectionTimestamp")
 
-			By("Verifying annotation IS set (the signal to PhysicalHost controller)")
+			By("Verifying annotation IS set (the signal to PhysicalHost controller), with its binding")
 			Expect(after.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect"))
+			Expect(after.Annotations).To(HaveKey(callbackBindingAnnotation(InspectionRequestAnnotation)))
+			Expect(callbackBinderFor(hostKey).holds(after, InspectionRequestAnnotation, "")).To(BeTrue(),
+				"the request carries the binding the reconciler recomputes from the host's Secret")
 		})
 
 		// "[SKIP - Hardware Testing] Should transition host to Inspecting state"
@@ -289,6 +294,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				Disks:        []infrav1.DiskInfo{{Name: "sda", SizeGB: 500}},
 			}
 			Expect(k8sClient.Status().Update(ctx, physicalHost)).To(Succeed())
+			physicalHost = claimWithCredentials(client.ObjectKeyFromObject(physicalHost), beskar7Machine.Name)
 
 			result, err := reconciler.validateInspectionReport(ctx, reconciler.Log, beskar7Machine, physicalHost)
 			Expect(err).NotTo(HaveOccurred(), "passing hardware checks must not error")
@@ -304,6 +310,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: physicalHost.Name, Namespace: testNs.Name}, updated)).To(Succeed())
 			Expect(updated.Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"),
 				"validateInspectionReport must signal inspect-complete via annotation; PhysicalHost owns the status transition")
+			Expect(callbackBinderFor(client.ObjectKeyFromObject(updated)).holds(updated, InspectionRequestAnnotation, "")).To(BeTrue(),
+				"the request is signed with the host's credentials (D-037)")
 		})
 
 		// Note: "[SKIP - Hardware Testing] Should handle no available hosts"
@@ -904,6 +912,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				host.Status.State = infrav1.StateInspecting
 				host.Status.InspectionTimestamp = &old
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+				// The timeout request is signed with the credentials of the claim (D-037).
+				host = claimWithCredentials(client.ObjectKeyFromObject(host), machine.Name)
 
 				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
@@ -923,6 +933,8 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				patchedHost := &infrav1.PhysicalHost{}
 				Expect(k8sClient.Get(ctx, types.NamespacedName{Name: host.Name, Namespace: host.Namespace}, patchedHost)).To(Succeed())
 				Expect(patchedHost.Annotations[InspectionRequestAnnotation]).To(Equal("timeout"))
+				Expect(callbackBinderFor(client.ObjectKeyFromObject(host)).holds(patchedHost, InspectionRequestAnnotation, "")).To(BeTrue(),
+					"the timeout is signed with the host's credentials")
 			})
 		})
 
@@ -967,6 +979,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 					Timestamp: metav1.Now(),
 				}
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+				host = claimWithCredentials(client.ObjectKeyFromObject(host), machine.Name)
 
 				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred())
@@ -1058,6 +1071,7 @@ var _ = Describe("Beskar7Machine Controller", func() {
 				host.Status.InspectionPhase = infrav1.InspectionPhaseInProgress
 				host.Status.InspectionTimestamp = &old
 				Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
+				host = claimWithCredentials(client.ObjectKeyFromObject(host), machine.Name)
 
 				result, err := reconciler.handleInspectingHost(ctx, reconciler.Log, machine, host)
 				Expect(err).NotTo(HaveOccurred(), "terminal failures must NOT return an error")
@@ -1752,7 +1766,7 @@ var _ = Describe("Beskar7Machine credential mint into the bound Secret (PR-5.2, 
 	It("creates the per-host Secret with both credentials, their expiries and the consumer, and writes nothing on the host", func() {
 		statusBefore := physicalHost.Status.DeepCopy()
 		now := time.Now()
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, b7machine, physicalHost, now)).To(Succeed())
+		ensureCredentials(r, b7machine, physicalHost, now)
 
 		s := getSecret()
 		Expect(s.Type).To(Equal(corev1.SecretTypeOpaque))
@@ -1787,15 +1801,15 @@ var _ = Describe("Beskar7Machine credential mint into the bound Secret (PR-5.2, 
 	})
 
 	It("mints nothing when both credentials are bound to this machine and valid", func() {
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, b7machine, physicalHost, time.Now())).To(Succeed())
+		ensureCredentials(r, b7machine, physicalHost, time.Now())
 		before := getSecret()
 
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, b7machine, getHost(), time.Now())).To(Succeed())
+		ensureCredentials(r, b7machine, getHost(), time.Now())
 		Expect(getSecret().ResourceVersion).To(Equal(before.ResourceVersion), "a valid, bound pair must not be rewritten")
 	})
 
 	It("re-mints only the nonce once its consume is recorded, keeping the bound token (single-use enforcement)", func() {
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, b7machine, physicalHost, time.Now())).To(Succeed())
+		ensureCredentials(r, b7machine, physicalHost, time.Now())
 		first := readBootstrapCredentials(getSecret())
 
 		By("recording the nonce's consume, as /boot does")
@@ -1804,7 +1818,7 @@ var _ = Describe("Beskar7Machine credential mint into the bound Secret (PR-5.2, 
 		ph.Status.Bootstrap = &infrav1.BootstrapStatus{BootNonceConsumedAt: &consumed, BootNonceConsumedHash: auth.Hash(first.nonce)}
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
 
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, b7machine, getHost(), time.Now())).To(Succeed())
+		ensureCredentials(r, b7machine, getHost(), time.Now())
 		second := readBootstrapCredentials(getSecret())
 		Expect(second.nonce).NotTo(Equal(first.nonce), "a consumed nonce is never reused")
 		Expect(second.token).To(Equal(first.token), "the nonce mint must not replace the bearer token")
@@ -1815,13 +1829,13 @@ var _ = Describe("Beskar7Machine credential mint into the bound Secret (PR-5.2, 
 	It("mints fresh credentials for a machine recreated under the same name", func() {
 		first := b7machine.DeepCopy()
 		first.UID = "uid-of-the-first-machine"
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, first, physicalHost, time.Now())).To(Succeed())
+		ensureCredentials(r, first, physicalHost, time.Now())
 		minted := readBootstrapCredentials(getSecret())
 		Expect(minted.consumerUID).To(Equal(string(first.UID)))
 
 		recreated := b7machine.DeepCopy()
 		recreated.UID = "uid-of-the-recreated-machine"
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, recreated, getHost(), time.Now())).To(Succeed())
+		ensureCredentials(r, recreated, getHost(), time.Now())
 		after := readBootstrapCredentials(getSecret())
 		Expect(after.token).NotTo(Equal(minted.token),
 			"a token the earlier machine's run may have exposed must not serve the new claim")

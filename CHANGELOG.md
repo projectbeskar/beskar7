@@ -59,11 +59,24 @@ section `v0.9.x` → `v0.10.0`.
   `v0.9.x` writes signals the new controller ignores. There is no CRD change for this, so no ordering
   constraint.
 
-<!-- D-037 PLACEHOLDER (INSPECT-REQUEST). The maintainer's session fills this in after the D-037 PR merges,
-     in the style of the SEC-15 entry above: what binding the machine-written `inspection-request` signal
-     (`inspect`, `inspect-complete`, `timeout`) closes, its upgrade note, and its PR link. Remove this
-     comment when it is filled; `grep -n 'D-037 PLACEHOLDER' CHANGELOG.md docs/upgrading.md` must print
-     nothing before the tag. -->
+- **The `inspection-request` the `Beskar7Machine` controller leaves on a `PhysicalHost` could be written by
+  anyone allowed to patch the host, failing or stalling a run (D-037).** The `PhysicalHost` reconciler acted
+  on `inspection-request` (`inspect`, `inspect-complete`, `timeout`) as it found it, so `patch physicalhosts`
+  was enough to fail a run at once (`timeout`, then `InspectionTimedOut`) or move a host to `Deploying`
+  without a verified inspection report (`inspect-complete`, then `DeploymentTimedOut`). It could not reach
+  `Ready`, which takes a bound `/provisioned`. The request now carries a binding the same way the callback
+  signals do (`inspection-request-binding`, the same HMAC scheme keyed by the host's token), written by the
+  machine controller with the credentials it has just minted or read, and an unbound request is removed and
+  does nothing. The reconciler now checks every binding against a live read of the host's
+  `<host>-bootstrap-token` Secret, not its cache, so a request signed right after a fresh mint is never
+  judged against the previous credentials. ([#253](https://github.com/projectbeskar/beskar7/pull/253))
+
+  **Upgrade note.** A request the previous controller wrote and the host had not applied yet has no binding
+  and is removed. An `inspect` (host `InUse`) or an `inspect-complete` (host `Inspecting` with its report in)
+  is written again, signed, on the machine's next pass; a host the old controller had already booted may be
+  restarted once more. A pending `timeout` is not written again: its machine has already failed, and the host
+  keeps its state until it is released. Upgrading with no host `Inspecting` or `Deploying` avoids all of it.
+
 
 - **A BMC hostname was resolved through the manager pod's DNS search path, so a Service in the cluster could
   receive a BMC connection, credentials included (SEC-17, D-032).** A pod's resolver (`ndots:5`) tried a

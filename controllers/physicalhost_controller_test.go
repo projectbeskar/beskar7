@@ -222,18 +222,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
 			By("Setting ConsumerRef and inspect annotation (as Beskar7Machine controller would)")
-			phPatch := ph.DeepCopy()
-			if phPatch.Annotations == nil {
-				phPatch.Annotations = map[string]string{}
-			}
-			phPatch.Annotations[InspectionRequestAnnotation] = "inspect"
-			phPatch.Spec.ConsumerRef = &corev1.ObjectReference{
-				Kind:       "Beskar7Machine",
-				APIVersion: InfrastructureAPIVersion,
-				Name:       "test-machine",
-				Namespace:  ph.Namespace,
-			}
-			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+			claimWithRequest(client.ObjectKeyFromObject(ph), "test-machine", "inspect")
 
 			By("Reconciling — controller should consume annotation and transition to Inspecting")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
@@ -255,14 +244,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			}, Timeout, Interval).Should(Succeed())
 
 			By("Setting inspect-complete annotation (as Beskar7Machine controller would after validation)")
-			ph2 := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
-			ph2Patch := ph2.DeepCopy()
-			if ph2Patch.Annotations == nil {
-				ph2Patch.Annotations = map[string]string{}
-			}
-			ph2Patch.Annotations[InspectionRequestAnnotation] = "inspect-complete"
-			Expect(k8sClient.Patch(ctx, ph2Patch, client.MergeFrom(ph2))).To(Succeed())
+			requestInspection(phLookupKey, "inspect-complete")
 
 			// D-015: inspect-complete now transitions to StateDeploying, not StateReady.
 			// StateReady is only reached after the provisioned callback.
@@ -301,29 +283,11 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Driving a full provisioning run: claim -> Inspecting -> Deploying")
 			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			phPatch := ph.DeepCopy()
-			if phPatch.Annotations == nil {
-				phPatch.Annotations = map[string]string{}
-			}
-			phPatch.Annotations[InspectionRequestAnnotation] = "inspect"
-			phPatch.Spec.ConsumerRef = &corev1.ObjectReference{
-				Kind:       "Beskar7Machine",
-				APIVersion: InfrastructureAPIVersion,
-				Name:       "first-consumer",
-				Namespace:  ph.Namespace,
-			}
-			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
+			claimWithRequest(client.ObjectKeyFromObject(ph), "first-consumer", "inspect")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
-			ph2 := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph2)).To(Succeed())
-			ph2Patch := ph2.DeepCopy()
-			if ph2Patch.Annotations == nil {
-				ph2Patch.Annotations = map[string]string{}
-			}
-			ph2Patch.Annotations[InspectionRequestAnnotation] = "inspect-complete"
-			Expect(k8sClient.Patch(ctx, ph2Patch, client.MergeFrom(ph2))).To(Succeed())
+			requestInspection(phLookupKey, "inspect-complete")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -371,18 +335,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("A second consumer can claim it and start a fresh inspection")
 			reclaim := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, reclaim)).To(Succeed())
-			reclaimPatch := reclaim.DeepCopy()
-			if reclaimPatch.Annotations == nil {
-				reclaimPatch.Annotations = map[string]string{}
-			}
-			reclaimPatch.Annotations[InspectionRequestAnnotation] = "inspect"
-			reclaimPatch.Spec.ConsumerRef = &corev1.ObjectReference{
-				Kind:       "Beskar7Machine",
-				APIVersion: InfrastructureAPIVersion,
-				Name:       "second-consumer",
-				Namespace:  reclaim.Namespace,
-			}
-			Expect(k8sClient.Patch(ctx, reclaimPatch, client.MergeFrom(reclaim))).To(Succeed())
+			claimWithRequest(client.ObjectKeyFromObject(reclaim), "second-consumer", "inspect")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 

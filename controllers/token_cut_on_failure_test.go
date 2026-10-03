@@ -140,7 +140,7 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 	}
 	// mint stores credentials for the machine the way triggerInspection would.
 	mint := func() bootstrapCredentials {
-		Expect(r.ensureBootstrapCredentials(ctx, r.Log, getMachine(), getPhysicalHost(hostKey), time.Now())).To(Succeed())
+		ensureCredentials(r, getMachine(), getPhysicalHost(hostKey), time.Now())
 		return readBootstrapCredentials(getCredentialSecret(hostKey))
 	}
 	reconcileMachine := func() error {
@@ -463,7 +463,7 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 				"/boot renders the token into a kernel cmdline: five minutes cannot cover a nonce plus an inspection")
 
 			By("the same machine minting again: the token is replaced, the unconsumed nonce is not")
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, machine, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, machine, getPhysicalHost(hostKey), time.Now())
 			again := readBootstrapCredentials(getCredentialSecret(hostKey))
 			Expect(again.token).NotTo(Equal(minted.token))
 			Expect(again.tokenExpiresAt).To(BeTemporally("~", time.Now().Add(auth.TokenLifetime), 10*time.Second))
@@ -473,7 +473,7 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 			second := &infrav1.Beskar7Machine{ObjectMeta: metav1.ObjectMeta{
 				Name: "second-failed-run-machine", Namespace: ns.Name, UID: "second-failed-run-machine-uid",
 			}}
-			Expect(r.ensureBootstrapCredentials(ctx, r.Log, second, getPhysicalHost(hostKey), time.Now())).To(Succeed())
+			ensureCredentials(r, second, getPhysicalHost(hostKey), time.Now())
 			fresh := readBootstrapCredentials(getCredentialSecret(hostKey))
 			Expect(fresh.consumer).To(Equal(second.Name))
 			Expect(fresh.consumerUID).To(Equal(string(second.UID)))

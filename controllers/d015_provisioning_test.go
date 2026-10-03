@@ -82,9 +82,6 @@ var _ = Describe("D-015 PhysicalHost inspect-complete → StateDeploying", func(
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "host-inspect-complete",
 				Namespace: testNs.Name,
-				Annotations: map[string]string{
-					InspectionRequestAnnotation: "inspect-complete",
-				},
 			},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
@@ -97,6 +94,10 @@ var _ = Describe("D-015 PhysicalHost inspect-complete → StateDeploying", func(
 		ph.Status.State = infrav1.StateInspecting
 		ph.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 		Expect(k8sClient.Status().Update(ctx, ph)).To(Succeed())
+
+		// The machine's request: the claim, the credentials and the signed
+		// inspect-complete (D-037).
+		claimWithRequest(client.ObjectKeyFromObject(ph), "inspect-complete-machine", "inspect-complete")
 
 		// Re-fetch so annotations round-trip correctly.
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, ph)).To(Succeed())

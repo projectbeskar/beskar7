@@ -258,9 +258,13 @@ A run in flight does not survive the upgrade intact:
 - **A callback-only instance still on `v0.9.x` writes signals with no binding**, which a `v0.10.0` controller
   drops. Upgrade the controller and every callback-only instance in the same window (step 6).
 
-<!-- D-037 PLACEHOLDER (INSPECT-REQUEST). The maintainer's session fills this in after the D-037 PR merges:
-     what binding the machine-written `inspection-request` signal changes for an upgrade, in the style of
-     the D-034 bullet above, and whether it extends the rule to wait for no host `Inspecting` or `Deploying`. -->
+- **A request the `Beskar7Machine` controller wrote and the host had not applied yet is removed** (decision
+  D-037): `v0.10.0` binds `inspection-request` the same way, and `v0.9.x` wrote it unbound. An `inspect` (host
+  `InUse`) or an `inspect-complete` (host `Inspecting` with its report in) is written again, signed, on the
+  machine's next pass, and a host the old controller had already booted may be restarted once more. A pending
+  `timeout` is not written again: its machine has already failed, and the host keeps its state until it is
+  released. This adds no new rule; waiting for no host `Inspecting` or `Deploying` covers it.
+
 
 A run caught by the upgrade is not reprovisioned behind your back: it ends in a timeout, and its
 `MachineHealthCheck` replaces the machine, or you delete it.

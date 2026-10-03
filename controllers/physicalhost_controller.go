@@ -56,7 +56,11 @@ const (
 
 	// InspectionRequestAnnotation is set by Beskar7Machine to signal an inspection intent.
 	// The PhysicalHost controller reads it and drives InspectionPhase / State accordingly.
-	// Valid values: "inspect", "timeout".
+	// Valid values: "inspect", "inspect-complete", "timeout".
+	//
+	// Like the three annotations the callback handlers write, it counts only with the
+	// binding the Beskar7Machine controller writes in the sibling annotation
+	// callbackBindingAnnotation(InspectionRequestAnnotation) (callback_binding.go, D-037).
 	InspectionRequestAnnotation = "infrastructure.cluster.x-k8s.io/inspection-request"
 
 	// inspectionTimedOutMessage is the ErrorMessage the "timeout" inspection
@@ -83,6 +87,15 @@ type PhysicalHostReconciler struct {
 	Scheme               *runtime.Scheme
 	Recorder             record.EventRecorder
 	RedfishClientFactory internalredfish.RedfishClientFactory
+	// APIReader reads the host's bootstrap-token Secret straight from the API
+	// server, to check the binding of the annotations the reconciler acts on
+	// (D-034, D-037). Not the cache: the Beskar7Machine controller signs an
+	// inspect request in the same pass that mints or rotates the credentials, so
+	// a cache that has not seen the write yet would show the previous credentials
+	// and the genuine request would be rejected and removed. SetupWithManager
+	// defaults it to the manager's API reader; unset, the reconciler reads
+	// through Client, which is only as fresh as Client is.
+	APIReader client.Reader
 	// MaxConcurrentReconciles is the worker count for this controller. Zero
 	// means DefaultMaxConcurrentReconciles (1).
 	MaxConcurrentReconciles int
@@ -729,11 +742,24 @@ func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, p
 }
 
 // applyInspectionRequest reads the InspectionRequestAnnotation and, when present, drives
-// Status.State and Status.InspectionPhase accordingly, then removes the annotation so it
-// is not acted on twice.
+// Status.State and Status.InspectionPhase accordingly, then removes the annotation, and
+// the binding next to it, so it is not acted on twice.
+//
+// The request counts only with the binding the Beskar7Machine controller wrote next to
+// it (D-037, the scheme of D-034): without that, anyone allowed to patch PhysicalHosts
+// could record an inspection timeout, which fails the run at once, or send
+// inspect-complete, which takes the host to Deploying and ends in DeploymentTimedOut.
+// One that is not bound is removed, and nothing else happens: not even the log names
+// its value. A request whose binding cannot be checked because the host's credentials
+// cannot be read just now is left for the next pass.
 func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	ann := physicalHost.Annotations[InspectionRequestAnnotation]
-	if ann == "" {
+	ann, present := physicalHost.Annotations[InspectionRequestAnnotation]
+	if !present {
+		// A binding with no request next to it was not written by the machine controller.
+		dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
+		return
+	}
+	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, InspectionRequestAnnotation, "") != callbackBound {
 		return
 	}
 
@@ -747,7 +773,7 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 	// DeploymentFailed.
 	if provisioningRunFailed(physicalHost) {
 		logger.Info("Ignoring inspection-request annotation: the host's provisioning run has failed", "value", ann)
-		delete(physicalHost.Annotations, InspectionRequestAnnotation)
+		dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
 		return
 	}
 
@@ -760,7 +786,7 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 	// and its machine would stop reporting it provisioned.
 	if physicalHost.Spec.ConsumerRef != nil && physicalHost.Status.State == infrav1.StateReady {
 		logger.Info("Ignoring inspection-request annotation: the host has been provisioned", "value", ann)
-		delete(physicalHost.Annotations, InspectionRequestAnnotation)
+		dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
 		return
 	}
 
@@ -802,7 +828,7 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 	}
 
 	// Remove the annotation so we don't act on it again. The deferred patch persists this.
-	delete(physicalHost.Annotations, InspectionRequestAnnotation)
+	dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
 }
 
 // applyBootstrapURLAnnotation reads the BootstrapURLAnnotation and, when present,
@@ -955,7 +981,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 		dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, InspectionResultAnnotation, contentDigest(raw)) != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, InspectionResultAnnotation, contentDigest(raw)) != callbackBound {
 		return
 	}
 
@@ -1028,7 +1054,7 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(ctx context.C
 		dropCallbackAnnotation(physicalHost, ProvisionedRequestAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, ProvisionedRequestAnnotation, "") != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, ProvisionedRequestAnnotation, "") != callbackBound {
 		return
 	}
 	if val != "provisioned" {
@@ -1102,7 +1128,7 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(ctx conte
 		dropCallbackAnnotation(physicalHost, ProvisionFailedRequestAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.Client, logger, physicalHost, ProvisionFailedRequestAnnotation, "") != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, ProvisionFailedRequestAnnotation, "") != callbackBound {
 		return
 	}
 
@@ -1206,10 +1232,23 @@ func (r *PhysicalHostReconciler) defaultFactory() error {
 	return nil
 }
 
+// bindingReader returns the reader the bindings of the annotations are checked
+// with: APIReader, or Client when none was set (a reconciler built outside a
+// manager).
+func (r *PhysicalHostReconciler) bindingReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := r.defaultFactory(); err != nil {
 		return err
+	}
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.PhysicalHost{}).

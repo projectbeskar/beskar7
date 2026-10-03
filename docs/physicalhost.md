@@ -65,7 +65,7 @@ The reconciler drives `Status.State` through these transitions:
 ```
 created → Available                            (BMC reachable, no consumer)
 Available → InUse                              (Beskar7Machine claims via spec.consumerRef)
-InUse → Inspecting                             (Beskar7Machine sets the inspection-request annotation)
+InUse → Inspecting                             (Beskar7Machine sets the signed inspection-request annotation)
 Inspecting → Deploying                         (inspection report consumed from ConfigMap, validated)
 Deploying → Ready                              (inspector POSTs /api/v1/provisioned; see contract §4.4)
 Deploying → Error                              (inspector POSTs /api/v1/provision-failed; see contract §4.5)
@@ -95,11 +95,23 @@ The callback credentials — the bearer token and the boot nonce — never trave
 
 The `infrastructure.cluster.x-k8s.io/bootstrap-token` and `infrastructure.cluster.x-k8s.io/boot-nonce` annotations are retired: releases before D-029 promoted them into `Status.Bootstrap`, which let anyone allowed to patch a PhysicalHost forge callback credentials (SEC-12). The reconciler removes either one on sight without reading it.
 
+## Inspection requests
+
+The Beskar7Machine controller drives a run through one more annotation, `infrastructure.cluster.x-k8s.io/inspection-request`. The reconciler applies it, then removes it together with its binding:
+
+| Value | The machine writes it when | The reconciler |
+|---|---|---|
+| `inspect` | it has stored the host's callback credentials and booted the host into the inspector | `Inspecting`, `InspectionPhase=Booting`; starts the inspection clock |
+| `inspect-complete` | it has validated the inspection report | `Deploying`, `HostInspected=True`; starts the deployment clock |
+| `timeout` | the inspection timeout has run out | `Error` (`Inspection timed out`), `InspectionPhase=Timeout`; kept until the host is released |
+
+The request counts only with the binding in `infrastructure.cluster.x-k8s.io/inspection-request-binding`, which the machine writes in the same patch: an HMAC-SHA256, keyed by the host's bearer token, over the request, the host, and the claim and boot cycle the token was minted for (decision D-037, SEC-15). The machine signs with the credentials in the host's `<host>-bootstrap-token` Secret, and an `inspect` with the ones it has just written there. The reconciler checks the binding against that Secret, read from the API server and not through the cache, so a request written by hand, one whose value was edited, or one signed in an earlier boot cycle or claim is removed and does nothing else. A request not applied yet when an older release's controller is replaced has no binding and is removed; the machine writes `inspect` and `inspect-complete` again, signed, in its next pass. See [State Management → The inspector's and the machine's annotations carry a binding](state-management.md#the-inspectors-and-the-machines-annotations-carry-a-binding).
+
 ## Inspection result handoff
 
 The inspection HTTP handler does not write to `PhysicalHost.Status` directly. Instead, it stores the validated `InspectionReport` on a ConfigMap named `<host>-inspection-result` (owner-ref → PhysicalHost) and patches an `infrastructure.cluster.x-k8s.io/inspection-result-ref` annotation onto the host. The reconciler consumes the ConfigMap, writes the report to `Status.InspectionReport`, marks `HostInspected=True`, deletes the ConfigMap, and clears the annotation. This keeps the controller as the sole writer of the host's status (decision D-005 in `.claude/context/PROJECT_CONTEXT.md`).
 
-The annotation carries a binding in `infrastructure.cluster.x-k8s.io/inspection-result-ref-binding`, written in the same patch: an HMAC-SHA256, keyed by the host's bearer token, that covers the ConfigMap's name and the SHA-256 of the `report.json` stored in it (decision D-034, SEC-15). The reconciler hashes the `report.json` it reads and checks the binding against the host's `<host>-bootstrap-token` Secret before it uses any of it, so an annotation written by hand, or a ConfigMap rewritten after the handler bound it, is removed and ignored, and the ConfigMap is left alone. The `provisioned-request` and `provision-failed-request` annotations the other two callbacks leave are bound the same way; see [State Management → The inspector's annotations carry a binding](state-management.md#the-inspectors-annotations-carry-a-binding).
+The annotation carries a binding in `infrastructure.cluster.x-k8s.io/inspection-result-ref-binding`, written in the same patch: an HMAC-SHA256, keyed by the host's bearer token, that covers the ConfigMap's name and the SHA-256 of the `report.json` stored in it (decision D-034, SEC-15). The reconciler hashes the `report.json` it reads and checks the binding against the host's `<host>-bootstrap-token` Secret before it uses any of it, so an annotation written by hand, or a ConfigMap rewritten after the handler bound it, is removed and ignored, and the ConfigMap is left alone. The `provisioned-request` and `provision-failed-request` annotations the other two callbacks leave are bound the same way, and so are the machine's inspection requests (above); see [State Management → The inspector's and the machine's annotations carry a binding](state-management.md#the-inspectors-and-the-machines-annotations-carry-a-binding).
 
 ## Conditions
 
