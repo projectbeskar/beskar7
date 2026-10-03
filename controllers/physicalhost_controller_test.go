@@ -1004,7 +1004,7 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		ph := hostWithStatus()
 		data := boundCredentialData("mirror-machine", "token", time.Hour, "nonce", 10*time.Minute)
 		data[bootstrapTokenIssuedAtSecretKey] = credentialTime(now)
-		mirror(ph, credentialSecret(ns, hostName, data))
+		mirror(ph, credentialSecret(ph, data))
 
 		bs := ph.Status.Bootstrap
 		Expect(bs.TokenHash).To(Equal(auth.Hash("token")))
@@ -1022,7 +1022,7 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		data := boundCredentialData("mirror-machine", "token", time.Hour, "nonce", time.Minute)
 		data[bootstrapTokenExpiresAtSecretKey] = []byte("next tuesday")
 		delete(data, bootNonceExpiresAtSecretKey)
-		mirror(ph, credentialSecret(ns, hostName, data))
+		mirror(ph, credentialSecret(ph, data))
 		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(auth.Hash("token")))
 		Expect(ph.Status.Bootstrap.ExpiresAt).To(BeNil())
 		Expect(ph.Status.Bootstrap.BootNonceExpiresAt).To(BeNil())
@@ -1031,7 +1031,7 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 	It("leaves status alone for a Secret written before the consumer binding (the upgrade backfill reads it)", func() {
 		ph := hostWithStatus()
 		before := ph.Status.DeepCopy()
-		mirror(ph, credentialSecret(ns, hostName, map[string][]byte{bootstrapTokenSecretKey: []byte("token")}))
+		mirror(ph, credentialSecret(ph, map[string][]byte{bootstrapTokenSecretKey: []byte("token")}))
 		Expect(ph.Status).To(Equal(*before))
 	})
 

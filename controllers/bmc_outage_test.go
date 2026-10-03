@@ -762,8 +762,9 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		}
 		setTrue(machine, infrav1.InfrastructureReadyCondition, infrav1.ProvisionedReason)
 
-		// No Redfish client: a provisioned machine must not need its BMC.
-		machineReconciler := &Beskar7MachineReconciler{Log: ctrl.Log.WithName("bmc-substate-401-machine")}
+		// No Redfish factory: a provisioned machine must not need its BMC. The
+		// API client is for the bootstrap-token Secret (D-031).
+		machineReconciler := &Beskar7MachineReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Log: ctrl.Log.WithName("bmc-substate-401-machine")}
 		_, err = machineReconciler.handlePhysicalHostState(ctx, machineReconciler.Log, machine, host)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(isTerminallyFailed(machine)).To(BeFalse())
@@ -829,8 +830,9 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		}
 		setTrue(machine, infrav1.InfrastructureReadyCondition, infrav1.ProvisionedReason)
 
-		// No Redfish client: a provisioned machine must not need its BMC.
-		machineReconciler := &Beskar7MachineReconciler{Log: ctrl.Log.WithName("bmc-substate-machine")}
+		// No Redfish factory: a provisioned machine must not need its BMC. The
+		// API client is for the bootstrap-token Secret (D-031).
+		machineReconciler := &Beskar7MachineReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Log: ctrl.Log.WithName("bmc-substate-machine")}
 		_, err = machineReconciler.handlePhysicalHostState(ctx, machineReconciler.Log, machine, host)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(isTerminallyFailed(machine)).To(BeFalse())

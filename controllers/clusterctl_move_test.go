@@ -147,9 +147,8 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		setTrue(host, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
 		Expect(k8sClient.Status().Update(ctx, host)).To(Succeed())
 
-		tokenSecret := credentialSecret(ns, hostName,
+		tokenSecret := credentialSecret(host,
 			boundCredentialData(machineName, "s3cr3t-token", 10*time.Minute, "s3cr3t-nonce", 5*time.Minute))
-		Expect(controllerutil.SetControllerReference(host, tokenSecret, k8sClient.Scheme())).To(Succeed())
 		Expect(k8sClient.Create(ctx, tokenSecret)).To(Succeed())
 
 		b7m := &infrav1.Beskar7Machine{
@@ -312,7 +311,19 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		Expect(finalHost.Annotations).NotTo(HaveKey(InspectionRequestAnnotation), "no inspection was ever requested")
 		finalTokenSecret := &corev1.Secret{}
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(tokenSecret), finalTokenSecret)).To(Succeed())
-		Expect(finalTokenSecret.Data).To(Equal(tokenSecret.Data), "no fresh bearer token or boot nonce was minted")
+		seeded, final := readBootstrapCredentials(tokenSecret), readBootstrapCredentials(finalTokenSecret)
+		Expect(final.token).To(Equal(seeded.token), "no fresh bearer token was minted")
+		Expect(final.tokenIssuedAt).To(Equal(seeded.tokenIssuedAt))
+		Expect(final.nonce).To(Equal(seeded.nonce), "no fresh boot nonce was minted")
+		Expect(final.nonceExpiresAt).To(Equal(seeded.nonceExpiresAt))
+		Expect(final.consumer).To(Equal(seeded.consumer))
+		Expect(final.consumerUID).To(Equal(seeded.consumerUID))
+
+		By("the moved Secret, its owner rewritten to the recreated host, still being the host's credential (D-031)")
+		_, _, err = boundBootstrapCredentials(ctx, k8sClient, finalHost)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(final.tokenExpiresAt).To(BeTemporally("<=", time.Now().Add(5*time.Minute)),
+			"the Ready machine cuts the moved token to the post-Ready grace like any other")
 	})
 
 	It("adopts Ready even when the credentials Secret has not been created yet", func() {

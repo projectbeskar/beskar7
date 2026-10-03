@@ -91,13 +91,27 @@ Context that may help when assessing a finding:
   `<host>-bootstrap-token` Secret is the only credential: every route compares
   the caller's token, in constant time, against the one in that Secret, with an
   expiry the manager wrote, and only while the host's `consumerRef` names the
-  machine the Secret was minted for, in the host's own namespace (D-029).
-  `status.bootstrap` shows the hashes as a mirror and is never used to
-  authenticate.
+  machine the Secret was minted for, in the host's own namespace (D-029). The
+  Secret counts only if its controller owner reference names that
+  `PhysicalHost` by UID; the manager never takes over a Secret someone else
+  created under that name (D-031). `status.bootstrap` shows the hashes as a
+  mirror and is never used to authenticate.
+- **The bearer token** is minted for 60 minutes (longer if `--inspection-timeout`
+  is raised above its default, by the same amount). Once the host is `Ready`, its
+  expiry is brought forward to at most 5 minutes later, which covers the
+  inspector's retries of its `/provisioned` report and nothing else. A token is
+  handed out again only while it has more life left than a boot nonce plus an
+  inspection (D-031).
 - **The `/boot` endpoint** is gated by a boot nonce, distinct from the bearer
-  token and held in the same Secret. Its first fetch is recorded; the same
-  nonce renders the same script until it expires (10 minutes), and a new
-  claim always gets a new one.
+  token and held in the same Secret. Its first fetch is recorded together with
+  the client address that made it. After that, the same nonce renders the same
+  script only for that address and only for 2 minutes; every other fetch gets
+  the same `404` as a wrong nonce, even though the nonce is valid for 10 minutes
+  from its mint. A new claim always gets a new one (D-031). The client address
+  is the peer, or the `X-Forwarded-For` entry a configured trusted proxy added,
+  so an attacker who can send from the host's own address within those 2
+  minutes, or who fetches the nonce before the host does, still gets the
+  script.
 - **OS image integrity** is anchored by `targetImageDigest` (SHA-256), verified by
   the inspector during the write. The image may be served over plain HTTP: the
   digest, not TLS, is the trust anchor.

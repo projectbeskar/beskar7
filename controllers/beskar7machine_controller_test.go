@@ -1841,42 +1841,48 @@ var _ = Describe("bootstrapTokenReusable", func() {
 	}
 
 	It("reuses a token bound to this machine within its validity window", func() {
-		Expect(bootstrapTokenReusable(bound(), consumer, now)).To(BeTrue())
+		Expect(bootstrapTokenReusable(bound(), consumer, now, 0)).To(BeTrue())
 	})
 
 	It("re-mints when the Secret holds no token", func() {
 		creds := bound()
 		creds.token = ""
-		Expect(bootstrapTokenReusable(creds, consumer, now)).To(BeFalse())
+		Expect(bootstrapTokenReusable(creds, consumer, now, 0)).To(BeFalse())
 	})
 
 	It("re-mints when the token has no expiry: a missing or unparseable key fails closed", func() {
 		creds := bound()
 		creds.tokenExpiresAt = time.Time{}
-		Expect(bootstrapTokenReusable(creds, consumer, now)).To(BeFalse())
+		Expect(bootstrapTokenReusable(creds, consumer, now, 0)).To(BeFalse())
 	})
 
 	It("re-mints when the expiry is in the past", func() {
 		creds := bound()
 		creds.tokenExpiresAt = now.Add(-time.Minute)
-		Expect(bootstrapTokenReusable(creds, consumer, now)).To(BeFalse())
+		Expect(bootstrapTokenReusable(creds, consumer, now, 0)).To(BeFalse())
 	})
 
 	It("re-mints when the expiry equals now (boundary)", func() {
 		creds := bound()
 		creds.tokenExpiresAt = now
-		Expect(bootstrapTokenReusable(creds, consumer, now)).To(BeFalse(),
+		Expect(bootstrapTokenReusable(creds, consumer, now, 0)).To(BeFalse(),
 			"now.Before(expiry) is false at equality — boundary must re-mint")
 	})
 
 	It("re-mints when the Secret is bound to another machine, so a token never outlives its claim (SEC-13)", func() {
-		Expect(bootstrapTokenReusable(bound(), "next-machine", now)).To(BeFalse())
+		Expect(bootstrapTokenReusable(bound(), "next-machine", now, 0)).To(BeFalse())
 	})
 
 	It("re-mints when the Secret carries no binding", func() {
 		creds := bound()
 		creds.consumer = ""
-		Expect(bootstrapTokenReusable(creds, consumer, now)).To(BeFalse())
+		Expect(bootstrapTokenReusable(creds, consumer, now, 0)).To(BeFalse())
+	})
+
+	It("re-mints a token with no more life left than the margin it must still cover (D-031)", func() {
+		Expect(bootstrapTokenReusable(bound(), consumer, now, 9*time.Minute)).To(BeTrue())
+		Expect(bootstrapTokenReusable(bound(), consumer, now, 10*time.Minute)).To(BeFalse(), "boundary: exactly the margin left")
+		Expect(bootstrapTokenReusable(bound(), consumer, now, 11*time.Minute)).To(BeFalse())
 	})
 })
 
@@ -2493,12 +2499,9 @@ var _ = Describe("Beskar7Machine credential reuse is judged by the bound Secret 
 		Expect(k8sClient.Get(ctx, hostKey, physicalHost)).To(Succeed())
 	}
 	// seedSecret plants the per-host Secret as an earlier mint — or an older
-	// manager — left it.
+	// manager — left it: every release made the host its controller.
 	seedSecret := func(data map[string][]byte) {
-		Expect(k8sClient.Create(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: secretKey.Name, Namespace: secretKey.Namespace},
-			Data:       data,
-		})).To(Succeed())
+		Expect(k8sClient.Create(ctx, credentialSecret(physicalHost, data))).To(Succeed())
 	}
 	getCreds := func() bootstrapCredentials {
 		s := &corev1.Secret{}
@@ -2613,7 +2616,9 @@ var _ = Describe("Beskar7Machine credential reuse is judged by the bound Secret 
 			token, tokenHash := mustMint()
 			nonce, nonceHash := mustMint()
 			seedSecret(map[string][]byte{bootstrapTokenSecretKey: []byte(token), bootNonceSecretKey: []byte(nonce)})
-			tokenExpiry := metav1.NewTime(time.Now().Add(20 * time.Minute).Truncate(time.Second))
+			// More than a nonce plus an inspection left, or the token is not
+			// handed out again however it was bound (D-031).
+			tokenExpiry := metav1.NewTime(time.Now().Add(40 * time.Minute).Truncate(time.Second))
 			nonceExpiry := metav1.NewTime(time.Now().Add(3 * time.Minute).Truncate(time.Second))
 			seedStatus(infrav1.StateInUse, &infrav1.BootstrapStatus{
 				TokenHash: tokenHash, ExpiresAt: &tokenExpiry, BootNonceHash: nonceHash, BootNonceExpiresAt: &nonceExpiry,

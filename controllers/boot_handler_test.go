@@ -151,7 +151,7 @@ func bootTestFixture(testNs string) (
 	noncePlaintext, _, err := auth.MintToken()
 	Expect(err).NotTo(HaveOccurred())
 
-	Expect(k8sClient.Create(ctx, credentialSecret(testNs, ph.Name,
+	Expect(k8sClient.Create(ctx, credentialSecret(ph,
 		boundCredentialData(b7m.Name, bearerPlaintext, 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 	// Return fresh copies so callers hold the latest resourceVersion.
@@ -362,33 +362,31 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 
 	It("already-consumed: identical render, no second patch, ConsumedAt value unchanged", func() {
 		ph, b7m, _, nonce := bootTestFixture(testNs.Name)
+		key := types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}
 
-		By("pre-consuming the nonce: a record naming this nonce's hash")
-		consumedAt := metav1.NewTime(time.Now().Add(-1 * time.Second))
-		freshPH := &infrav1.PhysicalHost{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, freshPH)).To(Succeed())
-		freshPH.Status.Bootstrap = &infrav1.BootstrapStatus{
-			BootNonceConsumedAt:   &consumedAt,
-			BootNonceConsumedHash: auth.Hash(nonce),
-		}
-		Expect(k8sClient.Status().Update(ctx, freshPH)).To(Succeed())
-
-		By("issuing a /boot fetch against an already-consumed nonce")
+		By("consuming the nonce with a first fetch")
 		resp := doBoot(server.URL, testNs.Name, ph.Name, nonce)
+		first := readBody(resp)
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
+		consumed := &infrav1.PhysicalHost{}
+		Expect(k8sClient.Get(ctx, key, consumed)).To(Succeed())
+		Expect(consumed.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil())
+
+		By("issuing a /boot fetch against the already-consumed nonce, from the same client")
+		resp = doBoot(server.URL, testNs.Name, ph.Name, nonce)
 		body := readBody(resp)
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
-		By("body is the correct iPXE script")
+		By("body is the correct iPXE script, identical to the first")
 		Expect(body).To(ContainSubstring(b7m.Spec.InspectionImageURL + "/vmlinuz"))
 		Expect(body).To(ContainSubstring("beskar7.token="))
+		Expect(body).To(Equal(first))
 
-		By("ConsumedAt is unchanged — same second as the pre-set value")
+		By("the consume record is unchanged")
 		got := &infrav1.PhysicalHost{}
-		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: ph.Name, Namespace: testNs.Name}, got)).To(Succeed())
-		Expect(got.Status.Bootstrap.BootNonceConsumedAt).NotTo(BeNil())
-		// metav1.Time serializes to second-precision RFC3339; compare truncated.
-		Expect(got.Status.Bootstrap.BootNonceConsumedAt.Truncate(time.Second)).To(
-			BeTemporally("==", consumedAt.Truncate(time.Second)),
+		Expect(k8sClient.Get(ctx, key, got)).To(Succeed())
+		Expect(got.ResourceVersion).To(Equal(consumed.ResourceVersion), "a retry records nothing")
+		Expect(got.Status.Bootstrap.BootNonceConsumedAt.Time).To(BeTemporally("==", consumed.Status.Bootstrap.BootNonceConsumedAt.Time),
 			"ConsumedAt must not be advanced by a second /boot fetch")
 		Expect(got.Status.Bootstrap.BootNonceConsumedHash).To(Equal(auth.Hash(nonce)))
 	})
@@ -452,7 +450,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h-superseded", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h-superseded", Namespace: "n", UID: "h-superseded-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{Address: "https://192.168.1.1", CredentialsSecretRef: "x"},
 				ConsumerRef: &corev1.ObjectReference{
@@ -468,7 +466,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := credentialSecret("n", ph.Name,
+		tokenSecret := credentialSecret(ph,
 			boundCredentialData(b7m.Name, "superseded-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 
 		// The first consume patch finds a newer nonce minted and consumed.
@@ -628,7 +626,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		// A valid nonce, bound to the machine that last claimed the host, so the
 		// only thing wrong is that nobody claims it now: callbacks for an
 		// unclaimed host are rejected (D-029).
-		Expect(k8sClient.Create(ctx, credentialSecret(testNs.Name, ph.Name,
+		Expect(k8sClient.Create(ctx, credentialSecret(ph,
 			boundCredentialData("previous-machine", tokenPlaintext, 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
@@ -687,7 +685,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		// machine of the ConsumerRef's name, so the only thing standing between
 		// a valid nonce and a rendered script naming namespace B's
 		// InspectionImageURL is the ConsumerRef namespace check.
-		Expect(k8sClient.Create(ctx, credentialSecret(testNs.Name, ph.Name,
+		Expect(k8sClient.Create(ctx, credentialSecret(ph,
 			boundCredentialData(crossB7m.Name, "host-a-token", 30*time.Minute, noncePlaintext, 10*time.Minute)))).To(Succeed())
 
 		resp := doBoot(server.URL, testNs.Name, ph.Name, noncePlaintext)
@@ -706,7 +704,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h-empty-inspect", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h-empty-inspect", Namespace: "n", UID: "h-empty-inspect-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
@@ -728,7 +726,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageURL:     "https://boot.example.com/target.tar.gz",
 			},
 		}
-		tokenSecret := credentialSecret("n", "h-empty-inspect",
+		tokenSecret := credentialSecret(ph,
 			boundCredentialData("b7m-empty", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
@@ -825,7 +823,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h-inject", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h-inject", Namespace: "n", UID: "h-inject-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
@@ -846,7 +844,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := credentialSecret("n", "h-inject",
+		tokenSecret := credentialSecret(ph,
 			boundCredentialData("b7m-inject", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
@@ -1009,7 +1007,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h-bad-digest", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h-bad-digest", Namespace: "n", UID: "h-bad-digest-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
@@ -1033,7 +1031,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  "sha256:A3B4C5D6E7F80102030405060708090A0B0C0D0E0F101112131415161718191A",
 			},
 		}
-		tokenSecret := credentialSecret("n", "h-bad-digest",
+		tokenSecret := credentialSecret(ph,
 			boundCredentialData("b7m-bad-digest", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).
@@ -1078,7 +1076,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		ph := &infrav1.PhysicalHost{
-			ObjectMeta: metav1.ObjectMeta{Name: "h-large-ca", Namespace: "n"},
+			ObjectMeta: metav1.ObjectMeta{Name: "h-large-ca", Namespace: "n", UID: "h-large-ca-uid"},
 			Spec: infrav1.PhysicalHostSpec{
 				RedfishConnection: infrav1.RedfishConnection{
 					Address: "https://192.168.1.1", CredentialsSecretRef: "x",
@@ -1099,7 +1097,7 @@ var _ = Describe("Boot GET handler (D-009 / D-010)", func() {
 				TargetImageDigest:  bootTestDigest,
 			},
 		}
-		tokenSecret := credentialSecret("n", "h-large-ca",
+		tokenSecret := credentialSecret(ph,
 			boundCredentialData("b7m-large-ca", "fake-token", 30*time.Minute, noncePlaintext, 10*time.Minute))
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(k8sClient.Scheme()).

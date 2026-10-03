@@ -92,7 +92,8 @@ Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 
 - 32 bytes from `crypto/rand`, encoded as `base64.RawURLEncoding` (43 chars), suitable for an iPXE kernel cmdline.
 - The Secret holds the plaintext, its manager-written expiry and the claiming machine's name; `PhysicalHost.Status.Bootstrap.TokenHash` mirrors the SHA-256 (64 hex chars) for operators.
-- Lifetime: 60 minutes (`auth.TokenLifetime`). Above the 10-minute `DefaultInspectionTimeout`, with headroom for slow BIOS POST + first-boot inspector.
+- Lifetime: 60 minutes (`auth.TokenLifetime`), plus however much `--inspection-timeout` exceeds its 10-minute default. Cut to 5 minutes (`auth.TokenReadyGrace`) once the host is `Ready`, which covers the inspector's `/provisioned` retries; never rendered again with less than a boot nonce plus an inspection left (D-031).
+- Accepted only from a Secret whose controller owner reference names the PhysicalHost by UID; the controller never takes over a Secret of that name that someone else created (D-031).
 
 The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decisions D-006, D-029.
 

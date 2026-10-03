@@ -175,6 +175,25 @@ func (r *Beskar7MachineReconciler) inspectionTimeout() time.Duration {
 	return DefaultInspectionTimeout
 }
 
+// bootstrapTokenMinRemaining is the least life a bearer token may have left to
+// be handed out again: a nonce fetched at the end of its own life, then a whole
+// inspection (D-031). A token with less could expire while the inspector it
+// was rendered into is still inspecting.
+func (r *Beskar7MachineReconciler) bootstrapTokenMinRemaining() time.Duration {
+	return auth.BootNonceLifetime + r.inspectionTimeout()
+}
+
+// bootstrapTokenLifetime is the life a fresh bearer token is minted with:
+// auth.TokenLifetime, lengthened by however much the configured inspection
+// timeout exceeds its default. A fresh token therefore stays reusable
+// (bootstrapTokenMinRemaining) for the same 40 minutes after its mint whatever
+// that timeout is. Without it, an inspection timeout of 50 minutes or more
+// would make every token too short to reuse the moment it was minted, and each
+// pass in InUse would replace the token an inspector may already hold (D-024).
+func (r *Beskar7MachineReconciler) bootstrapTokenLifetime() time.Duration {
+	return auth.TokenLifetime + max(0, r.inspectionTimeout()-DefaultInspectionTimeout)
+}
+
 // deploymentTimeout returns the configured deployment timeout (D-015), falling back
 // to DefaultDeploymentTimeout when unset (zero). Guards against a zero-value field
 // that would otherwise time out every deployment instantly.
@@ -607,6 +626,11 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	// never logged.
 	if err := r.ensureBootstrapCredentials(ctx, logger, b7machine, physicalHost, time.Now()); err != nil {
 		logger.Error(err, "Failed to ensure the host's bootstrap credentials")
+		if errors.Is(err, errBootstrapSecretNotOwned) {
+			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.BootstrapCredentialsConflictReason,
+				"Secret %q is not owned by PhysicalHost %q, so the host's callback credentials cannot be stored in it; delete it to let a fresh one be created",
+				bootstrapTokenSecretName(physicalHost.Name), physicalHost.Name)
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -678,12 +702,17 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 // cannot be reused, and writes the Secret at most once.
 //
 // A credential is reused only when the Secret is already bound to b7machine by
-// name and the credential is unexpired; the nonce must also be unconsumed.
-// Anything else — a Secret bound to an earlier claim, one from before the
-// binding existed, an expired or missing credential — mints afresh, so a
-// token captured during one claim never serves the next (SEC-13). Re-minting a
-// credential that is still valid would invalidate what the inspector or the
-// boot service already holds, which is why a valid one is kept.
+// name and the credential is unexpired; the token must also have enough life
+// left to outlast a boot and an inspection (bootstrapTokenMinRemaining), and
+// the nonce must be unconsumed. Anything else — a Secret bound to an earlier
+// claim, one from before the binding existed, an expired, nearly expired or
+// missing credential — mints afresh, so a token captured during one claim
+// never serves the next (SEC-13). Re-minting a credential that is still valid
+// would invalidate what the inspector or the boot service already holds, which
+// is why a valid one is kept.
+//
+// A Secret under the host's bootstrap-token name that the host does not own is
+// refused with errBootstrapSecretNotOwned, never taken over (D-031).
 //
 // The write carries the resourceVersion of the Secret the decision was made
 // from, and a create fails if the Secret appeared meanwhile. A decision made
@@ -700,6 +729,9 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
 	if err != nil {
 		return err
+	}
+	if secret != nil && !bootstrapSecretOwnedBy(secret, physicalHost) {
+		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, secret.Name)
 	}
 	creds := readBootstrapCredentials(secret)
 	changed := backfillLegacyCredentials(&creds, physicalHost, b7machine.Name, now)
@@ -719,13 +751,12 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 			"host", physicalHost.Name)
 		creds.consumer = ""
 	}
-	if !bootstrapTokenReusable(creds, b7machine.Name, now) {
+	if !bootstrapTokenReusable(creds, b7machine.Name, now, r.bootstrapTokenMinRemaining()) {
 		token, _, err := auth.MintToken()
 		if err != nil {
 			return fmt.Errorf("mint bootstrap token: %w", err)
 		}
-		issuedAt, expiresAt := auth.LifetimeFor(now)
-		creds.token, creds.tokenIssuedAt, creds.tokenExpiresAt = token, issuedAt.Time, expiresAt.Time
+		creds.token, creds.tokenIssuedAt, creds.tokenExpiresAt = token, now, now.Add(r.bootstrapTokenLifetime())
 		changed = true
 	}
 	if !bootNonceReusable(creds, physicalHost.Status.Bootstrap, b7machine.Name, now) {
@@ -749,10 +780,12 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 
 // bootstrapTokenReusable reports whether the bearer token in creds may be kept
 // for the Beskar7Machine named consumer: the Secret is bound to that machine
-// and the token has an expiry that has not passed. Nothing on the
-// PhysicalHost is consulted — its status only mirrors the Secret.
-func bootstrapTokenReusable(creds bootstrapCredentials, consumer string, now time.Time) bool {
-	return creds.consumer == consumer && creds.tokenValid(now)
+// and the token has an expiry more than minRemaining away. A token with less
+// left could be rendered by /boot and then expire while the inspector still
+// needs it (D-031). Nothing on the PhysicalHost is consulted — its status only
+// mirrors the Secret.
+func bootstrapTokenReusable(creds bootstrapCredentials, consumer string, now time.Time, minRemaining time.Duration) bool {
+	return creds.consumer == consumer && creds.tokenValid(now.Add(minRemaining))
 }
 
 // bootNonceReusable reports whether the boot nonce in creds may be kept for the
@@ -783,6 +816,14 @@ func (r *Beskar7MachineReconciler) backfillBootstrapCredentials(
 	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
 	if err != nil || secret == nil {
 		return err
+	}
+	if !bootstrapSecretOwnedBy(secret, physicalHost) {
+		// Every release that wrote these Secrets made the host their
+		// controller, so this one is not a pre-upgrade run's: it authenticates
+		// nothing, and there is nothing to keep working. Erroring here instead
+		// would stop the run's timeout from ever being judged.
+		logger.Info("Not backfilling a bootstrap-token Secret the host does not own", "host", physicalHost.Name, "secret", secret.Name)
+		return nil
 	}
 	creds := readBootstrapCredentials(secret)
 	if !backfillLegacyCredentials(&creds, physicalHost, b7machine.Name, time.Now()) {
@@ -871,7 +912,10 @@ func (r *Beskar7MachineReconciler) getBootstrapTokenSecret(ctx context.Context, 
 // there was none: the write updates it at the resourceVersion it was read at,
 // or creates the Secret, so a write computed from a stale read fails instead
 // of replacing a newer one. The Secret is owned by the PhysicalHost (GC'd with
-// it, D-006). Neither plaintext is ever logged.
+// it, D-006). An existing Secret the host does not own is refused with
+// errBootstrapSecretNotOwned, never adopted (D-031): SetControllerReference
+// alone would take over one nobody controls, and one a deleted host of the
+// same name controlled. Neither plaintext is ever logged.
 func (r *Beskar7MachineReconciler) writeBootstrapCredentials(
 	ctx context.Context,
 	logger logr.Logger,
@@ -879,6 +923,9 @@ func (r *Beskar7MachineReconciler) writeBootstrapCredentials(
 	existing *corev1.Secret,
 	creds bootstrapCredentials,
 ) error {
+	if existing != nil && !bootstrapSecretOwnedBy(existing, physicalHost) {
+		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, existing.Name)
+	}
 	secret := existing
 	if secret == nil {
 		secret = &corev1.Secret{
@@ -1180,8 +1227,53 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 		)
 	}
 
+	// The machine is Ready either way; a failed write is retried with the
+	// reconcile's backoff.
+	if err := r.limitBootstrapTokenAfterReady(ctx, logger, b7machine, physicalHost, time.Now()); err != nil {
+		logger.Error(err, "Failed to shorten the bootstrap token's life now that the host is Ready")
+		return ctrl.Result{}, err
+	}
+
 	logger.Info("Beskar7Machine infrastructure is ready")
 	return ctrl.Result{}, nil
+}
+
+// limitBootstrapTokenAfterReady ends the bearer token's life auth.TokenReadyGrace
+// after this controller first sees the host Ready (D-031). Ready means the run
+// is over, and nothing calls back after it but the inspector retrying its
+// /provisioned report; without this the token kept authenticating callbacks,
+// and fetching the host's bootstrap data, for the rest of its mint lifetime.
+//
+// The token itself stays: replacing it would turn a lost-then-retried
+// /provisioned into a 401, which the inspector treats as fatal. The expiry is
+// only ever brought forward, never extended or created, so a token that
+// expires sooner, has no expiry (and so never verifies), or is bound to
+// another machine is left alone, and the Secret is written at most once: the
+// next pass finds the expiry already inside the grace. A Secret the host does
+// not own authenticates nothing (bootstrapSecretOwnedBy) and is left alone too.
+func (r *Beskar7MachineReconciler) limitBootstrapTokenAfterReady(
+	ctx context.Context,
+	logger logr.Logger,
+	b7machine *infrav1.Beskar7Machine,
+	physicalHost *infrav1.PhysicalHost,
+	now time.Time,
+) error {
+	secret, err := r.getBootstrapTokenSecret(ctx, physicalHost)
+	if err != nil || secret == nil || !bootstrapSecretOwnedBy(secret, physicalHost) {
+		return err
+	}
+	creds := readBootstrapCredentials(secret)
+	limit := now.Add(auth.TokenReadyGrace)
+	if creds.consumer != b7machine.Name || creds.token == "" ||
+		creds.tokenExpiresAt.IsZero() || !creds.tokenExpiresAt.After(limit) {
+		return nil
+	}
+	creds.tokenExpiresAt = limit
+	if err := r.writeBootstrapCredentials(ctx, logger, physicalHost, secret, creds); err != nil {
+		return fmt.Errorf("shorten bootstrap token: %w", err)
+	}
+	logger.Info("Bootstrap token now expires shortly after the host became Ready", "host", physicalHost.Name, "grace", auth.TokenReadyGrace)
+	return nil
 }
 
 // errInvalidHostSelector marks a hostSelector that cannot be parsed. That is a

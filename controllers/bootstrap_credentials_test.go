@@ -27,8 +27,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
 // Pure unit specs for the per-host bootstrap-token Secret (D-029); the
@@ -81,10 +83,47 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 		Expect(verifyBootNonce("the-nonce", creds, now.Add(time.Minute))).To(BeFalse(), "expired at equality")
 	})
 
+	Describe("the consume record's client (D-031)", func() {
+		consumedAt := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
+		record := func(clientHash string) *infrav1.BootstrapStatus {
+			at := metav1.NewTime(consumedAt)
+			return &infrav1.BootstrapStatus{
+				BootNonceConsumedAt: &at, BootNonceConsumedHash: auth.Hash("the-nonce"),
+				BootNonceConsumedClientHash: clientHash,
+			}
+		}
+
+		It("identifies the client with a hash keyed by the nonce, so status reveals nothing about the address", func() {
+			h := bootNonceClientHash("the-nonce", "192.0.2.10")
+			Expect(h).To(HaveLen(64))
+			Expect(h).NotTo(Equal(auth.Hash("192.0.2.10")), "an unkeyed hash of an IPv4 address is reversed by enumeration")
+			Expect(bootNonceClientHash("another-nonce", "192.0.2.10")).NotTo(Equal(h))
+			Expect(bootNonceClientHash("the-nonce", "192.0.2.20")).NotTo(Equal(h))
+			Expect(bootNonceClientHash("the-nonce", "2001:db8:0:0::1")).To(Equal(bootNonceClientHash("the-nonce", "2001:db8::1")),
+				"one address written two ways is one client")
+		})
+
+		It("re-serves only the consuming client, and only before two minutes have passed", func() {
+			client := bootNonceClientHash("the-nonce", "192.0.2.10")
+			bs := record(client)
+			Expect(bootNonceRetryAllowed(bs, client, consumedAt)).To(BeTrue())
+			Expect(bootNonceRetryAllowed(bs, client, consumedAt.Add(2*time.Minute-time.Second))).To(BeTrue())
+			Expect(bootNonceRetryAllowed(bs, client, consumedAt.Add(2*time.Minute))).To(BeFalse(), "boundary: the window has closed")
+			Expect(bootNonceRetryAllowed(bs, bootNonceClientHash("the-nonce", "192.0.2.20"), consumedAt)).To(BeFalse())
+		})
+
+		It("re-serves nobody from a record that names no client, or from no record", func() {
+			Expect(bootNonceRetryAllowed(record(""), "", consumedAt)).To(BeFalse())
+			Expect(bootNonceRetryAllowed(record(""), bootNonceClientHash("the-nonce", "192.0.2.10"), consumedAt)).To(BeFalse())
+			Expect(bootNonceRetryAllowed(nil, bootNonceClientHash("the-nonce", "192.0.2.10"), consumedAt)).To(BeFalse())
+		})
+	})
+
 	Describe("boundBootstrapCredentials", func() {
 		const ns, hostName, machine = "bound-ns", "bound-host", "bound-machine"
+		const hostUID = types.UID("bound-host-uid")
 		claimed := func(consumer, consumerNamespace string) *infrav1.PhysicalHost {
-			host := &infrav1.PhysicalHost{ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns}}
+			host := &infrav1.PhysicalHost{ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns, UID: hostUID}}
 			if consumer != "" {
 				host.Spec.ConsumerRef = &corev1.ObjectReference{
 					Kind: "Beskar7Machine", APIVersion: InfrastructureAPIVersion,
@@ -96,12 +135,30 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 		reader := func(objs ...client.Object) client.Reader {
 			return fake.NewClientBuilder().WithScheme(k8sClient.Scheme()).WithObjects(objs...).Build()
 		}
+		bound := func() map[string][]byte {
+			return boundCredentialData(machine, "t", time.Hour, "n", time.Minute)
+		}
+		// ownedBy returns the host as another object of the same name: one
+		// deleted and recreated, or recreated by clusterctl move.
+		ownedBy := func(uid types.UID) *infrav1.PhysicalHost {
+			host := claimed(machine, ns)
+			host.UID = uid
+			return host
+		}
 		secretFor := func(kind string) []client.Object {
 			switch kind {
 			case "bound":
-				return []client.Object{credentialSecret(ns, hostName, boundCredentialData(machine, "t", time.Hour, "n", time.Minute))}
+				return []client.Object{credentialSecret(claimed(machine, ns), bound())}
 			case "unbound":
-				return []client.Object{credentialSecret(ns, hostName, map[string][]byte{bootstrapTokenSecretKey: []byte("t")})}
+				return []client.Object{credentialSecret(claimed(machine, ns), map[string][]byte{bootstrapTokenSecretKey: []byte("t")})}
+			case "unowned":
+				return []client.Object{unownedCredentialSecret(ns, hostName, bound())}
+			case "controlled by another host of the name":
+				return []client.Object{credentialSecret(ownedBy("uid-of-a-deleted-host"), bound())}
+			case "owned, but not as its controller":
+				secret := unownedCredentialSecret(ns, hostName, bound())
+				Expect(controllerutil.SetOwnerReference(claimed(machine, ns), secret, k8sClient.Scheme())).To(Succeed())
+				return []client.Object{secret}
 			}
 			return nil
 		}
@@ -124,6 +181,26 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 			Entry("a claim naming another namespace (SEC-12)", machine, "other-ns", "bound"),
 			Entry("a host without a Secret", machine, ns, "none"),
 			Entry("a Secret without a binding", machine, ns, "unbound"),
+			// D-031: the name is deterministic, so anyone who can create a
+			// Secret in the namespace can put one there before the manager does.
+			Entry("a Secret no controller owns", machine, ns, "unowned"),
+			Entry("a Secret controlled by an earlier host of the same name", machine, ns, "controlled by another host of the name"),
+			Entry("a Secret that names the host as an owner but not as its controller", machine, ns, "owned, but not as its controller"),
 		)
+
+		It("accepts the Secret once clusterctl move has rewritten its owner to the moved host, and only then", func() {
+			moved := ownedBy("uid-on-the-target-cluster")
+			_, _, err := boundBootstrapCredentials(ctx, reader(credentialSecret(moved, bound())), moved)
+			Expect(err).NotTo(HaveOccurred(), "the mover rewrites ownerRef UIDs to the recreated owner's")
+
+			_, _, err = boundBootstrapCredentials(ctx, reader(credentialSecret(claimed(machine, ns), bound())), moved)
+			Expect(err).To(HaveOccurred(), "an ownerRef still naming the source host's UID names another object")
+		})
+
+		It("refuses a host without a UID, whatever the Secret's owner says", func() {
+			host := ownedBy("")
+			_, _, err := boundBootstrapCredentials(ctx, reader(credentialSecret(host, bound())), host)
+			Expect(err).To(HaveOccurred())
+		})
 	})
 })

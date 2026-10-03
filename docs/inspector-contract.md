@@ -131,8 +131,8 @@ Two distinct per-host secrets, by design (decision D-009). Do not conflate them.
 
 | Secret | Gates | Lifetime | Reuse | Delivered to host via |
 |---|---|---|---|---|
-| **Boot nonce** | `GET /api/v1/boot/...` | ~10 min | **single-use** | the operator's iPXE script URL (the nonce IS the capability) |
-| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned` | 60 min (`auth.TokenLifetime`) | multi-use | rendered into the kernel cmdline by `/boot` |
+| **Boot nonce** | `GET /api/v1/boot/...` | ~10 min | **single-use**: after its first fetch, served again only to the same client address, within 2 min (§4.1) | the operator's iPXE script URL (the nonce IS the capability) |
+| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned`, `POST /provision-failed` | 60 min (`auth.TokenLifetime`), cut to 5 min (`auth.TokenReadyGrace`) once the host is `Ready` | multi-use | rendered into the kernel cmdline by `/boot` |
 
 The booting host holds no bearer token, so the endpoint that *hands out* the
 bearer token (`/boot`) cannot itself be bearer-gated. The boot nonce breaks that
@@ -146,11 +146,25 @@ delete) and in host memory. The Secret also holds each secret's expiry, written
 by the controller when it mints, and the name of the `Beskar7Machine` they were
 minted for; it is the **only** thing the controller checks a presented token or
 nonce against (D-029). A presented secret is accepted only while the host's
-`ConsumerRef` names that same machine (in the host's own namespace), and a
-secret whose expiry is missing or unreadable never verifies.
+`ConsumerRef` names that same machine (in the host's own namespace), only from
+a Secret whose controller owner reference names that `PhysicalHost` by UID
+(D-031: a Secret anyone else created under the name authenticates nothing, and
+the controller never takes it over), and a secret whose expiry is missing or
+unreadable never verifies.
 `PhysicalHost.Status.Bootstrap` carries a read-only mirror of their SHA-256
 hashes and expiries for operators and tooling; it is not an input to
 authentication. See `internal/auth/token.go` for the primitives.
+
+The bearer token is minted with `auth.TokenLifetime`, lengthened by however
+much `--inspection-timeout` exceeds its 10-minute default. It is handed out
+again (on a later `/boot` for the same claim) only while it has more than the
+nonce lifetime plus the inspection timeout left; otherwise the controller mints
+a fresh one, so `/boot` never renders a token that could expire before
+inspection ends. When the claiming `Beskar7Machine` sees the host `Ready`, it
+brings the token's expiry forward to at most 5 minutes from then
+(`auth.TokenReadyGrace`) without changing the token: long enough for the
+inspector's retries of a `POST /provisioned` whose `202` was lost (§4.4, §9.1),
+and no longer (D-031).
 
 ---
 
@@ -167,14 +181,24 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
   and only while the host is claimed by the machine the Secret is bound to (§3).
   NOT bearer-gated.
 - **On success**: marks the nonce consumed unless it already is (single-use, see
-  §7) and returns the rendered iPXE script / kernel cmdline carrying the
-  parameters in §5. A second successful fetch within the window (e.g. a NIC
-  retry) MUST return **identical** content for the same host.
+  §7), recording which client consumed it, and returns the rendered iPXE script
+  / kernel cmdline carrying the parameters in §5.
+- **Re-serving a consumed nonce** (D-031): a later fetch of the same nonce (a
+  NIC retry, or a concurrent fetch that lost the consume race) succeeds only if
+  it comes from the **same client address** as the fetch that consumed it, and
+  only within **2 minutes** of that consume (`auth.BootNonceRetryWindow`). It
+  then MUST return content **identical** to the first. The client address is
+  the one the rate limiter uses: the peer address, or the right-most untrusted
+  `X-Forwarded-For` entry when the peer is in `--trusted-proxies`. Any other
+  fetch of a consumed nonce — from another address, or after the 2 minutes,
+  even though the nonce has not yet expired — gets the opaque failure. So does
+  a nonce whose consume record names no client (one recorded by a controller
+  older than D-031).
 - **Failure**: opaque response identical for "no such host", "host not claimed
   by the machine the nonce was minted for", "wrong nonce" (including a nonce a
-  newer mint has replaced), and "expired" — no oracle. The
-  nonce, the URL, and the `{nonce}` path value MUST NOT be logged (the nonce hash
-  MAY be).
+  newer mint has replaced), "expired", and "consumed, and not re-served to this
+  request" — no oracle. The nonce, the URL, and the `{nonce}` path value MUST NOT
+  be logged (the nonce hash MAY be).
 - **Rate limiting**: this route is ungated; it MUST be rate-limited per source IP
   (and SHOULD be per `{namespace}/{hostName}`).
 
@@ -294,7 +318,9 @@ whole-disk write and `COS_OEM` inject succeed, and **before** `reboot(2)`.
   deployed. Any other status, or a call still failing once the retries are exhausted,
   is a failure that **propagates as an error**, and the inspector MUST NOT continue to
   `reboot(2)` (§9.1 step 6). A `401`/`403` means the token expired during a long
-  deploy.
+  deploy. Once the controller has taken the call and the host is `Ready`, the token
+  keeps authenticating for 5 more minutes (§3), which covers the retries of §9.1
+  step 6.
 - **Controller action**: on a valid call, patches
   `ProvisionedRequestAnnotation="provisioned"` onto the `PhysicalHost` metadata. The
   `PhysicalHostReconciler` reads this on its next pass — before it contacts the
@@ -491,9 +517,17 @@ evaluate correctly:
   record with no `BootNonceConsumedHash`, written before the field existed, is
   read the safe way by each side: `/boot` records the current nonce's consume
   afresh, and the controller never reuses a nonce such a record might describe.
-- A double-fetch to the **same host** (race loser, or a legitimate retry) is
-  benign and MUST return identical content (§4.1), until the nonce expires or a
-  newer mint replaces it. A second fetch for a **different** host's nonce is
+- The consume record also names the client that consumed the nonce
+  (`Status.Bootstrap.BootNonceConsumedClientHash`, an HMAC-SHA256 of the client
+  address keyed with the nonce, so the record reveals nothing about the address
+  to anyone who does not hold the nonce). A double-fetch from **that same
+  client** (race loser, or a legitimate retry) within **2 minutes** of the
+  consume is benign and MUST return identical content (§4.1). Any other fetch of
+  a consumed nonce gets the opaque failure, even before the nonce expires, so a
+  nonce read off the provisioning network is worth nothing once the host has
+  fetched it, unless the reader can also send from the host's address within
+  those 2 minutes (D-031). A record that names no client was written before
+  D-031 and re-serves to nobody. A second fetch for a **different** host's nonce is
   impossible by construction (per-host nonce).
 - Re-provision (reboot, inspection-timeout retry, delete-and-recreate) MUST mint
   a **fresh** nonce (and fresh bearer token) — there is no "un-consume" path.
@@ -924,6 +958,22 @@ change. These are not new contract versions.
   the one the secret was minted for, is rejected with the same opaque
   `401`/`404` as any other bad credential, and a secret the controller minted
   before this change stops working on a host that was already `Ready`.
+- **SEC-13 / D-031 (2026-10-02):** §4.1 and §7 said a consumed boot nonce
+  re-serves the script to any fetch "within the window", which the controller
+  read as "until the nonce expires", and §3 gave the bearer token its full mint
+  lifetime whatever happened to the run. Now: a consumed nonce
+  re-serves only to the client address that consumed it, within 2 minutes of
+  the consume; the token's expiry is cut to 5 minutes once the host is
+  `Ready`; a token with less life left than the nonce lifetime plus the
+  inspection timeout is never handed out again; and only a Secret whose
+  controller owner reference names the host by UID is a credential source.
+  **The wire is unchanged** and an inspector needs no change: the iPXE
+  firmware's retry of a `/boot` chainload normally comes from the address that
+  fetched it first, and the inspector's `/provisioned` retries (§9.1 step 6)
+  finish inside the 5 minutes. Observable server-side differences only: a `/boot`
+  fetch of a consumed nonce from another address, or later than 2 minutes, gets
+  the opaque `404`; a callback more than 5 minutes after the host became
+  `Ready` gets the opaque `401`.
 - **PROV-1 (2026-10-02):** §4.4 listed the hosts a `/provisioned` report is
   honoured on without the claimed host in a BMC-level `StateError` that
   interrupted `StateDeploying`, which §4.5 already listed for `/provision-failed`.

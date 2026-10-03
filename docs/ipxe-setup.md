@@ -62,13 +62,19 @@ When `Beskar7MachineReconciler` claims a `PhysicalHost`, `triggerInspection`:
 
 1. Mints a **bearer token** (32-byte random, 60-minute lifetime) into the Secret
    `<hostName>-bootstrap-token`, data key `plaintext-token`, with its expiry
-   under `token-expires-at`.
+   under `token-expires-at`. Once the host is `Ready`, the controller brings that
+   expiry forward to 5 minutes later, which covers the inspector's retries of its
+   last callback.
 2. Mints a **boot nonce** (256-bit random, ~10-minute lifetime) into the same
    Secret, data key `plaintext-boot-nonce`, with its expiry under
    `boot-nonce-expires-at`.
 3. Records, under `consumer`, the name of the `Beskar7Machine` that minted them.
    The controller accepts the token and the nonce only while the host's
-   `ConsumerRef` names that machine, and only before the expiries in the Secret.
+   `ConsumerRef` names that machine, only before the expiries in the Secret, and
+   only from a Secret the `PhysicalHost` owns (its controller owner reference).
+   Do not create this Secret yourself: the controller refuses to use or take over
+   one it did not create, and the `Beskar7Machine` reports
+   `BootstrapCredentialsConflict` until you delete it.
 4. Instructs the BMC (via Redfish) to set the boot source to PXE and power on.
 
 The Secret is the only place the controller checks these credentials against.
@@ -78,11 +84,21 @@ accepts. Treat read access to the Secret as read access to the host's bootstrap
 data, and restrict it accordingly.
 
 The nonce is **single-use**: the controller's `/boot` handler consumes it on the
-first successful fetch and never un-consumes it. A fresh nonce is minted on every
-re-provision attempt. Because the TTL is ~10 minutes and a host that fails to
-chainload in that window needs another provision cycle anyway, your boot service
-MUST read the nonce **fresh from the Secret on every boot request** — a static
-iPXE file cannot hard-code it.
+first successful fetch, records the client address that fetched it, and never
+un-consumes it. After that it serves the same script again only to that address
+and only for 2 minutes, so the host's own chainload retry works and a nonce
+anyone else saw does not. A fresh nonce is minted on every re-provision attempt.
+Because the TTL is ~10 minutes and a host that fails to chainload in that window
+needs another provision cycle anyway, your boot service MUST read the nonce
+**fresh from the Secret on every boot request** — a static iPXE file cannot
+hard-code it.
+
+The client address is the one `/boot` rate-limits on: the connection's peer, or
+the right-most `X-Forwarded-For` entry that is not a trusted proxy when the peer
+is listed in `--trusted-proxies` (`callback.trustedProxies` in the chart). If a
+proxy or a SNAT in front of the callback Service hides the hosts' addresses
+without being listed there, every host shares one address: retries still work,
+but the re-serve rule can no longer tell a host from its neighbours.
 
 ### Step 2: operator boot service resolves MAC → nonce URL
 
@@ -118,7 +134,9 @@ The controller's `/boot` handler (`GET /api/v1/boot/{namespace}/{hostName}/{nonc
 does not require a bearer token — the nonce IS the authorization. On a valid,
 unconsumed, in-TTL nonce:
 
-1. Marks the nonce consumed (optimistic-locked, single-use).
+1. Marks the nonce consumed (optimistic-locked, single-use), recording the client
+   address. A retry from that address within 2 minutes gets the same script; any
+   other fetch of the consumed nonce gets the same `404` as a wrong one.
 2. Reads the bearer token plaintext from the `<hostName>-bootstrap-token` Secret.
 3. Returns a complete iPXE script (`Content-Type: text/plain`) that boots the
    inspection image with all required parameters on the kernel cmdline.
@@ -277,7 +295,10 @@ errors ([Troubleshooting §14](troubleshooting.md#14-reconcile-errors-storm-with
 can hide the real client behind a single address, and then **all** your hosts
 share one bucket — a fleet powering on together, after a DC power event say,
 then serves a handful of hosts per second while the rest retry. It degrades
-rather than fails, because iPXE retries, but boots crawl.
+rather than fails, because iPXE retries, but boots crawl. The same address is
+the one a consumed nonce stays bound to for its 2-minute retry window (Step 1),
+so hiding it also lets any host behind that address re-fetch another host's
+consumed nonce within the window.
 
 Two ways to avoid it, in order of preference:
 
@@ -1015,7 +1036,10 @@ curl -v https://localhost/inspector/vmlinuz
 
 If a host fails to chainload within the ~10-minute nonce TTL, or if the nonce was
 already consumed by a previous boot attempt, the `/boot` endpoint returns an opaque
-`404`. The host needs a fresh provision cycle:
+`404`. A consumed nonce is served again only to the address that consumed it and
+only for 2 minutes, so a retry that comes later, or through a different address
+(another proxy hop, a changed DHCP lease, a `curl` from your workstation), gets the
+`404` too. The host needs a fresh provision cycle:
 
 ```bash
 # Delete and recreate the Beskar7Machine to trigger re-provision

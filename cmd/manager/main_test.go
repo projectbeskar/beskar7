@@ -229,9 +229,17 @@ func TestSetupManager(t *testing.T) {
 			}
 		})
 		// The Secret's data keys are the manager's (controllers package,
-		// D-029): the token, its expiry, and the machine it is bound to.
+		// D-029): the token, its expiry, and the machine it is bound to. It
+		// counts only as the host's own, controlled by the host (D-031).
+		isController := true
 		tokenSecret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: host.Name + "-bootstrap-token", Namespace: ns.Name},
+			ObjectMeta: metav1.ObjectMeta{
+				Name: host.Name + "-bootstrap-token", Namespace: ns.Name,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: infrav1.GroupVersion.String(), Kind: "PhysicalHost",
+					Name: host.Name, UID: host.UID, Controller: &isController,
+				}},
+			},
 			Data: map[string][]byte{
 				"plaintext-token":  []byte(plaintext),
 				"token-expires-at": []byte(time.Now().Add(time.Hour).UTC().Format(time.RFC3339)),
