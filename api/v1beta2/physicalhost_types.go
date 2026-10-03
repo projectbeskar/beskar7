@@ -389,8 +389,8 @@ type BootstrapStatus struct {
 	// ExpiresAt mirrors the time the current token stops being accepted, as
 	// stored in the bootstrap-token Secret: mint time + auth.TokenLifetime,
 	// cut to auth.TokenReadyGrace after the claiming Beskar7Machine sees the
-	// host Ready (D-031). Informational only; the manager reads the expiry
-	// from the Secret.
+	// host Ready (D-031) or fails terminally (D-036). Informational only; the
+	// manager reads the expiry from the Secret.
 	// +optional
 	ExpiresAt *metav1.Time `json:"expiresAt,omitempty"`
 

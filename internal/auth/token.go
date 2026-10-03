@@ -63,14 +63,16 @@ const (
 	//
 	// It is the most a token lives, not what it usually does: the
 	// Beskar7Machine controller cuts it to TokenReadyGrace once the host is
-	// Ready (D-031).
+	// Ready (D-031) or the machine has failed terminally (D-036).
 	TokenLifetime = 60 * time.Minute
 
 	// TokenReadyGrace is how long a bearer token keeps authenticating once its
-	// host is Ready (D-031). Nothing in a run calls back after Ready but the
-	// inspector's own retries of POST /provisioned, which it makes over about
-	// two and a half minutes when a response is lost, and a 401 among them is
-	// fatal to the host. Five minutes covers those retries and little else.
+	// run is over: the host is Ready (D-031), or the Beskar7Machine has failed
+	// terminally (D-036). Nothing in a run calls back after that but the
+	// inspector's own retries of POST /provisioned or POST /provision-failed,
+	// which it makes over about two and a half minutes when a response is lost,
+	// and a 401 among them is fatal to the host. Five minutes covers those
+	// retries and little else.
 	TokenReadyGrace = 5 * time.Minute
 
 	// BootNonceLifetime is the validity window for per-host boot nonces (D-009).

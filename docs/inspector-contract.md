@@ -132,7 +132,7 @@ Two distinct per-host secrets, by design (decision D-009). Do not conflate them.
 | Secret | Gates | Lifetime | Reuse | Delivered to host via |
 |---|---|---|---|---|
 | **Boot nonce** | `GET /api/v1/boot/...` | ~10 min | **single-use**: after its first fetch, served again only to the same client address, within 2 min (§4.1) | the operator's iPXE script URL (the nonce IS the capability) |
-| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned`, `POST /provision-failed` | 60 min (`auth.TokenLifetime`), cut to 5 min (`auth.TokenReadyGrace`) once the host is `Ready` | multi-use | rendered into the kernel cmdline by `/boot` |
+| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned`, `POST /provision-failed` | 60 min (`auth.TokenLifetime`), cut to 5 min (`auth.TokenReadyGrace`) once the host is `Ready` or its machine has failed terminally | multi-use | rendered into the kernel cmdline by `/boot` |
 
 The booting host holds no bearer token, so the endpoint that *hands out* the
 bearer token (`/boot`) cannot itself be bearer-gated. The boot nonce breaks that
@@ -164,7 +164,13 @@ inspection ends. When the claiming `Beskar7Machine` sees the host `Ready`, it
 brings the token's expiry forward to at most 5 minutes from then
 (`auth.TokenReadyGrace`) without changing the token: long enough for the
 inspector's retries of a `POST /provisioned` whose `202` was lost (§4.4, §9.1),
-and no longer (D-031).
+and no longer (D-031). It does the same, with the same 5 minutes, when the
+machine fails terminally (D-036): the inspector may still be retrying a
+`POST /provision-failed` (§4.5), and without the cut a failed machine that still
+holds the host would leave its token usable for up to an hour. The failure cut
+is not made while the host is in an `Error` about its BMC rather than one the
+run reported, because a `/provisioned` report lands on such a host (§4.4) and
+authenticates with this token; it follows once the host leaves that `Error`.
 
 ---
 
@@ -376,6 +382,8 @@ deployment-timeout.
 - **Success**: **`202 Accepted`** with body `{"status":"accepted"}`.
 - **Failure**: opaque `401` on expired/invalid bearer; opaque `500` on internal
   error; opaque `404` if the controller is v4 (does not implement this endpoint).
+  Once the controller has failed the machine, the token keeps authenticating for
+  5 more minutes (§3, D-036), which covers the retries of this call.
 - **Controller action**: on a valid call, patches `ProvisionFailedRequestAnnotation`
   carrying the sanitized reason onto the `PhysicalHost` metadata. The
   `PhysicalHostReconciler` reads this on its next pass — before it contacts the
@@ -984,6 +992,23 @@ change. These are not new contract versions.
   Only a host that v0.8.0 or earlier left in that `Error` reaches it. No
   endpoint, status code, cmdline parameter or report field changed, and the
   inspector sees `202` as before.
+- **D-036 (2026-10-03):** §3 gave the bearer token its full mint lifetime
+  whatever became of the run, except that D-031 cut it once the host was
+  `Ready`; a machine that failed terminally while still claiming its host kept a
+  usable token for up to an hour. Now the token's expiry is cut to 5 minutes
+  once the claiming `Beskar7Machine` has failed terminally, the same
+  `auth.TokenReadyGrace` as at `Ready` and for the same reason: the inspector
+  may still be retrying its `POST /provision-failed` (§4.5). The cut brings the
+  expiry forward and never extends it, leaves the token itself in place, and is
+  made once; a failure recorded before the controller was upgraded is cut on
+  the first pass that sees it. It is not made while the host is in an `Error`
+  about its BMC rather than one the run reported (§4.4: PROV-1 lets a
+  `/provisioned` report land there, and the report needs the token), and
+  follows once the host leaves that `Error`. **The wire is unchanged** and an
+  inspector needs no change: it retries its callbacks over about 2.5 minutes
+  (§9.1 step 6), inside the 5, and treats a `401`/`403` as fatal (§9.2), as
+  before. Observable server-side differences only: a callback more than 5
+  minutes after the machine failed gets the opaque `401`.
 
 ---
 
