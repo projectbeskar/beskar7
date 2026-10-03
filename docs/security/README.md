@@ -74,22 +74,24 @@ The Secret, not the host, decides which BMCs its credentials may be sent to (dec
 
 Source: `controllers/bmc_access.go:resolveBMCAccess`, called from `controllers/physicalhost_controller.go:reconcileNormal` and `controllers/beskar7machine_controller.go:getRedfishClientForHost`; `internal/redfish/absolute_dial.go` and `internal/redfish/origin_pinning.go` for name resolution and origin pinning.
 
-Beskar7 does not log usernames or passwords at any verbosity level. The structured logger emits `passwordProvided` (a boolean) at V(1) when constructing the gofish client. See `internal/redfish/gofish_client.go`.
+Beskar7 does not log usernames or passwords at any verbosity level, nor whether a password is present. When it builds a Redfish client it logs the BMC address and which transport options are in effect (`insecure`, `caBundleProvided`, `viaProxy`), at V(1). See `internal/redfish/gofish_client.go`.
 
 ### 3. Per-host bearer-token authentication on the callback endpoint
 
-The manager runs an HTTPS server on `:8082` that hosts two host-scoped endpoints:
+The manager runs an HTTPS server on `:8082` that hosts four host-scoped endpoints carrying the inspector's bearer token:
 
 - `POST /api/v1/inspection/{namespace}/{hostName}` — receives inspection reports.
 - `GET  /api/v1/bootstrap/{namespace}/{hostName}` — serves bootstrap data Secret bytes.
+- `POST /api/v1/provisioned/{namespace}/{hostName}` — the inspector's report that the OS image is written (D-015).
+- `POST /api/v1/provision-failed/{namespace}/{hostName}` — the inspector's report that deployment failed.
 
-Both are gated by the same `auth.RequireBearer` middleware. The verifier:
+All four are gated by the same `auth.RequireBearer` middleware. The same server also answers `GET /api/v1/boot/{namespace}/{hostName}/{nonce}`, which is gated by the host's boot nonce instead, because the iPXE client that fetches it cannot send a header (see [iPXE setup → Step 1](../ipxe-setup.md#step-1-controller-mints-secrets-and-pxe-boots-the-host)), and an unauthenticated `/healthz`. The verifier:
 
 1. Resolves `{namespace,hostName}` from the URL path.
 2. Loads the targeted `PhysicalHost` and its per-host Secret `<host>-bootstrap-token` (decision D-029). `PhysicalHost.Status.Bootstrap` is a read-only mirror of that Secret and is never consulted, so the right to patch PhysicalHosts does not let anyone mint a credential.
 3. Rejects the request if the host is not claimed, if its `ConsumerRef` names a different `Beskar7Machine` than the one the Secret's credentials were minted for (`consumer` key), if no token has been issued, if the token's expiry in the Secret is missing, unparseable or past, or if `sha256(presented)` does not equal `sha256(Secret token)` (constant-time compare via `crypto/subtle`).
 
-All authentication failures collapse to an opaque `401 Unauthorized` body — the verifier's specific error is logged at V(1) only, never echoed to the client.
+All authentication failures collapse to an opaque `401 Unauthorized` body. The verifier's specific reason is logged at Info, with the host, the remote address and the reason and never the presented token, and is never echoed to the client.
 
 Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 
@@ -100,7 +102,7 @@ Token shape (decision D-004 in `.claude/context/PROJECT_CONTEXT.md`):
 
 The plaintext is stored in a per-host Secret named `<host-name>-bootstrap-token` (data key `plaintext-token`), owned by the PhysicalHost so it is GC'd on host delete. Decisions D-006, D-029.
 
-Source: `internal/auth/token.go`, `internal/auth/middleware.go`, `controllers/inspection_handler.go:newBearerTokenVerifier`, `controllers/bootstrap_handler.go`.
+Source: `internal/auth/token.go`, `internal/auth/middleware.go`, `controllers/inspection_handler.go:newBearerTokenVerifier` (and the route table in `SetupCallbackServer`), `controllers/bootstrap_handler.go`, `controllers/provisioned_handler.go`, `controllers/provision_failed_handler.go`.
 
 ### 3a. Callback- and machine-written annotations are bound to the per-host token
 
