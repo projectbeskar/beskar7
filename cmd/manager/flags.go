@@ -20,7 +20,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -59,6 +61,61 @@ func parseWatchNamespaces(raw string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// parseBMCProxy parses a --bmc-proxy flag value: the one proxy every BMC
+// connection goes through (D-035). Empty means none, and returns nil.
+//
+// The value is an http:// or https:// URL with a host and an optional port, and
+// optional user:password@ for a proxy that wants credentials. A path other than
+// "/", a query and a fragment are rejected.
+//
+// Every error is a fixed message that repeats nothing of the value. The value
+// may carry the proxy's password, url.Parse's own errors quote the whole URL,
+// and even a single piece of a mistyped value can be a secret: user:pw@host:3128
+// parses with the user name as its scheme.
+func parseBMCProxy(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, invalidBMCProxy("it is not a URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, invalidBMCProxy("the scheme must be http or https")
+	}
+	if u.Hostname() == "" {
+		return nil, invalidBMCProxy("a host is required")
+	}
+	if strings.ContainsAny(raw, "?#") || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+		return nil, invalidBMCProxy("a path, query or fragment is not allowed")
+	}
+	if port := u.Port(); port != "" {
+		if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+			return nil, invalidBMCProxy("the port must be between 1 and 65535")
+		}
+	}
+	return u, nil
+}
+
+func invalidBMCProxy(reason string) error {
+	return fmt.Errorf("invalid --bmc-proxy: %s; expected http://[user:password@]host[:port] or https://[user:password@]host[:port]", reason)
+}
+
+// proxyEnvironmentVariables returns the names, never the values, of the
+// proxy variables net/http reads that getenv reports set. BMC connections
+// ignore them (D-035); the manager says so at startup, so an operator who
+// relied on one finds out from the log and not from unreachable BMCs.
+func proxyEnvironmentVariables(getenv func(string) string) []string {
+	var set []string
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+		if getenv(name) != "" {
+			set = append(set, name)
+		}
+	}
+	return set
 }
 
 // controllersMode is the value of the --controllers flag: which reconcilers
@@ -106,6 +163,9 @@ type managerConfig struct {
 
 	enableWebhook bool
 
+	// bmcProxy is the parsed --bmc-proxy; nil means BMC connections are direct.
+	bmcProxy *url.URL
+
 	bootstrapURLBase  string
 	inspectionPort    int
 	inspectionCertDir string
@@ -128,6 +188,10 @@ func (c managerConfig) validate() error {
 		return errors.New("--enable-webhook=true contradicts --controllers=none: a callback-only " +
 			"instance registers no webhook, so admission requests routed to it would fail closed; " +
 			"drop --enable-webhook")
+	}
+	if c.bmcProxy != nil {
+		return errors.New("--bmc-proxy contradicts --controllers=none: a callback-only " +
+			"instance never connects to a BMC, so the proxy would go unused; drop --bmc-proxy")
 	}
 	if c.leaderElectSet && c.enableLeaderElection {
 		return errors.New("--leader-elect=true contradicts --controllers=none: a callback-only " +

@@ -188,6 +188,12 @@ args:
 # Optional: reconcile workers per controller. Default 1. Raise for larger fleets
 # or to stop one unreachable BMC's 30s timeout blocking healthy hosts.
 - --max-concurrent-reconciles=4
+# Optional: the one http(s):// proxy every BMC (Redfish) connection goes through
+# (D-035). Default empty = direct. The environment's HTTP_PROXY/HTTPS_PROXY are
+# never used for BMCs; the proxy resolves BMC names, so D-032 does not apply
+# through it. Rejected with --controllers=none. Helm: bmcProxy. See
+# docs/security/configuration.md#reaching-bmcs-through-a-proxy.
+- --bmc-proxy=
 # Optional: which reconcilers this instance runs. Default all. 'none' is a
 # callback-only instance for a second copy on the provisioning network — no
 # reconciler, no webhook, leader election off. See docs/ipxe-setup.md.

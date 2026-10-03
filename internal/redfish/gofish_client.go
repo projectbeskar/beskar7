@@ -42,6 +42,11 @@ var log = logf.Log.WithName("redfish-client")
 // endpoint's origin (originPinnedTransport, SEC-17c). dial is the dialer
 // underneath; outside tests it is systemDial.
 //
+// proxy is where the connection goes through, nil for a direct one. The
+// environment's proxy is never used (D-035). Through a proxy, the proxy
+// resolves the BMC's name, so the absolute-name dial of D-032 has nothing to
+// act on; the origin pinning still does, since it sits above the transport.
+//
 // When caBundle is non-empty, the returned client validates BMC certificates
 // against the supplied PEM bundle (system roots are NOT additionally trusted —
 // callers who want both must concatenate them upstream) and InsecureSkipVerify
@@ -55,7 +60,7 @@ var log = logf.Log.WithName("redfish-client")
 // Returns an error when caBundle is non-empty and contains no usable PEM
 // certificates — silent fallback to system roots in that case would defeat the
 // operator's intent — or when endpoint has no origin to pin to.
-func newHTTPClient(endpoint *url.URL, insecure bool, caBundle []byte, dial dialContextFunc) (*http.Client, error) {
+func newHTTPClient(endpoint *url.URL, insecure bool, caBundle []byte, dial dialContextFunc, proxy *bmcProxy) (*http.Client, error) {
 	defaultTransport := http.DefaultTransport.(*http.Transport)
 	tlsConfig := &tls.Config{
 		// G402 — InsecureSkipVerify is operator-opt-in via Spec.RedfishConnection.InsecureSkipVerify.
@@ -73,9 +78,11 @@ func newHTTPClient(endpoint *url.URL, insecure bool, caBundle []byte, dial dialC
 		// false here as defence in depth.
 		tlsConfig.InsecureSkipVerify = false
 	}
+	dial = dialAbsolute(endpoint.Hostname(), dial)
 	transport := &http.Transport{
-		Proxy:                 defaultTransport.Proxy,
-		DialContext:           dialAbsolute(endpoint.Hostname(), dial),
+		Proxy:                 proxy.proxyFunc(),
+		DialContext:           dial,
+		DialTLSContext:        proxy.tlsDialer(dial),
 		MaxIdleConns:          defaultTransport.MaxIdleConns,
 		IdleConnTimeout:       defaultTransport.IdleConnTimeout,
 		ExpectContinueTimeout: defaultTransport.ExpectContinueTimeout,
@@ -114,15 +121,23 @@ func doWithCtx(ctx context.Context, op func() error) error {
 	}
 }
 
-// NewClient creates a new Redfish client.
+// NewClient creates a new Redfish client that connects to the BMC directly.
+// It does not use the environment's proxy (D-035); NewClientFactory is how a
+// client reaches BMCs through the manager's --bmc-proxy.
 //
 // caBundle, when non-empty, is the PEM-encoded CA used to verify the BMC's
 // TLS server certificate. caBundle != nil with insecure == true is rejected
 // up front: the two are mutually exclusive and silently picking one would
 // hide a likely operator misconfiguration.
 func NewClient(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (Client, error) {
+	return newClient(ctx, systemDial, nil, address, username, password, insecure, caBundle)
+}
+
+// newClient is NewClient with the dialer and the proxy named, so a test can
+// reach an address that does not resolve and a factory can name the proxy.
+func newClient(ctx context.Context, dial dialContextFunc, proxy *bmcProxy, address, username, password string, insecure bool, caBundle []byte) (Client, error) {
 	logger := logf.Log.WithName("redfish-client")
-	logger.V(1).Info("Creating new Redfish client", "rawAddress", address, "insecure", insecure, "caBundleProvided", len(caBundle) > 0)
+	logger.V(1).Info("Creating new Redfish client", "rawAddress", address, "insecure", insecure, "caBundleProvided", len(caBundle) > 0, "viaProxy", proxy != nil)
 
 	if insecure && len(caBundle) > 0 {
 		return nil, fmt.Errorf("redfish: InsecureSkipVerify=true is mutually exclusive with a CA bundle; choose one")
@@ -149,7 +164,7 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 	// Use the validated and cleaned URL string
 	endpointURL := parsedURL.String()
 
-	httpClient, err := newHTTPClient(parsedURL, insecure, caBundle, systemDial)
+	httpClient, err := newHTTPClient(parsedURL, insecure, caBundle, dial, proxy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build HTTP client for %s: %w", endpointURL, err)
 	}
@@ -192,10 +207,12 @@ func NewClient(ctx context.Context, address, username, password string, insecure
 // httptest.Server with a self-signed cert and full transport control.
 //
 // The supplied httpClient's transport is used as is, under the same origin
-// pinning NewClient applies (originPinnedTransport), and its dialer is the
-// caller's; the insecure flag is ignored beyond logging (caller has already
-// configured the transport's TLSClientConfig). httpClient must not be nil —
-// the whole point of this constructor is the explicit client.
+// pinning NewClient applies (originPinnedTransport), and its dialer and proxy
+// are the caller's; the insecure flag is ignored beyond logging (caller has
+// already configured the transport's TLSClientConfig). A client with no
+// transport gets a direct one, since http.DefaultTransport would use the
+// environment's proxy (D-035). httpClient must not be nil — the whole point of
+// this constructor is the explicit client.
 func NewClientWithHTTPClient(
 	ctx context.Context,
 	address, username, password string,
@@ -223,7 +240,9 @@ func NewClientWithHTTPClient(
 
 	base := httpClient.Transport
 	if base == nil {
-		base = http.DefaultTransport
+		direct := http.DefaultTransport.(*http.Transport).Clone()
+		direct.Proxy = nil
+		base = direct
 	}
 	pinned, err := pinToOrigin(base, parsedURL)
 	if err != nil {

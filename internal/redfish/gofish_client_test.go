@@ -125,7 +125,7 @@ func bmcTransport(t *testing.T, c *http.Client) *http.Transport {
 
 func TestNewHTTPClient_Timeout(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(testEndpoint, false, nil, systemDial)
+	c, err := newHTTPClient(testEndpoint, false, nil, systemDial, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestNewHTTPClient_Timeout(t *testing.T) {
 
 func TestNewHTTPClient_InsecureFalse(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(testEndpoint, false, nil, systemDial)
+	c, err := newHTTPClient(testEndpoint, false, nil, systemDial, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestNewHTTPClient_InsecureFalse(t *testing.T) {
 
 func TestNewHTTPClient_InsecureTrue(t *testing.T) {
 	t.Parallel()
-	c, err := newHTTPClient(testEndpoint, true, nil, systemDial)
+	c, err := newHTTPClient(testEndpoint, true, nil, systemDial, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestNewHTTPClient_InsecureTrue(t *testing.T) {
 func TestNewHTTPClient_CABundle_Valid(t *testing.T) {
 	t.Parallel()
 	caPEM, _ := generateSelfSignedCA(t)
-	c, err := newHTTPClient(testEndpoint, false, caPEM, systemDial)
+	c, err := newHTTPClient(testEndpoint, false, caPEM, systemDial, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestNewHTTPClient_CABundle_Valid(t *testing.T) {
 func TestNewHTTPClient_CABundle_InsecureForcedFalse(t *testing.T) {
 	t.Parallel()
 	caPEM, _ := generateSelfSignedCA(t)
-	c, err := newHTTPClient(testEndpoint, true, caPEM, systemDial)
+	c, err := newHTTPClient(testEndpoint, true, caPEM, systemDial, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestNewHTTPClient_CABundle_InsecureForcedFalse(t *testing.T) {
 func TestNewHTTPClient_CABundle_MalformedPEM(t *testing.T) {
 	t.Parallel()
 	bogus := []byte("this is not a PEM-encoded certificate")
-	_, err := newHTTPClient(testEndpoint, false, bogus, systemDial)
+	_, err := newHTTPClient(testEndpoint, false, bogus, systemDial, nil)
 	if err == nil {
 		t.Fatal("expected error for malformed PEM, got nil")
 	}

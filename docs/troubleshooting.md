@@ -761,7 +761,10 @@ connection, no route, a DNS failure, a timeout, or a 502/503/504 from a BMC that
 A DNS failure that persists can be a short in-cluster name: a BMC hostname is resolved as an
 absolute name, without the cluster search path (decision D-032), so `mock-redfish.my-ns.svc` must be
 written `mock-redfish.my-ns.svc.cluster.local`, in the host's address and in the credentials Secret's
-`bmc-addresses`.
+`bmc-addresses`. Another cause after an upgrade to `v0.10.0`: BMCs that were reachable only through a
+proxy in the manager's environment (`HTTP_PROXY`/`HTTPS_PROXY`) are now contacted directly, because the
+environment's proxy is no longer used for BMC connections (decision D-035). Set `--bmc-proxy` (Helm:
+`bmcProxy`); see [Reaching BMCs through a proxy](security/configuration.md#reaching-bmcs-through-a-proxy).
 This is not a terminal failure: `status.phase` is not `Failed`, the host retries every 15 seconds, and
 the machine carries on by itself on the first attempt that connects. A host that was already
 `Inspecting`, `Deploying` or `Ready` keeps that state through the outage (only its condition changes)
