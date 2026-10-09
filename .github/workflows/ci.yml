@@ -658,11 +658,10 @@ jobs:
 
     - name: Install Beskar7 via clusterctl init
       env:
+        GOPROXY: "off"
         # clusterctl resolves provider and cert-manager versions through the GitHub
         # API; unauthenticated it shares the runner's 60/h limit and fails at random.
         GITHUB_TOKEN: ${{ github.token }}
-      env:
-        GOPROXY: "off"
       run: |
         clusterctl init --infrastructure "beskar7:${OVERRIDE_VERSION}" --config /tmp/clusterctl.yaml -v 3
         kubectl -n capb7-system get pods,deploy,svc
