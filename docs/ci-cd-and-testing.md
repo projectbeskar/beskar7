@@ -237,7 +237,7 @@ osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
    ```bash
    # Install development dependencies
    make install-controller-gen
-   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2  # the version CI pins
+   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0  # the version CI pins
    ```
 
 2. **Run Tests**
