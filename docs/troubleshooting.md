@@ -873,6 +873,46 @@ carries on; nothing is reprovisioned and no machine needs deleting. If the addre
 recognise, fix the `PhysicalHost` instead and find out who changed it. See
 [PhysicalHost → Binding the credentials to their BMC](physicalhost.md#binding-the-credentials-to-their-bmc).
 
+### 18. Beskar7Machine reports `WaitingForTargetImageDigest`
+
+**Symptom:** a `Beskar7Machine` that sets `spec.targetImageDigestURL` has `InfrastructureReady=False` with
+reason `WaitingForTargetImageDigest` (and so `Ready=False`), claims no `PhysicalHost`, and its message names
+the checksum server's host and one reason, for example
+`Cannot resolve spec.targetImageDigestURL, retrying: sums.example.com: HTTP 404`.
+
+**Cause:** the controller could not turn the checksum file into the image's digest, and tries again after 30
+seconds, then 1, 2, 4 and every 5 minutes. This is not a terminal failure, and nothing is held for it: no
+host is claimed until the digest resolves. The reason says which:
+
+| Message | What to check |
+|---|---|
+| `HTTP 404` (or another code) | The URL. Only a `200` is accepted. |
+| `no entry for "<name>"` | The file has no line for `<name>`, the last path segment of `spec.targetImageURL`. The name must match exactly: a line for `images/<name>` does not, and neither does `<name>.sig`. A file of one bare 64-hex digest needs no name. |
+| `conflicting entries for "<name>"` | Two lines for `<name>` with different digests. |
+| `the entry for "<name>" is not a SHA-256 digest` | The line for `<name>` has something other than 64 hex characters (a SHA-512 sum, a truncated or mistyped digest). |
+| `checksum file too large (limit 64 KiB)` | The URL is not a checksum file, or it lists far too much. |
+| `TLS certificate not trusted` / `is for a different host` / `is expired or not valid` | The server's certificate does not verify against the manager's system roots, for that host name. There is no way to add a CA for this fetch: put the checksum file on a server whose certificate chains to a root the manager image trusts. |
+| `not an HTTPS server` | The URL says `https://` and the server answers in clear text. |
+| `redirect to another host refused` / `more than 3 redirects` | The server sends the controller somewhere else. Redirects are followed only within the same scheme, host and port; use the final URL. |
+| `timed out after 10s`, `cannot connect`, `cannot resolve the host name` | The path from the manager pod to the server. The chart's NetworkPolicy allows TCP 443 and 8443; another port needs a rule ([Security Configuration → NetworkPolicy](security/configuration.md#networkpolicy)). The manager's `HTTPS_PROXY` and `NO_PROXY` apply. |
+| `targetImageDigestURL must not contain credentials`, `is not an https URL` | The URL carries `user:password@` or is not `https://`. |
+
+The message never repeats what the server sent, so a surprising answer has to be looked at from outside:
+
+```bash
+kubectl get beskar7machine <name> -n <ns> -o jsonpath='{.spec.targetImageURL}{"\n"}{.spec.targetImageDigestURL}{"\n"}'
+curl -sS "<targetImageDigestURL>"
+```
+
+**Solution:** fix the file or the URL. Changing `spec.targetImageDigestURL` retries at once. Fixing the file is
+picked up at the next attempt, up to 5 minutes later; restarting the manager retries at once. Nothing needs to be
+deleted. A `MachineHealthCheck` sees this like any other time before the machine is `Ready`, so its
+`nodeStartupTimeout` decides how long it waits. See
+[Beskar7Machine → Naming the digest by URL](beskar7machine.md#naming-the-digest-by-url-targetimagedigesturl).
+
+A machine that already holds a host keeps the digest it pinned when you change the URL, and logs
+`keeping the pinned digest`; to use the new URL, delete the machine and let its owner replace it.
+
 ## Getting Help
 
 If you can't resolve your issue:

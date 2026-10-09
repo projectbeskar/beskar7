@@ -1,0 +1,62 @@
+# Naming the image digest by URL (targetImageDigestURL).
+#
+# A Beskar7Machine (or a Beskar7MachineTemplate) sets EXACTLY ONE of:
+#
+#   targetImageDigest     the digest itself, sha256:<64 hex>, in the manifest
+#   targetImageDigestURL  an https:// URL of a sha256sum-style file the
+#                         controller reads for you
+#
+# The CRD refuses both, and neither. See docs/beskar7machine.md ("Naming the
+# digest by URL") before choosing the second form: the digest is the only thing
+# that vouches for the OS image, which may be served over plain HTTP, so the URL
+# form moves your trust from the manifest to whoever controls the checksum file.
+#
+# What the controller does with it:
+#   - reads the file ONCE per machine, BEFORE it claims a host, so a URL that
+#     does not resolve never holds hardware (the machine reports
+#     InfrastructureReady=False, reason WaitingForTargetImageDigest, and retries
+#     after 30s, 1m, 2m, 4m, then every 5 minutes);
+#   - takes the entry named like the last path segment of targetImageURL
+#     (here: kairos-k3s-v1.2.3.raw) from GNU lines "<64 hex>  <name>" /
+#     "<64 hex> *<name>", BSD lines "SHA256 (<name>) = <64 hex>", or a file that
+#     is one bare 64-hex digest;
+#   - pins the result in status.targetImageDigest, which /boot renders for the
+#     inspector. A run in flight never changes digest, even if the file changes.
+#
+# POINT IT AT A VERSIONED FILE THAT NEVER CHANGES AFTER PUBLICATION, as below
+# (.../v1.2.3/SHA256SUMS, not .../latest/SHA256SUMS). Every machine cloned from a
+# template reads the file for itself, when that machine is created or replaced; a
+# file that changes lets the machines of one MachineDeployment get different
+# images.
+#
+# The fetch is HTTPS only (verified TLS, system roots, TLS 1.2+), has no
+# credentials, takes at most 10 seconds and 64 KiB, and follows at most 3
+# redirects, all to the same host. The URL must not contain user:password@.
+#
+# Replace every <...> placeholder. Use this template from a KubeadmControlPlane
+# or MachineDeployment infrastructureRef as in examples/host-pools.yaml.
+#
+# The same checksum file for the same image, with the digest pasted instead
+# (the only change is these two lines):
+#
+#   targetImageDigest: "sha256:<sha256-of-the-image>"
+#   # and no targetImageDigestURL
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: Beskar7MachineTemplate
+metadata:
+  name: kairos-k3s-by-checksum-file
+  namespace: <namespace>
+spec:
+  template:
+    spec:
+      inspectionImageURL: "https://<boot-server>/inspector"
+      targetImageURL: "http://<image-server>/images/v1.2.3/kairos-k3s-v1.2.3.raw"
+      # Lines of the file at this URL, any of:
+      #   <64 hex>  kairos-k3s-v1.2.3.raw
+      #   <64 hex> *kairos-k3s-v1.2.3.raw
+      #   SHA256 (kairos-k3s-v1.2.3.raw) = <64 hex>
+      targetImageDigestURL: "https://<checksum-server>/images/v1.2.3/SHA256SUMS"
+      hardwareRequirements:
+        minCPUCores: 2
+        minMemoryGB: 4
+        minDiskGB: 20

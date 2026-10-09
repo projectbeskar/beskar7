@@ -102,6 +102,46 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
+## `v0.10.0` → unreleased — optional `targetImageDigestURL`; CRDs go before the controller
+
+This section describes what the release after `v0.10.0` will carry; it is not in a tagged release yet, and
+its heading will change to the version number when it is. Nothing here needs doing unless you want the new
+field, and nothing changes for a machine that sets `spec.targetImageDigest`.
+
+What changes, all additive for the `v1beta2` API (every object that was valid before is still valid):
+
+- `Beskar7Machine` and `Beskar7MachineTemplate` gain the optional `spec.targetImageDigestURL`, an `https://`
+  URL of a `sha256sum`-style checksum file the controller reads instead of you pasting the digest. See
+  [Beskar7Machine → Naming the digest by URL](beskar7machine.md#naming-the-digest-by-url-targetimagedigesturl),
+  and read the trust trade-off in [Security](security/README.md#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038)
+  before you use it.
+- `spec.targetImageDigest` is no longer required by the schema. A CEL rule on the spec, in the machine and the
+  template CRD alike, requires exactly one of the two: both set, or neither, is refused at admission.
+- `Beskar7Machine` gains two optional status fields, `status.targetImageDigest` (the pinned digest) and
+  `status.targetImageDigestURL` (where it came from), and a new `InfrastructureReady` reason,
+  `WaitingForTargetImageDigest`.
+
+No contract change (still `v4.2`: the inspector receives `beskar7.target-digest` as before, so any `v4.2`
+inspector works), no RBAC change, and no new manager flag. **Apply the CRDs before the controller**, as for every
+release: the new controller writes `status.targetImageDigest`, and while the stored CRD lacks it the API server
+prunes it from the write, so a machine that names its digest by URL would read its checksum file again on every
+reconcile. A machine that sets `spec.targetImageDigest` never writes the field.
+
+```bash
+# Helm install: CRDs first (Helm does not upgrade CRDs on `helm upgrade`), from the chart you are about to install.
+kubectl apply -f ./beskar7-<version>/beskar7/crds/
+# Check the stored CRDs have the new fields; each prints "string":
+kubectl get crd beskar7machines.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.targetImageDigestURL.type}{"\n"}'
+kubectl get crd beskar7machines.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.status.properties.targetImageDigest.type}{"\n"}'
+```
+
+A release-manifest install lists the CRDs before the Deployment, so one apply does both. Going back to a
+controller that predates the field does not work for a machine that uses `targetImageDigestURL`: the older
+controller renders no digest for it and `/boot` refuses the host. Replace such machines with ones that set
+`spec.targetImageDigest` first.
+
 ## `v0.9.x` → `v0.10.0` — callback integrity, BMC transport and RBAC hardening; upgrade in this order
 
 No schema change to any existing field, and no contract change: still `v4.2`. `PhysicalHost` gains one

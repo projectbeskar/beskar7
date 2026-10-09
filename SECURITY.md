@@ -128,6 +128,11 @@ Context that may help when assessing a finding:
 - **OS image integrity** is anchored by `targetImageDigest` (SHA-256), verified by
   the inspector during the write. The image may be served over plain HTTP: the
   digest, not TLS, is the trust anchor.
+  `targetImageDigestURL` reads that digest from a checksum file over verified HTTPS
+  instead; the trust anchor is then whoever controls that file, so use a versioned,
+  never-overwritten one. The controller reads it once per machine, before it claims
+  a host, and pins the result; see
+  [docs/security/README.md](docs/security/README.md#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038).
 - **RBAC** can be narrowed from cluster-wide to per-namespace with
   `--watch-namespaces`; see [docs/security/rbac-hardening.md](docs/security/rbac-hardening.md).
 
