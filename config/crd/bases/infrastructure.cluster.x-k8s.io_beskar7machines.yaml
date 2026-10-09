@@ -106,14 +106,20 @@ spec:
               targetImageDigest:
                 pattern: ^sha256:[a-f0-9]{64}$
                 type: string
+              targetImageDigestURL:
+                maxLength: 2048
+                pattern: ^https://[^\s]+$
+                type: string
               targetImageURL:
                 pattern: ^https?://[^\s]+$
                 type: string
             required:
             - inspectionImageURL
-            - targetImageDigest
             - targetImageURL
             type: object
+            x-kubernetes-validations:
+            - message: set exactly one of targetImageDigest and targetImageDigestURL
+              rule: has(self.targetImageDigest) != has(self.targetImageDigestURL)
           status:
             properties:
               addresses:
@@ -186,6 +192,12 @@ spec:
                 type: string
               ready:
                 type: boolean
+              targetImageDigest:
+                pattern: ^sha256:[a-f0-9]{64}$
+                type: string
+              targetImageDigestURL:
+                maxLength: 2048
+                type: string
             type: object
         type: object
     served: true

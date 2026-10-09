@@ -11,6 +11,7 @@ If you are looking for hardening recommendations, see [Configuration](configurat
 - A misconfigured operator: BMC with self-signed cert, weak credentials, lax NetworkPolicy, etc.
 - A compromised host on the management network attempting to talk to the manager's callback endpoint.
 - A multi-tenant control-plane cluster where tenants must not read each other's BMC credentials or bootstrap data.
+- A user allowed to create `Beskar7Machine` objects (or `Beskar7MachineTemplate`s that mint them) choosing a `targetImageDigestURL`: a URL the manager will fetch, and a checksum file that decides which image the machine installs (control 10).
 - A user allowed to patch `PhysicalHost` objects (and create ConfigMaps) but not to read Secrets, trying to push a host to `Ready`, inject a hardware report or fail a run by writing the annotations the inspector's callbacks leave, or the inspection requests the `Beskar7Machine` controller writes (control 3a).
 
 Out of scope: kernel exploits on the inspection image, BMC firmware vulnerabilities, supply-chain attacks on the operator's iPXE image hosting.
@@ -191,6 +192,23 @@ The manager serves `/metrics` over HTTPS on `:8443` directly (no `kube-rbac-prox
 
 Source: `cmd/manager/main.go:135-145`.
 
+### 10. Image digest from a checksum URL (`targetImageDigestURL`, D-038)
+
+`spec.targetImageDigest` is the sole integrity and authenticity anchor of the OS image, which may be served over plain HTTP. `spec.targetImageDigestURL` lets the manager read that digest from a `sha256sum`-style file instead of from the manifest. It is opt-in, and it is a trade-off, not a free convenience:
+
+- **The anchor moves.** With a pasted digest, the anchor is the value in the manifest you reviewed. With a URL, it is whatever the file says at the moment the controller reads it: whoever can write that file, or intercept the connection to it, chooses the image every machine reading it installs. The verified TLS connection protects the connection, not the file at its source.
+- **A mutable file is worse than a pasted digest.** The controller reads the file once per machine, so a file that changes lets machines of one `MachineDeployment` get different images. Use a versioned file that is never overwritten.
+- **The digest is pinned.** The controller resolves the URL once, before it claims a host, and writes `sha256:<hex>` to `status.targetImageDigest`; `/boot` renders that value, validated like a spec digest (`^sha256:[0-9a-f]{64}$`, an empty one renders nothing). A run in flight never changes digest, and a change to the file or the URL after the claim does not move it. The inspector and the wire contract (v4.2) are unchanged.
+- **The fetch is an egress path for whoever can create a `Beskar7Machine`.** What bounds it, all enforced in code (`controllers/target_image_digest.go`) and not only in the CRD (`^https://`):
+  - HTTPS only; the certificate is verified against the system roots; TLS 1.2 or later; a URL with credentials in it is refused; only a `200` answer is used.
+  - A dedicated HTTP client, not `http.DefaultClient`, with no connection reuse and no content decoding. The environment proxy (`HTTPS_PROXY`) applies: the request carries no credential and the file is public. The BMC connections still ignore the environment proxy (D-035).
+  - 10 seconds for the whole fetch; a body of at most 64 KiB, read through a limit, and a larger one is an error; at most 3 redirects, each to the same scheme, host and port as the URL, and anything else is refused without connecting.
+  - A failed fetch is retried after 30 seconds, then 1, 2, 4 and every 5 minutes; reconciling the machine more often does not fetch more often.
+  - **Nothing the server sends is shown.** The machine's condition and the log name the URL's host and one of a fixed set of reasons (`HTTP 404`, `no entry for "<name>"`, `TLS certificate not trusted`, ...). No response body, header, TLS error text or digest text reaches status, a condition, an event or a log line; logs carry the URL without credentials or query.
+- **What it does not do.** It does not block private, loopback or link-local addresses: the checksum server is normally on the provisioning network, so that would break the intended use. A user who can create a `Beskar7Machine` can therefore make the manager open an HTTPS connection to any address it can reach, and can see from the machine's condition whether it worked and, if the server answered, its status code. It never sees a body. If that matters in your cluster, treat the right to create `Beskar7Machine`s and `Beskar7MachineTemplate`s as including that reach, and narrow the manager's egress (the chart's NetworkPolicy lets it reach TCP 443 and 8443 anywhere; see [Configuration](configuration.md#networkpolicy)).
+
+Source: `controllers/target_image_digest.go` (fetch, parse, pin), `ensureTargetImageDigest` and its call in `reconcileNormal` (`controllers/beskar7machine_controller.go`), `effectiveTargetImageDigest` in `renderBootScript` (`controllers/boot_handler.go`), the CEL rule on `Beskar7MachineSpec` (`api/v1beta2/beskar7machine_types.go`).
+
 ## Configuration entry points
 
 | What | How |
@@ -198,6 +216,7 @@ Source: `cmd/manager/main.go:135-145`.
 | Allow a credentials Secret to be sent to a BMC | annotate the Secret: `beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses=<IPs, CIDRs, hostnames, *.suffix>` |
 | Disable TLS verification on a single BMC (test only) | `PhysicalHost.spec.redfishConnection.insecureSkipVerify: true`, plus `beskar7.infrastructure.cluster.x-k8s.io/bmc-insecure-transport: "true"` on its credentials Secret |
 | Use a private CA on a BMC | `PhysicalHost.spec.redfishConnection.caBundleSecretRef: <secret>` |
+| Name the image digest by checksum file instead of pasting it | `Beskar7Machine.spec.targetImageDigestURL: https://...` (exactly one of it and `targetImageDigest`); read it as [control 10](#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038) first |
 | Force-release a host whose BMC is dead | annotate the consuming Beskar7Machine: `infrastructure.cluster.x-k8s.io/force-release=true` |
 | Open metrics for plain-HTTP development | manager flag `--secure-metrics=false` |
 
@@ -208,6 +227,7 @@ To avoid cargo-cult security claims:
 - There is no built-in password-strength policy. The Secret can hold any bytes.
 - There is no automatic credential rotation. Operators rotate Secret values manually; the `PhysicalHost` reconciler watches Secrets and re-reconciles on change.
 - Nothing stops re-pointing a host to another BMC its Secret's `bmc-addresses` list names. The credentials still reach only a listed BMC, but the host then drives the wrong machine. Restrict who can patch `PhysicalHost` objects; there is no `PhysicalHost` admission webhook.
+- Nothing checks that a `targetImageDigestURL` checksum file stays the same after it is published, or that it was published by whoever published the image. The controller pins what it read once per machine; a file that changes between machines changes their images.
 - There is no CIS / NIST / SOC 2 / ISO 27001 audit. Don't claim compliance you haven't measured.
 - There is no security-scanning CronJob shipped with the chart. Use your platform's standard tooling.
 

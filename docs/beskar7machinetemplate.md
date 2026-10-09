@@ -4,7 +4,7 @@
 
 `Beskar7MachineTemplate` is a pure schema. CAPI's `KubeadmControlPlane` and `MachineDeployment` reference it to mint `Beskar7Machine` objects with the same spec.
 
-There is **no** Beskar7MachineTemplate controller, **no** validating or defaulting webhook, and **no** immutability enforcement. The template's `template.spec` is whatever any author writes; CAPI clones it onto each `Beskar7Machine`. Validation of the inner spec happens when the cloned `Beskar7Machine` hits the API server (OpenAPI schema rules from `api/v1beta2/beskar7machine_types.go`).
+There is **no** Beskar7MachineTemplate controller, **no** validating or defaulting webhook, and **no** immutability enforcement. The template's `template.spec` is whatever any author writes; CAPI clones it onto each `Beskar7Machine`. The same OpenAPI schema rules and the CEL rule on the spec (`api/v1beta2/beskar7machine_types.go`) apply to the template itself and, again, to each cloned `Beskar7Machine` when it hits the API server.
 
 ## Identity
 
@@ -32,7 +32,8 @@ spec:
       # Identical to Beskar7Machine.spec
       inspectionImageURL: ...
       targetImageURL: ...
-      targetImageDigest: ...
+      targetImageDigest: ...         # exactly one of targetImageDigest and targetImageDigestURL
+      # targetImageDigestURL: https://...
       hardwareRequirements:
         minCPUCores: ...
         minMemoryGB: ...
@@ -41,6 +42,8 @@ spec:
         matchLabels:
           node-role: ...
 ```
+
+The template's `spec` carries the same CRD rule as a `Beskar7Machine`'s: set **exactly one** of `targetImageDigest` and `targetImageDigestURL`, and an `http://` digest URL is refused. A template that breaks it is rejected when it is created, not when its first machine is. With `targetImageDigestURL` every machine cloned from the template reads the checksum file for itself, when that machine is created or replaced, and pins what it read: the template does not pin anything. Point it at a versioned file that never changes, or the machines of one `MachineDeployment` can get different images (see [Beskar7Machine → Naming the digest by URL](beskar7machine.md#naming-the-digest-by-url-targetimagedigesturl)); with `targetImageDigest` the template fixes the digest for all of them.
 
 For the field reference, see [API Reference: Beskar7Machine](api-reference.md#beskar7machine). `hostSelector` is what keeps a control plane and a worker pool from racing for the same hosts — see [Beskar7Machine → Steering the claim](beskar7machine.md#steering-the-claim-hostselector-and-failure-domains).
 

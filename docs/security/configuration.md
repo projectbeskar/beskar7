@@ -228,6 +228,8 @@ There is no Helm value or operator flag to relax the ClusterRole at install time
 
 The Helm chart ships a NetworkPolicy in `templates/networkpolicy.yaml` that allows ingress on `:8443` (metrics), `:9443` (webhook), and `:8082` (callback). Egress is unrestricted by default (Beskar7 needs to reach BMCs at arbitrary IPs, the kube-apiserver, and DNS).
 
+Two things leave the manager besides the API server and DNS: its connections to BMCs, and, only for a `Beskar7Machine` that sets `spec.targetImageDigestURL`, one HTTPS request per machine to the host of that URL (see [control 10](README.md#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038)). The chart's policy lets the manager reach TCP 443 and 8443 anywhere, which covers a checksum server on the usual HTTPS port; a checksum server on another port needs a rule of its own, and the narrowed policy below must keep one for the checksum host as well as the BMC subnet.
+
 To narrow egress to a known BMC subnet, edit the NetworkPolicy in your installation:
 
 ```yaml

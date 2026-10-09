@@ -195,7 +195,11 @@ var _ = Describe("Beskar7Machine passes that return before the state machine run
 					OwnerReferences: []metav1.OwnerReference{{
 						APIVersion: clusterv1.GroupVersion.String(), Kind: "Machine", Name: "early-machine",
 					}},
-				}},
+				},
+					// The CRD admits no spec that names no digest; one that does not
+					// would wait for a digest before it claims anything.
+					Spec: infrav1.Beskar7MachineSpec{TargetImageDigest: bootTestDigest},
+				},
 				host,
 			).
 			WithStatusSubresource(&infrav1.Beskar7Machine{}, &infrav1.PhysicalHost{}).

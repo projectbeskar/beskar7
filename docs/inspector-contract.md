@@ -251,9 +251,15 @@ gatewayed winner on a multi-NIC host (§8.2).
   host cannot be booted without an inspector image.
 - `{base64CA}` is the callback CA, base64-encoded (see §5 / §8).
 - `{target}` is `Beskar7Machine.Spec.TargetImageURL` (the Kairos whole-disk raw
-  image URL) and `{digest}` is `Beskar7Machine.Spec.TargetImageDigest`
-  (`sha256:<hex>`). Both are required spec fields; if either is empty, `/boot`
-  returns the opaque failure — a host MUST NOT be booted without a pinned target.
+  image URL) and `{digest}` is the machine's effective digest (`sha256:<hex>`):
+  `Beskar7Machine.Spec.TargetImageDigest`, or, for a machine that sets
+  `Spec.TargetImageDigestURL` instead, the `Status.TargetImageDigest` the
+  controller resolved from that checksum file and pinned before claiming a host
+  (D-038). Only the controller's source for the value differs; the wire parameter
+  is the same and the contract version is unchanged. If the URL or the digest is
+  empty (a digest URL not yet resolved is empty), or the digest is not in the
+  canonical form, `/boot` returns the opaque failure — a host MUST NOT be booted
+  without a pinned target.
 - `{providerID}` is `b7://{ns}/{host}` — the exact string
   `providerID(PhysicalHost.Namespace, PhysicalHost.Name)` computes, which is
   also the value `Beskar7Machine.Spec.ProviderID` is stamped with once the host
@@ -264,8 +270,8 @@ gatewayed winner on a multi-NIC host (§8.2).
   iPXE script (the per-host script IS this response).
 
 > **Implementation status (v4.2):** this section is **implemented** in this
-> repo. `Beskar7Machine.Spec.TargetImageDigest` exists (required,
-> `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders `beskar7.target` +
+> repo. `Beskar7Machine.Spec.TargetImageDigest` exists (one of it and
+> `Spec.TargetImageDigestURL` is required, D-038; `^sha256:[a-f0-9]{64}$`) and `buildBootIPXEScript` renders `beskar7.target` +
 > `beskar7.target-digest` + `beskar7.provider-id`; `TargetImageURL`'s godoc is
 > Kairos-correct. The *optional* `beskar7.disk` render shown in brackets above
 > is also implemented: `Beskar7Machine.Spec.TargetDisk` (optional,
@@ -456,7 +462,7 @@ these from `/proc/cmdline`.
 | `beskar7.host` | yes | PhysicalHost name. |
 | `beskar7.token` | yes | The per-host bearer token (43-char `base64url`, no padding). Secret. |
 | `beskar7.target` | yes | `Beskar7Machine.Spec.TargetImageURL` — the **Kairos whole-disk raw image** the inspector writes to the target disk. MUST be an `http://` or `https://` URL; plain HTTP is permitted (integrity comes from `beskar7.target-digest`, not TLS — see §8.1). Non-secret. |
-| `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
+| `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` (or, when the machine sets `Spec.TargetImageDigestURL`, the `Status.TargetImageDigest` the controller pinned from it, D-038; the inspector cannot tell) — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
 | `beskar7.provider-id` | yes (v4.2) | `b7://{PhysicalHost.Namespace}/{PhysicalHost.Name}` — the exact string `providerID(ph.Namespace, ph.Name)` computes, which is also the value stamped onto `Beskar7Machine.Spec.ProviderID` once the host is ready. **Always rendered** (the controller always knows the host's identity); there is no omitted form, unlike the bracketed optional params below. The inspector MUST write it verbatim (no trailing newline, mode `0600`, root-owned) to `/oem/beskar7/provider-id` on the `COS_OEM` partition during the same mount session as `99_beskar7.yaml` (§9.1 step 5.4). This is the P2 mechanism that lets a *shared* bootstrap template produce a *per-host* kubelet `--provider-id`, so the workload Node's `ProviderID` matches its Machine's without a hand-authored-per-host config — required for templated `MachineDeployment` pools and multi-replica control planes (see D-014/D-017, `docs/beskar7machine.md`). Anchored server-side by `validateProviderID` (`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth — the value is controller-computed from already-validated k8s object names, so this guard cannot fail in production). Non-secret. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
 | `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |

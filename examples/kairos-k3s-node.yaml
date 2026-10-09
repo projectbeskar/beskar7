@@ -212,6 +212,9 @@ spec:
 # targetImageDigest: sha256 of the exact bytes served at targetImageURL.
 #   Compute with: sha256sum <image.raw>
 #   Format: sha256:<64 hex chars>
+#   Instead of pasting it you can set targetImageDigestURL (an https:// URL of a
+#   sha256sum-style file) and leave targetImageDigest out; set exactly one.
+#   Read the trust trade-off first: examples/target-image-digest-url.yaml.
 #
 # Optional fields:
 #   targetDisk: pin the install disk (e.g. /dev/disk/by-id/nvme-...).

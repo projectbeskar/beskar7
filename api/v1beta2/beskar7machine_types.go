@@ -79,6 +79,15 @@ const (
 	// WaitingForBootstrapDataReason (Severity=Info) indicates that
 	// Machine.Spec.Bootstrap.DataSecretName is not yet set by the bootstrap provider.
 	WaitingForBootstrapDataReason string = "WaitingForBootstrapData"
+	// WaitingForTargetImageDigestReason (not terminal) indicates that the machine
+	// names its image digest by URL (spec.targetImageDigestURL, D-038) and the
+	// controller has not been able to resolve it: the checksum file could not be
+	// fetched, or holds no usable entry for the image. No PhysicalHost is claimed
+	// while it lasts, so nothing is held for a digest that does not resolve. The
+	// operator can fix the file or the URL; the controller retries with a
+	// backoff of 30 seconds to 5 minutes. The message names the URL's host and a
+	// fixed reason, never anything the server sent.
+	WaitingForTargetImageDigestReason string = "WaitingForTargetImageDigest"
 	// BootstrapDataUnavailableReason (Severity=Error, terminal) indicates that the named
 	// bootstrap data Secret was not found in the Beskar7Machine's namespace.
 	BootstrapDataUnavailableReason string = "BootstrapDataUnavailable"
@@ -129,6 +138,10 @@ const (
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.
 // Simplified for iPXE + inspection workflow.
+//
+// The rule below also runs where this spec is embedded, in
+// Beskar7MachineTemplate (spec.template.spec).
+// +kubebuilder:validation:XValidation:rule="has(self.targetImageDigest) != has(self.targetImageDigestURL)",message="set exactly one of targetImageDigest and targetImageDigestURL"
 type Beskar7MachineSpec struct {
 	// ProviderID is the unique identifier as specified by the cloud provider.
 	// Format b7://<namespace>/<physicalhost-name>; set once the host is
@@ -166,9 +179,38 @@ type Beskar7MachineSpec struct {
 	// the sole integrity and authenticity anchor for the OS image — the image
 	// is fetched over plain HTTP and there is no signature; the operator must
 	// compute this digest over the exact, pinned artifact served at TargetImageURL.
-	// +kubebuilder:validation:Required
+	//
+	// Exactly one of TargetImageDigest and TargetImageDigestURL must be set.
+	// +optional
 	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
-	TargetImageDigest string `json:"targetImageDigest"`
+	TargetImageDigest string `json:"targetImageDigest,omitempty"`
+
+	// TargetImageDigestURL is an HTTPS URL of a checksum file the controller
+	// reads to learn the digest, instead of the operator pasting it into
+	// TargetImageDigest (D-038). The file is in sha256sum format
+	// ("<64 hex>  <name>" or "<64 hex> *<name>"), BSD format
+	// ("SHA256 (<name>) = <64 hex>"), or a single bare 64-hex digest. The entry
+	// used is the one named like the last path segment of TargetImageURL.
+	//
+	// The controller fetches the file once, before it claims a host, and pins
+	// the result in status.targetImageDigest: a run in flight, and a
+	// re-provisioning of the same machine, keep that digest even if the file
+	// changes. The fetch is HTTPS only with verified TLS, capped at 10 seconds
+	// and 64 KiB, and follows at most 3 redirects, all to the same host.
+	//
+	// This moves the integrity anchor of the OS image from this spec to whoever
+	// controls the checksum file, and from there to every machine that reads
+	// it. Point it at a versioned file that does not change after publication:
+	// a mutable file lets machines of one MachineDeployment get different
+	// images. The URL must not carry credentials. A URL that does not resolve
+	// holds the machine at InfrastructureReady=False with reason
+	// WaitingForTargetImageDigest and claims no host.
+	//
+	// Exactly one of TargetImageDigest and TargetImageDigestURL must be set.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	// +kubebuilder:validation:Pattern="^https://[^\\s]+$"
+	TargetImageDigestURL string `json:"targetImageDigestURL,omitempty"`
 
 	// TargetDisk optionally pins the disk the inspector writes the OS image to.
 	// A stable device path (/dev/disk/by-id/..., /dev/disk/by-path/...) or a
@@ -278,6 +320,22 @@ type Beskar7MachineStatus struct {
 
 	// Addresses contains the associated addresses for the machine.
 	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
+
+	// TargetImageDigest is the digest the controller resolved from
+	// spec.targetImageDigestURL and pinned (D-038), formatted
+	// "sha256:<64-lowercase-hex>". /boot renders it as beskar7.target-digest when
+	// spec.targetImageDigest is unset. It is resolved once, before a host is
+	// claimed, and not changed while a host is claimed, so a run in flight never
+	// switches digest. It is never kept when spec.targetImageDigest is set.
+	// +optional
+	// +kubebuilder:validation:Pattern="^sha256:[a-f0-9]{64}$"
+	TargetImageDigest string `json:"targetImageDigest,omitempty"`
+
+	// TargetImageDigestURL is the spec.targetImageDigestURL that
+	// status.targetImageDigest was resolved from.
+	// +optional
+	// +kubebuilder:validation:MaxLength=2048
+	TargetImageDigestURL string `json:"targetImageDigestURL,omitempty"`
 
 	// Conditions defines current service state of the Beskar7Machine. Ready is
 	// the summary condition Cluster API mirrors into the owning Machine; a
