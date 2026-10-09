@@ -18,7 +18,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -138,6 +140,22 @@ type Beskar7MachineReconciler struct {
 	// machine is marked terminally failed (DeploymentTimedOut, D-015). Zero means
 	// use DefaultDeploymentTimeout. Set from the --deployment-timeout manager flag.
 	DeploymentTimeout time.Duration
+	// ChecksumRootCAs, when non-nil, replaces the system roots that verify the
+	// HTTPS server of a spec.targetImageDigestURL (D-038). Production leaves it
+	// nil; it is the seam through which tests trust an httptest server, the way
+	// RedfishClientFactory is the seam for the BMC.
+	ChecksumRootCAs *x509.CertPool
+
+	// checksumHTTPClient is the client for the checksum fetch, built on first use
+	// from ChecksumRootCAs (checksumClient).
+	checksumHTTPClient *http.Client
+	checksumClientOnce sync.Once
+	// digestRetries holds, per Beskar7Machine (namespace/name), the backoff of a
+	// digest URL that did not resolve (digestRetry), and digestPins the digest
+	// last resolved while status may not show it yet (digestPin). In memory only:
+	// a restart retries at once, and status is what survives it.
+	digestRetries sync.Map
+	digestPins    sync.Map
 
 	// booted records, per PhysicalHost UID, the claim (bootClaim) this
 	// controller last booted the host for in triggerInspection. A pass that
@@ -243,6 +261,7 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			log.Info("Beskar7Machine resource not found, ignoring")
+			r.forgetTargetImageDigest(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Unable to fetch Beskar7Machine")
@@ -384,6 +403,17 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociationFailedReason, "Invalid host placement constraint: %v", err)
 		return ctrl.Result{}, err
 	}
+
+	// A machine that names its image digest by URL has it resolved and pinned
+	// before it claims anything, so a URL that does not resolve never holds
+	// hardware (D-038).
+	if result, proceed, err := r.ensureTargetImageDigest(ctx, logger, b7machine); err != nil || !proceed {
+		if err != nil {
+			internalmetrics.RecordError("beskar7machine", b7machine.Namespace, internalmetrics.ErrorTypeTransient)
+		}
+		return result, err
+	}
+
 	physicalHost, result, err := r.findAndClaimOrGetAssociatedHost(ctx, logger, b7machine, placement)
 	if err != nil {
 		logger.Error(err, "Failed to find, claim, or get associated PhysicalHost")
@@ -1459,6 +1489,7 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 // swallowed so that a dead BMC cannot block object deletion.
 func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (ctrl.Result, error) {
 	logger.Info("Reconciling deletion")
+	r.forgetTargetImageDigest(client.ObjectKeyFromObject(b7machine))
 
 	host, err := r.findClaimedHostForRelease(ctx, logger, b7machine)
 	if err != nil {

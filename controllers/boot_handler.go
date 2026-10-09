@@ -419,8 +419,11 @@ func formatBootif(mac string) (string, bool) {
 // canonical form. Defence-in-depth (SEC-7) on top of the CRD pattern: operates
 // on the value actually rendered, not the value admitted.
 func validateBootDigest(raw string) error {
+	if raw == "" {
+		return fmt.Errorf("no target image digest: spec.targetImageDigest is unset and spec.targetImageDigestURL has not been resolved into status.targetImageDigest")
+	}
 	if !bootDigestPattern.MatchString(raw) {
-		return fmt.Errorf("TargetImageDigest is not a valid sha256 digest (must match ^sha256:[0-9a-f]{64}$)")
+		return fmt.Errorf("target image digest is not a valid sha256 digest (must match ^sha256:[0-9a-f]{64}$)")
 	}
 	return nil
 }
@@ -539,7 +542,11 @@ func (h *BootHandler) renderBootScript(
 	if err := validateBootURL("TargetImageURL", b7m.Spec.TargetImageURL); err != nil {
 		return "", err
 	}
-	if err := validateBootDigest(b7m.Spec.TargetImageDigest); err != nil {
+	// The digest is the spec's, or else the one the controller pinned from
+	// spec.targetImageDigestURL (D-038). Both go through the same check, and an
+	// empty one fails it: a machine whose URL has not resolved yet renders nothing.
+	targetDigest := effectiveTargetImageDigest(b7m)
+	if err := validateBootDigest(targetDigest); err != nil {
 		return "", err
 	}
 	// providerID is controller-computed (not operator-supplied) — the same
@@ -604,7 +611,7 @@ func (h *BootHandler) renderBootScript(
 		ph.Name,
 		token,
 		b7m.Spec.TargetImageURL,
-		b7m.Spec.TargetImageDigest,
+		targetDigest,
 		hostProviderID,
 		caB64,
 		b7m.Spec.TargetDisk,
