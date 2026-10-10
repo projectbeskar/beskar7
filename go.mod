@@ -2,7 +2,7 @@ module github.com/projectbeskar/beskar7
 
 go 1.27.0
 
-toolchain go1.27.1
+toolchain go1.27.2
 
 require (
 	github.com/go-logr/logr v1.4.4
@@ -12,7 +12,7 @@ require (
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
 	github.com/stmcginnis/gofish v0.26.0
-	golang.org/x/net v0.59.0
+	golang.org/x/net v0.60.0
 	golang.org/x/time v0.16.0
 	k8s.io/api v0.35.9
 	k8s.io/apiextensions-apiserver v0.35.9
