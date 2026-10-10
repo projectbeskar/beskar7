@@ -824,7 +824,16 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 			physicalHost.Status.InspectionTimestamp = &t
 		}
 		physicalHost.Status.State = infrav1.StateInspecting
-		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseBooting
+		// A host can be InUse with this run's report already in: the inspector
+		// does not need the BMC, so one booted just before an outage posts its
+		// report while the host sits in Error, and the request dropped there is
+		// sent again once the host is back at InUse. Booting would wipe the report
+		// and leave the machine waiting for one that has come. A released host
+		// starts its next claim without a phase (clearProvisioningRunState), so
+		// Complete here is always this run's.
+		if physicalHost.Status.InspectionPhase != infrav1.InspectionPhaseComplete {
+			physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseBooting
+		}
 
 	case "inspect-complete":
 		// D-015: inspection-complete transitions to StateDeploying (not StateReady).

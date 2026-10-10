@@ -296,6 +296,51 @@ var _ = Describe("A duplicate inspect request", func() {
 		})
 	})
 
+	It("keeps the report a host received during a BMC Error when the machine sends inspect again on the host's recovery", func() {
+		key, b7m, machine := inUseHost()
+		mockRf := internalredfish.NewMockClient()
+		r := machineOver(k8sClient, func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
+			return mockRf, nil
+		})
+		staleInUse := getPhysicalHost(key)
+
+		By("the BMC going away right after the machine read the host InUse; it boots the host, and its write is not retried onto an Error host")
+		gate.setReachable(false)
+		Expect(settlePhysicalHost(hostReconciler, key).Status.State).To(Equal(infrav1.StateError))
+		_, err := r.triggerInspection(ctx, r.Log, b7m, staleInUse)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mockRf.PowerState).To(Equal(schemas.OnPowerState))
+		expectNoRequest(key)
+
+		By("the inspector, which does not need the BMC, posting its report while the host is in Error")
+		postInspectionReport(key)
+		received := settlePhysicalHost(hostReconciler, key)
+		Expect(received.Status.State).To(Equal(infrav1.StateError))
+		Expect(received.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete))
+		Expect(received.Status.InspectionReport).NotTo(BeNil())
+
+		By("the BMC coming back, and the machine sending inspect again")
+		gate.setReachable(true)
+		Expect(settlePhysicalHost(hostReconciler, key).Status.State).To(Equal(infrav1.StateInUse))
+		_, err = r.triggerInspection(ctx, r.Log, b7m, getPhysicalHost(key))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(mockRf.ResetCalled).To(BeFalse())
+		inspecting := settlePhysicalHost(hostReconciler, key)
+
+		Expect(inspecting.Status.State).To(Equal(infrav1.StateInspecting))
+		Expect(inspecting.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseComplete),
+			"the report the host received while its BMC was away must not be wiped by the request that follows the recovery")
+		Expect(apiequality.Semantic.DeepEqual(inspecting.Status.InspectionReport, received.Status.InspectionReport)).To(BeTrue())
+		Expect(inspecting.Status.InspectionTimestamp).NotTo(BeNil(), "the inspection clock starts, as for any inspect")
+
+		By("the machine validating the report and the host going to Deploying")
+		_, err = r.reconcileNormal(ctx, r.Log, b7m, machine)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(getPhysicalHost(key).Annotations).To(HaveKeyWithValue(InspectionRequestAnnotation, "inspect-complete"),
+			"the machine was not left waiting for a report that had already come")
+		Expect(settlePhysicalHost(hostReconciler, key).Status.State).To(Equal(infrav1.StateDeploying))
+	})
+
 	Describe("sent by the machine's retry", func() {
 		It("is not written when the first write conflicts and the fresh read shows the host already Inspecting; the run goes on", func() {
 			key, b7m, machine := inUseHost()
