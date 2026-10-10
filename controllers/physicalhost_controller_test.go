@@ -221,8 +221,14 @@ var _ = Describe("PhysicalHost Controller", func() {
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
 			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
 
-			By("Setting ConsumerRef and inspect annotation (as Beskar7Machine controller would)")
-			claimWithRequest(client.ObjectKeyFromObject(ph), "test-machine", "inspect")
+			By("Setting ConsumerRef (as Beskar7Machine controller would) and reconciling to InUse")
+			claimWithFreshCredentials(client.ObjectKeyFromObject(ph), "test-machine")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(getPhysicalHost(phLookupKey).Status.State).To(Equal(infrav1.StateInUse))
+
+			By("Setting the inspect annotation, which the machine sends to a host it has read InUse")
+			requestInspection(phLookupKey, "inspect")
 
 			By("Reconciling — controller should consume annotation and transition to Inspecting")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
@@ -234,11 +240,10 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(got.Status.State).To(Equal(infrav1.StateInspecting))
 				g.Expect(got.Status.InspectionPhase).To(Equal(infrav1.InspectionPhaseBooting))
 				g.Expect(got.Status.InspectionTimestamp).NotTo(BeNil())
-				// The claim and the inspect request arrived in one patch, so the host
-				// went Available -> Inspecting without ever being InUse. HostAvailable
-				// must still read False: it follows the claim, not the InUse edge.
+				// HostAvailable follows the claim, not the state: it must read False
+				// in a sub-state the claimed-host branch leaves alone as well.
 				g.Expect(conditions.IsFalse(got, infrav1.HostAvailableCondition)).To(BeTrue(),
-					"a claimed host must not advertise HostAvailable=True, even one that skipped InUse")
+					"a claimed host must not advertise HostAvailable=True")
 				// Annotation must be cleared so it is not acted on again.
 				g.Expect(got.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 			}, Timeout, Interval).Should(Succeed())
@@ -283,7 +288,10 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("Driving a full provisioning run: claim -> Inspecting -> Deploying")
 			ph := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			claimWithRequest(client.ObjectKeyFromObject(ph), "first-consumer", "inspect")
+			claimWithFreshCredentials(client.ObjectKeyFromObject(ph), "first-consumer")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			requestInspection(phLookupKey, "inspect")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -335,7 +343,10 @@ var _ = Describe("PhysicalHost Controller", func() {
 			By("A second consumer can claim it and start a fresh inspection")
 			reclaim := &infrav1.PhysicalHost{}
 			Expect(k8sClient.Get(ctx, phLookupKey, reclaim)).To(Succeed())
-			claimWithRequest(client.ObjectKeyFromObject(reclaim), "second-consumer", "inspect")
+			claimWithFreshCredentials(client.ObjectKeyFromObject(reclaim), "second-consumer")
+			_, err = reconcileWithTimeout(reconciler, phLookupKey)
+			Expect(err).NotTo(HaveOccurred())
+			requestInspection(phLookupKey, "inspect")
 			_, err = reconcileWithTimeout(reconciler, phLookupKey)
 			Expect(err).NotTo(HaveOccurred())
 
