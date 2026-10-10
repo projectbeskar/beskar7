@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.10.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.10.1`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.10.1` | `v4.2` **frozen** |
 | `v0.10.0` | `v4.2` **frozen** |
 | `v0.9.0` | `v4.2` **frozen** |
 | `v0.8.0` | `v4.2` **frozen** |
@@ -102,11 +103,13 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.10.0` → unreleased — optional `targetImageDigestURL`; CRDs go before the controller
+## `v0.10.0` → `v0.10.1` — optional `targetImageDigestURL`; CRDs go before the controller
 
-This section describes what the release after `v0.10.0` will carry; it is not in a tagged release yet, and
-its heading will change to the version number when it is. Nothing here needs doing unless you want the new
-field, and nothing changes for a machine that sets `spec.targetImageDigest`.
+`v0.10.1` adds one optional field and fixes two bugs in the inspection flow. Nothing here needs doing unless you
+want the new field, and nothing changes for a machine that sets `spec.targetImageDigest`. Coming from `v0.9.x`,
+you can go straight to `v0.10.1`: follow
+[`v0.9.x` → `v0.10.0`](#v09x--v0100--callback-integrity-bmc-transport-and-rbac-hardening-upgrade-in-this-order)
+and install `v0.10.1` wherever its commands name `v0.10.0`.
 
 What changes, all additive for the `v1beta2` API (every object that was valid before is still valid):
 
@@ -124,23 +127,57 @@ What changes, all additive for the `v1beta2` API (every object that was valid be
 No contract change (still `v4.2`: the inspector receives `beskar7.target-digest` as before, so any `v4.2`
 inspector works), no RBAC change, and no new manager flag. **Apply the CRDs before the controller**, as for every
 release: the new controller writes `status.targetImageDigest`, and while the stored CRD lacks it the API server
-prunes it from the write, so a machine that names its digest by URL would read its checksum file again on every
-reconcile. A machine that sets `spec.targetImageDigest` never writes the field.
+prunes it from the write, so the pin is never kept. A machine that names its digest by URL then keeps resolving
+it and never claims a host. A machine that sets `spec.targetImageDigest` never writes the field.
 
 ```bash
 # Helm install: CRDs first (Helm does not upgrade CRDs on `helm upgrade`), from the chart you are about to install.
-kubectl apply -f ./beskar7-<version>/beskar7/crds/
+helm repo update
+helm pull beskar7/beskar7 --version 0.10.1 --untar --untardir ./beskar7-0.10.1
+kubectl apply -f ./beskar7-0.10.1/beskar7/crds/
 # Check the stored CRDs have the new fields; each prints "string":
 kubectl get crd beskar7machines.infrastructure.cluster.x-k8s.io \
   -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.targetImageDigestURL.type}{"\n"}'
 kubectl get crd beskar7machines.infrastructure.cluster.x-k8s.io \
   -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.status.properties.targetImageDigest.type}{"\n"}'
+# Then the controller.
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.1 --reset-then-reuse-values
 ```
 
-A release-manifest install lists the CRDs before the Deployment, so one apply does both. Going back to a
-controller that predates the field does not work for a machine that uses `targetImageDigestURL`: the older
-controller renders no digest for it and `/boot` refuses the host. Replace such machines with ones that set
-`spec.targetImageDigest` first.
+```bash
+# Release-manifest install: the manifest lists the five CRDs before the Deployment, so one apply does both.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.1/beskar7-manifests-v0.10.1.yaml
+```
+
+Three more things, if you use the field:
+
+- **A separate callback-only instance** (the second copy of the manager started with `--controllers=none`)
+  serves `/boot`, and `/boot` is where the digest is rendered. Upgrade it to `v0.10.1` before any machine sets
+  `targetImageDigestURL`: an instance still on `v0.10.0` reads only `spec.targetImageDigest`, finds none, and
+  refuses the host.
+- **The controller makes one HTTPS request per such machine**, to the host of its URL, and sends it through
+  `HTTP_PROXY`/`HTTPS_PROXY` if the manager has them (unlike BMC connections). The chart's NetworkPolicy lets the
+  manager reach TCP 443 and 8443; a checksum server on another port, or a NetworkPolicy you narrowed yourself,
+  needs a rule of its own.
+- **Going back to a controller that predates the field does not work for a machine that uses
+  `targetImageDigestURL`**: the older controller renders no digest for it and `/boot` refuses the host. Replace
+  such machines with ones that set `spec.targetImageDigest` first.
+
+### Also in this release (nothing to do)
+
+- **The `inspect-complete` and `timeout` requests no longer surface a routine write conflict as a
+  `Reconciler error`.** The machine's write competes with the host controller's own as the inspection report
+  lands, and routinely lost, which showed as a `Reconciler error` although the next pass wrote it within a second. It now
+  retries in the same pass on a fresh read, re-checking that the request still applies and signing it again.
+- **A duplicate `inspect` request can no longer restart an inspection that already has its report.** Before, a
+  second `inspect` from a stale pass, applied after the report arrived, set the host back to `Booting` over the
+  report, and the machine then waited for a report that had come, until `InspectionTimedOut`. `inspect` now
+  applies only to a host that is `InUse`; the machine stops retrying it once the host has left `InUse`; and a
+  host that is `InUse` with its report already in keeps it, so a report that arrived during a BMC outage
+  survives the `inspect` the machine sends again afterwards. See
+  [PhysicalHost → Inspection requests](physicalhost.md#inspection-requests).
+
+The [CHANGELOG](../CHANGELOG.md) has the details.
 
 ## `v0.9.x` → `v0.10.0` — callback integrity, BMC transport and RBAC hardening; upgrade in this order
 
@@ -778,14 +815,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. These commands install the current release, v0.10.0. From v0.8.x or earlier, stop on v0.9.x first:
+# 0. These commands install the current release, v0.10.1. From v0.8.x or earlier, stop on v0.9.x first:
 #    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
-#    v0.9.x → v0.10.0 section above to reach v0.10.0.
+#    v0.9.x → v0.10.0 section above, installing v0.10.1 where it names v0.10.0.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.0/beskar7-manifests-v0.10.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.1/beskar7-manifests-v0.10.1.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.1 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

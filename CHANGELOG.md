@@ -4,6 +4,115 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.10.1] - 2026-10-10
+
+Adds `spec.targetImageDigestURL`, which lets a machine name its image digest by the URL of a checksum file, and
+fixes two bugs in the inspection flow. `Beskar7Machine` and `Beskar7MachineTemplate` gain one optional spec
+field, `Beskar7Machine` gains two optional status fields, and `spec.targetImageDigest` is no longer required;
+every object that was valid before still is. No contract change (still `v4.2`). On physical servers pair it with
+inspector `v0.3.4` or later.
+
+> **Upgrade note — apply the CRDs before the controller**, exactly as for `v0.10.0`. The controller writes the
+> new `status.targetImageDigest` and `status.targetImageDigestURL`. While the stored CRDs lack them, the API
+> server prunes them from the write, the pin is never kept, and a machine that names its digest by URL never
+> claims a host. Helm does not upgrade the CRDs on `helm upgrade`; a release-manifest install lists them before
+> the Deployment. If you run a callback-only instance (`--controllers=none`) and use `targetImageDigestURL`,
+> upgrade it too: it serves `/boot`, which renders the digest. Nothing else needs doing, and a machine that sets
+> `spec.targetImageDigest` is unaffected. Coming from `v0.9.x`, the `v0.10.0` steps apply as well. Details and
+> commands are in [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/upgrading.md#v0100--v0101--optional-targetimagedigesturl-crds-go-before-the-controller),
+> section `v0.10.0` → `v0.10.1`.
+
+### Added
+
+- **`spec.targetImageDigestURL`: the image digest, named by the URL of a checksum file (D-038).** Set it in
+  place of pasting `spec.targetImageDigest`; a CEL rule on the spec, in the machine and the template CRD alike,
+  requires exactly one of the two and refuses both or neither at admission. The URL must be `https://` and at
+  most 2048 characters, and must not carry credentials. The controller reads the file once, before it claims a
+  host, and takes the entry named like the last path segment of `targetImageURL` (a `sha256sum` file, a BSD
+  `SHA256 (name) = hex` file, or a file that is one bare digest). It pins the result as `sha256:<hex>` in the new
+  optional status fields `status.targetImageDigest` and `status.targetImageDigestURL` (where the pin came from),
+  and `/boot` renders the pin as `beskar7.target-digest`, so the inspector and the wire contract are unchanged.
+  While the file cannot be resolved, the machine reports `InfrastructureReady=False` with the new reason
+  `WaitingForTargetImageDigest`, claims no host, and retries after 30 seconds, doubling up to every 5 minutes;
+  this is not a terminal failure, so fixing the file or the URL recovers it. A run in flight, and a
+  re-provisioning of the same machine, keep the pinned digest whatever the file does afterwards.
+
+  **The trust anchor moves from your manifest to whoever controls the checksum file.** Each machine reads the
+  file for itself, so a file that is overwritten lets machines of one `MachineDeployment` get different images.
+  Point the field at a versioned file that is never overwritten.
+
+  The fetch is a new egress path for anyone who can create a `Beskar7Machine`, so it is bounded: HTTPS only,
+  with verified TLS 1.2 or later; 10 seconds overall; a body of at most 64 KiB; at most 3 redirects, each to the
+  same scheme, host and port; only a `200` answer is used. A body counts only if it was read in full before the
+  deadline, so one cut off at the deadline is a timeout and not a short file. An error names the URL's host and
+  fixed wording (`HTTP 404`, `no entry for "<name>"`, `checksum file too large`), and no body, header or TLS
+  error text from the server is repeated into status, conditions, events or logs; logs omit the URL's userinfo
+  and query. The fetch does not block private or loopback addresses, since the checksum
+  server is normally on the provisioning network, and it follows the manager's `HTTP_PROXY`/`HTTPS_PROXY`
+  (unlike BMC connections). See [`docs/security/README.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/security/README.md#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038)
+  and [`examples/target-image-digest-url.yaml`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/examples/target-image-digest-url.yaml).
+
+  Validated in the lab on 2026-10-10 against a real inspector: a digest pinned from a checksum file provisioned
+  a host to `Ready`; a wrong digest in the file was pinned and the inspector refused the image (`image digest
+  mismatch`, so the machine fails with `DeploymentFailed`); a URL that answered `404` held the machine at
+  `WaitingForTargetImageDigest` without claiming a host; and the admission rules held on a live API server.
+  ([#258](https://github.com/projectbeskar/beskar7/pull/258), [#262](https://github.com/projectbeskar/beskar7/pull/262))
+
+### Fixed
+
+- **The `inspect-complete` and `timeout` inspection requests no longer report a routine write conflict as a
+  `Reconciler error` (NOISE-2).** The machine's write to the host competes with the host controller's own as the
+  inspection report lands, and it lost visibly: `failed to set inspection-request annotation "inspect-complete"
+  on PhysicalHost …: the object has been modified`, logged at Error in both lab provisions that were watched,
+  though the flow was unaffected because the next pass wrote the request. The write now retries in the same pass on a fresh
+  read. Before each retry it checks that the request still applies (the host is still claimed by the machine and
+  still `Inspecting` and, for `inspect-complete`, still `Complete` with the report the machine validated),
+  writes nothing if it does not, and signs the request again with the host's current credentials. When every
+  attempt conflicts, `inspect-complete` requeues with no error and `timeout` still fails the machine with
+  `InspectionTimedOut`, with a line at Info instead of Error. Other failures are returned as before.
+  ([#261](https://github.com/projectbeskar/beskar7/pull/261))
+- **A duplicate `inspect` request, sent by a stale pass, could restart an inspection that had already received
+  its report, and the host then sat until `InspectionTimedOut`.** A machine pass that read the host from the
+  cache while it was still `InUse` wrote `inspect` a second time; the host applied it after the report arrived
+  and set `InspectionPhase` back to `Booting` over the report. The machine, finding the inspection no longer
+  complete, declined to send `inspect-complete` and waited for a report that had already come. Three changes:
+  `inspect` now applies only to an `InUse` host (on any other state it is removed and nothing changes); the
+  machine stops retrying `inspect` once the host has left `InUse`; and an `InUse` host that already has its
+  report keeps it, so a report received during a BMC outage survives the `inspect` the machine sends again
+  afterwards. A host in an `Error` about its BMC now drops an `inspect`; the machine sends it again once the
+  host is back at `InUse`, without restarting a host it already booted for the claim.
+  ([#263](https://github.com/projectbeskar/beskar7/pull/263))
+
+### Documentation
+
+- **Documentation drift found in a post-release sweep of `v0.10.0`, corrected against the code.** In
+  [`docs/beskar7machine.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/beskar7machine.md),
+  `inspect-complete` moves the host to `Deploying`, not `Ready`; the machine then waits out the deployment
+  (`DeploymentTimedOut` after 20 minutes by default, or `DeploymentFailed` on a `/provision-failed` report) and
+  is marked ready only when the bound `/provisioned` report takes the host to `Ready`. In
+  [`docs/security/README.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/security/README.md),
+  the logging section no longer names a `passwordProvided` field nothing logs, all four bearer-gated callback
+  routes are listed alongside the nonce-gated `/boot` and the open `/healthz`, and bearer rejections are
+  logged at Info. In
+  [`docs/deployment-best-practices.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/deployment-best-practices.md),
+  the upgrade path points at the upgrade guide and its CRDs-first step instead of a bare `helm upgrade` (Helm
+  never upgrades the CRDs in `crds/`), BMC names must be fully qualified (D-032), the environment proxy is not
+  used for BMC connections (D-035), and SSH is no longer listed as a network requirement.
+  ([#255](https://github.com/projectbeskar/beskar7/pull/255))
+- [`docs/physicalhost.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/physicalhost.md) and
+  [`docs/state-management.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.1/docs/state-management.md)
+  say that `inspect` applies only to an `InUse` host and is dropped on any other state.
+  ([#263](https://github.com/projectbeskar/beskar7/pull/263))
+
+### CI and dependencies
+
+- CI: `golangci-lint` `v2.13.2` → `v2.14.0`, in `ci.yml` and the Makefile's `lint` target. The runners moved to
+  Go 1.27.2, and `v2.13.2` could no longer analyse the tree (typecheck errors on the standard library's export
+  data). ([#259](https://github.com/projectbeskar/beskar7/pull/259))
+- CI: the E2E jobs pass `clusterctl` the workflow's token for the steps that run `clusterctl init`, so they stop
+  hitting the GitHub API rate limit. ([#260](https://github.com/projectbeskar/beskar7/pull/260))
+- CI: `anchore/sbom-action` `v0.24.2` → `v0.24.3`. ([#256](https://github.com/projectbeskar/beskar7/pull/256))
+
 ## [v0.10.0] - 2026-10-03
 
 Callback integrity, BMC transport and RBAC hardening, from the review that followed `v0.9.0`, together with
@@ -2205,7 +2314,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...HEAD
+[v0.10.1]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...v0.10.1
 [v0.10.0]: https://github.com/projectbeskar/beskar7/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/projectbeskar/beskar7/compare/v0.8.0...v0.9.0
 [v0.8.0]: https://github.com/projectbeskar/beskar7/compare/v0.7.0...v0.8.0
