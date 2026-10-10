@@ -25,6 +25,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -526,6 +527,26 @@ var _ = Describe("The checksum fetch's HTTP client (D-038)", func() {
 		Expect(err.reason).To(Equal("timed out after 10s"))
 	})
 
+	It("does not take a body that only ended at the deadline for the whole file", func() {
+		// What the spec above can run into: when the client gives up on a stalled
+		// chunked response, the server may close it cleanly, and the reader sees a
+		// normal end of a short file. Played here deterministically by a body that
+		// ends cleanly once the deadline has passed.
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		DeferCleanup(cancel)
+		client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, ContentLength: -1, Request: req,
+				Body: io.NopCloser(&endsCleanlyAtDeadline{ctx: req.Context(), data: "# slow\n"}),
+			}, nil
+		})}
+		u, perr := url.Parse("https://sums.example.invalid/SHA256SUMS")
+		Expect(perr).NotTo(HaveOccurred())
+		_, err := fetchChecksumFile(ctx, client, u)
+		Expect(err).NotTo(BeNil())
+		Expect(err.reason).To(Equal("timed out after 10s"))
+	})
+
 	It("reports a refused connection without the address it tried", func() {
 		s := newChecksumServer(servingText(digestTestHexA))
 		url := s.URL + "/SHA256SUMS?token=" + digestTestLeakMarker
@@ -536,3 +557,27 @@ var _ = Describe("The checksum fetch's HTTP client (D-038)", func() {
 		Expect(err.Error()).NotTo(ContainSubstring(digestTestLeakMarker), "the query stays out of the error")
 	})
 })
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// endsCleanlyAtDeadline returns data and a clean io.EOF, but only once ctx's
+// deadline has passed, without waiting on ctx.Done(): the reader sees a short
+// file end normally after the deadline, whatever the cancellation is doing.
+type endsCleanlyAtDeadline struct {
+	ctx  context.Context
+	data string
+	done bool
+}
+
+func (b *endsCleanlyAtDeadline) Read(p []byte) (int, error) {
+	if b.done {
+		return 0, io.EOF
+	}
+	if deadline, ok := b.ctx.Deadline(); ok {
+		time.Sleep(time.Until(deadline) + 20*time.Millisecond)
+	}
+	b.done = true
+	return copy(p, b.data), io.EOF
+}
