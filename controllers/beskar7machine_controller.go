@@ -33,6 +33,7 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	"github.com/stmcginnis/gofish/schemas"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -974,9 +975,14 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 			logger.Info("Inspection timed out (terminal)", "elapsed", elapsed, "timeout", timeout)
 			// Best-effort signal to the PhysicalHost controller. Don't block the
 			// terminal marking on the annotation patch — the PhysicalHost catches
-			// up on its next reconcile regardless.
-			if err := r.setInspectionRequestWithCurrentCredentials(ctx, logger, physicalHost, "timeout"); err != nil {
+			// up on its next reconcile regardless. A write that keeps conflicting
+			// with the host's own is not a failure worth an Error line.
+			switch contended, err := r.writeInspectionRequest(ctx, logger, b7machine, physicalHost, "timeout", nil); {
+			case err != nil:
 				logger.Error(err, "Failed to set inspection timeout annotation")
+			case contended:
+				logger.Info("The PhysicalHost kept changing under the inspection timeout annotation; it was not written, and the machine is marked failed regardless",
+					"host", physicalHost.Name)
 			}
 			msg := fmt.Sprintf("Inspection did not complete within %s", timeout)
 			r.markTerminalFailure(b7machine, infrav1.InspectionTimedOutReason, msg)
@@ -1123,8 +1129,27 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 	// PhysicalHost owns its own status; we must not call r.Status().Update on it here (BUG-1 fix).
 	// The "inspect-complete" value tells the PhysicalHost controller to set StateReady and
 	// MarkTrue(HostInspectedCondition) on its next reconcile.
-	if err := r.setInspectionRequestWithCurrentCredentials(ctx, logger, physicalHost, "inspect-complete"); err != nil {
+	//
+	// The report landing is also when the host's own reconciler writes the host, so this
+	// write meets a conflict routinely. writeInspectionRequest retries it in this pass,
+	// for as long as the host still holds the report that was validated here.
+	validated := report.DeepCopy()
+	contended, err := r.writeInspectionRequest(ctx, logger, b7machine, physicalHost, "inspect-complete", func(h *infrav1.PhysicalHost) string {
+		switch {
+		case h.Status.InspectionPhase != infrav1.InspectionPhaseComplete:
+			return "the inspection is no longer complete"
+		case !apiequality.Semantic.DeepEqual(h.Status.InspectionReport, validated):
+			return "the inspection report is not the one that was validated"
+		}
+		return ""
+	})
+	if err != nil {
 		return ctrl.Result{}, err
+	}
+	if contended {
+		// Not an error: the host changing is what wakes this machine again (the
+		// PhysicalHost watch), and the next pass writes the request.
+		logger.Info("The PhysicalHost kept changing under the inspect-complete request; writing it on the next pass", "host", physicalHost.Name)
 	}
 
 	return ctrl.Result{RequeueAfter: requeueShortly}, nil
@@ -1682,7 +1707,9 @@ func (r *Beskar7MachineReconciler) markTerminalFailure(b7machine *infrav1.Beskar
 // setInspectionRequestAnnotation patches only the annotations of a PhysicalHost to request
 // a state transition. The PhysicalHost controller reads the annotation on its next reconcile
 // and drives the Status transition, preserving status ownership (BUG-1 fix, Pattern A).
-// Uses optimistic locking via MergeFromWithOptions so a conflict causes a fast requeue.
+// Uses optimistic locking via MergeFromWithOptions, so it never overwrites another writer's
+// change: a conflict is returned (wrapped; apierrors.IsConflict still holds) for the caller to
+// retry on a fresh read, as triggerInspection and writeInspectionRequest do.
 //
 // The request and its binding are written in this one patch, signed by signer (D-037): the
 // reconciler acts on a request only with a binding it can recompute from the host's
@@ -1710,6 +1737,80 @@ func (r *Beskar7MachineReconciler) setInspectionRequestWithCurrentCredentials(ct
 		return fmt.Errorf("cannot sign inspection-request %q for PhysicalHost %s: %w", value, physicalHost.Name, err)
 	}
 	return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, value, signer)
+}
+
+// writeInspectionRequest writes the inspection request value to a host this
+// machine holds while it is Inspecting (inspect-complete, timeout), retrying in
+// this pass when the write conflicts with another writer's.
+//
+// Conflicts are routine. The PhysicalHost reconciler writes the host as the
+// inspection report lands, which is when inspect-complete goes out, and
+// returning the conflict made controller-runtime log a reconciler error for a
+// write the next pass makes without trouble. The write stays optimistic, so it
+// never overwrites what the other writer put there.
+//
+// Every attempt after the first reads the host again and checks that the request
+// still applies before it writes: the host is still claimed by b7machine
+// (resolveConsumerBeskar7Machine, as the inspect write in triggerInspection
+// checks), still Inspecting, and passes extra, which returns why it does not (""
+// when it does; nil for none). If it does not, nothing is written, the reason is
+// logged at V(1) and the call succeeds: a request must never reach a host that
+// has moved on. A read that lags is harmless, since the patch carries its
+// resourceVersion and conflicts instead of landing on a newer host.
+//
+// The request is signed again on every attempt, from the host just read
+// (setInspectionRequestWithCurrentCredentials): the binding covers the value and
+// the credentials in the host's Secret (D-037), and one computed from an earlier
+// read is not reused.
+//
+// contended reports that every attempt conflicted, which is not an error. Any
+// other failure is returned. The log names the host and the value, never the
+// binding or the credentials.
+func (r *Beskar7MachineReconciler) writeInspectionRequest(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, physicalHost *infrav1.PhysicalHost, value string, extra func(*infrav1.PhysicalHost) string) (contended bool, err error) {
+	host := physicalHost
+	attempts := 0
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		if attempts++; attempts > 1 {
+			current := &infrav1.PhysicalHost{}
+			var reason string
+			switch getErr := r.Get(ctx, client.ObjectKeyFromObject(physicalHost), current); {
+			case apierrors.IsNotFound(getErr):
+				reason = "the host is gone"
+			case getErr != nil:
+				return getErr
+			default:
+				reason = inspectionRequestMootReason(b7machine, current, extra)
+			}
+			if reason != "" {
+				logger.V(1).Info("Not writing the inspection request: it no longer applies",
+					"host", physicalHost.Name, "value", value, "reason", reason)
+				return nil
+			}
+			logger.V(1).Info("The inspection request conflicted with another write; retrying on a fresh read",
+				"host", physicalHost.Name, "value", value, "attempt", attempts)
+			host = current
+		}
+		return r.setInspectionRequestWithCurrentCredentials(ctx, logger, host, value)
+	})
+	if apierrors.IsConflict(err) {
+		return true, nil
+	}
+	return false, err
+}
+
+// inspectionRequestMootReason returns why a request b7machine sends from an
+// Inspecting host no longer applies to host, or "" when it still does.
+func inspectionRequestMootReason(b7machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost, extra func(*infrav1.PhysicalHost) string) string {
+	if key, ok := resolveConsumerBeskar7Machine(host); !ok || key != client.ObjectKeyFromObject(b7machine) {
+		return "the host is no longer claimed by this machine"
+	}
+	if host.Status.State != infrav1.StateInspecting {
+		return fmt.Sprintf("the host is %s, not Inspecting", host.Status.State)
+	}
+	if extra != nil {
+		return extra(host)
+	}
+	return ""
 }
 
 // inspectRequestPending reports whether physicalHost carries the "inspect" request this
