@@ -224,6 +224,13 @@ func fetchChecksumFile(ctx context.Context, client *http.Client, u *url.URL) ([]
 	if err != nil {
 		return nil, digestFail(u.Host, "%s", describeFetchError(err))
 	}
+	// A body that only ended at the deadline may have been cut short: when the
+	// client gives up on a stalled chunked response, the server can close it
+	// cleanly, and the read then reports a normal end of what it got. Only a
+	// body read in full before the deadline counts.
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return nil, digestFail(u.Host, "timed out after %s", digestFetchTimeout)
+	}
 	if len(body) > digestFetchMaxBytes {
 		return nil, tooLarge
 	}
