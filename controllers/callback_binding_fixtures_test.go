@@ -173,13 +173,7 @@ func ensureCredentials(r *Beskar7MachineReconciler, machine *infrav1.Beskar7Mach
 // replace whatever the host's Secret held (a new claim mints afresh), and the
 // request is signed with them.
 func claimWithRequest(host client.ObjectKey, machineName, value string) {
-	token, _, err := auth.MintToken()
-	Expect(err).NotTo(HaveOccurred())
-	nonce, _, err := auth.MintToken()
-	Expect(err).NotTo(HaveOccurred())
-	data := boundCredentialData(machineName, token, time.Hour, nonce, 10*time.Minute)
-	data[bootstrapConsumerUIDSecretKey] = []byte(fixtureConsumerUID)
-	putCredentialSecret(host, data)
+	mintClaimCredentials(host, machineName)
 
 	current := getPhysicalHost(host)
 	claimed := current.DeepCopy()
@@ -191,4 +185,27 @@ func claimWithRequest(host client.ObjectKey, machineName, value string) {
 	Expect(err).NotTo(HaveOccurred())
 	binder.setAnnotation(claimed, InspectionRequestAnnotation, value, "")
 	Expect(k8sClient.Patch(ctx, claimed, client.MergeFrom(current))).To(Succeed())
+}
+
+// mintClaimCredentials gives the host the credentials the Beskar7Machine named
+// machineName would have minted for a new claim, replacing whatever its
+// bootstrap-token Secret held: a new claim mints afresh.
+func mintClaimCredentials(host client.ObjectKey, machineName string) {
+	token, _, err := auth.MintToken()
+	Expect(err).NotTo(HaveOccurred())
+	nonce, _, err := auth.MintToken()
+	Expect(err).NotTo(HaveOccurred())
+	data := boundCredentialData(machineName, token, time.Hour, nonce, 10*time.Minute)
+	data[bootstrapConsumerUIDSecretKey] = []byte(fixtureConsumerUID)
+	putCredentialSecret(host, data)
+}
+
+// claimWithFreshCredentials claims the host for the Beskar7Machine named
+// machineName and gives it the credentials that machine would have minted for
+// the claim (mintClaimCredentials), without a request: the host is left for its
+// reconciler to take to InUse, which is where a machine finds it before it sends
+// inspect.
+func claimWithFreshCredentials(host client.ObjectKey, machineName string) {
+	mintClaimCredentials(host, machineName)
+	setHostConsumer(host, machineName)
 }

@@ -625,7 +625,9 @@ func hostWaitingForBMC(physicalHost *infrav1.PhysicalHost) bool {
 //  3. Boot the host: power it on, or restart it if it is already on.
 //  4. Signal the PhysicalHost controller to transition to Inspecting via the
 //     inspection-request annotation (Pattern A; PhysicalHost owns its own status),
-//     signed with the credentials step 2 stored (D-037).
+//     signed with the credentials step 2 stored (D-037). A write that conflicts
+//     is retried on a fresh read of the host, and given up if that read shows
+//     the host has left InUse: it has already acted on an earlier request.
 //
 // The power action comes after everything that can fail but the annotation, so
 // a retry of a failed step does not restart a host that is already booting.
@@ -718,8 +720,17 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 	// The host is booting now, so a conflict must not fail the pass: the next
 	// pass would restart it. Conflicts are routine here — the PhysicalHost
 	// reconciler mirrors the credentials minted above into the host's status —
-	// so retry with a fresh read, as long as the host is still ours.
+	// so retry with a fresh read, as long as the host is still ours and still InUse.
+	//
+	// A host that has left InUse by the time of the fresh read has already acted
+	// on an earlier inspect (this pass read it from a cache that had not seen that
+	// request applied), or has left the run. The request no longer applies, and
+	// writing it would have the host start its inspection again.
 	attempt := 0
+	var (
+		written     bool
+		stateOnRead string
+	)
 	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		if attempt++; attempt > 1 {
 			if err := r.Get(ctx, client.ObjectKeyFromObject(physicalHost), physicalHost); err != nil {
@@ -728,8 +739,18 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 			if key, ok := resolveConsumerBeskar7Machine(physicalHost); !ok || key != client.ObjectKeyFromObject(b7machine) {
 				return fmt.Errorf("PhysicalHost %s is no longer claimed by this machine", physicalHost.Name)
 			}
+			if physicalHost.Status.State != infrav1.StateInUse {
+				stateOnRead = physicalHost.Status.State
+				logger.V(1).Info("Not writing the inspection request: it no longer applies",
+					"host", physicalHost.Name, "state", stateOnRead)
+				return nil
+			}
 		}
-		return r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect", signer)
+		if err := r.setInspectionRequestAnnotation(ctx, logger, physicalHost, "inspect", signer); err != nil {
+			return err
+		}
+		written = true
+		return nil
 	})
 	if err != nil {
 		return ctrl.Result{}, err
@@ -737,7 +758,12 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 
 	phase := "Inspecting"
 	b7machine.Status.Phase = &phase
-	logger.Info("Inspection boot triggered successfully")
+	if written {
+		logger.Info("Inspection boot triggered successfully")
+	} else {
+		logger.Info("Booted the host for inspection; no inspection request was written because the host has left InUse",
+			"state", stateOnRead)
+	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 

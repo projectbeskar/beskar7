@@ -417,9 +417,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		}
 		// HostAvailable follows the claim, not the sub-state, so it is asserted
 		// on every claimed reconcile rather than on the InUse edge above: a
-		// claim that lands together with the inspect annotation goes straight
-		// to Inspecting and never crosses that edge. Re-asserting an unchanged
-		// status leaves lastTransitionTime alone.
+		// host that is already Inspecting, Deploying or Ready never crosses that
+		// edge. Re-asserting an unchanged status leaves lastTransitionTime alone.
 		setFalse(physicalHost, infrav1.HostAvailableCondition, infrav1.HostClaimedReason,
 			"Claimed by %s %s", physicalHost.Spec.ConsumerRef.Kind, physicalHost.Spec.ConsumerRef.Name)
 	} else {
@@ -752,6 +751,10 @@ func (r *PhysicalHostReconciler) clearProvisioningRunState(logger logr.Logger, p
 // One that is not bound is removed, and nothing else happens: not even the log names
 // its value. A request whose binding cannot be checked because the host's credentials
 // cannot be read just now is left for the next pass.
+//
+// inspect starts an inspection only on a host that is InUse. On a host in any other
+// state it is removed and nothing else changes (state, phase, timestamps, report), so a
+// duplicate never takes an Inspecting or Deploying host back to the start of its run.
 func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	ann, present := physicalHost.Annotations[InspectionRequestAnnotation]
 	if !present {
@@ -792,13 +795,45 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 
 	switch ann {
 	case "inspect":
+		// An inspection starts from InUse, the state a claimed host is in when its
+		// machine boots it, and the machine sends the request only to a host it has
+		// read there. A host in any other state has already acted on the request, or
+		// has left the run. The request is dropped and nothing else changes: a
+		// second one applied here would set InspectionPhase back to Booting over the
+		// report the host has received, and the machine, which validated the report
+		// and is sending inspect-complete, would find the inspection no longer
+		// complete and wait for a report that already came, until InspectionTimedOut.
+		// The same request reaches an Inspecting host in the window between the pass
+		// that applied it and the pass that removes it (Reconcile removes it after
+		// its status patch), and a machine that read the host before the first
+		// request was applied sends another.
+		//
+		// A host in an Error about its BMC is dropped the same way. Its machine
+		// waits for the BMC (hostWaitingForBMC) and sends the request again once the
+		// host is back at InUse, without restarting the host it has booted for this
+		// claim (bootedForClaim).
+		if physicalHost.Status.State != infrav1.StateInUse {
+			logger.Info("Ignoring inspection-request annotation: an inspection starts only on a host that is InUse",
+				"value", ann, "state", physicalHost.Status.State)
+			dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
+			return
+		}
 		logger.Info("Applying inspection-request annotation: starting inspection")
 		if physicalHost.Status.InspectionTimestamp == nil {
 			t := metav1.Now()
 			physicalHost.Status.InspectionTimestamp = &t
 		}
 		physicalHost.Status.State = infrav1.StateInspecting
-		physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseBooting
+		// A host can be InUse with this run's report already in: the inspector
+		// does not need the BMC, so one booted just before an outage posts its
+		// report while the host sits in Error, and the request dropped there is
+		// sent again once the host is back at InUse. Booting would wipe the report
+		// and leave the machine waiting for one that has come. A released host
+		// starts its next claim without a phase (clearProvisioningRunState), so
+		// Complete here is always this run's.
+		if physicalHost.Status.InspectionPhase != infrav1.InspectionPhaseComplete {
+			physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseBooting
+		}
 
 	case "inspect-complete":
 		// D-015: inspection-complete transitions to StateDeploying (not StateReady).
