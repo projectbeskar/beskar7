@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.10.1` (latest) | ✅ |
+| `v0.10.2` (latest) | ✅ |
+| `v0.10.1` | ✅ |
 | `v0.10.0` | ✅ |
 | `v0.9.0` | ✅ |
 | `v0.8.0` | ✅ |
@@ -69,6 +70,16 @@ connection meant for a short host name (and, over `http://`, its credentials). A
 `v0.10.0`, see the [CHANGELOG](CHANGELOG.md). Until you can upgrade, grant `patch` on
 `physicalhosts` only to people trusted to provision those hosts, and write BMC addresses as IP
 addresses or fully qualified names.
+
+**Every release before `v0.10.2`** is built with Go 1.27.1 or older and `golang.org/x/net` 0.59.0 or
+older (`v0.10.0` and `v0.10.1`: Go 1.27.1 and x/net 0.59.0), so it carries 13 Go standard library
+advisories published on 2026-10-08, five of them also in x/net. The serious ones are four HTTP/2
+server bugs (GO-2026-6603, GO-2026-6611, GO-2026-6612 and GO-2026-6617: memory exhaustion, CPU
+exhaustion, a double flow-control refund and a crash) that the callback endpoint (`:8082`) reaches
+before it checks any bearer token. All are fixed in `v0.10.2`, which also stops the callback, webhook
+and metrics servers from serving HTTP/2 at all; see the [CHANGELOG](CHANGELOG.md). Until you can
+upgrade, let only the provisioning network reach `:8082`, on a callback-only instance as well:
+firewall the port, or limit the source ranges of the load balancer or Ingress in front of it.
 
 ## Verifying what you run
 

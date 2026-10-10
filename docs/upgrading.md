@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.10.1`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.10.2`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.10.2` | `v4.2` **frozen** |
 | `v0.10.1` | `v4.2` **frozen** |
 | `v0.10.0` | `v4.2` **frozen** |
 | `v0.9.0` | `v4.2` **frozen** |
@@ -102,6 +103,73 @@ docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.10.1` → `v0.10.2` — Go and x/net security fixes; HTTP/1.1 only
+
+`v0.10.2` is a security release. There is **no CRD, API or contract change** (still `v4.2`), no RBAC or
+chart-template change and no new manager flag, so from `v0.10.1` it is an in-place controller upgrade: the CRDs
+you have are the CRDs it needs, and nothing has to be applied first. **Upgrade promptly.** Every release before
+it is built with Go 1.27.1 or older and `golang.org/x/net` 0.59.0 or older, and carries 13 Go standard library
+advisories published on 2026-10-08, five of them also in `golang.org/x/net`. Four are HTTP/2 server bugs
+(GO-2026-6603, GO-2026-6611, GO-2026-6612 and GO-2026-6617: memory exhaustion, CPU exhaustion, a double
+flow-control refund and a crash) that the callback endpoint (`:8082`) reached before it checked any bearer
+token. The [CHANGELOG](../CHANGELOG.md) lists all 13 with OSV's titles.
+
+Coming from `v0.10.0`, do [`v0.10.0` → `v0.10.1`](#v0100--v0101--optional-targetimagedigesturl-crds-go-before-the-controller)
+first: its CRDs go before the controller. Coming from `v0.9.x`, you can go straight to `v0.10.2`: follow
+[`v0.9.x` → `v0.10.0`](#v09x--v0100--callback-integrity-bmc-transport-and-rbac-hardening-upgrade-in-this-order)
+and the `v0.10.0` → `v0.10.1` section, and install `v0.10.2` wherever their commands name `v0.10.1` or `v0.10.0`.
+Coming from an earlier release, reach `v0.9.x` first, as the `v0.9.x` → `v0.10.0` section says.
+
+**Inspector:** nothing changes. Any `v4.2` inspector works; on physical servers use `v0.3.4` or later.
+
+Upgrade the controller, and every callback-only instance with it:
+
+```bash
+# Helm install: the CRDs are unchanged, so upgrade the controller directly.
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.2 --reset-then-reuse-values
+```
+
+```bash
+# Release-manifest install: re-apply it. The CRDs in it have the same schema as v0.10.1's.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.2/beskar7-manifests-v0.10.2.yaml
+```
+
+- **A separate callback-only instance** (the second copy of the manager started with `--controllers=none`) is the
+  same image, and it is the process that serves `:8082` on the provisioning network. An instance left on an
+  earlier release keeps the exposure, so move it to `v0.10.2` in the same window. Its flags and its role do not
+  change.
+- **Until you can upgrade**, let only the provisioning network reach `:8082`: firewall the port, or limit the
+  source ranges of the load balancer or Ingress in front of it. The chart's NetworkPolicy, which is off by
+  default, does not do this: it allows TCP 8082 from any source.
+- A controller restart restarts the callback server. Nothing in this release changes how a run in flight is
+  carried, so the guidance under [Before you start](#before-you-start) applies as usual: avoid upgrading while a
+  host is in `Deploying` if you can.
+
+### What changes on the wire
+
+The callback endpoint (`:8082`), the webhook server (`:9443`, when `--enable-webhook` is set) and the metrics
+endpoint (`:8443`, unless `--secure-metrics=false`) now advertise only `http/1.1` in TLS ALPN and never serve
+HTTP/2. There is no flag to turn it back on. The inspector and iPXE implement HTTP/1.1 only, the kube-apiserver
+calls admission webhooks over `http/1.1`, and Prometheus offers `h2` and `http/1.1` and takes `http/1.1`, so
+nothing that talks to these servers today needs HTTP/2. **A client that offers only `h2` is refused at the TLS
+handshake** (`no application protocol`). That includes an Ingress or proxy in front of `:8082` that is configured
+to speak only HTTP/2 to the manager; set it to HTTP/1.1. See
+[Security, control 11](security/README.md#11-http11-only-on-the-callback-webhook-and-metrics-servers).
+
+Check the result on every instance, the callback-only ones included:
+
+```bash
+# For each instance, in its own cluster and namespace (capb7-system by default). Every image ends in :v0.10.2.
+kubectl get pods -n capb7-system -o jsonpath='{.items[*].spec.containers[*].image}{"\n"}'
+# <callback-host-and-port> is the host and port of your bootstrap URL base (the callback Service's external address).
+# The callback server now serves HTTP/1.1 only, so this prints "1.1"; a release before v0.10.2 prints "2".
+curl --http2 -sk -o /dev/null -w '%{http_version}\n' https://<callback-host-and-port>/healthz
+```
+
+Going back to `v0.10.1` or `v0.10.0` needs no CRD step, and it brings back HTTP/2 on those ports and the
+advisories above.
 
 ## `v0.10.0` → `v0.10.1` — optional `targetImageDigestURL`; CRDs go before the controller
 
@@ -815,14 +883,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. These commands install the current release, v0.10.1. From v0.8.x or earlier, stop on v0.9.x first:
+# 0. These commands install the current release, v0.10.2. From v0.8.x or earlier, stop on v0.9.x first:
 #    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
-#    v0.9.x → v0.10.0 section above, installing v0.10.1 where it names v0.10.0.
+#    v0.9.x → v0.10.0 section above, installing v0.10.2 where it names v0.10.0.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.1/beskar7-manifests-v0.10.1.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.2/beskar7-manifests-v0.10.2.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.1 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.2 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

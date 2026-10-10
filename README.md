@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.10.1 — `spec.targetImageDigestURL`: a machine can name its image digest by the URL of a checksum file, which the controller reads once, before it claims a host, and pins in status, instead of you pasting the digest. Two inspection-flow fixes: a routine write conflict no longer shows up as a `Reconciler error`, and a duplicate `inspect` request can no longer restart an inspection that already has its report. The callback integrity, BMC transport and RBAC hardening of `v0.10.0` are unchanged. New optional `Beskar7Machine` spec and status fields and no contract change (still `v4.2`); pair it with inspector `v0.3.4` on physical servers. **Apply the CRDs before the controller.** Coming from `v0.9.x`, the `v0.10.0` steps apply too (fully qualified BMC names, the CA Secret annotation, `--bmc-proxy`, no host mid-run): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
+**Version:** v0.10.2 — a security release. It is built with Go 1.27.2 and `golang.org/x/net` 0.60.0, which fix 13 Go standard library advisories (five also in x/net) published after `v0.10.0`, among them four HTTP/2 server bugs that the callback port reached before any bearer check; and the callback, webhook and metrics servers now serve HTTP/1.1 only. **Every earlier release is affected: upgrade promptly, and upgrade every callback-only instance too.** No CRD, API or contract change (still `v4.2`), so from `v0.10.1` it is an in-place controller upgrade with nothing to apply first; pair it with inspector `v0.3.4` on physical servers. `spec.targetImageDigestURL` (`v0.10.1`) and the callback integrity, BMC transport and RBAC hardening of `v0.10.0` are unchanged. Coming from `v0.10.0`, apply the CRDs of `v0.10.1` before the controller; coming from `v0.9.x`, the `v0.10.0` steps apply too (fully qualified BMC names, the CA Secret annotation, `--bmc-proxy`, no host mid-run): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.2, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.2` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.1/beskar7-manifests-v0.10.1.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.2/beskar7-manifests-v0.10.2.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

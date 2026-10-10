@@ -4,6 +4,82 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [v0.10.2] - 2026-10-10
+
+Security release. The images are built with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix 13 advisories in
+the Go standard library (five of them also in `golang.org/x/net`) published after `v0.10.0` shipped, and the
+callback, webhook and metrics servers now serve HTTP/1.1 only. No CRD, API or contract change (still `v4.2`), no
+RBAC or chart-template change and no new manager flag. On physical servers pair it with inspector `v0.3.4` or
+later.
+
+> **Upgrade promptly.** Every release before `v0.10.2` is affected: each is built with Go 1.27.1 or older and
+> `golang.org/x/net` v0.59.0 or older, and the callback endpoint (`:8082`) negotiated HTTP/2 with anything that
+> could reach it, before any bearer check. **There is no CRD, API or contract change**, so from `v0.10.1` this is
+> an in-place controller upgrade with nothing to apply first. **Upgrade a callback-only instance
+> (`--controllers=none`) too**: it is the same image, and it is the process that serves `:8082` on the
+> provisioning network. Coming from `v0.10.0` or earlier, the steps of the releases in between still apply,
+> including the CRDs of `v0.10.1`, which go before the controller. Until you can upgrade, let only the
+> provisioning network reach `:8082`. Details, and a check that the new servers are in place, are in
+> [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.2/docs/upgrading.md#v0101--v0102--go-and-xnet-security-fixes-http11-only),
+> section `v0.10.1` → `v0.10.2`.
+
+### Security
+
+- **The Go 1.27.1 standard library and `golang.org/x/net` 0.59.0 carried 13 advisories published after `v0.10.0`
+  shipped; the images are now built with Go 1.27.2 and `golang.org/x/net` 0.60.0.** An OSV scan of the published
+  `v0.10.1` images lists them: 18 findings on the manager and `mock-inspector` images (13 in the standard library,
+  5 in `golang.org/x/net`) and the 13 standard-library ones on `mock-redfish`; a scan of the `v0.10.0` manager
+  image lists the same 18. The three Dockerfiles now pin `golang:1.27.2` by digest, `go.mod` names
+  `toolchain go1.27.2`, and `golang.org/x/net` moves from `v0.59.0` to `v0.60.0`; nothing else moves. The titles
+  below are OSV's own.
+
+  In the Go standard library, fixed in Go 1.27.2; they affect all three images (manager, `mock-redfish`,
+  `mock-inspector`):
+
+  - **HTTP/2 server**, reached by the callback endpoint before any bearer check:
+    [GO-2026-6617](https://osv.dev/GO-2026-6617) "HTTP/2 server crash due to HPACK encoder race in net/http";
+    [GO-2026-6603](https://osv.dev/GO-2026-6603) "HTTP/2 server memory exhaustion due to Trailer headers in net/http";
+    [GO-2026-6611](https://osv.dev/GO-2026-6611) "Excessive CPU consumption from repeated initial window changes in net/http";
+    [GO-2026-6612](https://osv.dev/GO-2026-6612) "Double flow control refund on HTTP/2 server streams in net/http".
+  - **HTTP/2 transport:**
+    [GO-2026-6610](https://osv.dev/GO-2026-6610) "HTTP/2 transport accepts malformed framing-related headers in net/http".
+  - **HTTP/1 and file serving in `net/http`:**
+    [GO-2026-6613](https://osv.dev/GO-2026-6613) "HTTP/1 server connection desynchronization after 2xx CONNECT response in net/http";
+    [GO-2026-6605](https://osv.dev/GO-2026-6605) "HTTP/1 client connection desynchronization after CONNECT rejection in net/http";
+    [GO-2026-6609](https://osv.dev/GO-2026-6609) "Lack of limit on size of parsed Range headers in net/http".
+  - **`crypto/tls`:**
+    [GO-2026-6607](https://osv.dev/GO-2026-6607) "Reject malformed ECH outer extension references in crypto/tls".
+  - **`net/textproto`, `mime/multipart`:**
+    [GO-2026-6608](https://osv.dev/GO-2026-6608) "Memory limit bypass when parsing MIME headers in net/textproto, mime/multipart".
+  - **`html/template`:**
+    [GO-2026-6599](https://osv.dev/GO-2026-6599) "Reset context tracking on consecutive template expressions in html/template";
+    [GO-2026-6600](https://osv.dev/GO-2026-6600) "Recognize yield as regexp preceder keyword in html/template".
+  - **`os`, Windows only:**
+    [GO-2026-6604](https://osv.dev/GO-2026-6604) "Root.Mkdir(All) can follow junctions out of the root on Windows in os".
+
+  In `golang.org/x/net` 0.59.0, fixed in 0.60.0; they affect the manager and `mock-inspector` images: five of the
+  HTTP/2 advisories above, GO-2026-6603, GO-2026-6610, GO-2026-6611, GO-2026-6612 and GO-2026-6617.
+  ([#265](https://github.com/projectbeskar/beskar7/pull/265))
+
+- **The callback, webhook and metrics servers serve HTTP/1.1 only, so HTTP/2 is no longer exposed on any of
+  them.** The protocol is negotiated before the callback endpoint checks a bearer token, so a bug in Go's HTTP/2
+  server needs no credential to reach, and nothing in the manager turned HTTP/2 off: the callback server
+  negotiated `h2` with any client that reached `:8082`, and controller-runtime's webhook and metrics servers offer
+  it by default. The three servers (the callback endpoint on `:8082`, the webhook on `:9443` when
+  `--enable-webhook` is set, and metrics on `:8443` unless `--secure-metrics=false`) now advertise only `http/1.1`
+  in TLS ALPN. The callback server terminates its own TLS, and there ALPN alone is not enough, because `net/http`
+  adds `h2` back to the list; it also sets `http.Server.Protocols` to HTTP/1 only. There is no flag.
+  Every client of these servers already speaks HTTP/1.1: the inspector and iPXE implement HTTP/1.1 only, the
+  kube-apiserver calls admission webhooks over `http/1.1`, and Prometheus offers `h2` and `http/1.1` and takes
+  `http/1.1`. **A client that offers only `h2` is now refused at the TLS handshake** (`no application protocol`),
+  and so is an Ingress or proxy configured to speak only HTTP/2 to the manager. To check a server,
+  `curl --http2 -sk -o /dev/null -w '%{http_version}\n' https://<callback-host-and-port>/healthz` prints `1.1`; an earlier
+  release negotiates HTTP/2 for the same request and prints `2`. This removes the HTTP/2 server advisories'
+  exposure on these three ports and does not replace the upgrade: the advisories in the other groups above are
+  fixed by the Go and `golang.org/x/net` bump alone. See
+  [`docs/security/README.md`](https://github.com/projectbeskar/beskar7/blob/v0.10.2/docs/security/README.md#11-http11-only-on-the-callback-webhook-and-metrics-servers).
+  ([#266](https://github.com/projectbeskar/beskar7/pull/266))
+
 ## [v0.10.1] - 2026-10-10
 
 Adds `spec.targetImageDigestURL`, which lets a machine name its image digest by the URL of a checksum file, and
@@ -2314,7 +2390,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.2...HEAD
+[v0.10.2]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...v0.10.2
 [v0.10.1]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...v0.10.1
 [v0.10.0]: https://github.com/projectbeskar/beskar7/compare/v0.9.0...v0.10.0
 [v0.9.0]: https://github.com/projectbeskar/beskar7/compare/v0.8.0...v0.9.0
