@@ -42,6 +42,7 @@ import (
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
+	"github.com/projectbeskar/beskar7/internal/http1only"
 )
 
 const (
@@ -458,8 +459,9 @@ func readCallbackCA(certDir string) ([]byte, error) {
 //     the single-use boot nonce (D-009). Rate-limited per source IP.
 //
 // All bearer-auth failures return an opaque 401. All /boot nonce failures return
-// an opaque 404. TLS is mandatory; the cert dir defaults to the webhook cert dir
-// (same Pod, same DNS name, one cert via cert-manager).
+// an opaque 404. TLS is mandatory and the server speaks HTTP/1.1 only; the cert
+// dir defaults to the webhook cert dir (same Pod, same DNS name, one cert via
+// cert-manager).
 //
 // bootstrapURLBase is the externally-reachable HTTPS base URL of this server
 // (e.g. "https://beskar7.example.com:8082"). It is rendered into the
@@ -620,6 +622,10 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 			MinVersion:     tls.VersionTLS12,
 		},
 	}
+	// The protocol is negotiated before any bearer check, for anything that can
+	// reach this port, and every client (the inspector, iPXE) speaks HTTP/1.1:
+	// serve nothing else.
+	http1only.Server(server)
 
 	go func() {
 		ctrl.Log.WithName("callback-server").Info("Starting callback HTTPS server", "port", port)

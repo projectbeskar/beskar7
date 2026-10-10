@@ -37,8 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
@@ -278,28 +276,10 @@ func main() {
 	// Setup metrics registry
 	internalmetrics.Init()
 
-	// Configure webhook server
-	webhookServerOptions := webhook.Options{
-		Port:    webhookPort,
-		CertDir: webhookCertDir,
-	}
-
-	metricsOptions := metricsserver.Options{
-		BindAddress:   metricsAddr,
-		SecureServing: secureMetrics,
-	}
-	if secureMetrics {
-		// Authenticate and authorize /metrics via TokenReview/SubjectAccessReview delegated to
-		// the kube-apiserver. Requires the manager ServiceAccount to have the
-		// authentication.k8s.io:tokenreviews and authorization.k8s.io:subjectaccessreviews create
-		// verbs (see config/rbac/metrics_auth_role.yaml).
-		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-
 	managerOpts := ctrl.Options{
 		Scheme:                 scheme,
-		Metrics:                metricsOptions,
-		WebhookServer:          webhook.NewServer(webhookServerOptions),
+		Metrics:                buildMetricsOptions(metricsAddr, secureMetrics),
+		WebhookServer:          webhook.NewServer(buildWebhookOptions(webhookPort, webhookCertDir)),
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         cfg.leaderElection(),
 		LeaderElectionID:       "beskar7.infrastructure.cluster.x-k8s.io",
