@@ -101,7 +101,7 @@ The Beskar7Machine controller drives a run through one more annotation, `infrast
 
 | Value | The machine writes it when | The reconciler |
 |---|---|---|
-| `inspect` | it has stored the host's callback credentials and booted the host into the inspector | `Inspecting`, `InspectionPhase=Booting`; starts the inspection clock |
+| `inspect` | it has stored the host's callback credentials and booted the host into the inspector | `Inspecting`, `InspectionPhase=Booting` (kept at `Complete` if the inspection report already arrived); starts the inspection clock. Applied only to a host that is `InUse`; on any other state the request is removed and nothing changes |
 | `inspect-complete` | it has validated the inspection report | `Deploying`, `HostInspected=True`; starts the deployment clock |
 | `timeout` | the inspection timeout has run out | `Error` (`Inspection timed out`), `InspectionPhase=Timeout`; kept until the host is released |
 
