@@ -16,25 +16,7 @@ limitations under the License.
 
 package main
 
-import (
-	"testing"
-
-	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
-	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-)
-
-// buildMetricsOptions mirrors the production wiring in main() so that test
-// and production code stay in sync.
-func buildMetricsOptions(addr string, secure bool) metricsserver.Options {
-	opts := metricsserver.Options{
-		BindAddress:   addr,
-		SecureServing: secure,
-	}
-	if secure {
-		opts.FilterProvider = filters.WithAuthenticationAndAuthorization
-	}
-	return opts
-}
+import "testing"
 
 func TestBuildMetricsOptions_SecureDefault(t *testing.T) {
 	opts := buildMetricsOptions(":8443", true)

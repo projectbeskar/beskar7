@@ -79,7 +79,7 @@ Beskar7 does not log usernames or passwords at any verbosity level, nor whether 
 
 ### 3. Per-host bearer-token authentication on the callback endpoint
 
-The manager runs an HTTPS server on `:8082` that hosts four host-scoped endpoints carrying the inspector's bearer token:
+The manager runs an HTTPS server on `:8082` that hosts four host-scoped endpoints carrying the inspector's bearer token. It speaks HTTP/1.1 only ([control 11](#11-http11-only-on-the-callback-webhook-and-metrics-servers)):
 
 - `POST /api/v1/inspection/{namespace}/{hostName}` — receives inspection reports.
 - `GET  /api/v1/bootstrap/{namespace}/{hostName}` — serves bootstrap data Secret bytes.
@@ -188,9 +188,9 @@ FROM gcr.io/distroless/static:nonroot@sha256:e2e927ec666bae08560abb3c55d0659ecea
 
 ### 9. Authenticated metrics on `:8443`
 
-The manager serves `/metrics` over HTTPS on `:8443` directly (no `kube-rbac-proxy` sidecar — removed in PR-11.1). Authentication and authorization are delegated to the kube-apiserver via TokenReview/SubjectAccessReview (`controller-runtime`'s `filters.WithAuthenticationAndAuthorization`). To scrape, your Prometheus ServiceAccount needs the `capb7-metrics-reader` ClusterRole (see `config/rbac/metrics_reader_role.yaml`). For local development you can opt out with `--secure-metrics=false`.
+The manager serves `/metrics` over HTTPS on `:8443` directly (no `kube-rbac-proxy` sidecar — removed in PR-11.1). Authentication and authorization are delegated to the kube-apiserver via TokenReview/SubjectAccessReview (`controller-runtime`'s `filters.WithAuthenticationAndAuthorization`). To scrape, your Prometheus ServiceAccount needs the `capb7-metrics-reader` ClusterRole (see `config/rbac/metrics_reader_role.yaml`). For local development you can opt out with `--secure-metrics=false`. The TLS server speaks HTTP/1.1 only ([control 11](#11-http11-only-on-the-callback-webhook-and-metrics-servers)).
 
-Source: `cmd/manager/main.go:135-145`.
+Source: `buildMetricsOptions` in `cmd/manager/servers.go`.
 
 ### 10. Image digest from a checksum URL (`targetImageDigestURL`, D-038)
 
@@ -208,6 +208,22 @@ Source: `cmd/manager/main.go:135-145`.
 - **What it does not do.** It does not block private, loopback or link-local addresses: the checksum server is normally on the provisioning network, so that would break the intended use. A user who can create a `Beskar7Machine` can therefore make the manager open an HTTPS connection to any address it can reach, and can see from the machine's condition whether it worked and, if the server answered, its status code. It never sees a body. If that matters in your cluster, treat the right to create `Beskar7Machine`s and `Beskar7MachineTemplate`s as including that reach, and narrow the manager's egress (the chart's NetworkPolicy lets it reach TCP 443 and 8443 anywhere; see [Configuration](configuration.md#networkpolicy)).
 
 Source: `controllers/target_image_digest.go` (fetch, parse, pin), `ensureTargetImageDigest` and its call in `reconcileNormal` (`controllers/beskar7machine_controller.go`), `effectiveTargetImageDigest` in `renderBootScript` (`controllers/boot_handler.go`), the CEL rule on `Beskar7MachineSpec` (`api/v1beta2/beskar7machine_types.go`).
+
+### 11. HTTP/1.1 only on the callback, webhook and metrics servers
+
+All three HTTPS servers the manager runs, the callback endpoint (`:8082`), the webhook server (`:9443`, when `--enable-webhook` is set) and the metrics endpoint (`:8443`, unless `--secure-metrics=false`), advertise only `http/1.1` in TLS ALPN and never serve HTTP/2. There is no flag to turn it on.
+
+The reason is exposure. The callback endpoint is reachable by anything on the provisioning network, and its protocol is negotiated before the bearer check, so a bug in the HTTP/2 server needs no credential to reach. Go's HTTP/2 server has had repeated resource-exhaustion and crash advisories (rapid reset in 2023; GO-2026-6603, -6611, -6612 and -6617, fixed in Go 1.27.2 and `golang.org/x/net` 0.60.0). A server that never speaks HTTP/2 is not exposed to the next one either.
+
+Every client of these servers already speaks HTTP/1.1:
+
+- The inspector's HTTP client (`ureq` in `beskar7-inspector`) and iPXE implement HTTP/1.1 only.
+- The kube-apiserver calls admission webhooks over `http/1.1` (its webhook client sets `NextProtos` to that).
+- Prometheus, like any ALPN client, offers h2 as an option and uses `http/1.1` when that is all the server advertises.
+
+A client that offers *only* `h2` is refused at the TLS handshake (`no application protocol`); none of the above does.
+
+Source: `internal/http1only`; `SetupCallbackServer` in `controllers/inspection_handler.go`; `buildWebhookOptions` and `buildMetricsOptions` in `cmd/manager/servers.go`. Tests: `TestCallbackServerServesHTTP1Only` and `TestWebhookAndMetricsServersServeHTTP1Only` in `cmd/manager`.
 
 ## Configuration entry points
 
