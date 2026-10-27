@@ -266,7 +266,7 @@ jobs:
         echo "IMAGE_REF=${image}" >> "$GITHUB_ENV"
 
     - name: Scan ${{ matrix.image.name }} with OSV-Scanner
-      uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+      uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
       continue-on-error: true # exits 1 on findings; the report is the deliverable
       with:
         scan-args: |-
@@ -278,7 +278,7 @@ jobs:
           --output=osv-image-results.json
 
     - name: Convert the ${{ matrix.image.name }} scan to SARIF
-      uses: google/osv-scanner-action/osv-reporter-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+      uses: google/osv-scanner-action/osv-reporter-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
       with:
         scan-args: |-
           --new=osv-image-results.json
@@ -287,13 +287,13 @@ jobs:
           --fail-on-vuln=false
 
     - name: Upload the ${{ matrix.image.name }} scan to the Security tab
-      uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3.38.2
+      uses: github/codeql-action/upload-sarif@ce5e7eeac396d720fe2d802714996c8ce561e311 # v3.39.0
       with:
         sarif_file: osv-image-results.sarif
         category: osv-scanner-release-${{ matrix.image.name }}
 
     - name: Write the human-readable ${{ matrix.image.name }} report
-      uses: google/osv-scanner-action/osv-scanner-action@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
+      uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
       continue-on-error: true
       with:
         scan-args: |-
