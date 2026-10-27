@@ -129,6 +129,31 @@ func TestUpdateBeskar7MachineStateCounts(t *testing.T) {
 	}
 }
 
+// Every phase the controller sets must be exported: a phase missing from the
+// canonical list is counted, then dropped (machines deploying were invisible).
+func TestBeskar7MachineGaugeExportsEveryPhase(t *testing.T) {
+	phases := []string{
+		"", infrav1.PhasePending, infrav1.PhaseInspecting, infrav1.PhaseProvisioning,
+		infrav1.PhaseProvisioned, infrav1.PhaseFailed,
+	}
+	counts := map[string]int{}
+	for i, phase := range phases {
+		counts[phase] = i + 1
+	}
+	UpdateBeskar7MachineStateCounts("b7m-ns-phases", counts)
+
+	for _, phase := range phases {
+		g := Beskar7MachineStatesGauge.WithLabelValues(phase, "b7m-ns-phases")
+		m := &dto.Metric{}
+		if err := g.Write(m); err != nil {
+			t.Fatalf("Failed to write %q metric: %v", phase, err)
+		}
+		if got, want := m.GetGauge().GetValue(), float64(counts[phase]); got != want {
+			t.Errorf("phase %q: want %v, got %v (missing from beskar7MachineCanonicalPhases?)", phase, want, got)
+		}
+	}
+}
+
 func TestUpdateBeskar7ClusterStateCounts(t *testing.T) {
 	UpdateBeskar7ClusterStateCounts("b7c-ns-1", 2, 1)
 
