@@ -17,9 +17,18 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta/testrestmapper"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 func TestParseWatchNamespaces(t *testing.T) {
@@ -187,6 +196,83 @@ func TestManagerConfigLeaderElection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.cfg.leaderElection(); got != tc.want {
 				t.Errorf("leaderElection() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// spyReader is a cache stand-in that counts the reads sent to it.
+type spyReader struct{ reads int }
+
+func (s *spyReader) Get(context.Context, client.ObjectKey, client.Object, ...client.GetOption) error {
+	s.reads++
+	return nil
+}
+
+func (s *spyReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+	s.reads++
+	return nil
+}
+
+// TestManagerConfigClientOptions builds a client from the options each mode
+// hands the manager and sees where its reads go. A callback-only instance reads
+// a Secret, singly or as a list, straight from the API server and every other
+// kind from the cache; the full manager's reconcilers watch Secrets, so it
+// caches those too (CALLBACK-SECRET-READ). The API server here is a closed
+// port: a read that is not served by the cache fails on the connection.
+func TestManagerConfigClientOptions(t *testing.T) {
+	cases := []struct {
+		name       string
+		mode       controllersMode
+		wantCached map[string]bool
+	}{
+		{
+			name:       "callback-only reads Secrets live",
+			mode:       controllersNone,
+			wantCached: map[string]bool{"Secret": false, "SecretList": false, "ConfigMap": true, "PhysicalHost": true},
+		},
+		{
+			name:       "the full manager caches Secrets",
+			mode:       controllersAll,
+			wantCached: map[string]bool{"Secret": true, "SecretList": true, "ConfigMap": true, "PhysicalHost": true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := managerConfig{controllers: tc.mode}.clientOptions()
+			opts.Scheme = scheme
+			opts.Mapper = testrestmapper.TestOnlyStaticRESTMapper(scheme)
+			spy := &spyReader{}
+			if opts.Cache == nil {
+				opts.Cache = &client.CacheOptions{}
+			}
+			opts.Cache.Reader = spy
+			c, err := client.New(&rest.Config{Host: "http://127.0.0.1:1", Timeout: 2 * time.Second}, opts)
+			if err != nil {
+				t.Fatalf("create client: %v", err)
+			}
+
+			reads := map[string]func() error{
+				"Secret": func() error {
+					return c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "x"}, &corev1.Secret{})
+				},
+				"SecretList": func() error { return c.List(context.Background(), &corev1.SecretList{}, client.InNamespace("ns")) },
+				"ConfigMap": func() error {
+					return c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "x"}, &corev1.ConfigMap{})
+				},
+				"PhysicalHost": func() error {
+					return c.Get(context.Background(), client.ObjectKey{Namespace: "ns", Name: "x"}, &infrav1.PhysicalHost{})
+				},
+			}
+			for kind, read := range reads {
+				before := spy.reads
+				err := read()
+				if cached := spy.reads == before+1; cached != tc.wantCached[kind] {
+					t.Errorf("%s read served by the cache = %t, want %t", kind, cached, tc.wantCached[kind])
+				}
+				if !tc.wantCached[kind] && err == nil {
+					t.Errorf("%s read did not reach the API server", kind)
+				}
 			}
 		})
 	}

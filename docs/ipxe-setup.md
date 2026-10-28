@@ -230,8 +230,10 @@ What the instance needs:
   on the provisioning network. `config/rbac/callback-only`, which the default
   install does not include, ships a ServiceAccount, `capb7-callback` in
   `capb7-system`, and a namespaced Role and RoleBinding granting it exactly
-  what the handlers do through the cached client: read PhysicalHosts, Beskar7Machines, Machines, Secrets and
-  ConfigMaps; create and update the inspection-result ConfigMap; patch
+  what the handlers do: read PhysicalHosts, Beskar7Machines, Machines and
+  ConfigMaps through the manager's cache (so with `list` and `watch`); `get`
+  Secrets, which the instance reads live, one at a time, by name, and never
+  lists or watches; create and update the inspection-result ConfigMap; patch
   PhysicalHosts (the request annotations) and `physicalhosts/status` (the
   `/boot` nonce consume); and update `physicalhosts/finalizers`, which only
   clusters running the `OwnerReferencesPermissionEnforcement` admission plugin
@@ -245,10 +247,14 @@ What the instance needs:
 
   `--watch-namespaces` is required with this RBAC: without it the instance's
   cache lists cluster-wide, which the Role does not allow, and it never becomes
-  ready. Bind it only where hosts live. Even so, the identity can read every
-  Secret in those namespaces (CAPI keeps each cluster's CA and kubeconfig
-  Secrets there) and patch any PhysicalHost, so guard its kubeconfig like the
-  cluster credential it is.
+  ready. Bind it only where hosts live. Even so, the identity can read a
+  Secret in those namespaces whenever it knows the name (CAPI keeps each
+  cluster's CA and kubeconfig Secrets there, named after the cluster) and patch
+  any PhysicalHost, so guard its kubeconfig like the cluster credential it is.
+  It cannot list or watch Secrets, so it cannot enumerate them, and the instance
+  holds none in memory. An instance older than this behaviour caches Secrets and
+  needs `list` and `watch` on them: upgrade the instance before you apply this
+  Role ([Upgrading](upgrading.md#v0102--unreleased--a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role)).
 - **A kubeconfig for that ServiceAccount.** A token from `kubectl create token`
   expires (`--duration`, capped by the API server's
   `--service-account-max-token-expiration`). Write it to a file, point the

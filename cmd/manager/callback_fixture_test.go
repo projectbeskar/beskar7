@@ -171,14 +171,27 @@ func createNamespace(t *testing.T, c client.Client, prefix string) string {
 // runCallbackOnlyManager starts a --controllers=none manager on restCfg
 // serving the callback routes on a free port from certDir, its cache scoped to
 // watchNamespaces the way main does for --watch-namespaces (all namespaces
-// when none are given). It returns the callback server's base URL once the
+// when none are given) and its client configured the way main does for
+// --controllers=none. It returns the callback server's base URL once the
 // cache has synced, and stops the manager when the test ends.
 func runCallbackOnlyManager(t *testing.T, restCfg *rest.Config, certDir string, watchNamespaces ...string) string {
 	t.Helper()
+	port := freePort(t)
+	base := fmt.Sprintf("https://127.0.0.1:%d", port)
+	cfg := managerConfig{
+		controllers:             controllersNone,
+		bootstrapURLBase:        base,
+		inspectionPort:          port,
+		inspectionCertDir:       certDir,
+		inspectionTimeout:       controllers.DefaultInspectionTimeout,
+		deploymentTimeout:       controllers.DefaultDeploymentTimeout,
+		maxConcurrentReconciles: controllers.DefaultMaxConcurrentReconciles,
+	}
 	opts := ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsserver.Options{BindAddress: "0"},
 		HealthProbeBindAddress: "0",
+		Client:                 cfg.clientOptions(),
 	}
 	if len(watchNamespaces) > 0 {
 		namespaces := make(map[string]cache.Config, len(watchNamespaces))
@@ -190,17 +203,6 @@ func runCallbackOnlyManager(t *testing.T, restCfg *rest.Config, certDir string, 
 	mgr, err := ctrl.NewManager(restCfg, opts)
 	if err != nil {
 		t.Fatalf("create manager: %v", err)
-	}
-	port := freePort(t)
-	base := fmt.Sprintf("https://127.0.0.1:%d", port)
-	cfg := managerConfig{
-		controllers:             controllersNone,
-		bootstrapURLBase:        base,
-		inspectionPort:          port,
-		inspectionCertDir:       certDir,
-		inspectionTimeout:       controllers.DefaultInspectionTimeout,
-		deploymentTimeout:       controllers.DefaultDeploymentTimeout,
-		maxConcurrentReconciles: controllers.DefaultMaxConcurrentReconciles,
 	}
 	if err := setupManager(mgr, cfg); err != nil {
 		t.Fatalf("setupManager: %v", err)

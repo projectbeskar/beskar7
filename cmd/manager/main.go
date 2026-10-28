@@ -281,6 +281,7 @@ func main() {
 		Metrics:                buildMetricsOptions(metricsAddr, secureMetrics),
 		WebhookServer:          webhook.NewServer(buildWebhookOptions(webhookPort, webhookCertDir)),
 		HealthProbeBindAddress: probeAddr,
+		Client:                 cfg.clientOptions(),
 		LeaderElection:         cfg.leaderElection(),
 		LeaderElectionID:       "beskar7.infrastructure.cluster.x-k8s.io",
 		LeaseDuration:          &leaderElectionLeaseDuration,
@@ -326,10 +327,10 @@ func main() {
 //
 //   - controllersAll: the normal manager — everything above.
 //   - controllersNone: callback-only. No reconciler and no webhook is
-//     registered; the callback server and the probes still are, on the same
-//     cached client the handlers always use (the bearer verifier reads
-//     PhysicalHost status through it; the /boot and bootstrap handlers read
-//     Beskar7Machine, PhysicalHost, the owning Machine and Secrets).
+//     registered; the callback server and the probes still are. The handlers
+//     read PhysicalHost, Beskar7Machine, the owning Machine and ConfigMaps
+//     through the manager's cache, and Secrets live (clientOptions), so the
+//     process never lists or watches Secrets.
 //
 // It is split out of main so a test can wire a manager against envtest and
 // check what each mode registers. cfg is validated again here so the function

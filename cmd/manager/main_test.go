@@ -95,7 +95,7 @@ func (m *recordingManager) controllerCount() int {
 // modes and checks what each registers. The callback-only case is the point
 // of the test: no reconciler, no webhook, but the health probes and the
 // bearer-gated callback routes still answer, with the bearer verifier reading
-// PhysicalHost status through the manager's cache.
+// the PhysicalHost through the manager's cache and its Secret live.
 func TestSetupManager(t *testing.T) {
 	restCfg := startEnvtest(t)
 	internalmetrics.Init()
@@ -108,7 +108,7 @@ func TestSetupManager(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 
-	newManager := func(t *testing.T, probeAddr string) *recordingManager {
+	newManager := func(t *testing.T, probeAddr string, cfg managerConfig) *recordingManager {
 		t.Helper()
 		// Controller names are process-global in controller-runtime; skipping
 		// the check keeps the "all" case valid under -count>1.
@@ -117,6 +117,7 @@ func TestSetupManager(t *testing.T) {
 			Scheme:                 scheme,
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: probeAddr,
+			Client:                 cfg.clientOptions(),
 			// The "all" case registers the webhook, and starting the manager
 			// then starts the webhook server: give it the test cert and a
 			// free port instead of the production defaults.
@@ -159,10 +160,10 @@ func TestSetupManager(t *testing.T) {
 
 	t.Run("callback-only registers no controller and still serves the callbacks", func(t *testing.T) {
 		callbackPort, probePort := freePort(t), freePort(t)
-		mgr := newManager(t, fmt.Sprintf("127.0.0.1:%d", probePort))
 		cfg := baseConfig(callbackPort)
 		cfg.controllers = controllersNone
 		cfg.enableLeaderElection = true // the flag default; must be ignored, not rejected
+		mgr := newManager(t, fmt.Sprintf("127.0.0.1:%d", probePort), cfg)
 
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
@@ -191,9 +192,9 @@ func TestSetupManager(t *testing.T) {
 		callbackBase := fmt.Sprintf("https://127.0.0.1:%d", callbackPort)
 		expectStatus(t, httpsClient, http.MethodGet, callbackBase+"/healthz", "", http.StatusOK)
 
-		// A bearer-gated route. The verifier reads the PhysicalHost and its
-		// bootstrap-token Secret through the cache, so this also proves the
-		// cache serves the handlers with no controller registered.
+		// A bearer-gated route. The verifier reads the PhysicalHost through the
+		// cache and its bootstrap-token Secret live, so this also proves both
+		// read paths serve the handlers with no controller registered.
 		ctx := context.Background()
 		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "callback-only-"}}
 		if err := k8sClient.Create(ctx, ns); err != nil {
@@ -258,9 +259,9 @@ func TestSetupManager(t *testing.T) {
 		})
 
 		route := fmt.Sprintf("%s/api/v1/bootstrap/%s/%s", callbackBase, ns.Name, host.Name)
-		// The host and the Secret reach the cache through a watch, so the
-		// accepted-token case is polled; the rejections are checked once the
-		// token is known to be visible.
+		// The host reaches the cache through a watch, so the accepted-token
+		// case is polled; the rejections are checked once the token is known
+		// to be visible.
 		//
 		// A claim whose Beskar7Machine does not exist is a 404 from the
 		// handler — anything but 401 means the bearer gate let the request
@@ -272,10 +273,10 @@ func TestSetupManager(t *testing.T) {
 
 	t.Run("all registers the three controllers and the webhook", func(t *testing.T) {
 		callbackPort := freePort(t)
-		mgr := newManager(t, "0")
 		cfg := baseConfig(callbackPort)
 		cfg.controllers = controllersAll
 		cfg.enableWebhook = true
+		mgr := newManager(t, "0", cfg)
 
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
@@ -312,10 +313,10 @@ func TestSetupManager(t *testing.T) {
 		}
 
 		callbackPort := freePort(t)
-		mgr := newManager(t, "0")
 		cfg := baseConfig(callbackPort)
 		cfg.controllers = controllersAll
 		cfg.bmcProxy = proxyURL
+		mgr := newManager(t, "0", cfg)
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
 		}

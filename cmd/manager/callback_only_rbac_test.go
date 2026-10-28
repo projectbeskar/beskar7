@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -53,6 +55,11 @@ var callbackOnlyRBACDir = filepath.Join("..", "..", "config", "rbac", "callback-
 // must succeed: a grant missing from the Role shows up here as a cache that
 // never syncs or a route that fails. test/rbac pins the same Role from the
 // other side, so it can grant nothing these routes do not use.
+//
+// The Role lets the identity get a Secret and nothing more (CALLBACK-SECRET-READ):
+// the instance reads Secrets live, so a Secret read that went through the cache
+// would start an informer whose list is forbidden, and the cache would never
+// sync.
 //
 // The apiserver runs with OwnerReferencesPermissionEnforcement, which hardened
 // clusters (OpenShift among them) enable: the inspection-result ConfigMap's
@@ -81,6 +88,7 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 	callbackCfg := rest.AnonymousClientConfig(restCfg)
 	callbackCfg.BearerToken = tokenRequest.Status.Token
 	callbackCfg.QPS, callbackCfg.Burst, callbackCfg.RateLimiter = restCfg.QPS, restCfg.Burst, restCfg.RateLimiter
+	requireSecretAccess(t, callbackCfg, watched, map[string]bool{"get": true, "list": false, "watch": false})
 
 	certDir := t.TempDir()
 	pool := writeServingCert(t, certDir)
@@ -179,6 +187,41 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 		t.Fatal("POST /provision-failed succeeded without annotating the host")
 	}
 	requireBinding(controllers.ProvisionFailedRequestAnnotation)
+}
+
+// requireSecretAccess asks the apiserver, as the identity cfg authenticates as,
+// whether it may perform each verb on Secrets in namespace, and waits for the
+// answers to match want. It holds the test to the Role it claims to run under,
+// and the wait covers the authorizer's RBAC informers catching up with a Role
+// created a moment ago.
+func requireSecretAccess(t *testing.T, cfg *rest.Config, namespace string, want map[string]bool) {
+	t.Helper()
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("create client for the callback identity: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var mismatch string
+		for verb, allowed := range want {
+			review := &authorizationv1.SelfSubjectAccessReview{Spec: authorizationv1.SelfSubjectAccessReviewSpec{
+				ResourceAttributes: &authorizationv1.ResourceAttributes{Namespace: namespace, Verb: verb, Resource: "secrets"},
+			}}
+			if err := c.Create(context.Background(), review); err != nil {
+				t.Fatalf("review %s on secrets: %v", verb, err)
+			}
+			if review.Status.Allowed != allowed {
+				mismatch = fmt.Sprintf("%s on secrets in %s: allowed=%t, want %t", verb, namespace, review.Status.Allowed, allowed)
+			}
+		}
+		if mismatch == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the callback identity does not hold the Secret access this test assumes: %s", mismatch)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
 }
 
 // applyCallbackOnlyRBAC applies the component as docs/ipxe-setup.md does:

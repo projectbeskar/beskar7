@@ -4,28 +4,30 @@
 # rules exactly; cmd/manager's TestCallbackOnlyRoleServesEveryRoute proves they
 # serve every callback route.
 #
-# The handlers read through the manager's cache, whose informers list and
-# watch; get rides along with them because list already returns every object.
+# The handlers read PhysicalHosts, Beskar7Machines, Machines and ConfigMaps
+# through the manager's cache, whose informers list and watch; get rides along
+# with them because list already returns every object. Secrets are read live,
+# one object at a time (CALLBACK-SECRET-READ), so they get get alone.
 #
-# What this still allows, by design: reading every Secret in the namespace (the
-# Secret informer caches them all, and CAPI keeps a cluster's CA and kubeconfig
-# Secrets next to its Machines), and patching any PhysicalHost or its status.
-# Bind it only in namespaces this instance must serve.
+# What this still allows, by design: reading a Secret in the namespace whose
+# name the caller knows (CAPI names a cluster's CA and kubeconfig Secrets after
+# the cluster), and patching any PhysicalHost or its status. It cannot list or
+# watch Secrets, and the callback-only manager holds none in memory. Bind it
+# only in namespaces this instance must serve.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: capb7-callback-role
 rules:
 # The bearer verifier and /boot read <host>-bootstrap-token; /bootstrap reads
-# the Secret Machine.spec.bootstrap.dataSecretName names.
+# the Secret Machine.spec.bootstrap.dataSecretName names. All by name, live from
+# the API server: no list, no watch.
 - apiGroups:
   - ""
   resources:
   - secrets
   verbs:
   - get
-  - list
-  - watch
 # /inspection writes the report to <host>-inspection-result (CreateOrUpdate:
 # create the first time, update on a retry the controller has not consumed).
 - apiGroups:
