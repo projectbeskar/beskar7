@@ -16,6 +16,7 @@ The metrics provide insights into:
 - Error rates and types
 - Boot configuration success rates
 - Failure domain discovery
+- Target image digest resolution (checksum file fetches)
 
 ## Metric Categories
 
@@ -144,6 +145,41 @@ These metrics track cluster-level operations and failure domain discovery.
 **Labels:** `namespace`, `outcome`  
 **Description:** How long a host claim took, from the start of `findAndClaimOrGetAssociatedHost` to the claim patch landing or failing.
 
+### Target Image Digest Metrics
+
+These track the resolution of `spec.targetImageDigestURL`: the controller fetches the checksum file over HTTPS, once, before it claims a host, and pins the digest in `status.targetImageDigest` (see [Beskar7Machine → Naming the digest by URL](beskar7machine.md#naming-the-digest-by-url-targetimagedigesturl)). A file that does not resolve holds the machine at `WaitingForTargetImageDigest` and is retried after 30 seconds, then 1, 2, 4 and every 5 minutes, so a persistent failure adds one count per retry.
+
+Both metrics count **attempts**, one per fetch. A reconcile that finds the digest already pinned, a machine waiting out its backoff (the server is not asked), a machine that sets `spec.targetImageDigest` and a machine whose host has already been `Ready` make no attempt and count nothing. The labels never carry the URL, the host, the image's file name or the digest.
+
+#### `beskar7_controller_target_image_digest_resolutions_total`
+**Type:** Counter  
+**Labels:** `outcome`, `namespace`  
+**Description:** Attempts to resolve a `targetImageDigestURL`, by how they ended.
+
+**Outcomes:**
+- `success` - the file named the image and its digest is pinned
+- `invalid_spec` - the spec cannot resolve whatever the server says, so nothing was fetched: the URL is not `https://` or carries credentials, `targetImageURL` has no file name, or neither digest field is set
+- `fetch_error` - no response came back: the host name does not resolve (`cannot resolve the host name`), the connection failed (`cannot connect`), or the request failed some other way (`request failed`)
+- `tls_error` - the server's certificate is not trusted, is for another host or is expired, or the server does not speak TLS (`TLS certificate ...`, `not an HTTPS server`)
+- `timeout` - the attempt hit its 10 second cap (`timed out after 10s`), connecting, waiting for the answer or reading the body
+- `redirect_refused` - the server redirected to another scheme, host or port, or more than three times
+- `http_status` - the server answered with anything but `200` (`HTTP <code>`)
+- `too_large` - the checksum file is over 64 KiB
+- `no_entry` - the file has no entry for the image's file name (`no entry for "<name>"`)
+- `invalid_entry` - the file has an entry for the image that cannot be relied on: not a SHA-256 digest, or two entries that disagree
+- `canceled` - the manager's own context ended the attempt (it is shutting down); not a fault of the file or the server
+
+Every outcome but `success` leaves the machine at `WaitingForTargetImageDigest`; the condition message says which one (see [Troubleshooting](troubleshooting.md#18-beskar7machine-reports-waitingfortargetimagedigest)).
+
+#### `beskar7_controller_target_image_digest_resolution_duration_seconds`
+**Type:** Histogram  
+**Labels:** `outcome`, `namespace`  
+**Description:** How long one attempt took, from the start of the fetch to its outcome, so that a histogram's `_count` equals the matching counter series.
+
+**Buckets:** 0.05s, 0.1s, 0.25s, 0.5s, 1s, 2.5s, 5s, 7.5s, 10s, 12.5s
+
+An attempt is capped at 10 seconds and ends a few milliseconds past it, so a `timeout` is counted in the 12.5s bucket. A healthy checksum server answers in well under a second; a `success` that creeps towards the cap is a server about to start timing out.
+
 ## Setting Up Monitoring
 
 ### Prerequisites
@@ -249,7 +285,25 @@ Create dashboards to visualize:
   for: 10m
   annotations:
     summary: "Slow machine provisioning times"
+
+# A checksum file (spec.targetImageDigestURL) that does not resolve
+- alert: Beskar7TargetImageDigestNotResolving
+  expr: sum by (namespace, outcome) (increase(beskar7_controller_target_image_digest_resolutions_total{outcome!~"success|canceled"}[15m])) > 0
+  annotations:
+    summary: "A Beskar7Machine cannot resolve its targetImageDigestURL ({{ $labels.outcome }} in {{ $labels.namespace }})"
+
+# A checksum server that answers slowly (the attempt is capped at 10s)
+- alert: Beskar7SlowChecksumServer
+  expr: histogram_quantile(0.95, sum by (le) (rate(beskar7_controller_target_image_digest_resolution_duration_seconds_bucket{outcome="success"}[1h]))) > 5
+  for: 30m
+  annotations:
+    summary: "Checksum fetches for targetImageDigestURL are slow"
 ```
+
+> A counter series starts at its first attempt, and `increase()` does not see that first sample. A machine that
+> keeps failing retries every 30 seconds to 5 minutes, so `Beskar7TargetImageDigestNotResolving` fires at the
+> next attempt. Attempts are rare (one per machine, plus retries), so the p95 in `Beskar7SlowChecksumServer` is
+> noisy on a small cluster; alert on `outcome="timeout"` instead if that bothers you.
 
 > The controller-runtime workqueue already exports requeue and workqueue-depth metrics
 > (`workqueue_*`, `controller_runtime_reconcile_total{result="requeue"}`); alert on those
@@ -274,6 +328,12 @@ Create dashboards to visualize:
 1. Monitor `beskar7_controller_physicalhost_availability`
 2. Check distribution of `beskar7_controller_physicalhost_states_total`
 3. Look for stuck hosts in `provisioning` or `error` states
+
+### Machines Stuck at `WaitingForTargetImageDigest`
+
+1. Check `beskar7_controller_target_image_digest_resolutions_total` by `outcome` and `namespace`: a rising `http_status`, `tls_error` or `no_entry` points at the checksum file or its server, `timeout` and `fetch_error` at the path from the manager pod to it, `invalid_spec` at the machine's own spec
+2. Read the condition message on an affected `Beskar7Machine` for the exact reason (it names the checksum server's host, which the metric deliberately does not); [Troubleshooting](troubleshooting.md#18-beskar7machine-reports-waitingfortargetimagedigest) maps each message to a fix
+3. Compare `beskar7_controller_target_image_digest_resolution_duration_seconds` for `success` against the 10 second cap
 
 ### Cluster Issues
 

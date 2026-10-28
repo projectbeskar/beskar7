@@ -6,6 +6,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **Metrics for resolving `spec.targetImageDigestURL` (D-038).** Operators can now alert on a checksum file
+  that does not resolve, and on a checksum server that answers slowly, without reading every machine's
+  condition. `beskar7_controller_target_image_digest_resolutions_total{outcome,namespace}` counts attempts, and
+  `beskar7_controller_target_image_digest_resolution_duration_seconds{outcome,namespace}` times them (buckets
+  from 50 ms to 12.5 s around the fetch's 10 s cap). `outcome` is one of `success`, `invalid_spec`,
+  `fetch_error`, `tls_error`, `timeout`, `redirect_refused`, `http_status`, `too_large`, `no_entry`,
+  `invalid_entry` and `canceled`; the URL, its host, the image's file name and the digest are never labels. One
+  attempt is one fetch: a reconcile that finds the digest already pinned, a machine waiting out its backoff, and
+  a machine that sets `spec.targetImageDigest` count nothing. No CRD, API, RBAC or chart change. See
+  [`docs/metrics.md`](docs/metrics.md#target-image-digest-metrics), which also has example alerts.
+
 ### Security
 
 - **A callback-only instance (`--controllers=none`) no longer lists or watches Secrets, and its Role drops `list`

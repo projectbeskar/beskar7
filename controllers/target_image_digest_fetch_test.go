@@ -20,18 +20,23 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 )
 
 // The checksum fetch behind spec.targetImageDigestURL (D-038): what it reads,
@@ -581,3 +586,91 @@ func (b *endsCleanlyAtDeadline) Read(p []byte) (int, error) {
 	b.done = true
 	return copy(p, b.data), io.EOF
 }
+
+var _ = Describe("Telling failed fetches apart for the resolution metric (D-038)", func() {
+	DescribeTable("names the failure of a request by its kind, and in fixed wording",
+		func(err error, wantOutcome internalmetrics.DigestResolutionOutcome, wantReason string) {
+			outcome, reason := describeFetchError(err)
+			Expect(outcome).To(Equal(wantOutcome))
+			Expect(reason).To(Equal(wantReason))
+		},
+		Entry("a redirect off the origin", &url.Error{Op: "Get", URL: "https://sums.example.invalid/", Err: errRedirectOffHost},
+			internalmetrics.DigestResolutionRedirectRefused, "redirect to another host refused"),
+		Entry("a fourth redirect", &url.Error{Op: "Get", URL: "https://sums.example.invalid/", Err: errTooManyRedirects},
+			internalmetrics.DigestResolutionRedirectRefused, "more than 3 redirects"),
+		Entry("a certificate from an unknown authority", &url.Error{Op: "Get", Err: x509.UnknownAuthorityError{}},
+			internalmetrics.DigestResolutionTLSError, "TLS certificate not trusted"),
+		Entry("a certificate for another host", &url.Error{Op: "Get", Err: x509.HostnameError{Certificate: &x509.Certificate{}, Host: "sums.example.invalid"}},
+			internalmetrics.DigestResolutionTLSError, "TLS certificate is for a different host"),
+		Entry("an expired certificate", &url.Error{Op: "Get", Err: x509.CertificateInvalidError{Reason: x509.Expired}},
+			internalmetrics.DigestResolutionTLSError, "TLS certificate is expired or not valid"),
+		Entry("a server that is not speaking TLS", &url.Error{Op: "Get", Err: tls.RecordHeaderError{}},
+			internalmetrics.DigestResolutionTLSError, "not an HTTPS server"),
+		Entry("the standard library's message for a plain-HTTP server", errors.New("http: server gave HTTP response to HTTPS client"),
+			internalmetrics.DigestResolutionTLSError, "not an HTTPS server"),
+		Entry("the request's deadline", &url.Error{Op: "Get", Err: context.DeadlineExceeded},
+			internalmetrics.DigestResolutionTimeout, "timed out after 10s"),
+		Entry("an i/o timeout", &url.Error{Op: "Get", Err: &net.OpError{Op: "read", Err: os.ErrDeadlineExceeded}},
+			internalmetrics.DigestResolutionTimeout, "timed out after 10s"),
+		Entry("a canceled request", &url.Error{Op: "Get", Err: context.Canceled},
+			internalmetrics.DigestResolutionCanceled, "request canceled"),
+		Entry("a name that does not resolve", &url.Error{Op: "Get", Err: &net.OpError{Op: "dial", Err: &net.DNSError{Err: "no such host", Name: "sums.example.invalid"}}},
+			internalmetrics.DigestResolutionFetchError, "cannot resolve the host name"),
+		Entry("a refused connection", &url.Error{Op: "Get", Err: &net.OpError{Op: "dial", Err: errors.New("connection refused")}},
+			internalmetrics.DigestResolutionFetchError, "cannot connect"),
+		Entry("anything else", errors.New("something nobody foresaw"),
+			internalmetrics.DigestResolutionFetchError, "request failed"),
+	)
+
+	// What is left of fetchTargetImageDigest's failures is decided where they are
+	// made: each carries the kind the metric labels it with, and none is left
+	// without one (a failure with no outcome would count under an empty label).
+	DescribeTable("gives every failure of the fetch a kind",
+		func(body, imageURL string, wantOutcome internalmetrics.DigestResolutionOutcome) {
+			s := newChecksumServer(servingText(body))
+			DeferCleanup(s.Close)
+			_, err := fetchTargetImageDigest(context.Background(), newChecksumClient(s.pool), s.URL+"/SHA256SUMS", imageURL)
+			Expect(err).NotTo(BeNil())
+			Expect(err.outcome).To(Equal(wantOutcome))
+		},
+		Entry("no entry", gnuLine(digestTestHexA, "other.raw"), digestTestImageURL, internalmetrics.DigestResolutionNoEntry),
+		Entry("conflicting entries", gnuLine(digestTestHexA, digestTestImageName)+gnuLine(digestTestHexB, digestTestImageName),
+			digestTestImageURL, internalmetrics.DigestResolutionInvalidEntry),
+		Entry("an entry that is not a digest", gnuLine("not-a-digest", digestTestImageName),
+			digestTestImageURL, internalmetrics.DigestResolutionInvalidEntry),
+		Entry("an image URL with no file name", gnuLine(digestTestHexA, digestTestImageName),
+			"http://images.example.invalid/os/", internalmetrics.DigestResolutionInvalidSpec),
+	)
+
+	It("kinds a body that only ended at the deadline as a timeout", func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+		DeferCleanup(cancel)
+		client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, ContentLength: -1, Request: req,
+				Body: io.NopCloser(&endsCleanlyAtDeadline{ctx: req.Context(), data: "# slow\n"}),
+			}, nil
+		})}
+		u, perr := url.Parse("https://sums.example.invalid/SHA256SUMS")
+		Expect(perr).NotTo(HaveOccurred())
+
+		_, err := fetchChecksumFile(ctx, client, u)
+
+		Expect(err).NotTo(BeNil())
+		Expect(err.outcome).To(Equal(internalmetrics.DigestResolutionTimeout))
+	})
+
+	It("kinds a body over the cap as too_large, and any status but 200 as http_status", func() {
+		s := newChecksumServer(servingText(strings.Repeat("#", digestFetchMaxBytes+1)))
+		DeferCleanup(s.Close)
+		_, err := fetchTargetImageDigest(context.Background(), newChecksumClient(s.pool), s.URL+"/SHA256SUMS", digestTestImageURL)
+		Expect(err).NotTo(BeNil())
+		Expect(err.outcome).To(Equal(internalmetrics.DigestResolutionTooLarge))
+
+		noContent := newChecksumServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		DeferCleanup(noContent.Close)
+		_, err = fetchTargetImageDigest(context.Background(), newChecksumClient(noContent.pool), noContent.URL+"/SHA256SUMS", digestTestImageURL)
+		Expect(err).NotTo(BeNil())
+		Expect(err.outcome).To(Equal(internalmetrics.DigestResolutionHTTPStatus))
+	})
+})

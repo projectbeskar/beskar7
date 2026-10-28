@@ -897,6 +897,9 @@ host is claimed until the digest resolves. The reason says which:
 | `timed out after 10s`, `cannot connect`, `cannot resolve the host name` | The path from the manager pod to the server. The chart's NetworkPolicy allows TCP 443 and 8443; another port needs a rule ([Security Configuration → NetworkPolicy](security/configuration.md#networkpolicy)). The manager's `HTTPS_PROXY` and `NO_PROXY` apply. |
 | `targetImageDigestURL must not contain credentials`, `is not an https URL` | The URL carries `user:password@` or is not `https://`. |
 
+Each failed attempt is also counted by kind in `beskar7_controller_target_image_digest_resolutions_total`, so an
+alert can fire without anyone reading the message ([Metrics → Target Image Digest Metrics](metrics.md#target-image-digest-metrics)).
+
 The message never repeats what the server sent, so a surprising answer has to be looked at from outside:
 
 ```bash

@@ -28,11 +28,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	utilrand "k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -45,6 +48,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
@@ -593,7 +597,314 @@ var _ = Describe("Beskar7Machine naming its image digest by URL (D-038)", func()
 		}
 		Expect(plain.hits.Load()).To(BeZero())
 	})
+
+	// ── the resolution metrics ───────────────────────────────────────────────
+
+	// The series are process-global and other specs resolve digests too, so each
+	// spec reads the series of a namespace nothing else uses: that is the only way
+	// to say "exactly this, and nothing else".
+	Describe("counting and timing each attempt to resolve the digest", func() {
+		var ns string
+
+		BeforeEach(func() { ns = "digest-metrics-" + utilrand.String(6) })
+
+		inNS := func(url string) *infrav1.Beskar7Machine {
+			b7m := newMachine(url)
+			b7m.Namespace = ns
+			return b7m
+		}
+		expire := func(r *Beskar7MachineReconciler, b7m *infrav1.Beskar7Machine) {
+			GinkgoHelper()
+			key := client.ObjectKeyFromObject(b7m)
+			v, ok := r.digestRetries.Load(key)
+			Expect(ok).To(BeTrue(), "there should be a backoff record to expire")
+			retry, ok := v.(digestRetry)
+			Expect(ok).To(BeTrue())
+			retry.next = time.Now().Add(-time.Second)
+			r.digestRetries.Store(key, retry)
+		}
+		// expectRecorded checks both series: the counter, and the histogram's
+		// _count, which must move with it.
+		expectRecorded := func(want map[string]float64) {
+			GinkgoHelper()
+			Expect(digestResolutions(ns)).To(Equal(want))
+			Expect(digestResolutionObservations(ns)).To(Equal(want), "the histogram moves with the counter")
+		}
+
+		It("counts a digest that resolves once, as success, and times it", func() {
+			s := newChecksumServer(sums(digestTestHexA))
+			DeferCleanup(s.Close)
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(s.URL + "/SHA256SUMS")
+
+			_, err := r.reconcileNormal(ctx, r.Log, b7m, owner)
+
+			Expect(err).NotTo(HaveOccurred())
+			Expect(b7m.Status.TargetImageDigest).To(Equal("sha256:" + digestTestHexA))
+			expectRecorded(map[string]float64{"success": 1})
+			Expect(digestResolutionSeconds(ns)["success"]).To(And(BeNumerically(">", 0), BeNumerically("<", digestFetchTimeout.Seconds())))
+		})
+
+		DescribeTable("counts a digest that does not resolve once, under the kind of failure",
+			func(handler http.Handler, trusted bool, want string) {
+				s := newChecksumServer(handler)
+				DeferCleanup(s.Close)
+				r := newReconciler(newClientWith(), &logCaptureSink{}, nil)
+				if trusted {
+					r.ChecksumRootCAs = s.pool
+				}
+				b7m := inNS(s.URL + "/SHA256SUMS?token=" + digestTestLeakMarker)
+
+				_, err := r.reconcileNormal(ctx, r.Log, b7m, owner)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(conditions.GetReason(b7m, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.WaitingForTargetImageDigestReason))
+				expectRecorded(map[string]float64{want: 1})
+			},
+			Entry("HTTP 404", failsWith(http.StatusNotFound), true, "http_status"),
+			Entry("HTTP 500", failsWith(http.StatusInternalServerError), true, "http_status"),
+			Entry("a body over 64 KiB", oversized, true, "too_large"),
+			Entry("no entry for the image in the file",
+				servingText(gnuLine(digestTestHexB, "other.raw")), true, "no_entry"),
+			Entry("two entries that disagree",
+				servingText(gnuLine(digestTestHexA, digestTestImageName)+gnuLine(digestTestHexB, digestTestImageName)), true, "invalid_entry"),
+			Entry("a digest that is not hex",
+				servingText(gnuLine(digestTestLeakMarker, digestTestImageName)), true, "invalid_entry"),
+			Entry("a digest of the wrong length",
+				servingText(gnuLine(digestTestHexA+digestTestHexA, digestTestImageName)), true, "invalid_entry"),
+			Entry("a certificate the manager does not trust", sums(digestTestHexA), false, "tls_error"),
+			Entry("a redirect to another host", redirectsElsewhere, true, "redirect_refused"),
+			Entry("redirects that never end", redirectsForever, true, "redirect_refused"),
+		)
+
+		DescribeTable("counts a spec that cannot resolve as invalid_spec, with nothing fetched",
+			func(digestURL string, mutate func(*infrav1.Beskar7Machine)) {
+				r := newReconciler(newClientWith(), &logCaptureSink{}, nil)
+				b7m := inNS(digestURL)
+				mutate(b7m)
+
+				_, err := r.reconcileNormal(ctx, r.Log, b7m, owner)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(conditions.GetReason(b7m, infrav1.InfrastructureReadyCondition)).To(Equal(infrav1.WaitingForTargetImageDigestReason))
+				expectRecorded(map[string]float64{"invalid_spec": 1})
+			},
+			Entry("an http URL", "http://sums.example.invalid/SHA256SUMS", func(*infrav1.Beskar7Machine) {}),
+			Entry("a URL with credentials", "https://admin:hunter2@sums.example.invalid/SHA256SUMS", func(*infrav1.Beskar7Machine) {}),
+			Entry("an image URL with no file name", "https://sums.example.invalid/SHA256SUMS",
+				func(b *infrav1.Beskar7Machine) { b.Spec.TargetImageURL = "http://images.example.invalid/os/" }),
+			Entry("neither digest field", "", func(*infrav1.Beskar7Machine) {}),
+		)
+
+		It("counts a refused connection as fetch_error", func() {
+			s := newChecksumServer(sums(digestTestHexA))
+			url := s.URL + "/SHA256SUMS"
+			s.Close()
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(url)
+
+			_, err := r.reconcileNormal(ctx, r.Log, b7m, owner)
+
+			Expect(err).NotTo(HaveOccurred())
+			expectRecorded(map[string]float64{"fetch_error": 1})
+		})
+
+		It("counts a server that does not answer in time as timeout, and times it", func() {
+			release := make(chan struct{})
+			s := newChecksumServer(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+				select {
+				case <-release:
+				case <-req.Context().Done():
+				}
+			}))
+			DeferCleanup(s.Close)
+			DeferCleanup(func() { close(release) })
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(s.URL + "/SHA256SUMS")
+			// The fetch's own cap is 10 seconds; a parent that expires sooner ends it
+			// the same way, without the spec waiting 10 seconds.
+			short, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+			DeferCleanup(cancel)
+
+			_, err := r.reconcileNormal(short, r.Log, b7m, owner)
+
+			Expect(err).NotTo(HaveOccurred())
+			expectRecorded(map[string]float64{"timeout": 1})
+			Expect(digestResolutionSeconds(ns)["timeout"]).To(And(BeNumerically(">=", 0.19), BeNumerically("<", 5)))
+		})
+
+		It("counts an attempt the manager itself cut short as canceled, not as a fault of the server", func() {
+			s := newChecksumServer(sums(digestTestHexA))
+			DeferCleanup(s.Close)
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(s.URL + "/SHA256SUMS")
+			stopped, cancel := context.WithCancel(ctx)
+			cancel()
+
+			_, err := r.reconcileNormal(stopped, r.Log, b7m, owner)
+
+			Expect(err).NotTo(HaveOccurred())
+			expectRecorded(map[string]float64{"canceled": 1})
+		})
+
+		It("counts each fetch and only fetches: not a pass inside the backoff, not one that finds the pin", func() {
+			var body atomic.Value
+			body.Store("# nothing yet\n")
+			s := newChecksumServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, body.Load())
+			}))
+			DeferCleanup(s.Close)
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(s.URL + "/SHA256SUMS")
+			reconcile := func() {
+				GinkgoHelper()
+				_, err := r.reconcileNormal(ctx, r.Log, b7m, owner)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			reconcile()
+			expectRecorded(map[string]float64{"no_entry": 1})
+
+			By("reconciling again inside the backoff window, as an event on the machine does")
+			reconcile()
+			reconcile()
+			expectRecorded(map[string]float64{"no_entry": 1})
+			Expect(s.hits.Load()).To(Equal(int32(1)))
+
+			By("the window passing, the file still unfixed")
+			expire(r, b7m)
+			reconcile()
+			expectRecorded(map[string]float64{"no_entry": 2})
+
+			By("the window passing, the file fixed")
+			body.Store(gnuLine(digestTestHexA, digestTestImageName))
+			expire(r, b7m)
+			reconcile()
+			expectRecorded(map[string]float64{"no_entry": 2, "success": 1})
+			Expect(s.hits.Load()).To(Equal(int32(3)))
+
+			By("the passes that follow, from the pin")
+			for range 3 {
+				_, proceed, err := r.ensureTargetImageDigest(ctx, r.Log, b7m)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(proceed).To(BeTrue())
+			}
+			expectRecorded(map[string]float64{"no_entry": 2, "success": 1})
+			Expect(s.hits.Load()).To(Equal(int32(3)))
+		})
+
+		It("counts the fetch once, though a pass that reads a status older than the pin does not fetch again", func() {
+			s := newChecksumServer(sums(digestTestHexA))
+			DeferCleanup(s.Close)
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			url := s.URL + "/SHA256SUMS"
+
+			_, proceed, err := r.ensureTargetImageDigest(ctx, r.Log, inNS(url))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proceed).To(BeFalse())
+			expectRecorded(map[string]float64{"success": 1})
+
+			stale := inNS(url)
+			_, proceed, err = r.ensureTargetImageDigest(ctx, r.Log, stale)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proceed).To(BeFalse())
+			Expect(stale.Status.TargetImageDigest).To(Equal("sha256:"+digestTestHexA), "answered from what the process remembers")
+			expectRecorded(map[string]float64{"success": 1})
+			Expect(s.hits.Load()).To(Equal(int32(1)))
+		})
+
+		It("counts the new URL's fetch when the URL changes before a host is claimed", func() {
+			s := newChecksumServer(sums(digestTestHexB))
+			DeferCleanup(s.Close)
+			r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+			b7m := inNS(s.URL + "/v2/SHA256SUMS")
+			b7m.Status.TargetImageDigest = "sha256:" + digestTestHexA
+			b7m.Status.TargetImageDigestURL = s.URL + "/v1/SHA256SUMS"
+
+			_, _, err := r.ensureTargetImageDigest(ctx, r.Log, b7m)
+
+			Expect(err).NotTo(HaveOccurred())
+			expectRecorded(map[string]float64{"success": 1})
+		})
+
+		DescribeTable("counts nothing when there is nothing to resolve",
+			func(setup func(*infrav1.Beskar7Machine)) {
+				s := newChecksumServer(sums(digestTestHexB))
+				DeferCleanup(s.Close)
+				r := newReconciler(newClientWith(), &logCaptureSink{}, s)
+				b7m := inNS(s.URL + "/SHA256SUMS")
+				setup(b7m)
+
+				_, proceed, err := r.ensureTargetImageDigest(ctx, r.Log, b7m)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(proceed).To(BeTrue())
+				Expect(s.hits.Load()).To(BeZero(), "no fetch")
+				Expect(digestResolutions(ns)).To(BeEmpty())
+				Expect(digestResolutionObservations(ns)).To(BeEmpty())
+			},
+			Entry("the digest is already pinned from this URL", func(b *infrav1.Beskar7Machine) {
+				b.Status.TargetImageDigest = "sha256:" + digestTestHexA
+				b.Status.TargetImageDigestURL = b.Spec.TargetImageDigestURL
+			}),
+			Entry("the spec names the digest", func(b *infrav1.Beskar7Machine) {
+				b.Spec.TargetImageDigestURL = ""
+				b.Spec.TargetImageDigest = "sha256:" + digestTestHexC
+			}),
+			Entry("the machine's host has been Ready", func(b *infrav1.Beskar7Machine) {
+				b.Spec.ProviderID = providerID(ns, "ready-host")
+			}),
+		)
+	})
 })
+
+// digestMetric reads one value per `outcome` label from the series of ns in c.
+func digestMetric(c prometheus.Collector, ns string, value func(*dto.Metric) float64) map[string]float64 {
+	GinkgoHelper()
+	series := make(chan prometheus.Metric)
+	go func() {
+		defer close(series)
+		c.Collect(series)
+	}()
+	out := map[string]float64{}
+	var writeErr error
+	for m := range series {
+		pb := &dto.Metric{}
+		if err := m.Write(pb); err != nil {
+			writeErr = err
+			continue
+		}
+		labels := map[string]string{}
+		for _, l := range pb.GetLabel() {
+			labels[l.GetName()] = l.GetValue()
+		}
+		if labels["namespace"] == ns {
+			out[labels["outcome"]] = value(pb)
+		}
+	}
+	Expect(writeErr).NotTo(HaveOccurred())
+	return out
+}
+
+// digestResolutions is the resolution counter's value per outcome, for ns.
+func digestResolutions(ns string) map[string]float64 {
+	GinkgoHelper()
+	return digestMetric(internalmetrics.TargetImageDigestResolutionsTotal, ns, func(m *dto.Metric) float64 { return m.GetCounter().GetValue() })
+}
+
+// digestResolutionObservations is how many attempts the duration histogram holds
+// per outcome, for ns.
+func digestResolutionObservations(ns string) map[string]float64 {
+	GinkgoHelper()
+	return digestMetric(internalmetrics.TargetImageDigestResolutionDuration, ns, func(m *dto.Metric) float64 { return float64(m.GetHistogram().GetSampleCount()) })
+}
+
+// digestResolutionSeconds is the total time the duration histogram holds per
+// outcome, for ns.
+func digestResolutionSeconds(ns string) map[string]float64 {
+	GinkgoHelper()
+	return digestMetric(internalmetrics.TargetImageDigestResolutionDuration, ns, func(m *dto.Metric) float64 { return m.GetHistogram().GetSampleSum() })
+}
 
 // ── /boot renders the effective digest ───────────────────────────────────────
 
