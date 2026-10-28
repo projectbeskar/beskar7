@@ -123,11 +123,11 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 
 ## Deletion
 
-`reconcileDelete` removes the finalizer and lets Kubernetes garbage-collect the host. The PhysicalHost reconciler does NOT call Redfish during deletion; that is the job of the consuming `Beskar7Machine` (best-effort `ClearBootSourceOverride` and a power-off before clearing `ConsumerRef`: graceful, or forced for a host released mid-run — see [Beskar7Machine → Deletion](beskar7machine.md#deletion)). If a host is deleted while still claimed, the controller emits a warning event but does not block.
+`reconcileDelete` removes the finalizer and lets Kubernetes garbage-collect the host. The PhysicalHost reconciler does NOT call Redfish during deletion; that is the job of the consuming `Beskar7Machine` (best-effort `ClearBootSourceOverride` and a power-off before clearing `ConsumerRef`: graceful and confirmed, or forced for a host released mid-run — see [Beskar7Machine → Deletion](beskar7machine.md#deletion); the claim is held until the host is off, so the host is not `Available` before then). If a host is deleted while still claimed, the controller emits a warning event but does not block.
 
 ## Operator escape hatches
 
-- **Force release:** Set `infrastructure.cluster.x-k8s.io/force-release: "true"` on the consuming `Beskar7Machine` before deletion. The Beskar7Machine controller will skip the BMC power-off / boot-clear during release. Use only when the BMC is permanently unreachable.
+- **Force release:** Set `infrastructure.cluster.x-k8s.io/force-release: "true"` on the consuming `Beskar7Machine` before deletion. The Beskar7Machine controller will skip the BMC power-off / boot-clear during release, and stops waiting for a host it is already shutting down. Use only when the BMC is permanently unreachable.
 
 ## Example
 

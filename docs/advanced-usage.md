@@ -92,11 +92,11 @@ Hosts without the label are not part of any failure domain; the reconciler ignor
 A normal Beskar7Machine deletion runs:
 
 1. Best-effort `ClearBootSourceOverride` on the BMC.
-2. Best-effort graceful `SetPowerState(Off)`.
+2. Best-effort graceful `SetPowerState(Off)`, followed until the host reads `Off`: a host that is still on 90 seconds after the BMC accepted the request is forced off (`ForcePowerOff`). A host released mid-run is forced off at once.
 3. Patch `ConsumerRef = nil` on the host.
 4. Remove the finalizer.
 
-Steps 1 and 2 can take time if the BMC is unreachable (the controller logs and swallows errors so a dead BMC cannot strand the finalizer; the timeouts come from `internal/redfish/gofish_client.go:newHTTPClient`). To skip the BMC steps entirely:
+Steps 1 and 2 can take time if the BMC is unreachable (the controller logs and swallows errors so a dead BMC cannot strand the finalizer; the timeouts come from `internal/redfish/gofish_client.go:newHTTPClient`). Once the BMC has accepted the shutdown, an unreachable BMC holds the deletion for at most 2 minutes from the request, after which the host is released unconfirmed. To skip the BMC steps entirely, and end such a wait:
 
 ```bash
 kubectl annotate beskar7machine <name> \

@@ -95,6 +95,30 @@ const (
 	// during deletion. Use only when the BMC is permanently unreachable.
 	ForceReleaseAnnotation = "infrastructure.cluster.x-k8s.io/force-release"
 
+	// ReleasePowerOffRequestedAnnotation is set by the controller on a
+	// Beskar7Machine being deleted, to the time (RFC 3339) the BMC accepted the
+	// graceful shutdown of the host it is releasing while the host was still
+	// on. It keeps the machine's finalizer, and so the host's claim, until the
+	// host is off or the controller has forced it off (releaseHostPower), and
+	// it carries the grace period across a manager restart.
+	ReleasePowerOffRequestedAnnotation = "infrastructure.cluster.x-k8s.io/release-power-off-requested-at"
+
+	// releaseShutdownGrace is how long a released host gets to reach Off after
+	// the BMC accepted its graceful shutdown. A host released soon after it
+	// booted its OS can lose the request: the guest is not handling ACPI yet,
+	// and nothing sends it again.
+	releaseShutdownGrace = 90 * time.Second
+
+	// releaseForceOffWindow is how long past releaseShutdownGrace the
+	// controller keeps retrying a ForcePowerOff the BMC refuses, or a BMC it
+	// cannot reach, before it releases the host anyway.
+	releaseForceOffWindow = 30 * time.Second
+
+	// releasePowerPollInterval is how often a pending release reads the host's
+	// power state. The wait is a timer, not a watch: the power state lives on
+	// the BMC, and nothing in the cluster changes when the host goes off.
+	releasePowerPollInterval = 5 * time.Second
+
 	// PhysicalHostStateIndex is the cache field index key for PhysicalHost.Status.State.
 	// Registered in SetupWithManager; used in findAndClaimOrGetAssociatedHost to filter
 	// Available hosts server-side instead of listing all hosts and filtering in Go.
@@ -1514,7 +1538,9 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 
 // reconcileDelete handles deletion. The sequence is:
 //  1. Locate the PhysicalHost this machine claimed (by ConsumerRef ownership).
-//  2. Best-effort Redfish cleanup (ClearBootSourceOverride + graceful power-off).
+//  2. Best-effort Redfish cleanup: ClearBootSourceOverride and a power-off,
+//     which for a graceful one is confirmed before the host is released
+//     (releaseHostPower).
 //  3. Patch ConsumerRef = nil on the PhysicalHost spec.
 //  4. Remove the Beskar7Machine finalizer.
 //
@@ -1528,6 +1554,11 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 // permanently unreachable) or when the credentials Secret no longer exists.
 // Neither case strands the finalizer: errors from Redfish are logged and
 // swallowed so that a dead BMC cannot block object deletion.
+//
+// While a graceful shutdown is unconfirmed the pass returns a RequeueAfter with
+// the claim and the finalizer in place, so the host cannot be claimed, and
+// powered on for the next machine, while a force-off for the last one is still
+// to come.
 func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (ctrl.Result, error) {
 	logger.Info("Reconciling deletion")
 	r.forgetTargetImageDigest(client.ObjectKeyFromObject(b7machine))
@@ -1550,9 +1581,8 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 			forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
 			if forceRelease {
 				logger.Info("ForceReleaseAnnotation set; skipping Redfish power-off and boot-override clear")
-			} else {
-				// Best-effort Redfish cleanup. Errors are logged but do not block release.
-				r.bestEffortReleaseRedfish(ctx, logger, host)
+			} else if wait := r.releaseHostPower(ctx, logger, b7machine, host); wait > 0 {
+				return ctrl.Result{RequeueAfter: wait}, nil
 			}
 			// Always clear ConsumerRef on the host spec.
 			base := host.DeepCopy()
@@ -1650,28 +1680,43 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 	return nil, nil
 }
 
-// bestEffortReleaseRedfish issues ClearBootSourceOverride and a power-off
-// against the host's BMC: graceful, unless the host was released mid-run. All
-// errors are logged at Info and swallowed so a dead BMC cannot strand the
-// Beskar7Machine finalizer.
-// Missing credentials, or a credentials Secret that does not authorise the
-// host's address (D-030), are treated identically — log and return.
-func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost) {
+// releaseHostPower issues ClearBootSourceOverride and a power-off against the
+// BMC of a host this Beskar7Machine is releasing, and reports how long to wait
+// before looking again, or zero once the host may be released.
+//
+// A host released mid-run is forced off and released at once: it is running the
+// inspector, which has nothing that acts on the ACPI power button, and nothing
+// on it needs a clean shutdown. Any other host is shut down gracefully, and a
+// graceful shutdown is only a request. A host released soon after its OS booted
+// can lose it, and the host then stays on indefinitely, where its kubelet can
+// register a Node into the cluster the Machine was just removed from. So a
+// request the BMC accepted is followed until the host reads Off
+// (confirmReleasedHostOff), and forced after releaseShutdownGrace if it does not.
+//
+// Every failure is logged at Info and swallowed, never returned, so a dead BMC
+// cannot strand the Beskar7Machine finalizer: one before the request was
+// accepted releases the host at once, as it always has, and one while the
+// request is being followed is retried until releaseForceOffWindow past the
+// grace. Missing credentials, or a credentials Secret that does not authorise
+// the host's address (D-030), are treated like the former either way.
+func (r *Beskar7MachineReconciler) releaseHostPower(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost) time.Duration {
+	if requestedAt, ok := releasePowerOffRequestedAt(b7machine); ok {
+		return r.confirmReleasedHostOff(ctx, logger, b7machine, host, requestedAt)
+	}
+
 	rfClient, err := r.getRedfishClientForHost(ctx, logger, host)
 	if err != nil {
 		logger.Info("Could not get Redfish client during release; skipping power-off and boot clear", "err", err)
-		return
+		return 0
 	}
 	defer rfClient.Close(ctx)
 
 	if err := rfClient.ClearBootSourceOverride(ctx); err != nil {
 		logger.Info("Failed to clear boot source override during release; continuing", "err", err)
 	}
+	midRun := releasedMidRun(host)
 	how := "graceful"
-	if releasedMidRun(host) {
-		// The host is running the inspector, which has nothing that acts on the
-		// ACPI power button a graceful shutdown presses, so it would stay on.
-		// Nothing on it needs a clean shutdown: the run is abandoned.
+	if midRun {
 		how = "forced"
 		err = rfClient.ForcePowerOff(ctx)
 	} else {
@@ -1680,9 +1725,100 @@ func (r *Beskar7MachineReconciler) bestEffortReleaseRedfish(ctx context.Context,
 	if err != nil {
 		logger.Info("Failed to power off during release; continuing", "powerOff", how, "err", err)
 		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeFailed)
-	} else {
-		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
+		return 0
 	}
+	internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
+	if midRun {
+		return 0
+	}
+
+	if state, err := rfClient.GetPowerState(ctx); err == nil && state == schemas.OffPowerState {
+		return 0
+	}
+	setReleasePowerOffRequestedAt(b7machine, time.Now())
+	logger.Info("Graceful shutdown requested; keeping the host claimed until it is off", "host", host.Name, "grace", releaseShutdownGrace)
+	return releasePowerPollInterval
+}
+
+// confirmReleasedHostOff is the pass of a release that follows a graceful
+// shutdown the BMC accepted at requestedAt. It reports how long to wait before
+// the next pass, or zero once the host may be released: it reads Off, the
+// ForcePowerOff that followed a missed grace period was accepted, the BMC could
+// not be made to answer for releaseShutdownGrace + releaseForceOffWindow, or its
+// credentials no longer authorise a connection.
+//
+// The deadlines are measured from requestedAt, which the Beskar7Machine carries
+// (ReleasePowerOffRequestedAnnotation), so a manager restart does not restart
+// them. An annotation dated in the future (a clock stepped back, a hand edit) is
+// taken as now, so it cannot hold the claim longer than the bound.
+func (r *Beskar7MachineReconciler) confirmReleasedHostOff(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost, requestedAt time.Time) time.Duration {
+	now := time.Now()
+	if requestedAt.After(now) {
+		requestedAt = now
+		setReleasePowerOffRequestedAt(b7machine, now)
+	}
+	waited := now.Sub(requestedAt)
+	if waited >= releaseShutdownGrace+releaseForceOffWindow {
+		logger.Info("Could not confirm the released host is off in time; releasing it anyway", "host", host.Name, "waited", waited.Round(time.Second))
+		return 0
+	}
+
+	rfClient, err := r.getRedfishClientForHost(ctx, logger, host)
+	if err != nil {
+		var refusal *bmcAccessError
+		if errors.As(err, &refusal) {
+			logger.Info("Cannot reach the released host's BMC, and nothing will change that by waiting; releasing it without confirming it is off", "host", host.Name, "err", err)
+			return 0
+		}
+		logger.Info("Could not get Redfish client while waiting for the released host to power off; will retry", "host", host.Name, "err", err)
+		return releasePowerPollInterval
+	}
+	defer rfClient.Close(ctx)
+
+	state, err := rfClient.GetPowerState(ctx)
+	switch {
+	case err != nil:
+		logger.Info("Could not read the released host's power state; will retry", "host", host.Name, "err", err)
+		return releasePowerPollInterval
+	case state == schemas.OffPowerState:
+		logger.Info("Released host is off", "host", host.Name, "waited", waited.Round(time.Second))
+		return 0
+	case waited < releaseShutdownGrace:
+		logger.V(1).Info("Released host is still shutting down", "host", host.Name, "state", string(state), "waited", waited.Round(time.Second))
+		return releasePowerPollInterval
+	}
+
+	logger.Info("Released host did not act on the graceful shutdown; forcing it off", "host", host.Name, "state", string(state), "waited", waited.Round(time.Second))
+	if err := rfClient.ForcePowerOff(ctx); err != nil {
+		logger.Info("Failed to force the released host off; will retry", "host", host.Name, "err", err)
+		internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeFailed)
+		return releasePowerPollInterval
+	}
+	internalmetrics.RecordPhysicalHostPowerOperation(internalmetrics.PowerOperationOff, host.Namespace, internalmetrics.ProvisioningOutcomeSuccess)
+	return 0
+}
+
+// releasePowerOffRequestedAt returns the time ReleasePowerOffRequestedAnnotation
+// records on b7machine. An annotation that is absent or not a time reads as
+// unset, so a release that finds a bad one sends the request again and writes a
+// good one.
+func releasePowerOffRequestedAt(b7machine *infrav1.Beskar7Machine) (time.Time, bool) {
+	raw, ok := b7machine.Annotations[ReleasePowerOffRequestedAnnotation]
+	if !ok {
+		return time.Time{}, false
+	}
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return at, true
+}
+
+func setReleasePowerOffRequestedAt(b7machine *infrav1.Beskar7Machine, at time.Time) {
+	if b7machine.Annotations == nil {
+		b7machine.Annotations = map[string]string{}
+	}
+	b7machine.Annotations[ReleasePowerOffRequestedAnnotation] = at.UTC().Format(time.RFC3339)
 }
 
 // releasedMidRun reports whether a host being released was in a provisioning

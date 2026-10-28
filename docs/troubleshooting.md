@@ -915,6 +915,20 @@ deleted. A `MachineHealthCheck` sees this like any other time before the machine
 A machine that already holds a host keeps the digest it pinned when you change the URL, and logs
 `keeping the pinned digest`; to use the new URL, delete the machine and let its owner replace it.
 
+### 19. Deleting a Beskar7Machine takes up to two minutes
+
+**Symptom:** a `Beskar7Machine` that is being deleted (and with it the `Machine` that owns it) stays in `Terminating` for tens of seconds, up to two minutes, and its `PhysicalHost` still names it as `spec.consumerRef`, in state `Ready`. The `Beskar7Machine` carries the annotation `infrastructure.cluster.x-k8s.io/release-power-off-requested-at`.
+
+**Cause:** nothing is wrong. The controller asked the host's BMC for a graceful shutdown and is waiting for the host to read `Off` before it releases the claim, so that the next machine to claim the host cannot race a power-off still in flight, and a host that ignored the request does not stay on with its kubelet running. See [Beskar7Machine → Deletion](beskar7machine.md#deletion). The controller reads the power state every 5 seconds and:
+
+| What happens | Result |
+|---|---|
+| The host reads `Off` | The host is released at once. This is the usual case; the wait is as long as the OS takes to shut down. |
+| The host is still on 90 seconds after the request | `ForcePowerOff` is sent once (log: `Released host did not act on the graceful shutdown; forcing it off`) and the host is released. |
+| The BMC cannot be reached, or refuses `ForcePowerOff` | Retried every 5 seconds. 30 seconds after the 90 the host is released anyway (log: `Could not confirm the released host is off in time; releasing it anyway`). The host may still be on: power it off out-of-band. |
+
+**Solution:** none is needed. If the BMC is permanently unreachable, skip the wait with the [force-release annotation](state-management.md#force-release) before deleting the machine. A machine that was deleted while `Inspecting`, `Deploying` or in `Error` is forced off and released at once and never waits.
+
 ## Getting Help
 
 If you can't resolve your issue:
