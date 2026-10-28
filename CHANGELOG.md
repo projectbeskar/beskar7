@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Security
+
+- **A callback-only instance (`--controllers=none`) no longer lists or watches Secrets, and its Role drops `list`
+  and `watch` on `secrets` (CALLBACK-SECRET-READ).** The instance read Secrets through the manager's cache, so its
+  first Secret read started a Secret informer. Its Role had to grant `get`, `list` and `watch` on `secrets`, and
+  the process held every Secret of its watched namespaces in memory, among them the cluster CA and kubeconfig
+  Secrets CAPI keeps next to the Machines. A callback-only manager now excludes Secrets from its client's cache:
+  the bearer verifier, `/boot` and `/bootstrap` read the `<host>-bootstrap-token` and bootstrap-data Secrets from
+  the API server, one object at a time, and `SetupCallbackServer` no longer pre-warms a Secret informer.
+  `config/rbac/callback-only/watched-namespace/role.yaml` grants `get` on `secrets` and nothing else on them: the
+  identity can still read a Secret whose name it knows, but it can no longer list or watch them. Each callback
+  request now costs up to three single-object Secret reads of the API server. The full manager is unchanged: its
+  reconcilers watch Secrets and keep the cache. No CRD, API, contract or chart change.
+
+  **Upgrade note: upgrade the callback-only instance to this release before applying the tightened Role.** An
+  instance on `v0.10.2` or earlier still caches Secrets, so under a Role that grants only `get` its Secret
+  informer is forbidden, its cache never syncs and its callback routes stop answering. A new instance under the
+  old Role works, so the order is instance first, then `kubectl apply -n <namespace> -k
+  config/rbac/callback-only/watched-namespace` in each watched namespace. Nothing changes for an install without a
+  callback-only instance. See
+  [`docs/upgrading.md`](docs/upgrading.md#v0102--unreleased--a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role).
+
 ## [v0.10.2] - 2026-10-10
 
 Security release. The images are built with Go 1.27.2 and `golang.org/x/net` v0.60.0, which fix 13 advisories in

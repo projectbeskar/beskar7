@@ -43,11 +43,14 @@ const (
 )
 
 // callbackOnlyRoleWant is every grant the callback-only Role must carry, each
-// with the code that needs it. In callback-only mode the handlers read through
-// the manager's cache, whose informers list and watch; get is listed with them
-// because list already returns every object, so it exposes nothing more.
+// with the code that needs it. In callback-only mode the handlers read
+// everything but Secrets through the manager's cache, whose informers list and
+// watch; get is listed with them because list already returns every object, so
+// it exposes nothing more. Secrets are read live, by name (cmd/manager
+// clientOptions, CALLBACK-SECRET-READ): get alone, because a list or watch
+// would mean the process caches every Secret of the namespace.
 var callbackOnlyRoleWant = map[ruleTriple]string{
-	// SetupCallbackServer pre-warms one informer per kind the handlers read.
+	// SetupCallbackServer pre-warms one informer per cached kind the handlers read.
 	{"infrastructure.cluster.x-k8s.io", "physicalhosts", "get"}:     "every route reads the host (cache)",
 	{"infrastructure.cluster.x-k8s.io", "physicalhosts", "list"}:    "PhysicalHost informer",
 	{"infrastructure.cluster.x-k8s.io", "physicalhosts", "watch"}:   "PhysicalHost informer",
@@ -57,9 +60,7 @@ var callbackOnlyRoleWant = map[ruleTriple]string{
 	{"cluster.x-k8s.io", "machines", "get"}:                         "/bootstrap walks to the owner Machine (cache)",
 	{"cluster.x-k8s.io", "machines", "list"}:                        "Machine informer",
 	{"cluster.x-k8s.io", "machines", "watch"}:                       "Machine informer",
-	{"", "secrets", "get"}:                                          "bearer verifier and /boot read <host>-bootstrap-token; /bootstrap reads Machine.spec.bootstrap.dataSecretName (cache)",
-	{"", "secrets", "list"}:                                         "Secret informer",
-	{"", "secrets", "watch"}:                                        "Secret informer",
+	{"", "secrets", "get"}:                                          "bearer verifier and /boot read <host>-bootstrap-token; /bootstrap reads Machine.spec.bootstrap.dataSecretName (live read)",
 	{"", "configmaps", "get"}:                                       "/inspection CreateOrUpdate reads <host>-inspection-result (cache)",
 	{"", "configmaps", "list"}:                                      "ConfigMap informer",
 	{"", "configmaps", "watch"}:                                     "ConfigMap informer",

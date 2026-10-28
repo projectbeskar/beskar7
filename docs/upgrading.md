@@ -104,6 +104,46 @@ Within a frozen `v4.x` line the changes are additive, so a controller tolerates 
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
+## `v0.10.2` → unreleased — a callback-only instance reads Secrets live; upgrade it before its Role
+
+This applies from the first release after `v0.10.2`. **If you do not run a separate callback-only instance** (the
+second copy of the manager started with `--controllers=none`), there is nothing to do: the controller, the chart
+and the CRDs are unchanged, and so is the controller's RBAC.
+
+A callback-only instance now reads Secrets from the API server one object at a time, by name, instead of through
+the manager's cache. Until now its first Secret read started a Secret informer, so its Role had to grant `list`
+and `watch` on `secrets` and the process held every Secret of its watched namespaces in memory (CAPI keeps each
+cluster's CA and kubeconfig Secrets there). The Role in `config/rbac/callback-only/watched-namespace` now grants
+`get` on `secrets` and nothing else on them.
+
+**Upgrade the callback-only instance to this release before you apply the tightened Role.** An instance on
+`v0.10.2` or earlier still caches Secrets: under a Role that grants only `get`, its Secret informer is forbidden,
+its cache never syncs and its callback routes stop answering, so no host can boot, report or fetch its bootstrap
+data. The other order is safe: the new instance runs under the old Role, which grants more than it uses, so
+leaving the Role as it is only leaves the extra grants in place.
+
+1. Upgrade the instance to this release and restart it. Its flags do not change.
+2. From a checkout of this release, apply the Role in every namespace its `--watch-namespaces` lists:
+
+   ```bash
+   kubectl apply -n <namespace> -k config/rbac/callback-only/watched-namespace
+   ```
+
+   If several callback-only instances share a namespace's Role, upgrade all of them first.
+3. Check the grants (this needs a user who may impersonate):
+
+   ```bash
+   # <namespace> is each namespace from step 2. Expect yes, no, no.
+   for verb in get list watch; do
+     kubectl auth can-i "$verb" secrets -n <namespace> --as=system:serviceaccount:capb7-system:capb7-callback
+   done
+   ```
+
+   Then PXE-boot a host and watch it reach `Ready`; the instance's log should show no `forbidden`.
+
+To go back to `v0.10.2` or earlier, apply that release's `config/rbac/callback-only/watched-namespace` first, then
+move the instance.
+
 ## `v0.10.1` → `v0.10.2` — Go and x/net security fixes; HTTP/1.1 only
 
 `v0.10.2` is a security release. There is **no CRD, API or contract change** (still `v4.2`), no RBAC or

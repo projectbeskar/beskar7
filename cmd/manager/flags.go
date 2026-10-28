@@ -25,6 +25,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // parseWatchNamespaces parses a --watch-namespaces flag value into a
@@ -129,11 +132,11 @@ const (
 
 	// controllersNone is callback-only. The instance registers no reconciler
 	// and no webhook; it serves the host-callback HTTPS endpoints and the
-	// health probes on top of the same cached client the handlers always
-	// use. That lets a copy of the manager sit on the provisioning network
-	// (where PXE-booting hosts can reach it) without competing with the
-	// in-cluster controllers for host claims or for the bootstrap-url
-	// annotation handshake — two full managers race on both.
+	// health probes, reading Secrets live and everything else through the
+	// cache (clientOptions). That lets a copy of the manager sit on the
+	// provisioning network (where PXE-booting hosts can reach it) without
+	// competing with the in-cluster controllers for host claims or for the
+	// bootstrap-url annotation handshake — two full managers race on both.
 	controllersNone controllersMode = "none"
 )
 
@@ -209,4 +212,17 @@ func (c managerConfig) leaderElection() bool {
 		return false
 	}
 	return c.enableLeaderElection
+}
+
+// clientOptions are the options of the manager's client. A callback-only
+// instance reads Secrets live, one object at a time: a cached read starts a
+// Secret informer, whose list and watch would put every Secret of the watched
+// namespaces in this process's memory (CAPI keeps cluster CA and kubeconfig
+// Secrets there) and force its Role to grant both verbs (CALLBACK-SECRET-READ).
+// The full manager keeps the cache, since its reconcilers watch Secrets.
+func (c managerConfig) clientOptions() client.Options {
+	if c.controllers != controllersNone {
+		return client.Options{}
+	}
+	return client.Options{Cache: &client.CacheOptions{DisableFor: []client.Object{&corev1.Secret{}}}}
 }

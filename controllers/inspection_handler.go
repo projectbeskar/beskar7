@@ -520,17 +520,22 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// cannot drive the host to Ready.
 	//
 	// The others matter in callback-only mode (--controllers=none). In the
-	// full manager the reconcilers' watches create the PhysicalHost,
-	// Beskar7Machine and Secret informers at start and the first reconcile
-	// creates the Machine one; with no reconciler registered nothing does,
-	// and every first callback of a kind would pay the same lazy-sync cost.
-	// Calling GetInformer here registers the informers with the cache;
-	// mgr.Start() boots them alongside the other watches. The cache keys
-	// informers by type, so in the full manager these are the ones the
-	// controllers use anyway and nothing extra is created.
+	// full manager the reconcilers' watches create the PhysicalHost and
+	// Beskar7Machine informers at start and the first reconcile creates the
+	// Machine one; with no reconciler registered nothing does, and every
+	// first callback of a kind would pay the same lazy-sync cost. Calling
+	// GetInformer here registers the informers with the cache; mgr.Start()
+	// boots them alongside the other watches. The cache keys informers by
+	// type, so in the full manager these are the ones the controllers use
+	// anyway and nothing extra is created.
+	//
+	// Secrets are left out on purpose. The full manager's PhysicalHost watch
+	// creates that informer, and a callback-only instance reads Secrets live
+	// (cmd/manager clientOptions, CALLBACK-SECRET-READ): an informer
+	// registered here would list and watch every Secret of the watched
+	// namespaces, which its Role does not grant and its process should not hold.
 	for _, obj := range []client.Object{
 		&corev1.ConfigMap{},
-		&corev1.Secret{},
 		&infrav1.PhysicalHost{},
 		&infrav1.Beskar7Machine{},
 		&clusterv1.Machine{},
