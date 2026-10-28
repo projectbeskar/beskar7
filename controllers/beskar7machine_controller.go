@@ -562,8 +562,7 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	default:
 		logger.Info("PhysicalHost in intermediate state", "hostState", physicalHost.Status.State)
 		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "PhysicalHost %q is in state: %s", physicalHost.Name, physicalHost.Status.State)
-		phase := "Pending"
-		b7machine.Status.Phase = &phase
+		b7machine.Status.Phase = ptr.To(infrav1.PhasePending)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 }
@@ -756,8 +755,7 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 		return ctrl.Result{}, err
 	}
 
-	phase := "Inspecting"
-	b7machine.Status.Phase = &phase
+	b7machine.Status.Phase = ptr.To(infrav1.PhaseInspecting)
 	if written {
 		logger.Info("Inspection boot triggered successfully")
 	} else {
@@ -1016,8 +1014,7 @@ func (r *Beskar7MachineReconciler) handleInspectingHost(ctx context.Context, log
 		}
 	}
 
-	phase := "Inspecting"
-	b7machine.Status.Phase = &phase
+	b7machine.Status.Phase = ptr.To(infrav1.PhaseInspecting)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
@@ -1079,8 +1076,7 @@ func (r *Beskar7MachineReconciler) handleDeployingHost(ctx context.Context, logg
 		}
 	}
 
-	phase := "Provisioning"
-	b7machine.Status.Phase = &phase
+	b7machine.Status.Phase = ptr.To(infrav1.PhaseProvisioning)
 	setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "PhysicalHost %q is deploying OS image", physicalHost.Name)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
@@ -1210,8 +1206,7 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	// Without this, CAPI v1.10+ does not advance the Machine past Pending and
 	// the parent Cluster never reaches Available.
 	b7machine.Status.Initialization.Provisioned = ptr.To(true)
-	phase := "Provisioned"
-	b7machine.Status.Phase = &phase
+	b7machine.Status.Phase = ptr.To(infrav1.PhaseProvisioned)
 
 	if firstProvisioning {
 		// Clear the PXE boot-source override so the host boots from disk on the

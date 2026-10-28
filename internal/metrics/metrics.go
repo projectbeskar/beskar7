@@ -21,6 +21,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
+
+	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
 const (
@@ -262,13 +264,17 @@ func RecordError(controller string, namespace string, errorType ErrorType) {
 // PhysicalHost.Status.State. Enumerating them here lets UpdatePhysicalHostStateCounts
 // zero-out states that have dropped to zero rather than leaving stale gauge series.
 var physicalHostCanonicalStates = []string{
-	"", "Unknown", "Enrolling", "Available", "InUse", "Inspecting", "Deploying", "Ready", "Error",
+	infrav1.StateNone, infrav1.StateUnknown, infrav1.StateEnrolling, infrav1.StateAvailable,
+	infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady,
+	infrav1.StateError,
 }
 
 // beskar7MachineCanonicalPhases lists every phase string that can appear in
-// Beskar7Machine.Status.Phase. Same zero-reset rationale as above.
+// Beskar7Machine.Status.Phase; "" counts machines with no phase yet. Same
+// zero-reset rationale as above, and a phase missing here is never exported.
 var beskar7MachineCanonicalPhases = []string{
-	"Pending", "Inspecting", "Provisioned", "Failed",
+	"", infrav1.PhasePending, infrav1.PhaseInspecting, infrav1.PhaseProvisioning,
+	infrav1.PhaseProvisioned, infrav1.PhaseFailed,
 }
 
 // UpdatePhysicalHostStateCounts sets the PhysicalHost state gauge from a precomputed

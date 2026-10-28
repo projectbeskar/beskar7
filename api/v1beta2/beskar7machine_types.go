@@ -33,6 +33,18 @@ const (
 	// BootstrapDataReadyReason (BootstrapDataReady=True): the bootstrap data
 	// Secret exists and the per-host bootstrap URL has been signalled.
 	BootstrapDataReadyReason = "BootstrapDataReady"
+	// PhasePending is the Status.Phase while the claimed PhysicalHost is in a
+	// state the machine waits on, such as InUse before the inspection starts.
+	PhasePending = "Pending"
+	// PhaseInspecting is the Status.Phase while the claimed host boots the
+	// inspector and reports its hardware.
+	PhaseInspecting = "Inspecting"
+	// PhaseProvisioning is the Status.Phase while the inspector writes the image
+	// to the claimed host.
+	PhaseProvisioning = "Provisioning"
+	// PhaseProvisioned is the Status.Phase once the host is Ready and the machine
+	// reports Ready and the ProviderID.
+	PhaseProvisioned = "Provisioned"
 	// PhaseFailed is the Status.Phase of a machine that hit a terminal failure.
 	// It is the terminal marker: the controller stops reconciling such a machine
 	// (deletion still works), and Ready/InfrastructureReady carry the reason.

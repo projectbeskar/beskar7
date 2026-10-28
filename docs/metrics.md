@@ -69,6 +69,7 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 - `Ready`
 - `Error`
 - `Enrolling` and `Unknown` — always 0: the API defines these states, but the controller never sets them
+- `""` (empty) — a host the controller has not given a state yet
 
 #### `beskar7_controller_physicalhost_power_operations_total`
 **Type:** Counter  
@@ -98,6 +99,14 @@ These metrics track machine provisioning and lifecycle management.
 **Type:** Gauge  
 **Labels:** `phase`, `namespace`  
 **Description:** Number of Beskar7Machines in each phase.
+
+**Phases** (match the `Status.Phase` strings — see the `Phase*` constants in `api/v1beta2/beskar7machine_types.go`):
+- `Pending`
+- `Inspecting`
+- `Provisioning`
+- `Provisioned`
+- `Failed`
+- `""` (empty) — a machine the controller has not given a phase yet
 
 #### `beskar7_controller_beskar7machine_provisioning_duration_seconds`
 **Type:** Histogram  
