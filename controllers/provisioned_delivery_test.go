@@ -460,13 +460,13 @@ var _ = Describe("A deployment reported while the controllers were away, with bo
 			Recorder:               record.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: time.Second,
+			BootstrapURLBase:       "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("provisioned-race-mgr-machine"),
 			RedfishClientFactory: gate.factory(),
-			BootstrapURLBase:     bootstrapURLBase,
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, mgrCancel := context.WithCancel(ctx)

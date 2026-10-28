@@ -313,7 +313,6 @@ var _ = Describe("An inspection request that conflicts with the host's own write
 			Client: writes.client(key), Scheme: k8sClient.Scheme(),
 			Log:                  logs.logger(),
 			RedfishClientFactory: reachableBMC(),
-			BootstrapURLBase:     "https://callback.example.com:8082",
 			InspectionTimeout:    inspectionTimeout,
 		}
 	}

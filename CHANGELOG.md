@@ -19,6 +19,20 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   a machine that sets `spec.targetImageDigest` count nothing. No CRD, API, RBAC or chart change. See
   [`docs/metrics.md`](docs/metrics.md#target-image-digest-metrics), which also has example alerts.
 
+### Changed
+
+- **`status.bootstrap.url` is published by the `PhysicalHost` reconciler, in the same write as
+  `status.bootstrap.tokenHash`.** It used to arrive a reconcile earlier, through the annotation, in the
+  pass that checked the bootstrap data Secret. Everything else about it is unchanged: the value is
+  `<--bootstrap-url-base>/api/v1/bootstrap/<namespace>/<host>`; an unclaimed host that was never claimed
+  has none; it follows `--bootstrap-url-base` while the host's credentials Secret exists; and a release
+  does not clear it. `cmd/mock-inspector` and `hack/smoke` wait for the URL and the token hash together
+  and need no change. The `Beskar7Machine` controller no longer patches the host to signal it, which also
+  removes one source of `the object has been modified` conflicts on claimed hosts.
+- **Code that embeds the reconcilers:** `BootstrapURLBase` moved from `Beskar7MachineReconciler` to
+  `PhysicalHostReconciler`, and `PhysicalHostReconciler.SetupWithManager` refuses an empty one as the
+  machine reconciler did. `cmd/manager` is wired accordingly; no flag changes.
+
 ### Security
 
 - **A callback-only instance (`--controllers=none`) no longer lists or watches Secrets, and its Role drops `list`
@@ -40,6 +54,20 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   config/rbac/callback-only/watched-namespace` in each watched namespace. Nothing changes for an install without a
   callback-only instance. See
   [`docs/upgrading.md`](docs/upgrading.md#v0102--unreleased--a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role).
+
+- **Anyone allowed to patch a `PhysicalHost` could set `status.bootstrap.url` to any value.** The
+  `Beskar7Machine` controller computed the host's bootstrap URL and left it in the
+  `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation, and the `PhysicalHost` reconciler copied
+  whatever the annotation held into `status.bootstrap.url`, with no binding. It was the last annotation
+  the reconciler turned into status unbound; the other four have carried an HMAC binding since `v0.10.0`
+  (D-034, D-037). The effect was limited to a misleading status field: nothing in the manager reads
+  `status.bootstrap.url` to decide anything (the callback server serves fixed routes, and `/boot` renders
+  `beskar7.api=` from `--bootstrap-url-base`), but operators and tooling such as `cmd/mock-inspector` read
+  it. The URL is a function of `--bootstrap-url-base` and the host's namespace and name, so there is
+  nothing for a writer to sign: the `PhysicalHost` reconciler now derives it itself, and the annotation is
+  retired. One found on a host, whether a forgery or one an older controller had not applied yet, is
+  removed on sight without being read. A spec that hand-sets the annotation fails on the previous code
+  (`status.bootstrap.url` becomes the hand-set value).
 
 ## [v0.10.2] - 2026-10-10
 

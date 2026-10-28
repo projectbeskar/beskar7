@@ -628,6 +628,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 				Log:                  ctrl.Log.WithName("inspection-request-setup"),
 				Recorder:             record.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
+				BootstrapURLBase:     "https://example.com:8082",
 			}
 			Expect(unset.SetupWithManager(mgr)).To(Succeed())
 			Expect(unset.APIReader).To(BeIdenticalTo(mgr.GetAPIReader()),
@@ -639,6 +640,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 				Log:                  ctrl.Log.WithName("inspection-request-setup"),
 				Recorder:             record.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
+				BootstrapURLBase:     "https://example.com:8082",
 			}
 			Expect(given.SetupWithManager(mgr)).To(Succeed())
 			Expect(given.APIReader).To(BeIdenticalTo(k8sClient))
@@ -663,6 +665,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 				Log:                  ctrl.Log.WithName("inspection-request-managed-host"),
 				Recorder:             record.NewFakeRecorder(100),
 				RedfishClientFactory: reachableBMC(),
+				BootstrapURLBase:     "https://example.com:8082",
 			}).SetupWithManager(mgr)).To(Succeed())
 			mgrCtx, mgrCancel := context.WithCancel(ctx)
 			defer mgrCancel()

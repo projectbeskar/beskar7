@@ -524,7 +524,6 @@ var _ = Describe("Beskar7Machine naming its image digest by URL (D-038)", func()
 		host.Status.State = infrav1.StateReady
 		c := newClientWith(host, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: bootstrapName, Namespace: "default"}})
 		r := newReconciler(c, sink, s)
-		r.BootstrapURLBase = "https://example.com:8082"
 		r.RedfishClientFactory = func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 			return internalredfish.NewMockClient(), nil
 		}
@@ -1139,7 +1138,6 @@ var _ = Describe("Beskar7Machine resolving and pinning its image digest, end to 
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 		if s != nil {
 			reconciler.ChecksumRootCAs = s.pool

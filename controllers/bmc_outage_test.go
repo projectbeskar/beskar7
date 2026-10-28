@@ -188,7 +188,6 @@ var _ = Describe("Beskar7Machine whose claimed PhysicalHost loses its BMC", func
 			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 		result, err := machineReconciler.handlePhysicalHostState(ctx, machineReconciler.Log, b7m, errored)
 		Expect(err).NotTo(HaveOccurred())
@@ -880,13 +879,13 @@ var _ = Describe("BMC outage with both controllers under a running manager", fun
 			Recorder:               record.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
+			BootstrapURLBase:       "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("bmc-outage-mgr-machine"),
 			RedfishClientFactory: gate.factory(),
-			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		var mgrCtx context.Context

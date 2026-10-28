@@ -119,6 +119,8 @@ Each annotation therefore carries a binding in a sibling annotation (`<annotatio
 
 No wire change: the inspector sends what it always did. The controllers and any callback-only instance must run the same version.
 
+One value that used to travel this way needs no binding: `Status.Bootstrap.URL`. It depends only on `--bootstrap-url-base` and the host's namespace and name, so the `PhysicalHost` reconciler computes it itself and takes no annotation for it. The `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation older releases used was the one signal the reconciler copied into status unbound; it is retired, and one found on a host is removed on sight, unread.
+
 Source: `controllers/callback_binding.go`, `setInspectionRequestAnnotation` in `controllers/beskar7machine_controller.go`, and `applyInspectionRequest`, `applyInspectionResultAnnotation`, `applyProvisionedRequestAnnotation` and `applyProvisionFailedRequestAnnotation` in `controllers/physicalhost_controller.go`.
 
 ### 4. Body cap on inspection POST

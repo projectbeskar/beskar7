@@ -283,7 +283,6 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 		// The first pass only publishes the Paused condition:
 		// paused.EnsurePausedCondition requeues once, on any object that does
@@ -641,6 +640,7 @@ var _ = Describe("PhysicalHostReconciler's Beskar7Machine watch", func() {
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
+			BootstrapURLBase: "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, mgrCancel := context.WithCancel(ctx)

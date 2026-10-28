@@ -53,8 +53,6 @@ import (
 // InUse. These specs pin each half on its own, and replay the whole race.
 
 var _ = Describe("A duplicate inspect request", func() {
-	const callbackBase = "https://callback.example.com:8082"
-
 	var (
 		ns             *corev1.Namespace
 		gate           *bmcGate
@@ -98,7 +96,6 @@ var _ = Describe("A duplicate inspect request", func() {
 			Client: c, Scheme: k8sClient.Scheme(),
 			Log:                  logs.logger(),
 			RedfishClientFactory: factory,
-			BootstrapURLBase:     callbackBase,
 		}
 	}
 

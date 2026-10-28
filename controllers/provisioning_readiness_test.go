@@ -211,7 +211,6 @@ var _ = Describe("Beskar7Machine passes that return before the state machine run
 		return c, &Beskar7MachineReconciler{
 			Client: c, Scheme: c.Scheme(),
 			Log:                  ctrl.Log.WithName("early-return"),
-			BootstrapURLBase:     "https://example.com:8082",
 			RedfishClientFactory: failingBMC(errors.New("no pass here reaches the BMC")),
 		}
 	}
@@ -256,21 +255,20 @@ var _ = Describe("Beskar7Machine passes that return before the state machine run
 		expectNotReady(c)
 	})
 
-	It("does not report Ready from a pass that fails to signal the bootstrap URL to its host", func() {
+	It("does not report Ready from a pass that fails to read the bootstrap data Secret", func() {
 		host := claimedPhysicalHost(ns, "held-host", "early-machine")
 		host.Status.State = infrav1.StateInUse
 		c, r := build(host, interceptor.Funcs{
-			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-				if _, isHost := obj.(*infrav1.PhysicalHost); isHost {
-					return apierrors.NewConflict(infrav1.GroupVersion.WithResource("physicalhosts").GroupResource(),
-						obj.GetName(), errors.New("the object has been modified"))
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, isSecret := obj.(*corev1.Secret); isSecret && key.Name == "early-bootstrap" {
+					return apierrors.NewInternalError(errors.New("the API server is struggling"))
 				}
-				return c.Patch(ctx, obj, patch, opts...)
+				return c.Get(ctx, key, obj, opts...)
 			},
 		})
 
 		_, err := reconcile(r)
-		Expect(apierrors.IsConflict(err)).To(BeTrue(), "the pass ends on the conflict: %v", err)
+		Expect(apierrors.IsInternalError(err)).To(BeTrue(), "the pass ends on the failed read: %v", err)
 		expectNotReady(c)
 	})
 })
@@ -310,13 +308,13 @@ var _ = Describe("Beskar7Machine provisioned under a running manager", func() {
 			Log:                  ctrl.Log.WithName("provisioning-readiness-host"),
 			Recorder:             record.NewFakeRecorder(100),
 			RedfishClientFactory: bmc,
+			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("provisioning-readiness-machine"),
 			RedfishClientFactory: bmc,
-			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		var mgrCtx context.Context

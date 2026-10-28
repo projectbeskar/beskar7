@@ -76,7 +76,6 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 			Client: c, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("failed-run-token"),
 			RedfishClientFactory: reachableBMC(),
-			BootstrapURLBase:     "https://callback.example.com:8082",
 		}
 	}
 

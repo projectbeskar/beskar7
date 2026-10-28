@@ -65,7 +65,6 @@ var _ = Describe("Beskar7Machine inspection when the host is powered off", func(
 			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 
 		b7m = &infrav1.Beskar7Machine{

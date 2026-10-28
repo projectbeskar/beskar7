@@ -96,6 +96,13 @@ type PhysicalHostReconciler struct {
 	// defaults it to the manager's API reader; unset, the reconciler reads
 	// through Client, which is only as fresh as Client is.
 	APIReader client.Reader
+	// BootstrapURLBase is the scheme+host+port of the manager's callback server
+	// (--bootstrap-url-base). The reconciler derives Status.Bootstrap.URL from it,
+	// <BootstrapURLBase>/api/v1/bootstrap/<namespace>/<name>, so no annotation
+	// carries the URL for it to copy. Must be non-empty; SetupWithManager refuses
+	// an empty one. A reconciler built outside a manager and left without one
+	// publishes no URL.
+	BootstrapURLBase string
 	// MaxConcurrentReconciles is the worker count for this controller. Zero
 	// means DefaultMaxConcurrentReconciles (1).
 	MaxConcurrentReconciles int
@@ -624,9 +631,9 @@ func inspectionReportReceived(physicalHost *infrav1.PhysicalHost) bool {
 
 // applyRunAnnotations acts on the annotations through which the Beskar7Machine
 // controller and the inspection handler drive a provisioning run: the
-// inspection requests, the bootstrap URL and the inspection report. It also
-// mirrors the run's callback credentials from their Secret into status. The
-// inspector's /provision-failed and /provisioned reports are applied at the
+// inspection requests and the inspection report. It also mirrors the run's
+// callback credentials from their Secret into status, with the bootstrap URL.
+// The inspector's /provision-failed and /provisioned reports are applied at the
 // top of reconcileNormal instead.
 //
 // reconcileNormal calls it once the BMC has answered, and also when it has
@@ -662,15 +669,11 @@ func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger
 	// keeping status ownership inside this controller.
 	r.applyInspectionRequest(ctx, logger, physicalHost)
 
-	// Consume the bootstrap-url annotation set by the Beskar7Machine controller and
-	// persist the value to Status.Bootstrap.URL. This keeps status ownership inside
-	// this controller (same pattern as applyInspectionRequest / BUG-1 fix).
-	r.applyBootstrapURLAnnotation(logger, physicalHost)
-
-	// The callback credentials live only in the bootstrap-token Secret (D-029):
-	// drop the annotations that used to carry them, unread, and mirror the
-	// Secret into Status.Bootstrap for operators.
-	r.dropRetiredCredentialAnnotations(logger, physicalHost)
+	// The callback credentials live only in the bootstrap-token Secret (D-029),
+	// and the bootstrap URL is derived here: drop the annotations that used to
+	// carry them, unread, and mirror the Secret into Status.Bootstrap for
+	// operators.
+	r.dropRetiredAnnotations(logger, physicalHost)
 	r.mirrorBootstrapCredentials(ctx, logger, physicalHost)
 
 	// Consume the inspection-result annotation (PR-5.2 / D-005): the inspection
@@ -866,39 +869,22 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 	dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
 }
 
-// applyBootstrapURLAnnotation reads the BootstrapURLAnnotation and, when present,
-// persists the URL to Status.Bootstrap.URL and removes the annotation so it is
-// not acted on again. Mirrors the pattern of applyInspectionRequest.
-func (r *PhysicalHostReconciler) applyBootstrapURLAnnotation(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	url := physicalHost.Annotations[BootstrapURLAnnotation]
-	if url == "" {
-		return
-	}
-
-	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
-	}
-	physicalHost.Status.Bootstrap.URL = url
-	logger.Info("Applied bootstrap-url annotation to Status.Bootstrap.URL", "host", physicalHost.Name)
-
-	// Remove the annotation so we don't act on it again. The deferred patch persists this.
-	delete(physicalHost.Annotations, BootstrapURLAnnotation)
-}
-
-// dropRetiredCredentialAnnotations removes the bootstrap-token and boot-nonce
-// annotations on sight, without reading them (D-029). Releases before D-029
-// copied their hash and expiry into Status.Bootstrap, which the callback server
-// trusted, so anyone allowed to patch a PhysicalHost could mint a bearer token
-// or boot nonce of their own (SEC-12). Nothing in the manager writes them: one
-// found on a host is a leftover from an older manager or a forgery, and either
-// way it is never promoted. Reconcile removes them by key after its status
-// patch (restoreConsumedAnnotations), like every other annotation a pass
-// consumes.
-func (r *PhysicalHostReconciler) dropRetiredCredentialAnnotations(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
-	for _, key := range []string{BootstrapTokenAnnotation, BootNonceAnnotation} {
+// dropRetiredAnnotations removes the bootstrap-token, boot-nonce and
+// bootstrap-url annotations on sight, without reading them. Releases before
+// D-029 copied the hash and expiry the first two carried into Status.Bootstrap,
+// which the callback server trusted, so anyone allowed to patch a PhysicalHost
+// could mint a bearer token or boot nonce of their own (SEC-12). Releases
+// before the third was retired copied its value into Status.Bootstrap.URL, so
+// anyone with that patch right could put any URL in that field. Nothing in the
+// manager writes any of them: one found on a host is a leftover from an older
+// manager or a forgery, and either way it is never promoted. Reconcile removes
+// them by key after its status patch (restoreConsumedAnnotations), like every
+// other annotation a pass consumes.
+func (r *PhysicalHostReconciler) dropRetiredAnnotations(logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
+	for _, key := range []string{BootstrapTokenAnnotation, BootNonceAnnotation, BootstrapURLAnnotation} {
 		if _, ok := physicalHost.Annotations[key]; ok {
 			// The value is never logged: it is not trusted, and not read.
-			logger.Info("Removing a retired credential annotation without applying it; callback credentials come only from the bootstrap-token Secret",
+			logger.Info("Removing a retired annotation without applying it; callback credentials come only from the bootstrap-token Secret and the bootstrap URL is derived from the manager's flag",
 				"host", physicalHost.Name, "annotation", key)
 			delete(physicalHost.Annotations, key)
 		}
@@ -907,18 +893,24 @@ func (r *PhysicalHostReconciler) dropRetiredCredentialAnnotations(logger logr.Lo
 
 // mirrorBootstrapCredentials copies the hashes and lifetimes of the credentials
 // in the host's bootstrap-token Secret into Status.Bootstrap, for operators and
-// tooling (hack/smoke, cmd/mock-inspector) to read. It is a mirror and never an
-// input to authentication: the bearer verifier and /boot read the Secret itself
-// (D-029). SetupWithManager maps a change to the Secret onto this host, so the
-// mirror follows the Secret.
+// tooling (hack/smoke, cmd/mock-inspector) to read, and publishes the host's
+// bootstrap URL with them. It is a mirror and never an input to authentication:
+// the bearer verifier and /boot read the Secret itself (D-029).
+// SetupWithManager maps a change to the Secret onto this host, so the mirror
+// follows the Secret.
+//
+// The URL is not copied from anywhere: the reconciler derives it from its
+// BootstrapURLBase and the host's namespace and name. It appears in the pass
+// that mirrors live credentials, so it is never published before the hashes it
+// belongs with, and an annotation cannot supply or change it.
 //
 // A Secret with no consumer binding was written before D-029 and is left
 // unmirrored: it authenticates nothing (boundBootstrapCredentials), so there is
 // no live credential to show, and status keeps what the release that wrote it
 // put there until the next claim mints fresh credentials over the Secret. A
-// missing Secret clears the mirror. The consume record the /boot handler owns
-// (D-010) and the bootstrap URL are left alone; the plaintexts never leave the
-// Secret.
+// missing Secret clears the hashes and lifetimes and leaves the URL, which
+// names the host and not a claim, like the consume record the /boot handler
+// owns (D-010). The plaintexts never leave the Secret.
 func (r *PhysicalHostReconciler) mirrorBootstrapCredentials(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost) {
 	secret := &corev1.Secret{}
 	key := types.NamespacedName{Namespace: physicalHost.Namespace, Name: bootstrapTokenSecretName(physicalHost.Name)}
@@ -947,6 +939,15 @@ func (r *PhysicalHostReconciler) mirrorBootstrapCredentials(ctx context.Context,
 	bs.ExpiresAt = mirroredTime(creds.tokenExpiresAt)
 	bs.BootNonceHash = mirroredHash(creds.nonce)
 	bs.BootNonceExpiresAt = mirroredTime(creds.nonceExpiresAt)
+	if creds.consumer != "" && r.BootstrapURLBase != "" {
+		bs.URL = bootstrapURL(r.BootstrapURLBase, physicalHost)
+	}
+}
+
+// bootstrapURL is where the host fetches its bootstrap data from the callback
+// server at base: the route GET /api/v1/bootstrap/{namespace}/{hostName}.
+func bootstrapURL(base string, host *infrav1.PhysicalHost) string {
+	return fmt.Sprintf("%s/api/v1/bootstrap/%s/%s", strings.TrimRight(base, "/"), host.Namespace, host.Name)
 }
 
 func mirroredHash(plaintext string) string {
@@ -1277,9 +1278,23 @@ func (r *PhysicalHostReconciler) bindingReader() client.Reader {
 	return r.Client
 }
 
+// validateAndDefault defaults the RedfishClientFactory and validates that
+// BootstrapURLBase is non-empty. Both are required for normal operation;
+// failing fast at setup time keeps a host from being published without its
+// bootstrap URL.
+func (r *PhysicalHostReconciler) validateAndDefault() error {
+	if err := r.defaultFactory(); err != nil {
+		return err
+	}
+	if r.BootstrapURLBase == "" {
+		return fmt.Errorf("PhysicalHostReconciler: BootstrapURLBase is empty; set --bootstrap-url-base")
+	}
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := r.defaultFactory(); err != nil {
+	if err := r.validateAndDefault(); err != nil {
 		return err
 	}
 	if r.APIReader == nil {

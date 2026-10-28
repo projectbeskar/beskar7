@@ -372,7 +372,6 @@ var _ = Describe("BMC credentials leave only for the addresses their Secret list
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("bmc-binding-machine"),
 				RedfishClientFactory: bmc.factory(),
-				BootstrapURLBase:     "https://example.com:8082",
 			}
 			machine = &infrav1.Beskar7Machine{ObjectMeta: metav1.ObjectMeta{Name: machineName, Namespace: ns}}
 		})
@@ -493,13 +492,13 @@ var _ = Describe("Upgrading with an unannotated BMC credentials Secret, both con
 			Log:                  ctrl.Log.WithName("bmc-binding-mgr-host"),
 			Recorder:             record.NewFakeRecorder(100),
 			RedfishClientFactory: bmc.factory(),
+			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("bmc-binding-mgr-machine"),
 			RedfishClientFactory: bmc.factory(),
-			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		var mgrCtx context.Context
