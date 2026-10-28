@@ -136,7 +136,7 @@ const (
 	// cache (clientOptions). That lets a copy of the manager sit on the
 	// provisioning network (where PXE-booting hosts can reach it) without
 	// competing with the in-cluster controllers for host claims or for the
-	// bootstrap-url annotation handshake — two full managers race on both.
+	// host's Status.Bootstrap.URL — two full managers race on both.
 	controllersNone controllersMode = "none"
 )
 

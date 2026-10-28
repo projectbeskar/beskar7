@@ -155,8 +155,9 @@ func main() {
 			"/api/v1/provision-failed) and the health probes but registers no reconciler "+
 			"or webhook. Use 'none' for a second instance placed on the provisioning "+
 			"network when PXE-booting hosts cannot reach the management cluster; a second "+
-			"full manager would fight the first over host claims and the bootstrap-url "+
-			"annotation. 'none' turns leader election off and rejects --enable-webhook=true.")
+			"full manager would fight the first over host claims and over "+
+			"PhysicalHost.Status.Bootstrap.URL. 'none' turns leader election off and "+
+			"rejects --enable-webhook=true.")
 
 	flag.StringVar(&bmcProxyRaw, "bmc-proxy", "",
 		"URL of the one HTTP or HTTPS proxy every BMC (Redfish) connection goes through, as "+
@@ -389,7 +390,6 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
 		Log:               ctrl.Log.WithName("controllers").WithName("Beskar7Machine"),
-		BootstrapURLBase:  cfg.bootstrapURLBase,
 		InspectionTimeout: cfg.inspectionTimeout,
 		DeploymentTimeout: cfg.deploymentTimeout,
 
@@ -412,6 +412,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		Scheme:                  mgr.GetScheme(),
 		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
 		RedfishClientFactory:    redfishFactory,
+		BootstrapURLBase:        cfg.bootstrapURLBase,
 		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"), //nolint:staticcheck // legacy recorder: moving to events.EventRecorder changes every Eventf call site; follow-up to D-023
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {

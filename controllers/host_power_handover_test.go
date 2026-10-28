@@ -67,7 +67,6 @@ var _ = Describe("Host power across a release and the next claim", func() {
 			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://test.svc:8082",
 		}
 	})
 
@@ -117,7 +116,7 @@ var _ = Describe("Host power across a release and the next claim", func() {
 
 			r = &Beskar7MachineReconciler{
 				Client: r.Client, Scheme: r.Scheme, Log: r.Log,
-				RedfishClientFactory: r.RedfishClientFactory, BootstrapURLBase: r.BootstrapURLBase,
+				RedfishClientFactory: r.RedfishClientFactory,
 			}
 			mockRf.ResetCalled = false
 			Expect(trigger()).To(Succeed())

@@ -377,6 +377,7 @@ var _ = Describe("PhysicalHost transient-failure retries under a running manager
 			// and nothing here asserts on events.
 			Recorder:               record.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
+			BootstrapURLBase:       "https://example.com:8082",
 			TransientRetryInterval: retryInterval,
 		}).SetupWithManager(mgr)).To(Succeed())
 

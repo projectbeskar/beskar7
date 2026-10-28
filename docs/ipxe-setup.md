@@ -291,9 +291,8 @@ controller); passing `--leader-elect=true` or `--enable-webhook=true` alongside
 
 Do **not** run the second copy with every controller. Two full managers race for
 host claims, and when their `--bootstrap-url-base` values differ each keeps
-rewriting the `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation to its
-own value — the symptom is a storm of `the object has been modified` reconcile
-errors ([Troubleshooting §14](troubleshooting.md#14-reconcile-errors-storm-with-the-object-has-been-modified-two-full-managers-share-a-namespace)).
+rewriting `PhysicalHost.Status.Bootstrap.URL` to its own value — the symptom is
+a storm of `the object has been modified` reconcile errors ([Troubleshooting §14](troubleshooting.md#14-reconcile-errors-storm-with-the-object-has-been-modified-two-full-managers-share-a-namespace)).
 
 #### Preserve the client address, or the rate limiter will bite
 

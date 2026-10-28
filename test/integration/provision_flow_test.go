@@ -143,6 +143,17 @@ var _ = Describe("Full provision flow", func() {
 			g.Expect(current.Spec.ConsumerRef).NotTo(BeNil())
 		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
 
+		By("checking the host publishes its bootstrap URL with the token hash, and carries no bootstrap-url annotation")
+		Eventually(func(g Gomega) {
+			current := &infrav1.PhysicalHost{}
+			g.Expect(mgr.GetClient().Get(specCtx, hostKey, current)).To(Succeed())
+			g.Expect(current.Status.Bootstrap).NotTo(BeNil())
+			g.Expect(current.Status.Bootstrap.URL).To(Equal(
+				fmt.Sprintf("%s/api/v1/bootstrap/%s/%s", testBootstrapURLBase, ns.Name, host.Name)))
+			g.Expect(current.Status.Bootstrap.TokenHash).NotTo(BeEmpty())
+			g.Expect(current.Annotations).NotTo(HaveKey(controllers.BootstrapURLAnnotation))
+		}, eventuallyTimeout, eventuallyInterval).Should(Succeed())
+
 		By("simulating the inspector: creating result ConfigMap and annotating the host")
 		simulateInspector(specCtx, ns.Name, host.Name)
 

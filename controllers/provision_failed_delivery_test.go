@@ -654,6 +654,7 @@ var _ = Describe("A fast deploy failure with both controllers under a running ma
 			Log:                  ctrl.Log.WithName("report-early-mgr-host"),
 			Recorder:             record.NewFakeRecorder(100),
 			RedfishClientFactory: reachableBMC(),
+			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 		// The host is Inspecting from the start, so the machine never has a reason
 		// to reach for the BMC.
@@ -666,7 +667,6 @@ var _ = Describe("A fast deploy failure with both controllers under a running ma
 				machineBMCCalls.Add(1)
 				return internalredfish.NewMockClient(), nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, mgrCancel := context.WithCancel(ctx)

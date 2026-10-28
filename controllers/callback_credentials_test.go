@@ -239,7 +239,6 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("callback-credentials-machine"),
 			RedfishClientFactory: reachableBMC(),
-			BootstrapURLBase:     "https://callback.example.com:8082",
 		}
 	})
 

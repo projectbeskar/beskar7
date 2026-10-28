@@ -66,7 +66,6 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
-			BootstrapURLBase: "https://callback.example.com:8082",
 		}
 	})
 

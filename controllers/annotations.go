@@ -69,14 +69,15 @@ const (
 	BMCCASecretAnnotation          = "beskar7.infrastructure.cluster.x-k8s.io/bmc-ca-secret"
 )
 
-// BootstrapURLAnnotation is set by the Beskar7Machine controller on a PhysicalHost
-// to signal the computed per-host bootstrap URL. The PhysicalHost controller reads
-// this annotation, persists the value to Status.Bootstrap.URL, and then removes the
-// annotation so it is not acted on again.
-//
-// Following the same "signal via annotation, status written by owner" pattern as
-// InspectionRequestAnnotation (BUG-1 fix). Defined here so both controllers share
-// the constant without creating an import cycle.
+// BootstrapURLAnnotation is retired. Releases before it signalled the per-host
+// bootstrap URL through it: the Beskar7Machine controller computed the URL and
+// annotated the PhysicalHost with it, and the PhysicalHost controller copied the
+// value into Status.Bootstrap.URL without checking who had written it, so anyone
+// allowed to patch a PhysicalHost could put any URL in that status field. The
+// PhysicalHost controller now derives the URL itself, from --bootstrap-url-base
+// and the host's namespace and name (mirrorBootstrapCredentials). Nothing in the
+// manager writes the annotation; the controller removes one on sight without
+// reading it (dropRetiredAnnotations), and the key stays defined only so it can.
 const BootstrapURLAnnotation = "infrastructure.cluster.x-k8s.io/bootstrap-url"
 
 // BootstrapTokenAnnotation and BootNonceAnnotation are retired (D-029). Releases
@@ -86,7 +87,7 @@ const BootstrapURLAnnotation = "infrastructure.cluster.x-k8s.io/bootstrap-url"
 // patch a PhysicalHost could forge callback credentials (SEC-12). Nothing in
 // the manager writes them: the credentials live only in the per-host
 // bootstrap-token Secret. The PhysicalHost controller removes either one on
-// sight without reading it (dropRetiredCredentialAnnotations); the keys stay
+// sight without reading it (dropRetiredAnnotations); the keys stay
 // defined only so it can.
 const (
 	BootstrapTokenAnnotation = "infrastructure.cluster.x-k8s.io/bootstrap-token"

@@ -152,7 +152,6 @@ var _ = Describe("D-015 StateDeploying + provisioned signal → StateReady", fun
 			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 
 		now := metav1.Now()

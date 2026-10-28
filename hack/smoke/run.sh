@@ -491,7 +491,8 @@ layer_4_claim() {
 #   1. Wait for PhysicalHost.Status.Bootstrap.{URL,TokenHash} to be set.
 #      The Beskar7Machine controller mints the token into the per-host
 #      Secret once the host is claimed; the PhysicalHost controller mirrors
-#      its hash into Status.Bootstrap.TokenHash (D-029).
+#      its hash into Status.Bootstrap.TokenHash (D-029), and derives
+#      Status.Bootstrap.URL in the same write.
 #   2. Read the plaintext token from Secret <hostName>-bootstrap-token
 #      (key plaintext-token). The Secret is what the callback server checks;
 #      the status hash only mirrors it, and may trail it by a reconcile.

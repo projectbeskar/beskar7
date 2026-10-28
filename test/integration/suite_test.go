@@ -67,6 +67,10 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
+// testBootstrapURLBase is the --bootstrap-url-base the suite's PhysicalHost
+// reconciler publishes host bootstrap URLs under.
+const testBootstrapURLBase = "https://test-mgr.capb7-system.svc:8082"
+
 var (
 	cfg         *rest.Config
 	k8sClient   client.Client
@@ -171,6 +175,10 @@ var _ = BeforeSuite(func() {
 		Log:                  ctrl.Log.WithName("integration-physicalhost"),
 		Recorder:             mgr.GetEventRecorderFor("beskar7-physicalhost-controller"),
 		RedfishClientFactory: mockFactory,
+		// Use a stable local URL for bootstrap URL computation; the callback
+		// server is not started in this suite (we simulate the inspector
+		// directly), but the URL must be non-empty to pass validateAndDefault.
+		BootstrapURLBase: testBootstrapURLBase,
 	}
 	Expect(phReconciler.SetupWithManager(mgr)).To(Succeed())
 
@@ -181,10 +189,6 @@ var _ = BeforeSuite(func() {
 		Scheme:               mgr.GetScheme(),
 		Log:                  ctrl.Log.WithName("integration-beskar7machine"),
 		RedfishClientFactory: mockFactory,
-		// Use a stable local URL for bootstrap URL computation; the callback
-		// server is not started in this suite (we simulate the inspector
-		// directly), but the URL must be non-empty to pass validateAndDefault.
-		BootstrapURLBase: "https://test-mgr.capb7-system.svc:8082",
 	}
 	Expect(b7mReconciler.SetupWithManager(mgr)).To(Succeed())
 

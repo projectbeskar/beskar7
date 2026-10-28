@@ -752,47 +752,6 @@ var _ = Describe("PhysicalHost Controller", func() {
 				g.Expect(err).NotTo(BeNil(), "ConfigMap must be gone")
 			}, Timeout, Interval).Should(Succeed())
 		})
-
-		It("Should consume bootstrap-url annotation, persist to Status.Bootstrap.URL, and clear the annotation", func() {
-			By("Creating the PhysicalHost and making it Available")
-			Expect(k8sClient.Create(ctx, physicalHost)).To(Succeed())
-
-			phLookupKey := types.NamespacedName{Name: physicalHost.Name, Namespace: physicalHost.Namespace}
-
-			// Two reconciles: first adds finalizer, second drives to Available.
-			_, err := reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			ph := &infrav1.PhysicalHost{}
-			Expect(k8sClient.Get(ctx, phLookupKey, ph)).To(Succeed())
-			Expect(ph.Status.State).To(Equal(infrav1.StateAvailable))
-
-			By("Setting the bootstrap-url annotation (as Beskar7Machine controller would)")
-			const expectedURL = "https://beskar7-controller-manager.capb7-system.svc:8082/api/v1/bootstrap/default/test-physicalhost"
-			phPatch := ph.DeepCopy()
-			if phPatch.Annotations == nil {
-				phPatch.Annotations = map[string]string{}
-			}
-			phPatch.Annotations[BootstrapURLAnnotation] = expectedURL
-			Expect(k8sClient.Patch(ctx, phPatch, client.MergeFrom(ph))).To(Succeed())
-
-			By("Reconciling — controller should consume annotation and persist to Status.Bootstrap.URL")
-			_, err = reconcileWithTimeout(reconciler, phLookupKey)
-			Expect(err).NotTo(HaveOccurred())
-
-			Eventually(func(g Gomega) {
-				got := &infrav1.PhysicalHost{}
-				g.Expect(k8sClient.Get(ctx, phLookupKey, got)).To(Succeed())
-				g.Expect(got.Status.Bootstrap).NotTo(BeNil(), "Status.Bootstrap must be initialized")
-				g.Expect(got.Status.Bootstrap.URL).To(Equal(expectedURL),
-					"Status.Bootstrap.URL must equal the annotation value")
-				// Annotation must be cleared so it is not acted on again.
-				g.Expect(got.Annotations).NotTo(HaveKey(BootstrapURLAnnotation),
-					"bootstrap-url annotation must be removed after consumption")
-			}, Timeout, Interval).Should(Succeed())
-		})
 	})
 
 	Describe("PhysicalHost pause functionality", func() {
@@ -901,27 +860,29 @@ var _ = Describe("PhysicalHost Controller", func() {
 	})
 })
 
-// The retired credential annotations (D-029) are removed on sight and never
-// read. Pure unit; no I/O.
-var _ = Describe("dropRetiredCredentialAnnotations", func() {
+// The retired annotations (the credentials since D-029, the bootstrap URL
+// since the reconciler derives it) are removed on sight and never read. Pure
+// unit; no I/O.
+var _ = Describe("dropRetiredAnnotations", func() {
 	r := &PhysicalHostReconciler{Log: ctrl.Log.WithName("retired-annotations-test")}
 
-	It("removes both keys, whatever they carry, and leaves status and every other annotation alone", func() {
+	It("removes every key, whatever it carries, and leaves status and every other annotation alone", func() {
 		ph := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
 				BootstrapTokenAnnotation:    `{"hash":"` + strings.Repeat("a", 64) + `"}`,
 				BootNonceAnnotation:         "not-even-json",
+				BootstrapURLAnnotation:      "https://attacker.example.com/api/v1/bootstrap/ns/host",
 				InspectionRequestAnnotation: "inspect",
 			}},
 		}
-		r.dropRetiredCredentialAnnotations(r.Log, ph)
+		r.dropRetiredAnnotations(r.Log, ph)
 		Expect(ph.Annotations).To(Equal(map[string]string{InspectionRequestAnnotation: "inspect"}))
 		Expect(ph.Status.Bootstrap).To(BeNil(), "an annotation is never promoted into status")
 	})
 
-	It("is a no-op when neither annotation is present", func() {
+	It("is a no-op when none is present", func() {
 		ph := &infrav1.PhysicalHost{}
-		r.dropRetiredCredentialAnnotations(r.Log, ph)
+		r.dropRetiredAnnotations(r.Log, ph)
 		Expect(ph.Annotations).To(BeNil())
 	})
 })
@@ -940,18 +901,26 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		consumedAt = metav1.NewTime(now.Add(-time.Minute))
 	})
 
-	mirror := func(ph *infrav1.PhysicalHost, objs ...client.Object) {
+	const (
+		mirrorBase = "https://callback.example.com"
+		derivedURL = mirrorBase + "/api/v1/bootstrap/mirror-ns/mirror-host"
+	)
+	mirrorWith := func(base string, ph *infrav1.PhysicalHost, objs ...client.Object) {
 		r := &PhysicalHostReconciler{
-			Client: fake.NewClientBuilder().WithScheme(k8sClient.Scheme()).WithObjects(objs...).Build(),
-			Log:    ctrl.Log.WithName("mirror-test"),
+			Client:           fake.NewClientBuilder().WithScheme(k8sClient.Scheme()).WithObjects(objs...).Build(),
+			Log:              ctrl.Log.WithName("mirror-test"),
+			BootstrapURLBase: base,
 		}
 		r.mirrorBootstrapCredentials(ctx, r.Log, ph)
+	}
+	mirror := func(ph *infrav1.PhysicalHost, objs ...client.Object) {
+		mirrorWith(mirrorBase, ph, objs...)
 	}
 	hostWithStatus := func() *infrav1.PhysicalHost {
 		return &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns},
 			Status: infrav1.PhysicalHostStatus{Bootstrap: &infrav1.BootstrapStatus{
-				URL:                   "https://callback.example.com/api/v1/bootstrap/mirror-ns/mirror-host",
+				URL:                   "https://older-callback.example.com/api/v1/bootstrap/mirror-ns/mirror-host",
 				TokenHash:             auth.Hash("older-token"),
 				BootNonceHash:         auth.Hash("older-nonce"),
 				BootNonceConsumedAt:   &consumedAt,
@@ -960,7 +929,7 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		}
 	}
 
-	It("mirrors the bound Secret's hashes and lifetimes, and leaves the URL and the consume record alone", func() {
+	It("mirrors the bound Secret's hashes and lifetimes with the URL it derives, and leaves the consume record alone", func() {
 		ph := hostWithStatus()
 		data := boundCredentialData("mirror-machine", "token", time.Hour, "nonce", 10*time.Minute)
 		data[bootstrapTokenIssuedAtSecretKey] = credentialTime(now)
@@ -972,9 +941,25 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 		Expect(bs.ExpiresAt.Time).To(BeTemporally("~", now.Add(time.Hour), 2*time.Second))
 		Expect(bs.BootNonceHash).To(Equal(auth.Hash("nonce")))
 		Expect(bs.BootNonceExpiresAt.Time).To(BeTemporally("~", now.Add(10*time.Minute), 2*time.Second))
-		Expect(bs.URL).To(Equal("https://callback.example.com/api/v1/bootstrap/mirror-ns/mirror-host"))
+		Expect(bs.URL).To(Equal(derivedURL), "derived from the reconciler's base, replacing the older base's URL")
 		Expect(bs.BootNonceConsumedAt).To(Equal(&consumedAt), "the consume record is the /boot handler's (D-010)")
 		Expect(bs.BootNonceConsumedHash).To(Equal(auth.Hash("older-nonce")))
+	})
+
+	It("publishes the URL with the hashes on a host that has no Status.Bootstrap yet", func() {
+		ph := &infrav1.PhysicalHost{ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: ns}}
+		mirror(ph, credentialSecret(ph, boundCredentialData("mirror-machine", "token", time.Hour, "nonce", 10*time.Minute)))
+		Expect(ph.Status.Bootstrap).NotTo(BeNil())
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(auth.Hash("token")))
+		Expect(ph.Status.Bootstrap.URL).To(Equal(derivedURL))
+	})
+
+	It("publishes no URL when the reconciler has no base, and leaves the one the status holds", func() {
+		ph := hostWithStatus()
+		older := ph.Status.Bootstrap.URL
+		mirrorWith("", ph, credentialSecret(ph, boundCredentialData("mirror-machine", "token", time.Hour, "nonce", 10*time.Minute)))
+		Expect(ph.Status.Bootstrap.TokenHash).To(Equal(auth.Hash("token")))
+		Expect(ph.Status.Bootstrap.URL).To(Equal(older))
 	})
 
 	It("mirrors a missing or malformed expiry as absent, as the verifier reads it", func() {
@@ -997,12 +982,13 @@ var _ = Describe("mirrorBootstrapCredentials", func() {
 
 	It("clears the mirrored credentials when the Secret is gone, keeping the URL and the consume record", func() {
 		ph := hostWithStatus()
+		older := ph.Status.Bootstrap.URL
 		mirror(ph)
 		bs := ph.Status.Bootstrap
 		Expect(bs.TokenHash).To(BeEmpty())
 		Expect(bs.BootNonceHash).To(BeEmpty())
 		Expect(bs.ExpiresAt).To(BeNil())
-		Expect(bs.URL).NotTo(BeEmpty())
+		Expect(bs.URL).To(Equal(older), "the URL names the host, not a claim, and is not cleared with the credentials")
 		Expect(bs.BootNonceConsumedHash).To(Equal(auth.Hash("older-nonce")))
 	})
 

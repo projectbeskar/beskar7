@@ -85,11 +85,9 @@ For the diagram and the full transition table, see [State Management](state-mana
 
 ## Bootstrap signaling
 
-When the Beskar7Machine controller has bootstrap data ready, it patches the bootstrap URL onto the PhysicalHost as an annotation. The PhysicalHost reconciler reads it on its next pass, persists the value to status, and clears the annotation:
+The PhysicalHost reconciler publishes the host's bootstrap URL, `<--bootstrap-url-base>/api/v1/bootstrap/<namespace>/<name>`, in `Status.Bootstrap.URL`. It computes the value itself (`controllers/physicalhost_controller.go:mirrorBootstrapCredentials`) and writes it in the same pass that mirrors the host's credentials, so the URL and `Status.Bootstrap.TokenHash` appear together, once a machine has claimed the host and minted them. A release does not clear it, and a change to `--bootstrap-url-base` shows in the next reconcile. Nothing is signalled through an annotation, so patching the host cannot change it.
 
-| Annotation | Persisted to | Source code |
-|---|---|---|
-| `infrastructure.cluster.x-k8s.io/bootstrap-url` | `Status.Bootstrap.URL` | `controllers/physicalhost_controller.go:applyBootstrapURLAnnotation` |
+The `infrastructure.cluster.x-k8s.io/bootstrap-url` annotation older releases used for this is retired: the reconciler removes one on sight without reading it.
 
 The callback credentials — the bearer token and the boot nonce — never travel through the PhysicalHost. The Beskar7Machine controller mints them into a Secret named `<host-name>-bootstrap-token`, owned by the PhysicalHost (so it is GC'd when the host is deleted), with keys `plaintext-token`, `token-issued-at`, `token-expires-at`, `plaintext-boot-nonce`, `boot-nonce-expires-at` and `consumer` (the name of the `Beskar7Machine` they were minted for). That Secret is the only thing the callback server checks, only while the host's `ConsumerRef` names that machine (decision D-029), and only if its controller owner reference names this PhysicalHost by UID: the controller never uses or takes over a Secret of that name that it did not create for the host (D-031). The token's expiry is cut to 5 minutes once the host is `Ready`, and once its claiming `Beskar7Machine` has failed terminally (D-036), except while the host is in an `Error` about its BMC (a `/provisioned` report still lands there). The PhysicalHost reconciler watches it and mirrors the hashes and expiries into `Status.Bootstrap.{TokenHash, IssuedAt, ExpiresAt, BootNonceHash, BootNonceExpiresAt}` for operators; nothing authenticates against the mirror.
 

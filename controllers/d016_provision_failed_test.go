@@ -537,7 +537,6 @@ var _ = Describe("v4.1 Beskar7Machine StateError deploy-failure path", func() {
 			RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
-			BootstrapURLBase: "https://example.com:8082",
 		}
 	})
 
