@@ -181,7 +181,7 @@ kubectl annotate beskar7machine <name> \
 kubectl delete beskar7machine <name>
 ```
 
-The Beskar7Machine controller skips the Redfish cleanup, clears `ConsumerRef`, and removes the finalizer. The host returns to `Available`.
+The Beskar7Machine controller skips the Redfish cleanup (and stops waiting for a host whose graceful shutdown it was confirming, [Beskar7Machine → Deletion](beskar7machine.md#deletion)), clears `ConsumerRef`, and removes the finalizer. The host returns to `Available`.
 
 ### Last-resort finalizer removal
 

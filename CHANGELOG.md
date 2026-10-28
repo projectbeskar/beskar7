@@ -33,6 +33,30 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `PhysicalHostReconciler`, and `PhysicalHostReconciler.SetupWithManager` refuses an empty one as the
   machine reconciler did. `cmd/manager` is wired accordingly; no flag changes.
 
+### Fixed
+
+- **A released host whose OS ignored the graceful shutdown stayed powered on indefinitely (RELEASE-POWER).**
+  Deleting a `Beskar7Machine` shuts a `Ready` host down gracefully (ACPI), which is only a request. A host
+  released soon after its OS booted (seen 25 to 70 seconds after `Ready`) can lose it, because the guest is
+  not handling ACPI yet, and nothing sent it again: the host stayed on, with its kubelet free to register a
+  Node into the cluster the `Machine` was just removed from, until its credentials expired. The release now
+  follows an accepted graceful shutdown until the host reads `Off`. The `Beskar7Machine` keeps its finalizer
+  and the host keeps its claim, so no other machine can claim the host, and boot it, while the power-off is
+  unsettled. The controller reads the power state every 5 seconds, releases the host when it is `Off`, and
+  sends `ForcePowerOff` once if it is still on 90 seconds after the request. The time of the request is kept
+  in the new `infrastructure.cluster.x-k8s.io/release-power-off-requested-at` annotation on the
+  `Beskar7Machine`, so a manager restart does not restart the 90 seconds. Nothing here fails the machine: a
+  BMC that cannot be reached, or that refuses the `ForcePowerOff`, is retried for 30 seconds more, and the host
+  is then released anyway with a log line saying it was not confirmed off. An error before the BMC accepted the
+  shutdown still releases the host at once, a host released while `Inspecting`, `Deploying` or in `Error` is
+  still forced off and released in the same pass, and the `force-release` annotation ends a wait under way.
+  A paused `Cluster` or `Beskar7Machine` suspends the wait like any other reconciliation.
+
+  **A visible change:** deleting a `Beskar7Machine` whose host is `Ready` now takes as long as the OS takes to
+  shut down (it used to end when the request was sent), and at most about two minutes when the host ignores
+  it, before the owning `Machine`'s deletion completes. There is no CRD, API or contract change and no new
+  flag or RBAC; the annotation is written by the controller on an object that is already being deleted.
+
 ### Security
 
 - **A callback-only instance (`--controllers=none`) no longer lists or watches Secrets, and its Role drops `list`

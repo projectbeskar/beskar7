@@ -18,6 +18,11 @@ type MockClient struct {
 	ShouldFail      map[string]error // Map method name to error to simulate failures
 	BootSourceIsPXE bool
 
+	// IgnoreGracefulShutdown makes SetPowerState(Off) succeed without changing
+	// the power state, as the BMC accepts the request of a guest that is not
+	// handling ACPI yet. ForcePowerOff still powers the host off.
+	IgnoreGracefulShutdown bool
+
 	// Network address fields
 	NetworkAddresses        []NetworkAddress
 	GetNetworkAddressesFunc func(ctx context.Context) ([]NetworkAddress, error)
@@ -32,6 +37,7 @@ type MockClient struct {
 	GetNetworkAddressesCalled     bool
 	ForcePowerOffCalled           bool
 	ClearBootSourceOverrideCalled bool
+	ForcePowerOffCount            int
 }
 
 // NewMockClient creates a new mock client with default values.
@@ -94,6 +100,9 @@ func (m *MockClient) SetPowerState(ctx context.Context, state schemas.PowerState
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if state == schemas.OffPowerState && m.IgnoreGracefulShutdown {
+		return nil
+	}
 	m.PowerState = state
 	return nil
 }
@@ -159,6 +168,7 @@ func (m *MockClient) Close(ctx context.Context) {
 func (m *MockClient) ForcePowerOff(ctx context.Context) error {
 	m.mu.Lock()
 	m.ForcePowerOffCalled = true
+	m.ForcePowerOffCount++
 	m.mu.Unlock()
 	if err := m.failIfNeeded("ForcePowerOff"); err != nil {
 		return err
