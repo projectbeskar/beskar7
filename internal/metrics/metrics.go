@@ -176,6 +176,30 @@ var (
 		},
 		[]string{"namespace", "outcome"},
 	)
+
+	// Target image digest resolution metrics (D-038)
+	TargetImageDigestResolutionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: MetricNamespace,
+			Subsystem: MetricSubsystem,
+			Name:      "target_image_digest_resolutions_total",
+			Help:      "Total number of attempts to resolve spec.targetImageDigestURL into a pinned digest, by outcome",
+		},
+		[]string{"outcome", "namespace"},
+	)
+
+	TargetImageDigestResolutionDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: MetricNamespace,
+			Subsystem: MetricSubsystem,
+			Name:      "target_image_digest_resolution_duration_seconds",
+			Help:      "Time taken by one attempt to resolve spec.targetImageDigestURL into a pinned digest",
+			// One attempt is capped at 10s; an attempt that hits the cap ends a few
+			// milliseconds past it, so the 12.5s bucket still holds it.
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 7.5, 10, 12.5},
+		},
+		[]string{"outcome", "namespace"},
+	)
 )
 
 // ReconciliationOutcome represents the result of a reconciliation
@@ -246,6 +270,10 @@ func Init() {
 		// Concurrent provisioning metrics
 		hostClaimAttempts,
 		hostClaimDuration,
+
+		// Target image digest resolution metrics
+		TargetImageDigestResolutionsTotal,
+		TargetImageDigestResolutionDuration,
 	)
 }
 
@@ -375,4 +403,50 @@ func RecordHostClaimAttempt(namespace string, outcome ClaimOutcome, conflictReas
 // RecordHostClaimDuration records the duration of a host claim operation
 func RecordHostClaimDuration(namespace string, outcome ClaimOutcome, duration time.Duration) {
 	hostClaimDuration.WithLabelValues(namespace, string(outcome)).Observe(duration.Seconds())
+}
+
+// DigestResolutionOutcome is how one attempt to resolve spec.targetImageDigestURL
+// ended. The set is closed and small on purpose: it is a metric label, and it must
+// never carry the URL, the host, the image's file name or the digest.
+type DigestResolutionOutcome string
+
+const (
+	// DigestResolutionSuccess: the checksum file named the image and its digest is pinned.
+	DigestResolutionSuccess DigestResolutionOutcome = "success"
+	// DigestResolutionInvalidSpec: the spec cannot be resolved whatever the server
+	// says (the URL is not https or carries credentials, the image URL has no file
+	// name, or neither digest field is set). Nothing was fetched.
+	DigestResolutionInvalidSpec DigestResolutionOutcome = "invalid_spec"
+	// DigestResolutionFetchError: no response came back for a reason that is not
+	// one of the kinds below: the host name does not resolve, the connection is
+	// refused or reset, or the request failed some other way.
+	DigestResolutionFetchError DigestResolutionOutcome = "fetch_error"
+	// DigestResolutionTLSError: the server's certificate is not trusted, is for
+	// another host or is expired, or the server does not speak TLS.
+	DigestResolutionTLSError DigestResolutionOutcome = "tls_error"
+	// DigestResolutionTimeout: the attempt hit its 10 second cap.
+	DigestResolutionTimeout DigestResolutionOutcome = "timeout"
+	// DigestResolutionRedirectRefused: the server redirected off the origin that
+	// was asked for, or more than three times.
+	DigestResolutionRedirectRefused DigestResolutionOutcome = "redirect_refused"
+	// DigestResolutionHTTPStatus: the server answered with anything but 200.
+	DigestResolutionHTTPStatus DigestResolutionOutcome = "http_status"
+	// DigestResolutionTooLarge: the checksum file is over the 64 KiB cap.
+	DigestResolutionTooLarge DigestResolutionOutcome = "too_large"
+	// DigestResolutionNoEntry: the file has no entry for the image's file name.
+	DigestResolutionNoEntry DigestResolutionOutcome = "no_entry"
+	// DigestResolutionInvalidEntry: the file has an entry for the image that
+	// cannot be relied on: not a SHA-256 digest, or two entries that disagree.
+	DigestResolutionInvalidEntry DigestResolutionOutcome = "invalid_entry"
+	// DigestResolutionCanceled: the attempt was cut short by the reconcile's own
+	// context (the manager is stopping), not by the server.
+	DigestResolutionCanceled DigestResolutionOutcome = "canceled"
+)
+
+// RecordTargetImageDigestResolution records one attempt to resolve a machine's
+// targetImageDigestURL: the counter and the duration histogram move together, so
+// a histogram's _count always equals the matching counter series.
+func RecordTargetImageDigestResolution(namespace string, outcome DigestResolutionOutcome, duration time.Duration) {
+	TargetImageDigestResolutionsTotal.WithLabelValues(string(outcome), namespace).Inc()
+	TargetImageDigestResolutionDuration.WithLabelValues(string(outcome), namespace).Observe(duration.Seconds())
 }

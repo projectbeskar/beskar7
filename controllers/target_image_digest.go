@@ -37,6 +37,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 )
 
 // Resolving spec.targetImageDigestURL (D-038).
@@ -83,6 +84,8 @@ type digestError struct {
 	host string
 	// reason is the fixed wording.
 	reason string
+	// outcome is the kind of failure, as the resolution metric labels it.
+	outcome internalmetrics.DigestResolutionOutcome
 }
 
 func (e *digestError) Error() string {
@@ -92,8 +95,14 @@ func (e *digestError) Error() string {
 	return e.host + ": " + e.reason
 }
 
-func digestFail(host, format string, args ...any) *digestError {
-	return &digestError{host: host, reason: fmt.Sprintf(format, args...)}
+func digestFail(outcome internalmetrics.DigestResolutionOutcome, host, format string, args ...any) *digestError {
+	return &digestError{host: host, reason: fmt.Sprintf(format, args...), outcome: outcome}
+}
+
+// digestFetchFail is the failure of a request, or of reading its body.
+func digestFetchFail(host string, err error) *digestError {
+	outcome, reason := describeFetchError(err)
+	return digestFail(outcome, host, "%s", reason)
 }
 
 var (
@@ -162,10 +171,10 @@ func effectivePort(u *url.URL) string {
 func parseDigestURL(raw string) (*url.URL, *digestError) {
 	u, err := url.Parse(raw)
 	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
-		return nil, digestFail("", "targetImageDigestURL is not an https URL")
+		return nil, digestFail(internalmetrics.DigestResolutionInvalidSpec, "", "targetImageDigestURL is not an https URL")
 	}
 	if u.User != nil {
-		return nil, digestFail(u.Host, "targetImageDigestURL must not contain credentials")
+		return nil, digestFail(internalmetrics.DigestResolutionInvalidSpec, u.Host, "targetImageDigestURL must not contain credentials")
 	}
 	u.Scheme = "https"
 	return u, nil
@@ -185,11 +194,11 @@ func redactedURL(raw string) string {
 func imageFileName(targetImageURL string) (string, *digestError) {
 	u, err := url.Parse(targetImageURL)
 	if err != nil || u.Path == "" || strings.HasSuffix(u.Path, "/") {
-		return "", digestFail("", "targetImageURL has no file name to look up")
+		return "", digestFail(internalmetrics.DigestResolutionInvalidSpec, "", "targetImageURL has no file name to look up")
 	}
 	name := path.Base(u.Path)
 	if name == "." || name == ".." || name == "/" || name == "" {
-		return "", digestFail("", "targetImageURL has no file name to look up")
+		return "", digestFail(internalmetrics.DigestResolutionInvalidSpec, "", "targetImageURL has no file name to look up")
 	}
 	return name, nil
 }
@@ -202,34 +211,34 @@ func fetchChecksumFile(ctx context.Context, client *http.Client, u *url.URL) ([]
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, digestFail(u.Host, "cannot build the request")
+		return nil, digestFail(internalmetrics.DigestResolutionFetchError, u.Host, "cannot build the request")
 	}
 	req.Header.Set("Accept", "text/plain, */*;q=0.1")
 	req.Header.Set("User-Agent", "beskar7-controller")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, digestFail(u.Host, "%s", describeFetchError(err))
+		return nil, digestFetchFail(u.Host, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, digestFail(u.Host, "HTTP %d", resp.StatusCode)
+		return nil, digestFail(internalmetrics.DigestResolutionHTTPStatus, u.Host, "HTTP %d", resp.StatusCode)
 	}
-	tooLarge := digestFail(u.Host, "checksum file too large (limit %d KiB)", digestFetchMaxBytes>>10)
+	tooLarge := digestFail(internalmetrics.DigestResolutionTooLarge, u.Host, "checksum file too large (limit %d KiB)", digestFetchMaxBytes>>10)
 	if resp.ContentLength > digestFetchMaxBytes {
 		return nil, tooLarge
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, digestFetchMaxBytes+1))
 	if err != nil {
-		return nil, digestFail(u.Host, "%s", describeFetchError(err))
+		return nil, digestFetchFail(u.Host, err)
 	}
 	// A body that only ended at the deadline may have been cut short: when the
 	// client gives up on a stalled chunked response, the server can close it
 	// cleanly, and the read then reports a normal end of what it got. Only a
 	// body read in full before the deadline counts.
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return nil, digestFail(u.Host, "timed out after %s", digestFetchTimeout)
+		return nil, digestFail(internalmetrics.DigestResolutionTimeout, u.Host, "timed out after %s", digestFetchTimeout)
 	}
 	if len(body) > digestFetchMaxBytes {
 		return nil, tooLarge
@@ -237,11 +246,12 @@ func fetchChecksumFile(ctx context.Context, client *http.Client, u *url.URL) ([]
 	return body, nil
 }
 
-// describeFetchError names why a request failed in fixed wording. The text of
-// err is never reported, only looked at for the one message the standard library
-// gives a plain-HTTP server: it can carry the URL's query, and TLS and proxy
-// errors can carry what the peer sent.
-func describeFetchError(err error) string {
+// describeFetchError names why a request failed in fixed wording, and gives the
+// kind of failure for the resolution metric. The text of err is never reported,
+// only looked at for the one message the standard library gives a plain-HTTP
+// server: it can carry the URL's query, and TLS and proxy errors can carry what
+// the peer sent.
+func describeFetchError(err error) (internalmetrics.DigestResolutionOutcome, string) {
 	var (
 		unknownAuthority x509.UnknownAuthorityError
 		wrongHost        x509.HostnameError
@@ -253,27 +263,27 @@ func describeFetchError(err error) string {
 	)
 	switch {
 	case errors.Is(err, errRedirectOffHost):
-		return "redirect to another host refused"
+		return internalmetrics.DigestResolutionRedirectRefused, "redirect to another host refused"
 	case errors.Is(err, errTooManyRedirects):
-		return fmt.Sprintf("more than %d redirects", digestFetchMaxRedirects)
+		return internalmetrics.DigestResolutionRedirectRefused, fmt.Sprintf("more than %d redirects", digestFetchMaxRedirects)
 	case errors.As(err, &unknownAuthority):
-		return "TLS certificate not trusted"
+		return internalmetrics.DigestResolutionTLSError, "TLS certificate not trusted"
 	case errors.As(err, &wrongHost):
-		return "TLS certificate is for a different host"
+		return internalmetrics.DigestResolutionTLSError, "TLS certificate is for a different host"
 	case errors.As(err, &invalidCert):
-		return "TLS certificate is expired or not valid"
+		return internalmetrics.DigestResolutionTLSError, "TLS certificate is expired or not valid"
 	case errors.As(err, &notTLS), strings.Contains(err.Error(), "server gave HTTP response to HTTPS client"):
-		return "not an HTTPS server"
+		return internalmetrics.DigestResolutionTLSError, "not an HTTPS server"
 	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &timeout) && timeout.Timeout()):
-		return fmt.Sprintf("timed out after %s", digestFetchTimeout)
+		return internalmetrics.DigestResolutionTimeout, fmt.Sprintf("timed out after %s", digestFetchTimeout)
 	case errors.Is(err, context.Canceled):
-		return "request canceled"
+		return internalmetrics.DigestResolutionCanceled, "request canceled"
 	case errors.As(err, &dnsErr):
-		return "cannot resolve the host name"
+		return internalmetrics.DigestResolutionFetchError, "cannot resolve the host name"
 	case errors.As(err, &opErr):
-		return "cannot connect"
+		return internalmetrics.DigestResolutionFetchError, "cannot connect"
 	}
-	return "request failed"
+	return internalmetrics.DigestResolutionFetchError, "request failed"
 }
 
 // bsdChecksumLine recognises a BSD line; splitChecksumLine reads everything else
@@ -338,16 +348,16 @@ func parseChecksumFile(body []byte, name, host string) (string, *digestError) {
 		}
 	}
 	if len(hashes) == 0 {
-		return "", digestFail(host, "no entry for %q", name)
+		return "", digestFail(internalmetrics.DigestResolutionNoEntry, host, "no entry for %q", name)
 	}
 	var digest string
 	for _, h := range hashes {
 		if !isSHA256Hex(h) {
-			return "", digestFail(host, "the entry for %q is not a SHA-256 digest", name)
+			return "", digestFail(internalmetrics.DigestResolutionInvalidEntry, host, "the entry for %q is not a SHA-256 digest", name)
 		}
 		h = strings.ToLower(h)
 		if digest != "" && digest != h {
-			return "", digestFail(host, "conflicting entries for %q", name)
+			return "", digestFail(internalmetrics.DigestResolutionInvalidEntry, host, "conflicting entries for %q", name)
 		}
 		digest = h
 	}
@@ -375,7 +385,7 @@ func fetchTargetImageDigest(ctx context.Context, client *http.Client, digestURL,
 		return "", derr
 	}
 	if err := validateBootDigest(digest); err != nil {
-		return "", digestFail(u.Host, "the entry for %q is not a SHA-256 digest", name)
+		return "", digestFail(internalmetrics.DigestResolutionInvalidEntry, u.Host, "the entry for %q is not a SHA-256 digest", name)
 	}
 	return digest, nil
 }
@@ -515,7 +525,9 @@ func (r *Beskar7MachineReconciler) ensureTargetImageDigest(ctx context.Context, 
 		return ctrl.Result{RequeueAfter: prev.next.Sub(now)}, false, nil
 	}
 
+	started := time.Now()
 	digest, derr := r.fetchDigest(ctx, spec)
+	recordDigestResolution(b7machine.Namespace, derr, time.Since(started))
 	if derr != nil {
 		failures := prev.failures + 1
 		delay := digestRetryDelay(failures)
@@ -535,10 +547,22 @@ func (r *Beskar7MachineReconciler) ensureTargetImageDigest(ctx context.Context, 
 	return ctrl.Result{RequeueAfter: requeueShortly}, false, nil
 }
 
+// recordDigestResolution counts one attempt to resolve a digest URL, derr being
+// how it failed and nil when it did not. It is called once per fetch and nowhere
+// else: a pass that finds the digest pinned, remembered or inside a backoff
+// window made no attempt.
+func recordDigestResolution(namespace string, derr *digestError, took time.Duration) {
+	outcome := internalmetrics.DigestResolutionSuccess
+	if derr != nil {
+		outcome = derr.outcome
+	}
+	internalmetrics.RecordTargetImageDigestResolution(namespace, outcome, took)
+}
+
 // fetchDigest resolves spec's digest URL, or reports that it has none.
 func (r *Beskar7MachineReconciler) fetchDigest(ctx context.Context, spec *infrav1.Beskar7MachineSpec) (string, *digestError) {
 	if spec.TargetImageDigestURL == "" {
-		return "", digestFail("", "neither spec.targetImageDigest nor spec.targetImageDigestURL is set")
+		return "", digestFail(internalmetrics.DigestResolutionInvalidSpec, "", "neither spec.targetImageDigest nor spec.targetImageDigestURL is set")
 	}
 	return fetchTargetImageDigest(ctx, r.checksumClient(), spec.TargetImageDigestURL, spec.TargetImageURL)
 }

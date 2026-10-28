@@ -17,10 +17,14 @@ limitations under the License.
 package metrics
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
@@ -40,6 +44,25 @@ func TestInit(t *testing.T) {
 	RecordReconciliation("test", "test-ns", ReconciliationOutcomeSuccess, 100*time.Millisecond)
 	UpdatePhysicalHostStateCounts("test-ns", map[string]int{"Available": 1})
 	RecordError("test", "test-ns", ErrorTypeConnection)
+
+	// The digest resolution metrics must be in the registry the manager serves.
+	RecordTargetImageDigestResolution("test-ns", DigestResolutionSuccess, time.Second)
+	families, err := metrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("Gather() failed: %v", err)
+	}
+	registered := map[string]bool{}
+	for _, f := range families {
+		registered[f.GetName()] = true
+	}
+	for _, name := range []string{
+		"beskar7_controller_target_image_digest_resolutions_total",
+		"beskar7_controller_target_image_digest_resolution_duration_seconds",
+	} {
+		if !registered[name] {
+			t.Errorf("%s is not registered by Init()", name)
+		}
+	}
 }
 
 func TestRecordReconciliation(t *testing.T) {
@@ -292,6 +315,176 @@ func TestPhysicalHostCanonicalStatesCoversEveryAPIState(t *testing.T) {
 	for _, s := range apiStates {
 		if !listed[s] {
 			t.Errorf("state %q is set by the controllers but missing from physicalHostCanonicalStates, so the gauge never emits it", s)
+		}
+	}
+}
+
+// allDigestResolutionOutcomes is every outcome the resolution metrics can carry,
+// written out as the literal label values operators write alerts against.
+var allDigestResolutionOutcomes = map[DigestResolutionOutcome]string{
+	DigestResolutionSuccess:         "success",
+	DigestResolutionInvalidSpec:     "invalid_spec",
+	DigestResolutionFetchError:      "fetch_error",
+	DigestResolutionTLSError:        "tls_error",
+	DigestResolutionTimeout:         "timeout",
+	DigestResolutionRedirectRefused: "redirect_refused",
+	DigestResolutionHTTPStatus:      "http_status",
+	DigestResolutionTooLarge:        "too_large",
+	DigestResolutionNoEntry:         "no_entry",
+	DigestResolutionInvalidEntry:    "invalid_entry",
+	DigestResolutionCanceled:        "canceled",
+}
+
+func readDigestResolutions(t *testing.T, outcome DigestResolutionOutcome, namespace string) (count float64, observed uint64, sum float64) {
+	t.Helper()
+	c := &dto.Metric{}
+	if err := TargetImageDigestResolutionsTotal.WithLabelValues(string(outcome), namespace).Write(c); err != nil {
+		t.Fatalf("Failed to write counter: %v", err)
+	}
+	h := &dto.Metric{}
+	obs, ok := TargetImageDigestResolutionDuration.WithLabelValues(string(outcome), namespace).(prometheus.Metric)
+	if !ok {
+		t.Fatal("the duration histogram's observer is not a prometheus.Metric")
+	}
+	if err := obs.Write(h); err != nil {
+		t.Fatalf("Failed to write histogram: %v", err)
+	}
+	return c.GetCounter().GetValue(), h.GetHistogram().GetSampleCount(), h.GetHistogram().GetSampleSum()
+}
+
+func TestRecordTargetImageDigestResolution(t *testing.T) {
+	for outcome, want := range allDigestResolutionOutcomes {
+		if string(outcome) != want {
+			t.Errorf("outcome %q: the label value changed from %q, which breaks alerts written against it", outcome, want)
+		}
+		ns := "digest-" + want
+		RecordTargetImageDigestResolution(ns, outcome, 250*time.Millisecond)
+		RecordTargetImageDigestResolution(ns, outcome, 750*time.Millisecond)
+
+		count, observed, sum := readDigestResolutions(t, outcome, ns)
+		if count != 2 {
+			t.Errorf("%s: counter = %v, want 2", want, count)
+		}
+		if observed != 2 {
+			t.Errorf("%s: histogram observed %d attempts, want 2 (it must move with the counter)", want, observed)
+		}
+		if sum != 1 {
+			t.Errorf("%s: histogram sum = %v seconds, want 1", want, sum)
+		}
+
+		// No other outcome of the same namespace moves.
+		for other := range allDigestResolutionOutcomes {
+			if other == outcome {
+				continue
+			}
+			if c, o, _ := readDigestResolutions(t, other, ns); c != 0 || o != 0 {
+				t.Errorf("recording %s moved %s in the same namespace (counter %v, histogram %d)", want, other, c, o)
+			}
+		}
+	}
+}
+
+func TestRecordTargetImageDigestResolutionIsPerNamespace(t *testing.T) {
+	RecordTargetImageDigestResolution("digest-ns-a", DigestResolutionHTTPStatus, time.Second)
+
+	if c, o, _ := readDigestResolutions(t, DigestResolutionHTTPStatus, "digest-ns-a"); c != 1 || o != 1 {
+		t.Errorf("digest-ns-a: counter %v, histogram %d, want 1 and 1", c, o)
+	}
+	if c, o, _ := readDigestResolutions(t, DigestResolutionHTTPStatus, "digest-ns-b"); c != 0 || o != 0 {
+		t.Errorf("digest-ns-b moved with digest-ns-a: counter %v, histogram %d", c, o)
+	}
+}
+
+// TestDigestResolutionLabelsAreOutcomeAndNamespaceOnly pins the label set. The
+// checksum URL, its host, the image's file name and the digest come from the spec
+// or from a server; none of them may become a label, for cardinality and so a
+// metrics reader learns nothing about what a machine fetches.
+func TestDigestResolutionLabelsAreOutcomeAndNamespaceOnly(t *testing.T) {
+	RecordTargetImageDigestResolution("digest-labels", DigestResolutionNoEntry, time.Second)
+
+	c := &dto.Metric{}
+	if err := TargetImageDigestResolutionsTotal.WithLabelValues(string(DigestResolutionNoEntry), "digest-labels").Write(c); err != nil {
+		t.Fatalf("Failed to write counter: %v", err)
+	}
+	got := map[string]string{}
+	for _, l := range c.GetLabel() {
+		got[l.GetName()] = l.GetValue()
+	}
+	want := map[string]string{"outcome": "no_entry", "namespace": "digest-labels"}
+	if len(got) != len(want) || got["outcome"] != want["outcome"] || got["namespace"] != want["namespace"] {
+		t.Errorf("counter labels = %v, want %v", got, want)
+	}
+
+	obs, ok := TargetImageDigestResolutionDuration.WithLabelValues(string(DigestResolutionNoEntry), "digest-labels").(prometheus.Metric)
+	if !ok {
+		t.Fatal("the duration histogram's observer is not a prometheus.Metric")
+	}
+	h := &dto.Metric{}
+	if err := obs.Write(h); err != nil {
+		t.Fatalf("Failed to write histogram: %v", err)
+	}
+	if len(h.GetLabel()) != 2 {
+		t.Errorf("histogram has %d labels, want outcome and namespace only", len(h.GetLabel()))
+	}
+}
+
+// TestDigestResolutionDurationBucketsSuitTheTenSecondCap: an attempt is cut off
+// at 10 seconds and ends a few milliseconds after, so the bucket above 10s must
+// exist, or every timeout would land only in +Inf.
+func TestDigestResolutionDurationBucketsSuitTheTenSecondCap(t *testing.T) {
+	RecordTargetImageDigestResolution("digest-buckets", DigestResolutionTimeout, 10*time.Second+5*time.Millisecond)
+	RecordTargetImageDigestResolution("digest-buckets", DigestResolutionTimeout, 80*time.Millisecond)
+
+	obs, ok := TargetImageDigestResolutionDuration.WithLabelValues(string(DigestResolutionTimeout), "digest-buckets").(prometheus.Metric)
+	if !ok {
+		t.Fatal("the duration histogram's observer is not a prometheus.Metric")
+	}
+	m := &dto.Metric{}
+	if err := obs.Write(m); err != nil {
+		t.Fatalf("Failed to write histogram: %v", err)
+	}
+	cumulative := map[float64]uint64{}
+	for _, b := range m.GetHistogram().GetBucket() {
+		cumulative[b.GetUpperBound()] = b.GetCumulativeCount()
+	}
+	for _, bound := range []float64{0.1, 10, 12.5} {
+		if _, ok := cumulative[bound]; !ok {
+			t.Fatalf("no bucket with upper bound %v; buckets: %v", bound, cumulative)
+		}
+	}
+	if cumulative[0.1] != 1 {
+		t.Errorf("le=0.1 holds %d, want the 80ms attempt only", cumulative[0.1])
+	}
+	if cumulative[10] != 1 {
+		t.Errorf("le=10 holds %d, want 1: the attempt that ran past the cap is not in it", cumulative[10])
+	}
+	if cumulative[12.5] != 2 {
+		t.Errorf("le=12.5 holds %d, want both attempts", cumulative[12.5])
+	}
+}
+
+// TestDocsDescribeTheDigestResolutionMetrics keeps docs/metrics.md in step with
+// the code: a section for each metric, and every outcome an operator can see in a
+// label listed in the counter's section.
+func TestDocsDescribeTheDigestResolutionMetrics(t *testing.T) {
+	raw, err := os.ReadFile("../../docs/metrics.md")
+	if err != nil {
+		t.Fatalf("read docs/metrics.md: %v", err)
+	}
+	section := func(name string) string {
+		heading := "#### `" + name + "`"
+		_, rest, found := strings.Cut(string(raw), heading)
+		if !found {
+			t.Fatalf("docs/metrics.md has no section %q", heading)
+		}
+		body, _, _ := strings.Cut(rest, "\n#")
+		return body
+	}
+	counter := section("beskar7_controller_target_image_digest_resolutions_total")
+	section("beskar7_controller_target_image_digest_resolution_duration_seconds")
+	for _, want := range allDigestResolutionOutcomes {
+		if !strings.Contains(counter, "\n- `"+want+"` ") {
+			t.Errorf("the counter's section does not list the outcome %q as a bullet", want)
 		}
 	}
 }
