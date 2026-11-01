@@ -465,7 +465,7 @@ these from `/proc/cmdline`.
 | `beskar7.target-digest` | yes | `Beskar7Machine.Spec.TargetImageDigest` (or, when the machine sets `Spec.TargetImageDigestURL`, the `Status.TargetImageDigest` the controller pinned from it, D-038; the inspector cannot tell) — the expected SHA-256 of the bytes at `beskar7.target`, matching `^sha256:[0-9a-f]{64}$`. The inspector MUST verify the written image against this digest and MUST refuse to **boot** (mount/inject/reboot) a non-matching image (§8.1). Non-secret; it is the sole integrity **and authenticity** anchor for the OS image. |
 | `beskar7.provider-id` | yes (v4.2) | `b7://{PhysicalHost.Namespace}/{PhysicalHost.Name}` — the exact string `providerID(ph.Namespace, ph.Name)` computes, which is also the value stamped onto `Beskar7Machine.Spec.ProviderID` once the host is ready. **Always rendered** (the controller always knows the host's identity); there is no omitted form, unlike the bracketed optional params below. The inspector MUST write it verbatim (no trailing newline, mode `0600`, root-owned) to `/oem/beskar7/provider-id` on the `COS_OEM` partition during the same mount session as `99_beskar7.yaml` (§9.1 step 5.4). This is the P2 mechanism that lets a *shared* bootstrap template produce a *per-host* kubelet `--provider-id`, so the workload Node's `ProviderID` matches its Machine's without a hand-authored-per-host config — required for templated `MachineDeployment` pools and multi-replica control planes (see D-014/D-017, `docs/beskar7machine.md`). Anchored server-side by `validateProviderID` (`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth — the value is controller-computed from already-validated k8s object names, so this guard cannot fail in production). Non-secret. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
-| `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
+| `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. The image's size is known only once it streams, so that last check is the §8.1 size bound: the write is capped at the pinned disk's capacity, and an image that does not fit aborts as a size-limit breach. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 | `BOOTIF` | no | The provisioning NIC's MAC in the pxelinux/iPXE form `01-aa-bb-cc-dd-ee-ff` (a `01` hardware-type prefix + the MAC with dashes). **Not** a `beskar7.*` key — it is the established netboot convention. `/boot` renders it from a `?mac=<mac>` query the operator's first-stage iPXE appends (e.g. `${net0/mac}`); see §4.1, §8.2. The inspector DHCP-configures the matching interface. **Absent** → a single-NIC host uses its one NIC; a multi-NIC host DHCP-races all links and applies the gatewayed winner (§8.2). `BOOTIF` is the deterministic pin and is the way to select a specific network. Non-secret. |
@@ -777,10 +777,17 @@ The inspector MUST:
    (§5) and use exactly that device — aborting if it is missing, not a block device,
    not a whole disk (partition/`dm`/loop), removable, read-only, backs the running
    ramdisk, or smaller than the image, and never silently falling back; otherwise
-   auto-select the **smallest** whole disk large enough to hold the image (and meeting
-   `MinDiskGB`), excluding partitions, removable/USB media, read-only devices, and any
-   device backing the running ramdisk. The inspector MUST log (non-secret) which disk
-   it chose and why, and MUST refuse to provision if no disk qualifies.
+   auto-select the **smallest** eligible whole disk, excluding partitions, virtual
+   devices (`loop`, `ram`, `zram`, `dm`, `md`), removable/USB media, read-only or
+   empty devices, and any device backing the running ramdisk. The inspector selects
+   before it posts the report, so in either mode it does not yet know the image's
+   size, and it never sees `MinDiskGB`, which the controller checks against the
+   report's summed `disks[].sizeGB` (§6.1). Whether the image fits is settled by the
+   write: it is capped at the selected disk's capacity (§8.1), so an image too large
+   for the disk aborts there as a size-limit breach, which the inspector reports
+   through `/provision-failed` (§4.5) with the reason `image too large`. The
+   inspector MUST log (non-secret) which disk it chose and why, and MUST refuse to
+   provision if no disk qualifies.
 3. `POST` the report to `{api}/api/v1/inspection/{ns}/{host}` with the bearer
    token over verified TLS; treat **202** as success; retry transient failures
    with backoff.
@@ -947,14 +954,15 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
     net for operator input.
   - **Still open (not closed by v4.2):** a fixture for the `99_beskar7.yaml`
     `COS_OEM` cloud-config *shape* (filename/mode/owner — content is
-    operator-supplied, so only the shape is pinnable); an inspector test that a
-    pinned-but-ineligible `beskar7.disk` aborts with **no** fallback while
-    auto-selection picks the smallest eligible whole disk, excluding the
-    ramdisk-backing device (§9.1 step 2); and request/response-shape guards for
-    `/provisioned` and `/provision-failed`. Until those land, "no test failed"
-    does **not** fully imply the deploy contract held for those specific
-    surfaces (e.g. a regression to a system-wide `COS_OEM` label scan would
-    still pass silently).
+    operator-supplied, so only the shape is pinnable); and request/response-shape
+    guards for `/provisioned` and `/provision-failed`. Until those land, "no
+    test failed" does **not** fully imply the deploy contract held for those
+    specific surfaces (e.g. a regression to a system-wide `COS_OEM` label scan
+    would still pass silently).
+  - **Covered on the inspector side:** the §9.1 step 2 disk selection, by the
+    inspector's `target_disk` unit tests: a pinned-but-ineligible `beskar7.disk`
+    aborts with **no** fallback, and auto-selection picks the smallest eligible
+    whole disk, skipping the ramdisk-backing device.
 
 ### 10.1 Version history
 
@@ -1053,6 +1061,17 @@ change. These are not new contract versions.
   (§9.1 step 6), inside the 5, and treats a `401`/`403` as fatal (§9.2), as
   before. Observable server-side differences only: a callback more than 5
   minutes after the machine failed gets the opaque `401`.
+- **DOCS-3 (2026-10-31):** §9.1 step 2 said auto-selection picks the smallest
+  disk "large enough to hold the image (and meeting `MinDiskGB`)", and §5 and
+  §9.1 step 2 listed "smaller than the image" among the checks on a pinned disk
+  as if it were made at selection. The inspector has neither input when it
+  selects: it selects before posting the report and before the image streams,
+  and `MinDiskGB` is a controller check against the report (§6.1). It picks the
+  smallest eligible disk, and whether the image fits is settled by the §8.1 size
+  bound, which is capped at the selected disk's capacity: an image too large for
+  the disk aborts during the write and is reported through `/provision-failed`.
+  The text now says so, and §10 no longer lists disk-selection tests as missing.
+  Nothing changed in the inspector, the controller or on the wire.
 
 ---
 
