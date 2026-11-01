@@ -294,7 +294,9 @@ type HardwareRequirements struct {
 	// +kubebuilder:validation:Minimum=1
 	MinMemoryGB int32 `json:"minMemoryGB,omitempty"`
 
-	// MinDiskGB is the minimum disk space in GB required.
+	// MinDiskGB is the minimum total disk space in GB across all disks in the
+	// inspection report. It does not require any single disk, including the image
+	// target disk, to meet this size.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	MinDiskGB int32 `json:"minDiskGB,omitempty"`

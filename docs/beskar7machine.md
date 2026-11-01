@@ -314,6 +314,14 @@ If you skip this, the node still comes up and is `Ready`, but the CAPI `Machine`
 
 > **Scaled deployments:** hand-authoring the value works when you author the per-machine bootstrap config and therefore know which PhysicalHost the Machine will use (a single node, or hosts pinned to specific machines). A templated `MachineDeployment` or a multi-replica control plane cannot pin a per-host ProviderID in one shared template — that is what the image-side stages above are for.
 
+## Disk capacity requirement
+
+`spec.hardwareRequirements.minDiskGB` checks the sum of `sizeGB` across every
+disk in the inspection report. For example, two 100 GB disks satisfy
+`minDiskGB: 150`, even though neither disk can hold a 150 GB image. The inspector
+writes the image to one disk; this field does not check the capacity of that
+target disk. There is currently no separate target-disk size requirement.
+
 ## Example
 
 ```yaml
