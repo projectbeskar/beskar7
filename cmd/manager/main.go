@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -46,6 +47,9 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	//+kubebuilder:scaffold:imports
 )
+
+// clusterCacheUserAgent identifies this manager's requests to workload clusters.
+const clusterCacheUserAgent = "beskar7-controller-manager"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -386,6 +390,15 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", cfg.maxConcurrentReconciles)
 	redfishFactory := internalredfish.NewClientFactory(cfg.bmcProxy)
 
+	// The cached client already holds Secrets in this mode and honors --watch-namespaces.
+	clusterCache, err := clustercache.SetupWithManager(context.Background(), mgr, clustercache.Options{
+		SecretClient: mgr.GetClient(),
+		Client:       clustercache.ClientOptions{UserAgent: clusterCacheUserAgent},
+	}, controller.Options{MaxConcurrentReconciles: cfg.maxConcurrentReconciles})
+	if err != nil {
+		return fmt.Errorf("unable to create ClusterCache: %w", err)
+	}
+
 	if err := (&controllers.Beskar7MachineReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
@@ -395,6 +408,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 		RedfishClientFactory:    redfishFactory,
+		ClusterCache:            clusterCache,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
 	}
