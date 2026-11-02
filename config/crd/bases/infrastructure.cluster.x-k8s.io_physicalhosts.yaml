@@ -65,6 +65,10 @@ spec:
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
+              networkDataSecretRef:
+                maxLength: 253
+                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                type: string
               redfishConnection:
                 properties:
                   address:

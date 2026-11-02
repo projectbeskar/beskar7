@@ -55,6 +55,7 @@ spec:
         args:
         - --namespace=beskar7-smoke
         - --host-name=smoke-host-01
+        - --expect-network-data=true
         - --wait-for-bootstrap=3m
         - --insecure-skip-verify=true
         resources:

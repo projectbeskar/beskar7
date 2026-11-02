@@ -534,6 +534,14 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 				"Waiting for PhysicalHost %q to reassert Ready (already held by this machine's ProviderID)", physicalHost.Name)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
+		if hostWaitingForNetworkData(physicalHost) {
+			// The host's Secret watch wakes this machine once it is fixed; the
+			// requeue is only a backstop.
+			logger.Info("PhysicalHost network data cannot be served yet; waiting before booting it", "physicalhost", physicalHost.Name)
+			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.WaitingForNetworkDataReason,
+				"Waiting for PhysicalHost %q: %s", physicalHost.Name, networkDataWaitMessage(physicalHost))
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
 		// Host claimed, need to trigger inspection
 		logger.Info("PhysicalHost claimed, triggering inspection")
 		setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason, "Starting inspection of PhysicalHost %q", physicalHost.Name)

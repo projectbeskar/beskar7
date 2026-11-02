@@ -17,8 +17,11 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -350,5 +353,65 @@ func TestPostReport_AuthorizationHeaderScheme(t *testing.T) {
 	// Confirm Content-Type is set.
 	if req.Header.Get("Content-Type") != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", req.Header.Get("Content-Type"))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// networkdata (contract v4.3)
+// ---------------------------------------------------------------------------
+
+func TestDeriveNetworkDataURL(t *testing.T) {
+	t.Parallel()
+	got, err := deriveNetworkDataURL("https://host:8082/api/v1/bootstrap/ns/name")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "https://host:8082/api/v1/networkdata/ns/name"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if _, err := deriveNetworkDataURL("https://host:8082/api/v2/bootstrap/ns/name"); err == nil {
+		t.Fatal("expected an error for a URL without the bootstrap segment")
+	}
+}
+
+func TestFetchNetworkData(t *testing.T) {
+	t.Parallel()
+	const token = "test-token"
+	body := "network:\n  version: 2\n"
+	cases := []struct {
+		name     string
+		status   int
+		wantSize int
+		wantErr  bool
+	}{
+		{name: "served", status: http.StatusOK, wantSize: len(body)},
+		{name: "no network data", status: http.StatusNotFound},
+		{name: "refused Secret", status: http.StatusConflict, wantErr: true},
+		{name: "server error", status: http.StatusInternalServerError, wantErr: true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "Bearer "+token {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				w.WriteHeader(tc.status)
+				if tc.status == http.StatusOK {
+					_, _ = w.Write([]byte(body))
+				}
+			}))
+			defer server.Close()
+
+			size, err := fetchNetworkData(context.Background(), server.Client(), server.URL, token)
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if size != tc.wantSize {
+				t.Fatalf("size = %d, want %d", size, tc.wantSize)
+			}
+		})
 	}
 }

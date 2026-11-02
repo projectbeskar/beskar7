@@ -7,6 +7,10 @@
 #   3. Skip TLS verification (the mock generates a self-signed cert at startup)
 #   4. Query /redfish/v1/Systems/1 for power state + hardware details
 #   5. Transition the host through Enrolling -> Available (layer 3 success)
+#
+# It also names a network data Secret (contract v4.3). The mock inspector is run
+# with --expect-network-data, so the smoke test fails unless /networkdata serves
+# it. The pool hosts (61-pool.yaml) have none and get 404.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost
 metadata:
@@ -20,3 +24,26 @@ spec:
     address: https://mock-redfish.beskar7-smoke.svc.cluster.local:8443
     credentialsSecretRef: bmc-credentials
     insecureSkipVerify: true
+  networkDataSecretRef: smoke-host-01-network
+---
+# Opted in for smoke-host-01 only: the annotation must name the host.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: smoke-host-01-network
+  namespace: beskar7-smoke
+  labels:
+    app.kubernetes.io/part-of: beskar7
+    app.kubernetes.io/component: smoke-test
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/network-data-host: smoke-host-01
+type: Opaque
+stringData:
+  networkData: |
+    network:
+      version: 2
+      ethernets:
+        boot:
+          match:
+            macaddress: "52:54:00:12:34:56"
+          dhcp4: true
