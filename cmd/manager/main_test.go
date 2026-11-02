@@ -271,7 +271,7 @@ func TestSetupManager(t *testing.T) {
 		expectStatus(t, httpsClient, http.MethodGet, route, "Bearer not-the-token", http.StatusUnauthorized)
 	})
 
-	t.Run("all registers the three controllers and the webhook", func(t *testing.T) {
+	t.Run("all registers the three controllers, the ClusterCache and the webhook", func(t *testing.T) {
 		callbackPort := freePort(t)
 		cfg := baseConfig(callbackPort)
 		cfg.controllers = controllersAll
@@ -281,8 +281,8 @@ func TestSetupManager(t *testing.T) {
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
 		}
-		if n := mgr.controllerCount(); n != 3 {
-			t.Fatalf("all mode registered %d controllers, want 3 (Beskar7Machine, Beskar7Cluster, PhysicalHost)", n)
+		if n := mgr.controllerCount(); n != 4 {
+			t.Fatalf("all mode registered %d controllers, want 4 (Beskar7Machine, Beskar7Cluster, PhysicalHost, ClusterCache)", n)
 		}
 		if !mgr.webhookRequested {
 			t.Fatal("all mode with --enable-webhook did not register the webhook")

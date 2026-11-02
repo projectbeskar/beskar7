@@ -19,6 +19,10 @@ const (
 	// Machine.Spec.Bootstrap.DataSecretName is present and the per-host bootstrap
 	// URL has been signaled to the PhysicalHost.
 	BootstrapDataReadyCondition = "BootstrapDataReady"
+	// NodeProviderIDReadyCondition reports whether the workload cluster Node
+	// named after the owner Machine carries this machine's ProviderID. It is
+	// not part of the Ready summary: the Node joins after the machine is Ready.
+	NodeProviderIDReadyCondition = "NodeProviderIDReady"
 )
 
 // Reasons for the True state of the Beskar7Machine conditions (metav1.Condition
@@ -33,6 +37,9 @@ const (
 	// BootstrapDataReadyReason (BootstrapDataReady=True): the bootstrap data
 	// Secret exists and the per-host bootstrap URL has been signalled.
 	BootstrapDataReadyReason = "BootstrapDataReady"
+	// NodeProviderIDSetReason (NodeProviderIDReady=True): the Node carries the
+	// machine's ProviderID.
+	NodeProviderIDSetReason = "NodeProviderIDSet"
 	// PhasePending is the Status.Phase while the claimed PhysicalHost is in a
 	// state the machine waits on, such as InUse before the inspection starts.
 	PhasePending = "Pending"
@@ -146,6 +153,19 @@ const (
 	// one (D-031). Deleting the Secret clears it: the next pass mints into a
 	// fresh one.
 	BootstrapCredentialsConflictReason string = "BootstrapCredentialsConflict"
+	// NodeNotFoundReason (NodeProviderIDReady=False, not terminal): the
+	// workload cluster has no Node named after the owner Machine yet, which is
+	// normal while the host boots and joins.
+	NodeNotFoundReason string = "NodeNotFound"
+	// NodeProviderIDMismatchReason (NodeProviderIDReady=False, not terminal):
+	// the Node carries a different, non-empty providerID, which the API server
+	// does not allow to change. Cluster API cannot link the Node to the Machine
+	// until the Node is recreated with the right one.
+	NodeProviderIDMismatchReason string = "NodeProviderIDMismatch"
+	// WorkloadClusterUnreachableReason (NodeProviderIDReady=False, not
+	// terminal): the controller has no working client for the workload
+	// cluster, for example while its control plane is still coming up.
+	WorkloadClusterUnreachableReason string = "WorkloadClusterUnreachable"
 )
 
 // Beskar7MachineSpec defines the desired state of Beskar7Machine.

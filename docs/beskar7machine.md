@@ -124,6 +124,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 8. **Start deployment.** When validation passes, signal the host (`inspection-request: inspect-complete`, signed like `inspect`), which moves the host to `Deploying` and records `Status.DeployingTimestamp`. The inspector does not wait for that (contract §9.2): once `/bootstrap` answers it writes the digest-pinned image to the target disk, injects the bootstrap data, and reports `POST /provisioned`, or `POST /provision-failed` on a failure.
 9. **Wait for deployment.** While the host is `Deploying`, the machine reports phase `Provisioning` and `InfrastructureReady=False` (`PhysicalHostNotReady`). If `Status.DeployingTimestamp` is older than the deployment timeout (default 20 minutes; override with the `--deployment-timeout` manager flag), call `markTerminalFailure(DeploymentTimedOut, ...)` and stop. A `/provision-failed` report puts the host in `Error` with the reported reason, and the machine fails with `DeploymentFailed`.
 10. **Mark ready.** When the host's reconciler applies the bound `/provisioned` report, the host moves to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, sets `InfrastructureReady=True` (`Provisioned`), `Status.Ready=true`, and `Status.Initialization.Provisioned=true` (the CAPI v1beta2 contract field that CAPI core lifts into `Machine.status.initialization.infrastructureProvisioned` and uses to advance the parent Machine past `Pending`). On that first pass it also clears the host's boot override, and it cuts the host's callback token to 5 minutes (decision D-031).
+11. **Link the Node (#297).** Until the owner `Machine` has `status.nodeRef`, the controller reads the workload cluster Node named after the `Machine` and, if its `spec.providerID` is empty, sets it to the machine's `ProviderID`. It never changes a non-empty value. See [ProviderID & Node association](#providerid--node-association).
 
 ## Conditions
 
@@ -138,6 +139,7 @@ Every condition is a native `metav1.Condition` (`status.conditions[]`: `type`, `
 | `PhysicalHostAssociated` | A host has been claimed. | `PhysicalHostAssociated` | `WaitingForPhysicalHost`, `NoMatchingPhysicalHost`, `PhysicalHostAssociationFailed`, `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Machine.Spec.Bootstrap.DataSecretName` is set and the URL has been signalled. | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
 | `Paused` | Maintained by `sigs.k8s.io/cluster-api/util/paused`. See [Paused](#paused). | `Paused` | `NotPaused`. |
+| `NodeProviderIDReady` | The workload cluster Node named after the owner `Machine` carries this machine's `ProviderID`. Written only once the host is `Ready`, and **not** part of the `Ready` summary: the Node joins after the infrastructure is ready. | `NodeProviderIDSet` | `NodeNotFound` (no such Node yet, normal while the host boots and joins; checked every 15 seconds); `NodeProviderIDMismatch` (the Node has a different, non-empty `providerID`, which the API server does not let anyone change; the message names both values; checked every 5 minutes); `WorkloadClusterUnreachable` (no client for the workload cluster yet, for example while its control plane comes up; checked every 30 seconds). None is terminal. |
 
 There is no `MachineProvisioned` condition — it was declared but never set by any reconciler and has been removed from the API. Use `Ready` (backed by `Status.Ready` and `Status.Initialization.Provisioned`) as the provisioned signal.
 
@@ -232,7 +234,24 @@ The provider ID is `b7://<namespace>/<name>`, where `<name>` is the **PhysicalHo
 
 Setting `Beskar7Machine.Spec.ProviderID` marks the **infrastructure** ready, which advances the CAPI `Machine` to `Provisioned`. It does **not**, on its own, advance the Machine to `Running`. CAPI reaches `Running` only after it associates the Machine with a Kubernetes Node, and it does that by matching the Machine's `spec.providerID` against the Node's `spec.providerID` — **the two must be exactly equal**.
 
-A freshly provisioned node's kubelet, left to its defaults, registers a ProviderID that does **not** match `b7://...` (k3s, for example, uses `k3s://<hostname>`). So you must tell the node's kubelet to register with the value Beskar7 assigns:
+### The controller sets it (default)
+
+Since #297 the controller links the Node itself, so most images need no providerID glue. Once the host is `Ready`, and until the owner `Machine` has a `nodeRef`, it reads the workload cluster Node **named after the `Machine`** and:
+
+- the Node's `spec.providerID` is empty: it patches it to `b7://<namespace>/<host-name>`. The API server allows setting it once while empty, so this works on any image whose kubelet registers without `--provider-id` (kubeadm does, unless told otherwise);
+- it is already equal: nothing to do;
+- it is anything else: it does not touch it and reports `NodeProviderIDReady=False (NodeProviderIDMismatch)`, with both values in the message.
+
+Progress shows on the `NodeProviderIDReady` condition (see [Conditions](#conditions)). The controller reaches the workload cluster through Cluster API's ClusterCache, with the `<cluster>-kubeconfig` Secret, which is the admin kubeconfig. Nothing narrows those credentials: that the controller only gets Nodes and patches `spec.providerID` is a property of its code, not of its access. No RBAC rule changes on the management cluster.
+
+Two limits:
+
+- **The Node must be named after the `Machine`.** Kubeadm-based bootstrap providers set `nodeRegistration.name` to it. A distro that names the Node after the hostname (k3s, k0s on Kairos by default) never matches, and its machine shows `NodeNotFound` until one of the image-side routes below sets the providerID and Cluster API links the Node.
+- **k3s registers `k3s://<hostname>` by default**, which cannot be changed afterwards. Its machines need the k3s route below, or they show `NodeProviderIDMismatch`.
+
+### Setting it on the node
+
+The routes below set the providerID on the node itself, before or as it registers. They are needed where the controller cannot help (see the limits above), and harmless elsewhere: a Node that already carries the right value is left alone. A kubelet left to its defaults registers either nothing or a ProviderID that does **not** match `b7://...` (k3s, for example, uses `k3s://<hostname>`), so tell it the value Beskar7 assigns:
 
 ```
 b7://<namespace>/<physicalhost-name>
@@ -310,7 +329,7 @@ node with **no** `admin.conf`, then reached `Running` with its `nodeRef` — no 
 **Plain kubelet / other distros:** set the kubelet `--provider-id` flag to the same value via your
 distro's kubelet-args mechanism, before the kubelet first registers.
 
-If you skip this, the node still comes up and is `Ready`, but the CAPI `Machine` stays at `Provisioned` and never reaches `Running` (the Node is never bound). See [Troubleshooting → CAPI Machine stuck at Provisioned](troubleshooting.md#12-capi-machine-stuck-at-provisioned-never-reaches-running-node-not-associated).
+If neither the controller nor the node sets it, the node still comes up and is `Ready`, but the CAPI `Machine` stays at `Provisioned` and never reaches `Running` (the Node is never bound). See [Troubleshooting → CAPI Machine stuck at Provisioned](troubleshooting.md#12-capi-machine-stuck-at-provisioned-never-reaches-running-node-not-associated).
 
 > **Scaled deployments:** hand-authoring the value works when you author the per-machine bootstrap config and therefore know which PhysicalHost the Machine will use (a single node, or hosts pinned to specific machines). A templated `MachineDeployment` or a multi-replica control plane cannot pin a per-host ProviderID in one shared template — that is what the image-side stages above are for.
 
