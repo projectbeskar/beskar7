@@ -1,0 +1,16 @@
+{
+  "namespace": "contract-test",
+  "host": "host-01",
+  "endpoint": "/api/v1/network-data/contract-test/host-01",
+  "secretKey": "networkData",
+  "hostAnnotation": "beskar7.infrastructure.cluster.x-k8s.io/network-data-host",
+  "maxSizeBytes": 65536,
+  "content": "network:\n  version: 2\n  ethernets:\n    boot:\n      match:\n        macaddress: \"52:54:00:12:34:56\"\n      dhcp4: false\n  vlans:\n    vlan208:\n      id: 208\n      link: boot\n      addresses: [192.0.2.15/24]\n      routes: [{to: default, via: 192.0.2.1}]\n",
+  "artifactPath": "/oem/beskar7/network-data",
+  "mode": "0600",
+  "owner": "root",
+  "statusServed": 200,
+  "statusNoData": 404,
+  "statusUnauthorized": 401,
+  "statusRefused": 409
+}

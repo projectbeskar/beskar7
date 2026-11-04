@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v4.2` — FROZEN for v0.4.0 GA**
+**Contract version: `v4.3`, FROZEN for v0.4.0 GA**
 
 > The wire contract is **frozen** as of `v0.4.0`. Within the `v4.x` line, changes
 > MUST be additive and backward-compatible, as specified in
@@ -16,6 +16,17 @@ ramdisk (`beskar7-inspector`). Both repositories pin to a contract version; a
 change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#10-versioning-and-anti-drift)).
+
+> **v4.3 in one line:** adds optional per-host network data for the installed
+> OS: a new endpoint `GET /api/v1/network-data/{ns}/{host}` (§4.6), same token
+> rule as `/bootstrap`, and a new `COS_OEM` artifact `/oem/beskar7/network-data`
+> (§9.1) the inspector writes in the same mount session as `99_beskar7.yaml`.
+> The bytes come verbatim from the Secret `PhysicalHost.spec.networkDataSecretRef`
+> names (cloud-init `network-config` v2 by convention); how the OS applies them
+> is out of scope. Additive and backward-compatible: a v4.2 controller has no
+> such route and answers `404`, which a v4.3 inspector reads as "no network
+> data", and a v4.2 inspector never calls the endpoint. **No §5 cmdline, §6 report or existing endpoint
+> change.**
 
 > **v4.2 in one line:** adds per-host `ProviderID` delivery for templated
 > pools/HA control planes (D-014 P2) — a new required cmdline param
@@ -79,11 +90,13 @@ controller
   │
 inspector ramdisk — Phase 2: provision (when bootstrap data is available)
   ├─ GET bootstrap → {api}/api/v1/bootstrap/{ns}/{host}    (Bearer token, TLS-verified)  → user-data
+  ├─ GET network-data → {api}/api/v1/network-data/{ns}/{host} (Bearer token, TLS-verified) → bytes, or 404 [v4.3]
   ├─ download beskar7.target (plain HTTP) → verify sha256 == beskar7.target-digest
   ├─ write the whole-disk image to the selected target disk (dd-equivalent)
   ├─ re-read the partition table; mount the image's COS_OEM partition
   ├─ inject a per-host cloud-config embedding the fetched user-data into COS_OEM
   ├─ write beskar7.provider-id verbatim to COS_OEM:/oem/beskar7/provider-id
+  ├─ write the network data, if any, to COS_OEM:/oem/beskar7/network-data [v4.3]
   ├─ sync, unmount — zero the in-memory user-data
   │  (on any step failure above)
   │  └─ POST provision-failed → {api}/api/v1/provision-failed/{ns}/{host}
@@ -132,7 +145,7 @@ Two distinct per-host secrets, by design (decision D-009). Do not conflate them.
 | Secret | Gates | Lifetime | Reuse | Delivered to host via |
 |---|---|---|---|---|
 | **Boot nonce** | `GET /api/v1/boot/...` | ~10 min | **single-use**: after its first fetch, served again only to the same client address, within 2 min (§4.1) | the operator's iPXE script URL (the nonce IS the capability) |
-| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `POST /provisioned`, `POST /provision-failed` | 60 min (`auth.TokenLifetime`), cut to 5 min (`auth.TokenReadyGrace`) once the host is `Ready` or its machine has failed terminally | multi-use | rendered into the kernel cmdline by `/boot` |
+| **Bearer token** | `POST /inspection`, `GET /bootstrap`, `GET /network-data` (v4.3), `POST /provisioned`, `POST /provision-failed` | 60 min (`auth.TokenLifetime`), cut to 5 min (`auth.TokenReadyGrace`) once the host is `Ready` or its machine has failed terminally | multi-use | rendered into the kernel cmdline by `/boot` |
 
 The booting host holds no bearer token, so the endpoint that *hands out* the
 bearer token (`/boot`) cannot itself be bearer-gated. The boot nonce breaks that
@@ -190,7 +203,7 @@ callback-only instance (`--controllers=none`) must run the same version.
 
 ## 4. Endpoints
 
-All five endpoints are served by the controller's callback server on a single
+All six endpoints are served by the controller's callback server on a single
 HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
 `SetupCallbackServer`). TLS is mandatory on all of them.
 
@@ -448,6 +461,60 @@ deployment-timeout.
   unused (host times out at `--deployment-timeout`). A v4 controller + v4.1
   inspector → 404, which the inspector tolerates.
 
+### 4.6 `GET /api/v1/network-data/{namespace}/{hostName}`: per-host network data
+
+Added in v4.3. Serves the network configuration a claimed host's installed OS
+uses, for addresses that cannot travel in the bootstrap data: the bootstrap
+provider renders that per `Machine`, before beskar7 claims a host.
+
+- **Auth**: same bearer token as §4.2, and the same rule as §4.3: only a token
+  bound to the machine that claims the host is served. Both handlers resolve the
+  host through one function (`boundCallbackHost`), so a change to who may call
+  `/bootstrap` applies here too.
+- **Source**: the Secret `PhysicalHost.spec.networkDataSecretRef` names, in the
+  host's namespace, key `networkData`. The Secret MUST carry the annotation
+  `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <hostName>`;
+  otherwise it is refused. The annotation sits on the Secret because anyone who
+  may patch a PhysicalHost could otherwise point it at any Secret in the
+  namespace. The controller publishes the result of the same checks on the
+  host's `NetworkDataReady` condition.
+- **Success**: `200` with the `networkData` bytes, verbatim and never parsed
+  (`Content-Type: application/octet-stream`, `Cache-Control: no-store`), at most
+  64 KiB. The format is cloud-init `network-config` v2 by convention; the
+  controller does not check it.
+- **`404` means only "no network data"**: the host has no
+  `networkDataSecretRef`. A v4.2 controller has no such route and answers `404`
+  too, so both read the same to the inspector.
+- **`401`**: the bearer gate, and any resolution failure after it: the host is
+  not found, its credentials are not bound to a claiming machine, or the claim
+  changed during the request. Unlike on `/bootstrap` (§4.3), these are not
+  `404`s, because a `404` here means "install without the file".
+- **`409`**: the ref is set but the controller cannot serve it: the Secret is
+  missing, does not opt in for this host, has no non-empty `networkData` key,
+  or is over the cap. The endpoint checks all of this on its own live read of
+  the Secret; the condition is for operators and is never an input.
+- **`500`**: the Secret could not be read (a transient API error).
+- **Controller side**: a host whose ref is set and whose `NetworkDataReady` is
+  not `True` for its current generation is not claimed. A claimed host whose
+  condition goes `False` is not booted; its `Beskar7Machine` waits with
+  `InfrastructureReady=False`, reason `WaitingForNetworkData`. So `409` is only
+  reached when the Secret changes between that check and the fetch.
+- **Inspector MUST**: call it in Phase 2 after `/bootstrap` returns `200` and
+  **before** the disk write (§9.1 step 4), so a refusal never costs a wiped
+  disk, and hold the bytes in memory.
+  - `200`: write the bytes as §9.1 step 5.4 says.
+  - `404`: write no network data file and go on.
+  - `409`: call `/provision-failed` (§4.5) and leave the disk untouched: the
+    host must not be installed without the network it was given.
+  - `401`/`403`: abort, as on `/bootstrap`.
+  - `5xx` or a network error: retry with backoff within `beskar7.timeout`, then
+    call `/provision-failed`, leaving the disk untouched.
+  - Never log the bytes.
+- **Backward compatibility**: a v4.3 controller + v4.2 inspector → endpoint
+  unused, so a host that references network data still installs, but without
+  the file. The controller docs state the minimum inspector version for
+  `networkDataSecretRef`. A v4.2 controller + v4.3 inspector → `404`, no file.
+
 ---
 
 ## 5. Kernel cmdline parameters
@@ -577,7 +644,7 @@ evaluate correctly:
 
 ## 8. TLS and reachability
 
-- **All five endpoints are HTTPS-only.** The inspector MUST verify the callback
+- **All six endpoints are HTTPS-only.** The inspector MUST verify the callback
   server's certificate against the CA delivered inline via `beskar7.ca`.
   The inspector MUST NOT offer or use an insecure-skip-verify option for the
   inspection POST or bootstrap GET — those carry/return cluster join secrets and a
@@ -792,7 +859,9 @@ The inspector MUST:
    token over verified TLS; treat **202** as success; retry transient failures
    with backoff.
 4. *(Phase 2)* `GET` `{api}/api/v1/bootstrap/{ns}/{host}` with the same bearer
-   token over verified TLS to fetch the CAPI user-data.
+   token over verified TLS to fetch the CAPI user-data. *(v4.3)* Then `GET`
+   `{api}/api/v1/network-data/{ns}/{host}` the same way and keep the bytes in
+   memory, before the disk write, handling the status as §4.6 says.
 5. *(Phase 2)* Deploy the OS to the selected disk:
    1. Stream `beskar7.target` (scheme/redirect-restricted per §8.1) directly to the
       selected target disk, computing its SHA-256 incrementally and enforcing the
@@ -828,6 +897,10 @@ The inspector MUST:
       step 3's `99_beskar7.yaml` write, before `fsync`/unmount (step 5). This is
       non-secret (unlike the user-data), so it MAY be logged for debugging, but the
       inspector SHOULD NOT do so routinely.
+
+      *(v4.3)* If step 4 fetched network data (`200`), write it **verbatim** to
+      `/oem/beskar7/network-data` in the same mount session, mode `0600`,
+      root-owned. On `404`, write no file. The inspector MUST NOT log the bytes.
    5. `fsync` the written files **and** their containing directory, unmount the
       `COS_OEM` partition, and **zero the in-memory user-data buffer**. The
       `COS_OEM` partition MUST be unmounted and the user-data buffer MUST be
@@ -852,9 +925,10 @@ The inspector MUST:
       injected config on first boot. (`kexec` is an optional future speed
       optimization — see §11 — not a contract requirement.)
    8. **Failure cleanup.** If a step fails while `COS_OEM` is mounted (the
-      `99_beskar7.yaml` write, the `provider-id` write, `fsync`), the inspector MUST
-      remove the partial `99_beskar7.yaml` (and, if written, the partial
-      `provider-id` file) and unmount `COS_OEM` before it stops or drops to the debug
+      `99_beskar7.yaml` write, the `provider-id` write, the `network-data` write,
+      `fsync`), the inspector MUST remove the partial `99_beskar7.yaml` (and, if
+      written, the partial `provider-id` and `network-data` files) and unmount
+      `COS_OEM` before it stops or drops to the debug
       shell — it MUST NOT leave the join secret on a mounted-then-abandoned partition
       or in the partial file. The user-data buffer MUST still be zeroed on this path.
       A failed provisioned callback (step 6) is not a cleanup trigger: by then both
@@ -941,6 +1015,15 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
     end-to-end proof — Go CI cannot execute Rust or mount a `COS_OEM` block
     device, so this is a legitimate two-tier guard, not full coverage by
     itself.
+  - [`test/contract/golden_network_data_artifact.json`](../test/contract/golden_network_data_artifact.json)
+    (v4.3): the `/network-data` endpoint and the `/oem/beskar7/network-data`
+    artifact (Secret key, opt-in annotation, cap, status per case, path, mode,
+    owner, content). Guarded by `TestGoldenNetworkDataArtifact_MatchesHandler`
+    (`controllers/network_data_contract_test.go`, added with the controller
+    change), which drives the real
+    `NetworkDataHandler` with the fixture and checks the served bytes and each
+    status. Like the provider-id fixture, it does not prove the inspector writes
+    the file; that half is the inspector's own test.
   - `controllers/boot_handler_test.go` additionally proves the render-time and
     stamp-time `ProviderID` values can never diverge (both call the same
     `providerID()`) and that `beskar7.provider-id` renders unconditionally,
@@ -974,6 +1057,7 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v4** | **Provisioning-complete callback — §6 report schema and golden fixture unchanged.** Adds a fourth HTTPS endpoint: `POST /api/v1/provisioned/{ns}/{host}` (§4.4), bearer-gated with the same per-host token as §4.2/§4.3, advisory body `{"status":"provisioned"}`, success response `202 Accepted`. The inspector calls it after the verified whole-disk write + `COS_OEM` inject, and **before** `reboot(2)` (§9.1 step 5 renumbered). Adds a new `StateDeploying` phase on `PhysicalHost` (entered at inspection-complete, exited at provisioned-callback or deployment-timeout). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are now set only upon the provisioned callback, not at inspection completion — aligning what "infrastructure provisioned" means with what CAPI's `infrastructureProvisioned` field is supposed to mean. Also fixes `ClearBootSourceOverride` to send `Target=NoneBootSourceOverrideTarget` (Redfish-canonical clear); previously it sent `Enabled=Disabled` with no `Target` which caused a `400` on real BMCs. `TokenLifetime` increased from 30 min to 60 min (SEC-D015-1: `InspectionTimeout(10m) + DeploymentTimeout(20m) = 30m` could expire the token during a slow deploy). **No §5 cmdline or §6 report change.** Controller side: `controllers/provisioned_handler.go` (new); route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4"`, `client::provisioned()` in `src/client.rs`, called from `src/run.rs` before `reboot(2)`. |
 | **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (a terminal `InfrastructureReady=False` reason `DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
 | **v4.2** | **Per-host `ProviderID` delivery for templated pools/HA (D-014 P2) — §6 report schema and golden fixture unchanged. Additive and backward-compatible.** A shared `Beskar7MachineTemplate`/bootstrap-config template cannot pin a per-host `ProviderID` (P1's hand-authored, one-Machine-at-a-time pattern breaks for `MachineDeployment` pools and multi-replica control planes). Adds a new required cmdline param `beskar7.provider-id=b7://{ns}/{host}` (§5), rendered by `/boot` immediately after `beskar7.target-digest` and before `beskar7.ca`, and **always** rendered (the controller always knows the host's identity — no omitted form). The value is `providerID(ph.Namespace, ph.Name)`, the identical call `handleReadyHost` uses to stamp `Beskar7Machine.Spec.ProviderID`, so the rendered and stamped values cannot diverge by construction. Adds a new `COS_OEM` artifact `/oem/beskar7/provider-id` (§9.1 step 5.4): the inspector writes the cmdline value verbatim (no trailing newline, mode `0600`, root-owned) during the *same* mount session as `99_beskar7.yaml`, no new mount or fetch. A shared boot-time stage in the node's bootstrap config reads this file to set a per-host kubelet `--provider-id` before the k8s distro starts — the residual per-distro glue that lets a shared template still produce a correct, unique `Node.spec.providerID` per replica. **Backward-compatible:** a v4.1 inspector ignores the unknown cmdline param and never writes the new artifact (P1's single hand-authored Machine path is unaffected); a v4.2 controller tolerates a v4.1 inspector. **Controller side**: `controllers/boot_handler.go` — `validateProviderID` (anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth) + the `beskar7.provider-id` render in `buildBootIPXEScript`/`renderBootScript`; new golden fixtures `test/contract/golden_boot_cmdline.txt` and `test/contract/golden_provider_id_artifact.json` (§10); `controllers/deploy_contract_test.go` (new). Inspector side: `CONTRACT_VERSION="v4.2"`, cmdline parser + `COS_OEM` writer for `/oem/beskar7/provider-id`, per `.claude/context/GA-P2-VALIDATION.md` §1.5 (spec only from this repo's side — cross-repo). |
+| **v4.3** | **Per-host network data for the installed OS (#283, #300). §5 cmdline, §6 report schema and existing golden fixtures unchanged. Additive and backward-compatible.** Adds a sixth HTTPS endpoint, `GET /api/v1/network-data/{ns}/{host}` (§4.6): bearer-gated with the same rule as §4.3, it serves verbatim the `networkData` key of the Secret `PhysicalHost.spec.networkDataSecretRef` names, which must opt in with `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <hostName>`. `200` bytes (≤64 KiB), `404` only when the host has no ref, `401` for the bearer gate and any resolution failure after it, `409` ref set but Secret refused, `500` read error. A host whose `NetworkDataReady` is not `True` is not claimed, and a claimed one is not booted (`WaitingForNetworkData`), so `409` only covers a Secret that changes after that check. Adds a `COS_OEM` artifact `/oem/beskar7/network-data` (§9.1 step 5.4), written in the same mount session as `99_beskar7.yaml` and removed on inject failure (step 5.8); the inspector fetches it before the disk write (step 4). New golden fixture `test/contract/golden_network_data_artifact.json`. Controller side: #302. Inspector side: `CONTRACT_VERSION="v4.3"`, beskar7-inspector#69. |
 
 ### 10.2 Clarifications (no version bump)
 

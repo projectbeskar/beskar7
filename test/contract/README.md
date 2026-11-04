@@ -1,4 +1,4 @@
-# Inspector contract fixtures (contract: v4.2)
+# Inspector contract fixtures (contract: v4.3)
 
 This directory holds the **canonical golden fixtures** for the controller ↔
 inspector wire contract — the inbound inspection-report body and the outbound
@@ -69,10 +69,23 @@ in the same mount session as `99_beskar7.yaml`; a shared bootstrap stage reads i
 to set a per-host kubelet `--provider-id`. Beskar7 asserts the `content` equals
 the computed `providerID(ns, host)`; the inspector asserts it writes exactly this.
 
+## `golden_network_data_artifact.json` (contract v4.3, deploy-path)
+
+The descriptor for per-host network data: the endpoint
+`GET /api/v1/network-data/{ns}/{host}`, the Secret key (`networkData`), the opt-in
+annotation, the 64 KiB cap, the status for each case (`200` served, `404` no
+network data, `401` resolution failure, `409` Secret refused), and the `COS_OEM` artifact the inspector
+writes on `200`: path `/oem/beskar7/network-data`, `content` byte for byte,
+mode `0600`, owner `root`. Beskar7's
+`controllers/network_data_contract_test.go` drives the real handler with the
+fixture and asserts the constants, the served bytes and each status; the
+inspector asserts it fetches before the disk write, writes exactly `content` on
+`200`, writes nothing on `404`, aborts on `401`, and fails the deploy on `409`.
+
 ## `VERSION`
 
 A one-line plain-text marker: the contract version this checkout implements
-(currently `v4.2`). It is the root of truth for the version — beskar7 pins a
+(currently `v4.3`). It is the root of truth for the version: beskar7 pins a
 Go const to it (`contract.Version`, `version.go` in this directory), and
 `beskar7-inspector` pins its own Rust `CONTRACT_VERSION` to a vendored copy of
 the same bytes. `TestContractVersion` (`version_test.go`) is the intra-repo
