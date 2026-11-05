@@ -74,13 +74,14 @@ the computed `providerID(ns, host)`; the inspector asserts it writes exactly thi
 The descriptor for per-host network data: the endpoint
 `GET /api/v1/network-data/{ns}/{host}`, the Secret key (`networkData`), the opt-in
 annotation, the 64 KiB cap, the status for each case (`200` served, `404` no
-network data, `401` resolution failure, `409` Secret refused), and the `COS_OEM` artifact the inspector
-writes on `200`: path `/oem/beskar7/network-data`, `content` byte for byte,
-mode `0600`, owner `root`. Beskar7's
+network data, `401` resolution failure, `409` Secret refused), and the `COS_OEM`
+artifact the inspector writes on `200`: path `/oem/beskar7/network-data`,
+`content` byte for byte, mode `0600`, owner `root`. Beskar7's
 `controllers/network_data_contract_test.go` drives the real handler with the
 fixture and asserts the constants, the served bytes and each status; the
 inspector asserts it fetches before the disk write, writes exactly `content` on
-`200`, writes nothing on `404`, aborts on `401`, and fails the deploy on `409`.
+`200`, writes no file and removes a stale one from the image on `404`, aborts
+on `401`, and fails the deploy on `409`.
 
 ## `VERSION`
 
