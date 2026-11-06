@@ -2227,8 +2227,19 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 		return m
 	}
 
-	It("admits only the events on which an unclaimed host enters Available", func() {
-		p := hostBecameAvailable()
+	// withNetworkData gives h a network data ref and a NetworkDataReady
+	// condition for its current generation.
+	withNetworkData := func(h *infrav1.PhysicalHost, status metav1.ConditionStatus) *infrav1.PhysicalHost {
+		h.Spec.NetworkDataSecretRef = "wake-host-network"
+		h.Status.Conditions = []metav1.Condition{{
+			Type: infrav1.NetworkDataReadyCondition, Status: status, Reason: infrav1.NetworkDataAvailableReason,
+			ObservedGeneration: h.Generation,
+		}}
+		return h
+	}
+
+	It("admits only the events on which an unclaimed host becomes claimable", func() {
+		p := hostBecameClaimable()
 
 		Expect(p.Create(event.CreateEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeTrue(), "created already free")
 		Expect(p.Create(event.CreateEvent{Object: hostIn(infrav1.StateEnrolling)})).To(BeFalse(), "created enrolling")
@@ -2238,6 +2249,15 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 		Expect(p.Update(event.UpdateEvent{ObjectOld: claimedIn(infrav1.StateInUse), ObjectNew: hostIn(infrav1.StateAvailable)})).To(BeTrue(), "released")
 		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrav1.StateAvailable), ObjectNew: hostIn(infrav1.StateAvailable)})).To(BeFalse(), "status churn on a free host")
 		Expect(p.Update(event.UpdateEvent{ObjectOld: hostIn(infrav1.StateAvailable), ObjectNew: claimedIn(infrav1.StateAvailable)})).To(BeFalse(), "claimed")
+
+		Expect(p.Create(event.CreateEvent{Object: withNetworkData(hostIn(infrav1.StateAvailable), metav1.ConditionFalse)})).To(BeFalse(), "created free, network data refused")
+		Expect(p.Update(event.UpdateEvent{
+			ObjectOld: hostIn(""), ObjectNew: withNetworkData(hostIn(infrav1.StateAvailable), metav1.ConditionFalse),
+		})).To(BeFalse(), "enrolment finished, network data refused")
+		Expect(p.Update(event.UpdateEvent{
+			ObjectOld: withNetworkData(hostIn(infrav1.StateAvailable), metav1.ConditionFalse),
+			ObjectNew: withNetworkData(hostIn(infrav1.StateAvailable), metav1.ConditionTrue),
+		})).To(BeTrue(), "network data fixed on a free host")
 
 		Expect(p.Delete(event.DeleteEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeFalse())
 		Expect(p.Generic(event.GenericEvent{Object: hostIn(infrav1.StateAvailable)})).To(BeFalse())
@@ -2290,6 +2310,8 @@ var _ = Describe("Waking waiting Beskar7Machines when a PhysicalHost becomes Ava
 		By("mapping nothing for a host that is not claimable")
 		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), claimedIn(infrav1.StateAvailable))).To(BeEmpty())
 		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(), hostIn(infrav1.StateInUse))).To(BeEmpty())
+		Expect(r.AvailablePhysicalHostToWaitingBeskar7Machines(context.Background(),
+			withNetworkData(hostIn(infrav1.StateAvailable), metav1.ConditionFalse))).To(BeEmpty())
 	})
 })
 

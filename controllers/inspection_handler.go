@@ -440,7 +440,7 @@ func readCallbackCA(certDir string) ([]byte, error) {
 
 // SetupCallbackServer wires the host-callback HTTPS server into the manager.
 //
-// The server hosts five host-scoped endpoints:
+// The server hosts six host-scoped endpoints:
 //
 //   - POST /api/v1/inspection/{namespace}/{hostName}: receives inspection
 //     reports from the inspection image (handled by InspectionHandler).
@@ -448,6 +448,9 @@ func readCallbackCA(certDir string) ([]byte, error) {
 //   - GET  /api/v1/bootstrap/{namespace}/{hostName}: serves the bootstrap data
 //     Secret bytes for the Beskar7Machine that consumes the targeted host
 //     (handled by BootstrapHandler). Bearer-gated.
+//   - GET  /api/v1/network-data/{namespace}/{hostName}: serves the network data
+//     Secret bytes of a claimed host (handled by NetworkDataHandler, v4.3).
+//     Bearer-gated, same token rule as bootstrap.
 //   - POST /api/v1/provisioned/{namespace}/{hostName}: receives the OS-deployment
 //     complete signal from the inspector (handled by ProvisionedHandler). Bearer-gated.
 //     Returns 202 Accepted; body is advisory only — the authenticated POST is the signal.
@@ -557,6 +560,13 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Log:    bootstrapLog,
 	}
 
+	networkDataLog := ctrl.Log.WithName("network-data-handler")
+	networkDataHandler := &NetworkDataHandler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Log:       networkDataLog,
+	}
+
 	provisionedLog := ctrl.Log.WithName("provisioned-handler")
 	provisionedHandler := &ProvisionedHandler{
 		Client: mgr.GetClient(),
@@ -586,6 +596,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// so the log handle reflects the route.
 	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
 	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
+	networkDataVerifier := newBearerTokenVerifier(mgr.GetClient(), networkDataLog)
 	provisionedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionedLog)
 	provisionFailedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionFailedLog)
 
@@ -595,6 +606,10 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		auth.RequireBearer(inspectionLog, inspectionVerifier, inspectionHandler))
 	mux.Handle("GET /api/v1/bootstrap/{namespace}/{hostName}",
 		auth.RequireBearer(bootstrapLog, bootstrapVerifier, bootstrapHandler))
+	// Network data (v4.3): same token rule as bootstrap. A controller before
+	// v4.3 returns 404 here, which the inspector reads as "no network data".
+	mux.Handle("GET /api/v1/network-data/{namespace}/{hostName}",
+		auth.RequireBearer(networkDataLog, networkDataVerifier, networkDataHandler))
 	// Provisioned callback (D-015): inspector signals OS deployment complete.
 	// Bearer-gated with the same per-host token as inspection/bootstrap.
 	mux.Handle("POST /api/v1/provisioned/{namespace}/{hostName}",

@@ -40,14 +40,16 @@ import (
 )
 
 // callbackFixture is one host claimed by a Beskar7Machine whose owner Machine
-// names a bootstrap data Secret, with live callback credentials: everything
-// every callback route reads on the inspector's happy path.
+// names a bootstrap data Secret, with a network data Secret and live callback
+// credentials: everything every callback route reads on the inspector's happy
+// path.
 type callbackFixture struct {
 	namespace     string
 	host          string
 	token         string
 	nonce         string
 	bootstrapData string
+	networkData   string
 }
 
 // createCallbackFixture creates the fixture in namespace with c. The host is
@@ -56,7 +58,7 @@ type callbackFixture struct {
 func createCallbackFixture(t *testing.T, c client.Client, namespace string) callbackFixture {
 	t.Helper()
 	ctx := context.Background()
-	fx := callbackFixture{namespace: namespace, host: "host-1", bootstrapData: "#cloud-config\n"}
+	fx := callbackFixture{namespace: namespace, host: "host-1", bootstrapData: "#cloud-config\n", networkData: "network:\n  version: 2\n"}
 	const machineName, b7mName = "machine-1", "b7m-1"
 
 	bootstrapSecret := &corev1.Secret{
@@ -64,6 +66,15 @@ func createCallbackFixture(t *testing.T, c client.Client, namespace string) call
 		Data:       map[string][]byte{"value": []byte(fx.bootstrapData)},
 	}
 	mustCreate(t, c, bootstrapSecret)
+
+	networkDataSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: fx.host + "-network", Namespace: namespace,
+			Annotations: map[string]string{controllers.NetworkDataHostAnnotation: fx.host},
+		},
+		Data: map[string][]byte{"networkData": []byte(fx.networkData)},
+	}
+	mustCreate(t, c, networkDataSecret)
 
 	machine := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
@@ -109,6 +120,7 @@ func createCallbackFixture(t *testing.T, c client.Client, namespace string) call
 				Kind: "Beskar7Machine", APIVersion: infrav1.GroupVersion.String(),
 				Name: b7mName, Namespace: namespace,
 			},
+			NetworkDataSecretRef: networkDataSecret.Name,
 		},
 	}
 	mustCreate(t, c, host)
