@@ -46,7 +46,19 @@ import (
 //     inspector retries it.
 type NetworkDataHandler struct {
 	Client client.Client
-	Log    logr.Logger
+	// APIReader reads the network data Secret straight from the API server, so
+	// a Secret that just lost its opt-in is never served from a stale cache
+	// (§4.6). Unset, the handler reads through Client.
+	APIReader client.Reader
+	Log       logr.Logger
+}
+
+// secretReader returns the reader the network data Secret is checked with.
+func (h *NetworkDataHandler) secretReader() client.Reader {
+	if h.APIReader != nil {
+		return h.APIReader
+	}
+	return h.Client
 }
 
 // ServeHTTP serves the network data for the host identified by the URL path.
@@ -70,7 +82,7 @@ func (h *NetworkDataHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := loadNetworkData(r.Context(), h.Client, ph)
+	data, err := loadNetworkData(r.Context(), h.secretReader(), ph)
 	if err != nil && networkDataReason(err) != "" {
 		log.Info("network-data GET: network data Secret refused", "err", err.Error())
 		http.Error(w, "conflict", http.StatusConflict)

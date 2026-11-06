@@ -462,11 +462,13 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		// a backstop: a host entering Available re-enqueues the machine at once
 		// (AvailablePhysicalHostToWaitingBeskar7Machines).
 		logger.Info("No available PhysicalHost satisfies the placement constraint, requeuing", "placement", placement.String())
-		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "No available PhysicalHost matches the placement constraint %s", placement.String())
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "No available PhysicalHost matches the placement constraint %s%s",
+			placement.String(), r.noClaimableHostNote(ctx, b7machine, placement))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	} else {
 		logger.Info("No available or associated PhysicalHost found, requeuing")
-		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason, "No available PhysicalHost found")
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason, "No available PhysicalHost found%s",
+			r.noClaimableHostNote(ctx, b7machine, nil))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	}
 
@@ -1480,18 +1482,10 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	// The field index filters server-side to StateAvailable so the result set
 	// is bounded by the count of free hosts.
 	hostList := &infrav1.PhysicalHostList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(b7machine.Namespace),
-		client.MatchingFields{PhysicalHostStateIndex: string(infrav1.StateAvailable)},
-	}
 	if placement != nil && !placement.Empty() {
-		// Applied together with the field index: the cache resolves the index
-		// first and filters labels in memory, so this stays bounded by the
-		// number of free hosts.
-		listOpts = append(listOpts, client.MatchingLabelsSelector{Selector: placement})
 		logger.V(1).Info("Restricting the host claim to a placement constraint", "placement", placement.String())
 	}
-	if err := r.List(ctx, hostList, listOpts...); err != nil {
+	if err := r.List(ctx, hostList, availableHostListOptions(b7machine, placement)...); err != nil {
 		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
 		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
@@ -1502,7 +1496,7 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		// A host whose network data cannot be served would only hold this
 		// machine in WaitingForNetworkData while a usable host sits idle.
 		if hostWaitingForNetworkData(host) {
-			logger.Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", networkDataWaitMessage(host))
+			logger.V(1).Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", networkDataWaitMessage(host))
 			continue
 		}
 		// ConsumerRef is on Spec (not indexed); keep the in-loop guard defensively.
@@ -1548,6 +1542,43 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeNoHosts, internalmetrics.ConflictReasonNone)
 	internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeNoHosts, time.Since(claimStart))
 	return nil, ctrl.Result{}, nil
+}
+
+// availableHostListOptions lists the Available hosts a machine may claim.
+func availableHostListOptions(b7machine *infrav1.Beskar7Machine, placement labels.Selector) []client.ListOption {
+	opts := []client.ListOption{
+		client.InNamespace(b7machine.Namespace),
+		client.MatchingFields{PhysicalHostStateIndex: string(infrav1.StateAvailable)},
+	}
+	if placement == nil || placement.Empty() {
+		return opts
+	}
+	// Applied together with the field index: the cache resolves the index
+	// first and filters labels in memory, so this stays bounded by the number
+	// of free hosts.
+	return append(opts, client.MatchingLabelsSelector{Selector: placement})
+}
+
+// noClaimableHostNote says how many Available hosts the claim skipped for
+// their network data, so the operator looks at their NetworkDataReady.
+// Empty when none was skipped or the hosts cannot be listed.
+func (r *Beskar7MachineReconciler) noClaimableHostNote(ctx context.Context, b7machine *infrav1.Beskar7Machine, placement labels.Selector) string {
+	hosts := &infrav1.PhysicalHostList{}
+	if err := r.List(ctx, hosts, availableHostListOptions(b7machine, placement)...); err != nil {
+		return ""
+	}
+	skipped := 0
+	for i := range hosts.Items {
+		h := &hosts.Items[i]
+		if h.Spec.ConsumerRef == nil && hostWaitingForNetworkData(h) {
+			skipped++
+		}
+	}
+	if skipped == 0 {
+		return ""
+	}
+	return fmt.Sprintf("; %d Available PhysicalHost(s) skipped because their network data is not ready, see their %s condition",
+		skipped, infrav1.NetworkDataReadyCondition)
 }
 
 // reconcileDelete handles deletion. The sequence is:

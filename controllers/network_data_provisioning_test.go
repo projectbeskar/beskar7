@@ -219,8 +219,11 @@ var _ = Describe("Network data gates the claim and the boot under a running mana
 
 		createMachine()
 		Eventually(func(g Gomega) {
-			g.Expect(conditions.GetReason(getMachine(g), infrav1.PhysicalHostAssociatedCondition)).
-				To(Equal(infrav1.WaitingForPhysicalHostReason))
+			cond := conditions.Get(getMachine(g), infrav1.PhysicalHostAssociatedCondition)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(infrav1.WaitingForPhysicalHostReason))
+			g.Expect(cond.Message).To(ContainSubstring("1 Available PhysicalHost(s) skipped because their network data is not ready"),
+				"the operator is sent to the host's NetworkDataReady")
 		}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
 		Consistently(func(g Gomega) {
 			g.Expect(getHost(g).Spec.ConsumerRef).To(BeNil(), "a host whose network data is refused must not be claimed")

@@ -562,8 +562,9 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 
 	networkDataLog := ctrl.Log.WithName("network-data-handler")
 	networkDataHandler := &NetworkDataHandler{
-		Client: mgr.GetClient(),
-		Log:    networkDataLog,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Log:       networkDataLog,
 	}
 
 	provisionedLog := ctrl.Log.WithName("provisioned-handler")

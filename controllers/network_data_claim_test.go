@@ -53,7 +53,10 @@ type networkDataStatusCase struct {
 	secret    *corev1.Secret
 	// failGet makes a Get of an object of this type fail with an API error.
 	failGet client.Object
-	want    int
+	// liveSecret, when set, is the network data Secret as the API server has
+	// it, while the cached client still holds secret.
+	liveSecret *corev1.Secret
+	want       int
 }
 
 // serveNetworkDataStatus calls NetworkDataHandler past the bearer middleware,
@@ -93,8 +96,12 @@ func serveNetworkDataStatus(t *testing.T, tc networkDataStatusCase) int {
 	req.Header.Set("Authorization", "Bearer "+networkDataStatusToken)
 	req.SetPathValue("namespace", networkDataTestNamespace)
 	req.SetPathValue("hostName", networkDataTestHost)
+	handler := &NetworkDataHandler{Client: c, Log: logr.Discard()}
+	if tc.liveSecret != nil {
+		handler.APIReader = fake.NewClientBuilder().WithScheme(scheme).WithObjects(tc.liveSecret).Build()
+	}
 	w := httptest.NewRecorder()
-	(&NetworkDataHandler{Client: c, Log: logr.Discard()}).ServeHTTP(w, req)
+	handler.ServeHTTP(w, req)
 	return w.Code
 }
 
@@ -117,6 +124,7 @@ func TestNetworkDataHandlerStatus(t *testing.T) {
 	served := networkDataTestSecretFor(networkDataTestHost, networkDataTestBytes)
 	noKey := networkDataTestSecretFor(networkDataTestHost, nil)
 	noKey.Data = nil
+	optedOut := networkDataTestSecretFor("", networkDataTestBytes)
 
 	tests := []networkDataStatusCase{
 		{name: "served", claimedBy: networkDataStatusMachine, secret: served, want: http.StatusOK},
@@ -129,6 +137,8 @@ func TestNetworkDataHandlerStatus(t *testing.T) {
 		{name: "network data read fails", claimedBy: networkDataStatusMachine, secret: served,
 			failGet: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: networkDataTestSecret}}, want: http.StatusInternalServerError},
 		{name: "no networkData key", claimedBy: networkDataStatusMachine, secret: noKey, want: http.StatusConflict},
+		{name: "opt-in removed, cache not caught up", claimedBy: networkDataStatusMachine, secret: served, liveSecret: optedOut, want: http.StatusConflict},
+		{name: "opted in, cache not caught up", claimedBy: networkDataStatusMachine, secret: optedOut, liveSecret: served, want: http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
