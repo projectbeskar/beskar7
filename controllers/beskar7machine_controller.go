@@ -1499,6 +1499,12 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 
 	for i := range hostList.Items {
 		host := &hostList.Items[i]
+		// A host whose network data cannot be served would only hold this
+		// machine in WaitingForNetworkData while a usable host sits idle.
+		if hostWaitingForNetworkData(host) {
+			logger.Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", networkDataWaitMessage(host))
+			continue
+		}
 		// ConsumerRef is on Spec (not indexed); keep the in-loop guard defensively.
 		// A host can be Available in the index but have a stale ConsumerRef that has
 		// not yet been cleared, so this check prevents a double-claim.
@@ -2127,7 +2133,7 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.AvailablePhysicalHostToWaitingBeskar7Machines),
-			builder.WithPredicates(hostBecameAvailable()),
+			builder.WithPredicates(hostBecameClaimable()),
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
@@ -2157,22 +2163,26 @@ func (r *Beskar7MachineReconciler) PhysicalHostToBeskar7Machine(ctx context.Cont
 	}
 }
 
-// hostBecameAvailable admits exactly the PhysicalHost events on which an
-// unclaimed host enters Available: creation already in that state, and the
-// transition into it (enrolment, release by a deleted machine). Status churn
-// on a host that is already free does not pass, so waiting machines are not
-// re-enqueued on every host resync.
-func hostBecameAvailable() predicate.Funcs {
-	free := func(o client.Object) bool {
-		h, ok := o.(*infrav1.PhysicalHost)
-		return ok && h.Status.State == infrav1.StateAvailable && h.Spec.ConsumerRef == nil
-	}
+// hostBecameClaimable admits exactly the PhysicalHost events on which an
+// unclaimed host becomes claimable: creation already in that state, the
+// transition into Available (enrolment, release by a deleted machine), and an
+// Available host whose network data turns ready. Status churn on a host that
+// is already claimable does not pass, so waiting machines are not re-enqueued
+// on every host resync.
+func hostBecameClaimable() predicate.Funcs {
 	return predicate.Funcs{
-		CreateFunc:  func(e event.CreateEvent) bool { return free(e.Object) },
-		UpdateFunc:  func(e event.UpdateEvent) bool { return free(e.ObjectNew) && !free(e.ObjectOld) },
+		CreateFunc:  func(e event.CreateEvent) bool { return hostClaimable(e.Object) },
+		UpdateFunc:  func(e event.UpdateEvent) bool { return hostClaimable(e.ObjectNew) && !hostClaimable(e.ObjectOld) },
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
 	}
+}
+
+// hostClaimable reports whether o is a PhysicalHost the claim in
+// findAndClaimOrGetAssociatedHost would take.
+func hostClaimable(o client.Object) bool {
+	h, ok := o.(*infrav1.PhysicalHost)
+	return ok && h.Status.State == infrav1.StateAvailable && h.Spec.ConsumerRef == nil && !hostWaitingForNetworkData(h)
 }
 
 // AvailablePhysicalHostToWaitingBeskar7Machines maps a PhysicalHost that has
@@ -2188,7 +2198,7 @@ func (r *Beskar7MachineReconciler) AvailablePhysicalHostToWaitingBeskar7Machines
 		r.Log.Error(nil, "Expected a PhysicalHost in AvailablePhysicalHostToWaitingBeskar7Machines map", "object", obj)
 		return nil
 	}
-	if host.Status.State != infrav1.StateAvailable || host.Spec.ConsumerRef != nil {
+	if !hostClaimable(host) {
 		return nil
 	}
 	machines := &infrav1.Beskar7MachineList{}

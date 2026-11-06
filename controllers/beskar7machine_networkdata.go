@@ -27,7 +27,7 @@ import (
 // yet because its network data cannot be served: it names a network data
 // Secret, and NetworkDataReady is not True for the host's current spec.
 //
-// Booting anyway would only reach the /networkdata endpoint's 409, fail the
+// Booting anyway would only reach the /network-data endpoint's 409, fail the
 // machine, and have its replacement wipe the same host again. Waiting costs
 // nothing, and fixing the Secret wakes the host, and through it this machine.
 // A condition from an older generation does not count, so a ref changed since

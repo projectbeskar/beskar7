@@ -9,7 +9,7 @@
 #   5. Transition the host through Enrolling -> Available (layer 3 success)
 #
 # It also names a network data Secret (contract v4.3). The mock inspector is run
-# with --expect-network-data, so the smoke test fails unless /networkdata serves
+# with --expect-network-data, so the smoke test fails unless /network-data serves
 # it. The pool hosts (61-pool.yaml) have none and get 404.
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: PhysicalHost

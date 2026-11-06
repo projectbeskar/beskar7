@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -40,6 +41,11 @@ const (
 
 var errCallbackTokenMismatch = errors.New("bearer token does not match the host's current credentials")
 
+// errCallbackHostUnreadable is returned (wrapped with the cause) when the
+// PhysicalHost a callback names could not be read for a reason other than not
+// existing.
+var errCallbackHostUnreadable = errors.New("PhysicalHost could not be read")
+
 // writeNoStore writes data as a 200 octet-stream that no proxy or HTTP cache
 // may keep.
 func writeNoStore(w http.ResponseWriter, data []byte) error {
@@ -52,7 +58,7 @@ func writeNoStore(w http.ResponseWriter, data []byte) error {
 }
 
 // boundCallbackHost resolves the PhysicalHost a claimed-host callback
-// (/bootstrap, /networkdata) names and the Beskar7Machine its credentials are
+// (/bootstrap, /network-data) names and the Beskar7Machine its credentials are
 // bound to, and checks the bearer token again against those credentials.
 //
 // The bearer verifier checked the token against its own read of the
@@ -70,6 +76,9 @@ func boundCallbackHost(c client.Reader, r *http.Request) (*infrav1.PhysicalHost,
 	}
 	ph := &infrav1.PhysicalHost{}
 	if err := c.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, types.NamespacedName{}, fmt.Errorf("PhysicalHost lookup failed: %w: %w", errCallbackHostUnreadable, err)
+		}
 		return nil, types.NamespacedName{}, fmt.Errorf("PhysicalHost lookup failed: %w", err)
 	}
 	creds, consumerKey, err := boundBootstrapCredentials(r.Context(), c, ph)
@@ -81,4 +90,11 @@ func boundCallbackHost(c client.Reader, r *http.Request) (*infrav1.PhysicalHost,
 		return nil, types.NamespacedName{}, errCallbackTokenMismatch
 	}
 	return ph, consumerKey, nil
+}
+
+// callbackReadFailed reports whether a boundCallbackHost error comes from a
+// failed read rather than a refusal, so the caller may answer 5xx and let the
+// inspector retry.
+func callbackReadFailed(err error) bool {
+	return errors.Is(err, errCallbackHostUnreadable) || errors.Is(err, errBootstrapSecretUnreadable)
 }

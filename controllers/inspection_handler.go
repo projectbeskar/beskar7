@@ -448,7 +448,7 @@ func readCallbackCA(certDir string) ([]byte, error) {
 //   - GET  /api/v1/bootstrap/{namespace}/{hostName}: serves the bootstrap data
 //     Secret bytes for the Beskar7Machine that consumes the targeted host
 //     (handled by BootstrapHandler). Bearer-gated.
-//   - GET  /api/v1/networkdata/{namespace}/{hostName}: serves the network data
+//   - GET  /api/v1/network-data/{namespace}/{hostName}: serves the network data
 //     Secret bytes of a claimed host (handled by NetworkDataHandler, v4.3).
 //     Bearer-gated, same token rule as bootstrap.
 //   - POST /api/v1/provisioned/{namespace}/{hostName}: receives the OS-deployment
@@ -560,7 +560,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Log:    bootstrapLog,
 	}
 
-	networkDataLog := ctrl.Log.WithName("networkdata-handler")
+	networkDataLog := ctrl.Log.WithName("network-data-handler")
 	networkDataHandler := &NetworkDataHandler{
 		Client: mgr.GetClient(),
 		Log:    networkDataLog,
@@ -607,7 +607,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		auth.RequireBearer(bootstrapLog, bootstrapVerifier, bootstrapHandler))
 	// Network data (v4.3): same token rule as bootstrap. A controller before
 	// v4.3 returns 404 here, which the inspector reads as "no network data".
-	mux.Handle("GET /api/v1/networkdata/{namespace}/{hostName}",
+	mux.Handle("GET /api/v1/network-data/{namespace}/{hostName}",
 		auth.RequireBearer(networkDataLog, networkDataVerifier, networkDataHandler))
 	// Provisioned callback (D-015): inspector signals OS deployment complete.
 	// Bearer-gated with the same per-host token as inspection/bootstrap.

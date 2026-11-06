@@ -32,13 +32,18 @@ import (
 //
 // Responses:
 //   - 200: the "networkData" bytes, verbatim, never parsed.
-//   - 404: the host cannot be resolved or has no spec.networkDataSecretRef.
-//     A controller before v4.3 answers 404 too, so the inspector reads both as
-//     "no network data".
+//   - 401: boundCallbackHost refused the request: the host is gone, its claim
+//     moved or its token changed since the bearer check. Unlike /bootstrap,
+//     this is not a 404, because a 404 here installs the host without its
+//     network.
+//   - 404: only when the host has no spec.networkDataSecretRef. A controller
+//     before v4.3 answers 404 too, so the inspector reads both as "no network
+//     data".
 //   - 409: the ref is set but the Secret is missing, not opted in or invalid.
 //     The host must not be installed without the network it was given, so the
 //     inspector fails the deploy. NetworkDataReady on the host says why.
-//   - 500: the Secret could not be read.
+//   - 500: the host, its credentials or the Secret could not be read. The
+//     inspector retries it.
 type NetworkDataHandler struct {
 	Client client.Client
 	Log    logr.Logger
@@ -49,33 +54,38 @@ func (h *NetworkDataHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := h.Log.WithValues("method", r.Method, "namespace", r.PathValue("namespace"), "host", r.PathValue("hostName"), "remote", r.RemoteAddr)
 
 	ph, _, err := boundCallbackHost(h.Client, r)
+	if err != nil && callbackReadFailed(err) {
+		log.Error(err, "network-data GET: host could not be resolved")
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 	if err != nil {
-		log.V(1).Info("networkdata GET: refused", "err", err.Error())
-		http.Error(w, "not found", http.StatusNotFound)
+		log.V(1).Info("network-data GET: refused", "err", err.Error())
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	if ph.Spec.NetworkDataSecretRef == "" {
-		log.V(1).Info("networkdata GET: host has no network data")
+		log.V(1).Info("network-data GET: host has no network data")
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 
 	data, err := loadNetworkData(r.Context(), h.Client, ph)
 	if err != nil && networkDataReason(err) != "" {
-		log.Info("networkdata GET: network data Secret refused", "err", err.Error())
+		log.Info("network-data GET: network data Secret refused", "err", err.Error())
 		http.Error(w, "conflict", http.StatusConflict)
 		return
 	}
 	if err != nil {
-		log.Error(err, "networkdata GET: network data Secret could not be read")
+		log.Error(err, "network-data GET: network data Secret could not be read")
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
 	// The bytes and any digest of them are never logged.
 	if err := writeNoStore(w, data); err != nil {
-		log.V(1).Info("networkdata GET: response write failed", "err", err.Error())
+		log.V(1).Info("network-data GET: response write failed", "err", err.Error())
 		return
 	}
-	log.V(1).Info("networkdata GET: served network data")
+	log.V(1).Info("network-data GET: served network data")
 }

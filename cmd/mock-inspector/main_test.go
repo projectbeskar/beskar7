@@ -357,7 +357,7 @@ func TestPostReport_AuthorizationHeaderScheme(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// networkdata (contract v4.3)
+// network-data (contract v4.3)
 // ---------------------------------------------------------------------------
 
 func TestDeriveNetworkDataURL(t *testing.T) {
@@ -366,7 +366,7 @@ func TestDeriveNetworkDataURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "https://host:8082/api/v1/networkdata/ns/name"; got != want {
+	if want := "https://host:8082/api/v1/network-data/ns/name"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	if _, err := deriveNetworkDataURL("https://host:8082/api/v2/bootstrap/ns/name"); err == nil {

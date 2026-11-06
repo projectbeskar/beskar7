@@ -35,11 +35,11 @@ import (
 	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
-const networkDataRoute = "GET /api/v1/networkdata/{namespace}/{hostName}"
+const networkDataRoute = "GET /api/v1/network-data/{namespace}/{hostName}"
 
 // buildNetworkDataMux wires the network data handler as SetupCallbackServer does.
 func buildNetworkDataMux() *http.ServeMux {
-	log := ctrl.Log.WithName("networkdata-handler-test")
+	log := ctrl.Log.WithName("network-data-handler-test")
 	handler := &NetworkDataHandler{Client: k8sClient, Log: log}
 	mux := http.NewServeMux()
 	mux.Handle(networkDataRoute, auth.RequireBearer(log, newBearerTokenVerifier(k8sClient, log), handler))
@@ -81,7 +81,7 @@ var _ = Describe("Network data GET handler (v4.3)", func() {
 
 	get := func(bearer string) *http.Response {
 		req, err := http.NewRequest(http.MethodGet,
-			fmt.Sprintf("%s/api/v1/networkdata/%s/%s", server.URL, testNs.Name, hostName), bytes.NewReader(nil))
+			fmt.Sprintf("%s/api/v1/network-data/%s/%s", server.URL, testNs.Name, hostName), bytes.NewReader(nil))
 		Expect(err).NotTo(HaveOccurred())
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)
@@ -98,7 +98,7 @@ var _ = Describe("Network data GET handler (v4.3)", func() {
 	}
 
 	BeforeEach(func() {
-		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "networkdata-handler-test-"}}
+		testNs = &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "network-data-handler-test-"}}
 		Expect(k8sClient.Create(ctx, testNs)).To(Succeed())
 
 		physicalHost = &infrav1.PhysicalHost{

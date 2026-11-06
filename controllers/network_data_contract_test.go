@@ -37,7 +37,7 @@ import (
 )
 
 // goldenNetworkDataArtifactPath is the canonical descriptor of the
-// /networkdata endpoint and the /oem/beskar7/network-data COS_OEM artifact
+// /network-data endpoint and the /oem/beskar7/network-data COS_OEM artifact
 // (contract v4.3), shared with beskar7-inspector.
 const goldenNetworkDataArtifactPath = "../test/contract/golden_network_data_artifact.json"
 
@@ -49,19 +49,20 @@ const (
 
 // goldenNetworkDataArtifact mirrors golden_network_data_artifact.json.
 type goldenNetworkDataArtifact struct {
-	Namespace      string `json:"namespace"`
-	Host           string `json:"host"`
-	Endpoint       string `json:"endpoint"`
-	SecretKey      string `json:"secretKey"`
-	HostAnnotation string `json:"hostAnnotation"`
-	MaxSizeBytes   int    `json:"maxSizeBytes"`
-	Content        string `json:"content"`
-	ArtifactPath   string `json:"artifactPath"`
-	Mode           string `json:"mode"`
-	Owner          string `json:"owner"`
-	StatusServed   int    `json:"statusServed"`
-	StatusNoData   int    `json:"statusNoData"`
-	StatusRefused  int    `json:"statusRefused"`
+	Namespace          string `json:"namespace"`
+	Host               string `json:"host"`
+	Endpoint           string `json:"endpoint"`
+	SecretKey          string `json:"secretKey"`
+	HostAnnotation     string `json:"hostAnnotation"`
+	MaxSizeBytes       int    `json:"maxSizeBytes"`
+	Content            string `json:"content"`
+	ArtifactPath       string `json:"artifactPath"`
+	Mode               string `json:"mode"`
+	Owner              string `json:"owner"`
+	StatusServed       int    `json:"statusServed"`
+	StatusNoData       int    `json:"statusNoData"`
+	StatusUnauthorized int    `json:"statusUnauthorized"`
+	StatusRefused      int    `json:"statusRefused"`
 }
 
 func readGoldenNetworkDataArtifact(t *testing.T) goldenNetworkDataArtifact {
@@ -82,6 +83,9 @@ func readGoldenNetworkDataArtifact(t *testing.T) goldenNetworkDataArtifact {
 type goldenNetworkDataCase struct {
 	setRef         bool
 	annotationHost string
+	// claimMovedTo, when set, is the machine the host's claim names instead of
+	// the one its credentials are bound to.
+	claimMovedTo string
 }
 
 // serveGoldenNetworkData drives the real NetworkDataHandler for the fixture's
@@ -100,6 +104,9 @@ func serveGoldenNetworkData(t *testing.T, fixture goldenNetworkDataArtifact, tc 
 	}
 	if tc.setRef {
 		host.Spec.NetworkDataSecretRef = goldenNetworkDataSecret
+	}
+	if tc.claimMovedTo != "" {
+		host.Spec.ConsumerRef.Name = tc.claimMovedTo
 	}
 	credentials := unownedCredentialSecret(fixture.Namespace, fixture.Host,
 		boundCredentialData(goldenNetworkDataMachine, goldenNetworkDataToken, time.Hour, "", 0))
@@ -156,6 +163,9 @@ func TestGoldenNetworkDataArtifact_MatchesHandler(t *testing.T) {
 
 	if got := serveGoldenNetworkData(t, fixture, goldenNetworkDataCase{}).Code; got != fixture.StatusNoData {
 		t.Errorf("no ref: status %d, want %d", got, fixture.StatusNoData)
+	}
+	if got := serveGoldenNetworkData(t, fixture, goldenNetworkDataCase{setRef: true, annotationHost: fixture.Host, claimMovedTo: "b7m-02"}).Code; got != fixture.StatusUnauthorized {
+		t.Errorf("claim moved: status %d, want %d", got, fixture.StatusUnauthorized)
 	}
 	if got := serveGoldenNetworkData(t, fixture, goldenNetworkDataCase{setRef: true, annotationHost: "another-host"}).Code; got != fixture.StatusRefused {
 		t.Errorf("refused Secret: status %d, want %d", got, fixture.StatusRefused)

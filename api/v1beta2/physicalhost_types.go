@@ -156,7 +156,9 @@ type PhysicalHostSpec struct {
 	// network-config v2 by convention. The Secret must carry the
 	// beskar7.infrastructure.cluster.x-k8s.io/network-data-host annotation
 	// naming this PhysicalHost; otherwise it is refused and NetworkDataReady
-	// is False with NetworkDataNotAuthorized.
+	// is False with NetworkDataNotAuthorized. While NetworkDataReady is not
+	// True for the current generation, the host is not claimed, and a host
+	// already claimed is not booted.
 	//
 	// When unset, no network data is delivered and behaviour is unchanged.
 	// +kubebuilder:validation:MaxLength=253

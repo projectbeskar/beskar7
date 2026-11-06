@@ -202,14 +202,14 @@ func main() {
 	// before the disk write. A host without it answers 404.
 	networkDataURL, err := deriveNetworkDataURL(bootstrapURL)
 	if err != nil {
-		log.Fatalf("derive networkdata URL: %v", err)
+		log.Fatalf("derive network-data URL: %v", err)
 	}
 	size, err := fetchNetworkData(ctx, httpClient, networkDataURL, token)
 	if err != nil {
-		log.Fatalf("networkdata GET failed: %v", err)
+		log.Fatalf("network-data GET failed: %v", err)
 	}
 	if expectNetworkData && size == 0 {
-		log.Fatalf("networkdata GET: host %s/%s served no network data, but --expect-network-data is set", namespace, hostName)
+		log.Fatalf("network-data GET: host %s/%s served no network data, but --expect-network-data is set", namespace, hostName)
 	}
 	log.Printf("mock-inspector: network data for host %s/%s: %d bytes", namespace, hostName, size)
 
@@ -239,7 +239,7 @@ const (
 	bootstrapSeg   = "/api/v1/bootstrap/"
 	inspectionSeg  = "/api/v1/inspection/"
 	provisionedSeg = "/api/v1/provisioned/"
-	networkDataSeg = "/api/v1/networkdata/"
+	networkDataSeg = "/api/v1/network-data/"
 )
 
 // deriveCallbackURL swaps the first bootstrapSeg in bootstrapURL for seg.
@@ -280,12 +280,12 @@ func fetchNetworkData(ctx context.Context, httpClient *http.Client, url, token s
 		return 0, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("networkdata GET returned %d", resp.StatusCode)
+		return 0, fmt.Errorf("network-data GET returned %d", resp.StatusCode)
 	}
 	// The bytes are read only to be counted, never logged.
 	n, err := io.Copy(io.Discard, resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("read networkdata body: %w", err)
+		return 0, fmt.Errorf("read network-data body: %w", err)
 	}
 	return int(n), nil
 }

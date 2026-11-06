@@ -26,7 +26,7 @@ import (
 )
 
 // reconcileNetworkData publishes NetworkDataReady for the host's network data
-// Secret, applying the same checks as the /networkdata handler. It needs
+// Secret, applying the same checks as the /network-data handler. It needs
 // nothing from the BMC, so it runs before the BMC is tried.
 func (r *PhysicalHostReconciler) reconcileNetworkData(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost) {
 	if host.Spec.NetworkDataSecretRef == "" {
