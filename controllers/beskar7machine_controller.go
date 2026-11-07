@@ -509,7 +509,7 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	switch physicalHost.Status.State {
 	case infrav1.StateReady:
 		// OS deployment complete (provisioned callback received); set ProviderID + Ready.
-		logger.Info("PhysicalHost deployment complete and ready")
+		logger.V(1).Info("PhysicalHost deployment complete and ready")
 		return r.handleReadyHost(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateDeploying:
@@ -1212,7 +1212,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 
 // handleReadyHost handles a host that's ready after inspection.
 func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
-	logger.Info("Host ready, marking infrastructure as ready")
+	logger.V(1).Info("Host ready, marking infrastructure as ready")
 
 	// Set ProviderID
 	currentProviderID := providerID(physicalHost.Namespace, physicalHost.Name)
@@ -1224,7 +1224,7 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	// Copy addresses from PhysicalHost
 	if len(physicalHost.Status.Addresses) > 0 {
 		b7machine.Status.Addresses = physicalHost.Status.Addresses
-		logger.Info("Copied network addresses", "count", len(physicalHost.Status.Addresses))
+		logger.V(1).Info("Copied network addresses", "count", len(physicalHost.Status.Addresses))
 	}
 
 	// Record provisioning success only on the first transition to ready. We check
@@ -1272,7 +1272,9 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Beskar7Machine infrastructure is ready")
+	if firstProvisioning {
+		logger.Info("Beskar7Machine infrastructure is ready")
+	}
 	return r.reconcileNodeProviderID(ctx, logger, b7machine)
 }
 
@@ -2169,6 +2171,12 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.AvailablePhysicalHostToWaitingBeskar7Machines),
 			builder.WithPredicates(hostBecameClaimable()),
+		).
+		// Flipping setNodeProviderID reaches the Cluster as an annotation; a Ready machine has no timer to notice it.
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(r.ClusterToBeskar7Machines),
+			builder.WithPredicates(nodeProviderIDAnnotationChanged()),
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),

@@ -358,6 +358,7 @@ kind: Beskar7Cluster
 |---|---|---|
 | `controlPlaneEndpoint.host` | string | Optional. The endpoint in effect is `Cluster.spec.controlPlaneEndpoint` when that is set, otherwise this one; with neither, `ControlPlaneEndpointReady=False`. The controller never derives an endpoint (D-027). |
 | `controlPlaneEndpoint.port` | int32 | Optional. |
+| `setNodeProviderID` | bool | Optional, default `false`. Lets the controller set an empty `Node.spec.providerID` on the workload cluster with its admin kubeconfig. Mirrored onto the owner `Cluster` as the `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id` annotation, which is what the manager's ClusterCache filters on; a cluster without it is never connected to. See [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association). |
 
 ### `status`
 
@@ -423,7 +424,7 @@ kind: Beskar7ClusterTemplate
 | `template.metadata` | `clusterv1.ObjectMeta` | Optional. Labels and annotations propagated onto each generated `Beskar7Cluster` (the `InfrastructureClusterTemplate` contract path `spec.template.metadata`). Other `ObjectMeta` fields are ignored. |
 | `template.spec` | `Beskar7ClusterSpec` | Identical schema to a `Beskar7Cluster`'s spec. Normally `{}` — see below. |
 
-`template.spec` being empty is correct. `Beskar7ClusterSpec`'s only field is `controlPlaneEndpoint`, and templating it would give every cluster in the class the same endpoint; Beskar7 does not discover one, so each `Cluster` supplies its own via a `controlPlaneEndpoint` `ClusterClass` variable patched into the generated `Beskar7Cluster`, or directly on `Cluster.spec.controlPlaneEndpoint`. See [Beskar7ClusterTemplate](beskar7clustertemplate.md) and [`examples/clusterclass.yaml`](../examples/clusterclass.yaml).
+`template.spec` being empty is correct, or it may carry only `setNodeProviderID`. Templating `controlPlaneEndpoint` would give every cluster in the class the same endpoint; Beskar7 does not discover one, so each `Cluster` supplies its own via a `controlPlaneEndpoint` `ClusterClass` variable patched into the generated `Beskar7Cluster`, or directly on `Cluster.spec.controlPlaneEndpoint`. See [Beskar7ClusterTemplate](beskar7clustertemplate.md) and [`examples/clusterclass.yaml`](../examples/clusterclass.yaml).
 
 ### Status
 
