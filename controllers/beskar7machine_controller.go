@@ -45,6 +45,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -165,6 +166,8 @@ type Beskar7MachineReconciler struct {
 	// nil; it is the seam through which tests trust an httptest server, the way
 	// RedfishClientFactory is the seam for the BMC.
 	ChecksumRootCAs *x509.CertPool
+	// ClusterCache gives clients for workload clusters; nil turns off setting the Node providerID (#297).
+	ClusterCache clustercache.ClusterCache
 
 	// checksumHTTPClient is the client for the checksum fetch, built on first use
 	// from ChecksumRootCAs (checksumClient).
@@ -343,6 +346,7 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			infrav1.InfrastructureReadyCondition,
 			infrav1.PhysicalHostAssociatedCondition,
 			infrav1.BootstrapDataReadyCondition,
+			infrav1.NodeProviderIDReadyCondition,
 		}}); err != nil {
 			if deletedBeforePatch(b7machine, err) {
 				log.V(1).Info("Beskar7Machine was already deleted; nothing left to patch")
@@ -503,7 +507,7 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 	switch physicalHost.Status.State {
 	case infrav1.StateReady:
 		// OS deployment complete (provisioned callback received); set ProviderID + Ready.
-		logger.Info("PhysicalHost deployment complete and ready")
+		logger.V(1).Info("PhysicalHost deployment complete and ready")
 		return r.handleReadyHost(ctx, logger, b7machine, physicalHost)
 
 	case infrav1.StateDeploying:
@@ -1198,7 +1202,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 
 // handleReadyHost handles a host that's ready after inspection.
 func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, physicalHost *infrav1.PhysicalHost) (ctrl.Result, error) {
-	logger.Info("Host ready, marking infrastructure as ready")
+	logger.V(1).Info("Host ready, marking infrastructure as ready")
 
 	// Set ProviderID
 	currentProviderID := providerID(physicalHost.Namespace, physicalHost.Name)
@@ -1210,7 +1214,7 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	// Copy addresses from PhysicalHost
 	if len(physicalHost.Status.Addresses) > 0 {
 		b7machine.Status.Addresses = physicalHost.Status.Addresses
-		logger.Info("Copied network addresses", "count", len(physicalHost.Status.Addresses))
+		logger.V(1).Info("Copied network addresses", "count", len(physicalHost.Status.Addresses))
 	}
 
 	// Record provisioning success only on the first transition to ready. We check
@@ -1258,8 +1262,10 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 		return ctrl.Result{}, err
 	}
 
-	logger.Info("Beskar7Machine infrastructure is ready")
-	return ctrl.Result{}, nil
+	if firstProvisioning {
+		logger.Info("Beskar7Machine infrastructure is ready")
+	}
+	return r.reconcileNodeProviderID(ctx, logger, b7machine)
 }
 
 // limitBootstrapTokenAfterReady ends the bearer token's life auth.TokenReadyGrace
@@ -2120,6 +2126,12 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.AvailablePhysicalHostToWaitingBeskar7Machines),
 			builder.WithPredicates(hostBecameAvailable()),
+		).
+		// Flipping setNodeProviderID reaches the Cluster as an annotation; a Ready machine has no timer to notice it.
+		Watches(
+			&clusterv1.Cluster{},
+			handler.EnqueueRequestsFromMapFunc(r.ClusterToBeskar7Machines),
+			builder.WithPredicates(nodeProviderIDAnnotationChanged()),
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
