@@ -594,7 +594,7 @@ kubectl --kubeconfig <workload.kubeconfig> get node <node> -o jsonpath='{.spec.p
 # If this is e.g. "k3s://<hostname>" instead of "b7://<namespace>/<host-name>", that is the bug.
 ```
 
-**First, read the `Beskar7Machine`'s `NodeProviderIDReady` condition** (#297). The controller sets an empty Node `providerID` itself, and the reason says why it could not:
+**First, read the `Beskar7Machine`'s `NodeProviderIDReady` condition** (#297). With `spec.setNodeProviderID: true` on the `Beskar7Cluster` the controller sets an empty Node `providerID` itself, and the reason says why it could not. No condition at all means the cluster has not opted in: turn the switch on, or use an image-side route below.
 
 ```bash
 kubectl get beskar7machine <name> -o jsonpath='{.status.conditions[?(@.type=="NodeProviderIDReady")]}'

@@ -21,6 +21,7 @@ spec:
   controlPlaneEndpoint:
     host: "10.0.1.10"   # optional; see "Control-plane endpoint" below
     port: 6443          # required if host is set
+  setNodeProviderID: false  # optional, off by default; see "Setting Node providerIDs" below
 ```
 
 ## What the reconciler does
@@ -54,6 +55,12 @@ metadata:
 ```
 
 CAPI uses these for placement: a `KubeadmControlPlane` or equivalent spreads its Machines across the published domains by setting `Machine.spec.failureDomain`, and the `Beskar7Machine` controller then claims only a `PhysicalHost` carrying that zone label (see [Beskar7Machine → Reconcile flow](beskar7machine.md#reconcile-flow), step 3). A Machine with no failure domain may claim any host. A host with no zone label is never a candidate for a Machine that has one, so label every host in a zoned inventory.
+
+### Setting Node providerIDs
+
+`spec.setNodeProviderID: true` lets the `Beskar7Machine` controller set an empty `Node.spec.providerID` on the workload cluster, using its admin kubeconfig (see [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association)). Off by default.
+
+Cluster API's ClusterCache decides which clusters to connect to from the `Cluster` object alone, so this controller mirrors the switch onto the owner `Cluster` as the annotation `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id: "true"`, and removes it when the switch is off. That annotation is the only write it makes to the `Cluster`, and it is what lets a change to the switch reach a running manager without a restart. A cluster without it is never connected to.
 
 ## Conditions
 

@@ -58,8 +58,14 @@ type nodeProviderIDFixture struct {
 
 func newNodeProviderIDFixture(namespace string) nodeProviderIDFixture {
 	cluster := &clusterv1.Cluster{
-		ObjectMeta: metav1.ObjectMeta{Name: nodeProviderIDTestCluster, Namespace: namespace},
-		Spec:       clusterv1.ClusterSpec{Paused: ptr.To(false)},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: nodeProviderIDTestCluster, Namespace: namespace,
+			Annotations: map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue},
+		},
+		Spec: clusterv1.ClusterSpec{
+			Paused:            ptr.To(false),
+			InfrastructureRef: beskar7ClusterRef(nodeProviderIDTestCluster),
+		},
 	}
 	machine := &clusterv1.Machine{
 		ObjectMeta: metav1.ObjectMeta{
@@ -83,6 +89,15 @@ func newNodeProviderIDFixture(namespace string) nodeProviderIDFixture {
 		Spec: infrav1.Beskar7MachineSpec{ProviderID: providerID(namespace, nodeProviderIDTestHost)},
 	}
 	return nodeProviderIDFixture{cluster: cluster, machine: machine, b7machine: b7machine}
+}
+
+func beskar7ClusterRef(name string) clusterv1.ContractVersionedObjectReference {
+	return clusterv1.ContractVersionedObjectReference{APIGroup: infrav1.GroupVersion.Group, Kind: beskar7ClusterKind, Name: name}
+}
+
+// optOut turns the fixture's Cluster into one that has not opted in.
+func (f nodeProviderIDFixture) optOut() {
+	delete(f.cluster.Annotations, NodeProviderIDAnnotation)
 }
 
 func (f nodeProviderIDFixture) clusterKey() client.ObjectKey {
@@ -229,6 +244,44 @@ func TestReconcileNodeProviderID_NoClusterCacheIsNoop(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
+}
+
+func TestReconcileNodeProviderID_OptedOutNeverAsksClusterCache(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	f.optOut()
+
+	// An empty cache would report the cluster unreachable if it were asked.
+	result, err := nodeProviderIDCase{fixture: f, cache: clustercache.NewFakeEmptyClusterCache()}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
+}
+
+func TestReconcileNodeProviderID_OptingOutRemovesCondition(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	f.optOut()
+	setFalse(f.b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeNotFoundReason, "left over")
+
+	result, err := nodeProviderIDCase{fixture: f, cache: clustercache.NewFakeEmptyClusterCache()}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
+}
+
+func TestReconcileNodeProviderID_OptedOutWithNodeRefGetsNoCondition(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	f.optOut()
+	f.machine.Status.NodeRef = clusterv1.MachineNodeReference{Name: nodeProviderIDTestMachine}
+
+	_, err := nodeProviderIDCase{fixture: f, cache: clustercache.NewFakeEmptyClusterCache()}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
 }
 

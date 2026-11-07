@@ -56,6 +56,14 @@ rules:
   - cluster.x-k8s.io
   resources:
   - clusters
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
   - clusters/status
   - machines
   - machines/status
@@ -235,6 +243,14 @@ rules:
   - cluster.x-k8s.io
   resources:
   - clusters
+  verbs:
+  - get
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - cluster.x-k8s.io
+  resources:
   - clusters/status
   - machines
   - machines/status
