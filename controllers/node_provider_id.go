@@ -25,6 +25,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -55,15 +56,21 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	if machine == nil {
 		return ctrl.Result{}, nil
 	}
-	if machine.Status.NodeRef.IsDefined() {
-		// Cluster API matched the Node by providerID, so it carries ours.
-		setTrue(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeProviderIDSetReason)
-		return ctrl.Result{}, nil
-	}
 
 	cluster, err := util.GetClusterFromMetadata(ctx, r.Client, machine.ObjectMeta)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("get Cluster of Machine %q: %w", machine.Name, err)
+	}
+	// Same check as the ClusterCache filter, so an opted-out cluster is never asked for and carries no condition.
+	if !NodeProviderIDClusterFilter(cluster) {
+		conditions.Delete(b7machine, infrav1.NodeProviderIDReadyCondition)
+		return ctrl.Result{}, nil
+	}
+
+	if machine.Status.NodeRef.IsDefined() {
+		// Cluster API matched the Node by providerID, so it carries ours.
+		setTrue(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeProviderIDSetReason)
+		return ctrl.Result{}, nil
 	}
 
 	// Uncached, so no Node informer runs on every workload cluster for a few reads.

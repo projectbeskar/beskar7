@@ -391,9 +391,11 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 	redfishFactory := internalredfish.NewClientFactory(cfg.bmcProxy)
 
 	// The cached client already holds Secrets in this mode and honors --watch-namespaces.
+	// The filter keeps every Cluster that did not opt in out of the cache: no kubeconfig read, no health checks.
 	clusterCache, err := clustercache.SetupWithManager(context.Background(), mgr, clustercache.Options{
-		SecretClient: mgr.GetClient(),
-		Client:       clustercache.ClientOptions{UserAgent: clusterCacheUserAgent},
+		SecretClient:  mgr.GetClient(),
+		Client:        clustercache.ClientOptions{UserAgent: clusterCacheUserAgent},
+		ClusterFilter: controllers.NodeProviderIDClusterFilter,
 	}, controller.Options{MaxConcurrentReconciles: cfg.maxConcurrentReconciles})
 	if err != nil {
 		return fmt.Errorf("unable to create ClusterCache: %w", err)

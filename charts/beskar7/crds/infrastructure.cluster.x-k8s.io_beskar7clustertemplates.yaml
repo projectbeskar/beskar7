@@ -63,6 +63,8 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      setNodeProviderID:
+                        type: boolean
                     type: object
                 required:
                 - spec
