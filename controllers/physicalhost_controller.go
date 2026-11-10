@@ -531,9 +531,9 @@ func inProvisioningSubState(physicalHost *infrav1.PhysicalHost) bool {
 //
 // Adopts only a host that is claimed and still at State "" or InUse — never
 // Inspecting, Deploying, Ready or Error, which are driven by the annotation
-// handlers and must not be second-guessed here — whose ConsumerRef names a
-// Beskar7Machine in this host's own namespace (resolveConsumerBeskar7Machine:
-// claims are always same-namespace, SEC-12) and whose
+// handlers and must not be second-guessed here — whose ConsumerRef resolves to
+// a Beskar7Machine in this host's own namespace or in one its claim's pool
+// grants (resolveConsumer, SEC-12) and whose
 // Spec.ProviderID equals this host's own b7://<namespace>/<name> form. That
 // form is produced only by handleReadyHost once this exact host reached
 // Ready, so the match is proof the consumer already provisioned this host,
@@ -543,7 +543,11 @@ func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logg
 	if physicalHost.Status.State != infrav1.StateNone && physicalHost.Status.State != infrav1.StateInUse {
 		return
 	}
-	key, ok := resolveConsumerBeskar7Machine(physicalHost)
+	key, ok, err := resolveConsumer(ctx, r.Client, physicalHost)
+	if err != nil {
+		logger.Error(err, "Failed to resolve the consumer of the PhysicalHost for adoption")
+		return
+	}
 	if !ok {
 		return
 	}
@@ -1403,9 +1407,9 @@ func beskar7MachineProviderIDLanded() predicate.Funcs {
 // Beskar7MachineToPhysicalHost maps a Beskar7Machine to the PhysicalHost its
 // Spec.ProviderID names, so a host adopts as soon as its consumer lands
 // (D-028) instead of waiting for its own next resync. parseProviderID rejects
-// anything not shaped b7://<namespace>/<name>; the namespace segment is
-// compared against the machine's own namespace defensively — this controller
-// never produces a cross-namespace ProviderID — rather than trusted alone.
+// anything not shaped b7://<namespace>/<name>; the namespace segment must be
+// the machine's own unless the machine claims through a pool. The mapping only
+// wakes the host; adoption still checks the claim (resolveConsumer).
 func (r *PhysicalHostReconciler) Beskar7MachineToPhysicalHost(ctx context.Context, obj client.Object) []reconcile.Request {
 	m, ok := obj.(*infrav1.Beskar7Machine)
 	if !ok {
@@ -1416,7 +1420,11 @@ func (r *PhysicalHostReconciler) Beskar7MachineToPhysicalHost(ctx context.Contex
 		return nil
 	}
 	ns, name, err := parseProviderID(m.Spec.ProviderID)
-	if err != nil || ns != m.Namespace {
+	if err != nil {
+		return nil
+	}
+	// A host in another namespace is only ever claimed through the machine's pool.
+	if ns != m.Namespace && (m.Spec.PoolRef == "" || !HostPoolsEnabled()) {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}

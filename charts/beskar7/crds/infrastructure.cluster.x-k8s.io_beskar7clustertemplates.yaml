@@ -63,6 +63,14 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      poolRefs:
+                        items:
+                          maxLength: 63
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                          type: string
+                        maxItems: 16
+                        type: array
+                        x-kubernetes-list-type: set
                     type: object
                 required:
                 - spec

@@ -1,0 +1,5 @@
+# Kustomize v5 does not know ValidatingAdmissionPolicy is cluster-scoped, so
+# config/default's namespace lands on the policy. Harmless: the API server
+# clears metadata.namespace on create for cluster-scoped kinds.
+resources:
+- pool_claim_guard.yaml

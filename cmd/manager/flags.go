@@ -177,6 +177,16 @@ type managerConfig struct {
 	inspectionTimeout       time.Duration
 	deploymentTimeout       time.Duration
 	maxConcurrentReconciles int
+
+	// watchNamespaces is the parsed --watch-namespaces.
+	watchNamespaces []string
+}
+
+// hostPools reports whether PhysicalHostPool claims are on. They need cluster-wide
+// reads of pools and namespaces, which neither a --watch-namespaces cache nor the
+// callback-only RBAC allows, so they are on only in the full cluster-wide install.
+func (c managerConfig) hostPools() bool {
+	return c.controllers == controllersAll && len(c.watchNamespaces) == 0
 }
 
 // validate rejects flag combinations that contradict each other. It runs

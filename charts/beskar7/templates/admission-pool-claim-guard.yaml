@@ -1,0 +1,43 @@
+{{- if not .Values.watchNamespaces }}
+# Mirrors config/admission/pool_claim_guard.yaml.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "beskar7.fullname" . }}-pool-claim-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups:
+      - infrastructure.cluster.x-k8s.io
+      apiVersions:
+      - v1beta2
+      operations:
+      - UPDATE
+      resources:
+      - physicalhosts
+  variables:
+  - name: pool
+    expression: "has(oldObject.spec.consumerPool) ? oldObject.spec.consumerPool : ''"
+  - name: claimed
+    expression: "variables.pool != '' && has(oldObject.spec.consumerRef) && has(object.spec.consumerRef)"
+  - name: key
+    expression: "'pool.beskar7.infrastructure.cluster.x-k8s.io/' + variables.pool"
+  validations:
+  - expression: >-
+      !variables.claimed ||
+      !(has(oldObject.metadata.labels) && variables.key in oldObject.metadata.labels) ||
+      (has(object.metadata.labels) && variables.key in object.metadata.labels)
+    messageExpression: "'the host is claimed through PhysicalHostPool ' + variables.pool + '; its label ' + variables.key + ' cannot be removed until the claim is released'"
+  - expression: "!variables.claimed || (has(object.spec.consumerPool) && object.spec.consumerPool == variables.pool)"
+    messageExpression: "'spec.consumerPool cannot change while the host is claimed through PhysicalHostPool ' + variables.pool"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "beskar7.fullname" . }}-pool-claim-guard
+spec:
+  policyName: {{ include "beskar7.fullname" . }}-pool-claim-guard
+  validationActions:
+  - Deny
+{{- end }}
