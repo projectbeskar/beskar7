@@ -154,6 +154,7 @@ const (
 // The rule below also runs where this spec is embedded, in
 // Beskar7MachineTemplate (spec.template.spec).
 // +kubebuilder:validation:XValidation:rule="has(self.targetImageDigest) != has(self.targetImageDigestURL)",message="set exactly one of targetImageDigest and targetImageDigestURL"
+// +kubebuilder:validation:XValidation:rule="has(self.poolRef) == has(oldSelf.poolRef)",message="poolRef cannot be added or removed"
 type Beskar7MachineSpec struct {
 	// ProviderID is the unique identifier as specified by the cloud provider.
 	// Format b7://<namespace>/<physicalhost-name>; set once the host is
@@ -280,6 +281,17 @@ type Beskar7MachineSpec struct {
 	// has to change.
 	// +optional
 	HostSelector *metav1.LabelSelector `json:"hostSelector,omitempty"`
+
+	// PoolRef names a PhysicalHostPool to claim a host from, instead of the
+	// machine's own namespace. Only members of that pool are considered, with no
+	// fallback; HostSelector and the failure domain still apply. The pool must
+	// grant the machine's namespace, otherwise the machine waits with
+	// PoolNotAvailable. Immutable.
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="poolRef is immutable"
+	// +optional
+	PoolRef string `json:"poolRef,omitempty"`
 }
 
 // HardwareRequirements specifies hardware requirements for a machine.

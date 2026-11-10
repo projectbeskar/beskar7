@@ -90,6 +90,8 @@ By default a Beskar7Machine claims the first `Available` PhysicalHost in its nam
   ```
 
   `matchExpressions` work too (`In`, `NotIn`, `Exists`, `DoesNotExist`). An absent or empty selector means any host, so existing deployments are unaffected. See [`examples/host-pools.yaml`](../examples/host-pools.yaml).
+
+To claim hosts that live in another namespace, set `spec.poolRef` to a `PhysicalHostPool` that grants this namespace. See [PhysicalHostPool](physicalhostpool.md).
 - **`Machine.spec.failureDomain`** — CAPI's placement. `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone` label on hosts; when CAPI assigns a Machine to one, the claim only considers hosts carrying that zone label.
 
 Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place.

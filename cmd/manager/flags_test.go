@@ -128,6 +128,25 @@ func TestParseControllersMode(t *testing.T) {
 	}
 }
 
+func TestManagerConfigHostPools(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  managerConfig
+		want bool
+	}{
+		{name: "on in the cluster-wide install", cfg: managerConfig{controllers: controllersAll}, want: true},
+		{name: "off with --watch-namespaces", cfg: managerConfig{controllers: controllersAll, watchNamespaces: []string{"a"}}},
+		{name: "off in callback-only mode", cfg: managerConfig{controllers: controllersNone}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.hostPools(); got != tc.want {
+				t.Fatalf("hostPools() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestManagerConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string

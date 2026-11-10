@@ -27,6 +27,17 @@ type Beskar7ClusterSpec struct {
 	// omitzero: an endpoint is legitimately absent until the control plane has
 	// an address, and the v1beta2 APIEndpoint schema rejects an empty object.
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
+
+	// PoolRefs names the PhysicalHostPools this cluster's machines claim from.
+	// The zones (topology.kubernetes.io/zone) of their members become failure
+	// domains next to those of the hosts in the cluster's own namespace. A pool
+	// that does not exist or does not grant the namespace adds nothing.
+	// +kubebuilder:validation:MaxItems=16
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +listType=set
+	// +optional
+	PoolRefs []string `json:"poolRefs,omitempty"`
 }
 
 // Beskar7ClusterInitializationStatus carries CAPI v1beta2 contract fields

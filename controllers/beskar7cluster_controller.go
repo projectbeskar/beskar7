@@ -18,12 +18,14 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -212,6 +214,13 @@ func (r *Beskar7ClusterReconciler) reconcileFailureDomains(ctx context.Context, 
 		return errors.Wrapf(err, "failed to list PhysicalHosts for failure domain discovery")
 	}
 
+	poolHosts, err := r.poolMembersForCluster(ctx, b7cluster)
+	if err != nil {
+		internalmetrics.RecordFailureDomainDiscovery(b7cluster.Namespace, internalmetrics.ProvisioningOutcomeFailed)
+		return errors.Wrapf(err, "failed to list pool members for failure domain discovery")
+	}
+	phList.Items = append(phList.Items, poolHosts...)
+
 	// Early return if no PhysicalHosts and no current domains
 	if len(phList.Items) == 0 && len(currentFailureDomains) == 0 {
 		logger.V(1).Info("No PhysicalHosts found and no existing failure domains, skipping update")
@@ -348,8 +357,21 @@ func (r *Beskar7ClusterReconciler) reconcileDelete(ctx context.Context, logger l
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *Beskar7ClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrav1.Beskar7Cluster{}).
+	if err := mgr.GetFieldIndexer().IndexField(ctx, &infrav1.Beskar7Cluster{}, Beskar7ClusterPoolRefsIndex, func(obj client.Object) []string {
+		c, ok := obj.(*infrav1.Beskar7Cluster)
+		if !ok {
+			return nil
+		}
+		return c.Spec.PoolRefs
+	}); err != nil {
+		return fmt.Errorf("failed to index Beskar7Cluster.spec.poolRefs: %w", err)
+	}
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(&infrav1.Beskar7Cluster{})
+	if HostPoolsEnabled() {
+		b = b.Watches(&infrav1.PhysicalHostPool{}, handler.EnqueueRequestsFromMapFunc(r.poolToBeskar7Clusters))
+	}
+	return b.
 		Watches(
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Clusters),
@@ -414,6 +436,10 @@ func (r *Beskar7ClusterReconciler) PhysicalHostToBeskar7Clusters(ctx context.Con
 				Namespace: cluster.Namespace,
 			},
 		}
+	}
+	// Clusters in any namespace that take failure domains from a pool this host is in.
+	for _, pool := range hostPools(physicalHost) {
+		requests = append(requests, r.poolToBeskar7Clusters(ctx, &infrav1.PhysicalHostPool{ObjectMeta: metav1.ObjectMeta{Name: pool}})...)
 	}
 	log.V(1).Info("Triggering reconciliation for Beskar7Clusters in namespace", "namespace", physicalHost.Namespace, "count", len(requests))
 	return requests

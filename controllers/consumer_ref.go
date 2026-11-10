@@ -34,12 +34,13 @@ import (
 // object there; every caller sees the same "no valid consumer" outcome it
 // would see for an absent ConsumerRef.
 //
-// Claims are always same-namespace: the Beskar7Machine controller only
-// claims a PhysicalHost it has just listed from its own namespace, and it
-// stamps ConsumerRef.Namespace with that same namespace. A ConsumerRef
-// naming a different namespace is therefore never the product of a real
+// Without a pool, claims are always same-namespace: the Beskar7Machine
+// controller only claims a PhysicalHost it has just listed from its own
+// namespace, and it stamps ConsumerRef.Namespace with that same namespace. A
+// ConsumerRef naming a different namespace is then never the product of a real
 // claim — it can only be a value someone with patch access to PhysicalHosts
-// wrote directly (SEC-12). Every caller must treat it exactly like no
+// wrote directly (SEC-12). Claims through a PhysicalHostPool are the one
+// exception, and only resolveConsumer accepts them. Every caller must treat it exactly like no
 // consumer at all: the callback handlers return their usual opaque
 // not-found, and the Beskar7Machine controller's host-lookup scans skip the
 // host rather than adopting or releasing it.

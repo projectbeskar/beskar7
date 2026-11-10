@@ -1,0 +1,56 @@
+# Cluster-scoped reads for PhysicalHostPool claims (cluster-wide install only).
+# Hand-maintained, not generated: the pool controller and the pool checks carry
+# no +kubebuilder:rbac markers, so the namespace-scoped install, which cannot
+# use pools, keeps exactly the rules of role.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capb7-host-pool-role
+rules:
+# Pools: read on every claim and callback, finalizer on create and delete.
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhostpools
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhostpools/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - infrastructure.cluster.x-k8s.io
+  resources:
+  - physicalhostpools/status
+  verbs:
+  - get
+  - patch
+  - update
+# Namespaces: a pool's namespaceSelector matches namespace labels.
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capb7-host-pool-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capb7-host-pool-role
+subjects:
+- kind: ServiceAccount
+  name: capb7-manager
+  namespace: capb7-system
