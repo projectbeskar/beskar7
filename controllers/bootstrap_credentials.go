@@ -30,8 +30,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
@@ -65,7 +67,14 @@ const (
 	// the same name is a new claim and gets fresh credentials (contract §12)
 	// instead of inheriting the earlier machine's.
 	bootstrapConsumerUIDSecretKey = "consumer-uid"
+	// bootstrapPurposeSecretKey is empty for a claim's credentials and credentialPurposeClean for a cleaning run's.
+	bootstrapPurposeSecretKey = "purpose"
+	// cleaningImageURLSecretKey holds --cleaning-image-url so the /boot handler needs no flag of its own.
+	cleaningImageURLSecretKey = "cleaning-image-url"
 )
+
+// credentialPurposeClean is the purpose of credentials minted for a cleaning run.
+const credentialPurposeClean = "clean"
 
 // bootstrapTokenSecretName returns the deterministic name of the per-host
 // Secret holding the callback credentials (D-006).
@@ -83,6 +92,8 @@ type bootstrapCredentials struct {
 	nonceExpiresAt time.Time
 	consumer       string
 	consumerUID    string
+	purpose        string
+	cleaningImage  string
 }
 
 // readBootstrapCredentials parses secret, which may be nil.
@@ -98,6 +109,8 @@ func readBootstrapCredentials(secret *corev1.Secret) bootstrapCredentials {
 		nonceExpiresAt: parseCredentialTime(secret.Data[bootNonceExpiresAtSecretKey]),
 		consumer:       string(secret.Data[bootstrapConsumerSecretKey]),
 		consumerUID:    string(secret.Data[bootstrapConsumerUIDSecretKey]),
+		purpose:        string(secret.Data[bootstrapPurposeSecretKey]),
+		cleaningImage:  string(secret.Data[cleaningImageURLSecretKey]),
 	}
 }
 
@@ -121,6 +134,13 @@ func (c bootstrapCredentials) writeTo(secret *corev1.Secret) {
 	put(bootNonceExpiresAtSecretKey, formatCredentialTime(c.nonceExpiresAt))
 	put(bootstrapConsumerSecretKey, c.consumer)
 	put(bootstrapConsumerUIDSecretKey, c.consumerUID)
+	put(bootstrapPurposeSecretKey, c.purpose)
+	put(cleaningImageURLSecretKey, c.cleaningImage)
+}
+
+// forCleaning reports whether c was minted for a cleaning run.
+func (c bootstrapCredentials) forCleaning() bool {
+	return c.purpose == credentialPurposeClean
 }
 
 // tokenValid reports whether c holds a bearer token that has an expiry and
@@ -218,10 +238,81 @@ func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infra
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, key.Name)
 	}
 	creds := readBootstrapCredentials(secret)
+	if creds.purpose != "" {
+		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("bootstrap-token Secret %s holds credentials for a %s run, not a claim", key.Name, creds.purpose)
+	}
 	if creds.consumer == "" || creds.consumer != consumer.Name {
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("bootstrap-token Secret %s is not bound to the host's current consumer", key.Name)
 	}
 	return creds, consumer, nil
+}
+
+// errNotCleaning is returned by boundCleaningCredentials for a host that is not
+// in a cleaning run.
+var errNotCleaning = errors.New("host is not in a cleaning run")
+
+// boundCleaningCredentials returns the cleaning credentials of an unclaimed Cleaning host; it and boundBootstrapCredentials never accept each other's.
+func boundCleaningCredentials(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (bootstrapCredentials, error) {
+	if host.Spec.ConsumerRef != nil || host.Status.State != infrav1.StateCleaning {
+		return bootstrapCredentials{}, fmt.Errorf("%w: %s/%s", errNotCleaning, host.Namespace, host.Name)
+	}
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{Namespace: host.Namespace, Name: bootstrapTokenSecretName(host.Name)}
+	if err := c.Get(ctx, key, secret); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return bootstrapCredentials{}, fmt.Errorf("get bootstrap-token Secret %s: %w: %w", key.Name, errBootstrapSecretUnreadable, err)
+		}
+		return bootstrapCredentials{}, fmt.Errorf("get bootstrap-token Secret %s: %w", key.Name, err)
+	}
+	if !bootstrapSecretOwnedBy(secret, host) {
+		return bootstrapCredentials{}, fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, key.Name)
+	}
+	creds := readBootstrapCredentials(secret)
+	if !creds.forCleaning() || creds.consumer != "" {
+		return bootstrapCredentials{}, fmt.Errorf("bootstrap-token Secret %s holds no cleaning credentials", key.Name)
+	}
+	return creds, nil
+}
+
+// writeCredentialsParams is the input of writeBootstrapCredentialsSecret.
+type writeCredentialsParams struct {
+	Client client.Client
+	Scheme *runtime.Scheme
+	Host   *infrav1.PhysicalHost
+	// Existing is the Secret Creds were computed from, or nil when there was none.
+	Existing *corev1.Secret
+	Creds    bootstrapCredentials
+}
+
+// writeBootstrapCredentialsSecret stores Creds in the host-owned Secret at Existing's resourceVersion, never adopting one the host does not own (D-031).
+func writeBootstrapCredentialsSecret(ctx context.Context, params writeCredentialsParams) error {
+	host := params.Host
+	if params.Existing != nil && !bootstrapSecretOwnedBy(params.Existing, host) {
+		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, params.Existing.Name)
+	}
+	secret := params.Existing
+	if secret == nil {
+		secret = &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      bootstrapTokenSecretName(host.Name),
+				Namespace: host.Namespace,
+			},
+			Type: corev1.SecretTypeOpaque,
+		}
+	}
+	if secret.Labels == nil {
+		secret.Labels = map[string]string{}
+	}
+	secret.Labels[inspectionResultLabelOwnedBy] = inspectionResultOwnerValue
+	secret.Labels[inspectionResultLabelHost] = host.Name
+	if err := controllerutil.SetControllerReference(host, secret, params.Scheme); err != nil {
+		return fmt.Errorf("set controller reference on bootstrap-token Secret: %w", err)
+	}
+	params.Creds.writeTo(secret)
+	if params.Existing == nil {
+		return params.Client.Create(ctx, secret)
+	}
+	return params.Client.Update(ctx, secret)
 }
 
 // verifyBootNonce reports whether nonce is the unexpired boot nonce creds

@@ -30,6 +30,21 @@ const (
 	StateReady = "Ready"
 	// StateError indicates the host is in an error state
 	StateError = "Error"
+	// StateCleaning indicates a released host is booting the inspector in clean
+	// mode to wipe its disks before it becomes Available again.
+	StateCleaning = "Cleaning"
+)
+
+// CleaningMode selects what happens to a host's disks when its claim is released.
+// +kubebuilder:validation:Enum=Disabled;Metadata
+type CleaningMode string
+
+const (
+	// CleaningModeDisabled leaves the disks as they are on release.
+	CleaningModeDisabled CleaningMode = "Disabled"
+	// CleaningModeMetadata wipes partition tables and filesystem signatures on
+	// every disk on release. It is not a secure erase.
+	CleaningModeMetadata CleaningMode = "Metadata"
 )
 
 // Inspection phases
@@ -165,6 +180,18 @@ type PhysicalHostSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
 	// +optional
 	NetworkDataSecretRef string `json:"networkDataSecretRef,omitempty"`
+
+	// CleaningMode selects what happens to the host's disks when its claim is
+	// released. Disabled (the default) leaves them as they are. Metadata takes
+	// the host through Cleaning before it is Available again: the inspector
+	// boots in clean mode and zeroes the first and last 8 MiB of every disk
+	// and partition, removing the partition table, its GPT backup and the
+	// COS_OEM partition with the previous join secret. It is not a secure
+	// erase. A change takes effect at the next release; setting Disabled while
+	// the host is Cleaning stops the run and makes the host Available as it is.
+	// +kubebuilder:default=Disabled
+	// +optional
+	CleaningMode CleaningMode `json:"cleaningMode,omitempty"`
 }
 
 // InspectionPhase represents the current phase of hardware inspection
@@ -363,6 +390,11 @@ type PhysicalHostStatus struct {
 	// +optional
 	DeployingTimestamp *metav1.Time `json:"deployingTimestamp,omitempty"`
 
+	// CleaningTimestamp is when the controller booted the host into the
+	// cleaning run. The cleaning timeout is measured from it.
+	// +optional
+	CleaningTimestamp *metav1.Time `json:"cleaningTimestamp,omitempty"`
+
 	// Bootstrap holds the per-host data the inspection image and target OS use
 	// to fetch bootstrap data (cloud-init / Ignition) from the manager, a
 	// read-only mirror of the hashes and lifetimes of the host's callback
@@ -497,6 +529,9 @@ const (
 	// holds the host (Spec.ConsumerRef is set). The condition returns to True
 	// with HostAvailableReason once the claim is released.
 	HostClaimedReason string = "HostClaimed"
+	// HostCleaningReason marks HostAvailable=False while a released host is
+	// being cleaned (Spec.CleaningMode Metadata).
+	HostCleaningReason string = "HostCleaning"
 	// InsecureCABundleConflictReason is set when InsecureSkipVerify=true is
 	// combined with CABundleSecretRef != "" — the two are mutually exclusive
 	// (a CA bundle and "skip verification" together is incoherent). The
@@ -549,6 +584,35 @@ const (
 	// NetworkDataInvalidReason marks NetworkDataReady=False when the Secret has
 	// no non-empty "networkData" key or the value exceeds the size cap.
 	NetworkDataInvalidReason string = "NetworkDataInvalid"
+)
+
+// Disk cleaning condition and reasons. The condition is present once a host
+// with Spec.CleaningMode Metadata has been released.
+const (
+	// HostCleanedCondition reports whether the disks of a released host have
+	// been wiped by its last cleaning run.
+	HostCleanedCondition = "HostCleaned"
+
+	// HostCleanedReason marks HostCleaned=True: the inspector reported the wipe.
+	HostCleanedReason string = "HostCleaned"
+	// CleaningPendingReason marks a released host that has not been booted for
+	// its cleaning run yet.
+	CleaningPendingReason string = "CleaningPending"
+	// CleaningInProgressReason marks a host booted into its cleaning run.
+	CleaningInProgressReason string = "CleaningInProgress"
+	// CleaningFailedReason marks a host whose inspector reported that the wipe
+	// failed. The host stays in Error until the retry-cleaning annotation or
+	// CleaningMode Disabled.
+	CleaningFailedReason string = "CleaningFailed"
+	// CleaningTimedOutReason marks a host whose cleaning run did not report in
+	// time. It is held like CleaningFailedReason.
+	CleaningTimedOutReason string = "CleaningTimedOut"
+	// CleaningNotConfiguredReason marks a host waiting to be cleaned while the
+	// manager has no --cleaning-image-url to boot it with.
+	CleaningNotConfiguredReason string = "CleaningNotConfigured"
+	// CleaningSkippedReason marks a host made Available without a wipe because
+	// CleaningMode was set to Disabled while it was waiting for one.
+	CleaningSkippedReason string = "CleaningSkipped"
 )
 
 // +kubebuilder:object:root=true

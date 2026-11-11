@@ -35,7 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -85,7 +85,7 @@ type PhysicalHostReconciler struct {
 	client.Client
 	Log                  logr.Logger
 	Scheme               *runtime.Scheme
-	Recorder             record.EventRecorder
+	Recorder             events.EventRecorder
 	RedfishClientFactory internalredfish.RedfishClientFactory
 	// APIReader reads the host's bootstrap-token Secret straight from the API
 	// server, to check the binding of the annotations the reconciler acts on
@@ -110,6 +110,10 @@ type PhysicalHostReconciler struct {
 	// means the default. Not a manager flag; it exists so the envtest specs
 	// can watch several retries without waiting a quarter of a minute each.
 	TransientRetryInterval time.Duration
+	// CleaningImageURL is the inspector base URL a released host boots to be wiped (--cleaning-image-url).
+	CleaningImageURL string
+	// CleaningTimeout bounds a cleaning run (--cleaning-timeout); zero means DefaultCleaningTimeout.
+	CleaningTimeout time.Duration
 }
 
 // NewPhysicalHostReconciler creates a new PhysicalHostReconciler
@@ -118,7 +122,7 @@ func NewPhysicalHostReconciler(
 	scheme *runtime.Scheme,
 	redfishFactory internalredfish.RedfishClientFactory,
 	logger logr.Logger,
-	recorder record.EventRecorder,
+	recorder events.EventRecorder,
 ) *PhysicalHostReconciler {
 	return &PhysicalHostReconciler{
 		Client:               c,
@@ -142,6 +146,8 @@ func NewPhysicalHostReconciler(
 // scope after PR-7. Eliminating it requires either dropping the watch
 // or replacing it with a label-selected partial cache (v0.5 follow-up).
 //+kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// create/update: the cleaning run writes its credentials into the host's own bootstrap-token Secret.
+//+kubebuilder:rbac:groups="",resources=secrets,verbs=create;update
 // ConfigMaps are only ever fetched by name (the inspection-result
 // ConfigMap referenced from the InspectionResultAnnotation) and
 // upserted/deleted by the inspection handler. The informer also needs to
@@ -152,6 +158,7 @@ func NewPhysicalHostReconciler(
 // note that omitted these is superseded by the inspection-handler design.
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // beskar7machines is read-only here: adoptProvisionedClaim looks up the
 // consumer named by ConsumerRef.Name to compare its ProviderID against this
 // host, and SetupWithManager watches Beskar7Machine so a newly-landed machine
@@ -276,6 +283,12 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	// be unreachable, and none of that should delay recognising a claim this
 	// host already fulfilled.
 	r.adoptProvisionedClaim(ctx, logger, physicalHost)
+
+	// Cleaning is entered, and its reports applied, before anything can make the host Available.
+	r.startCleaningOnRelease(logger, physicalHost)
+	r.applyRetryCleaningAnnotation(logger, physicalHost)
+	r.applyCleanFailedRequestAnnotation(ctx, logger, physicalHost)
+	r.applyCleanedRequestAnnotation(ctx, logger, physicalHost)
 
 	// The inspector's reports go first, before the BMC is tried. They need
 	// nothing from the BMC, and the run's Error they may write outlasts whatever
@@ -432,6 +445,16 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		setFalse(physicalHost, infrav1.HostAvailableCondition, infrav1.HostClaimedReason,
 			"Claimed by %s %s", physicalHost.Spec.ConsumerRef.Kind, physicalHost.Spec.ConsumerRef.Name)
 	} else {
+		switch {
+		case physicalHost.Status.State == infrav1.StateCleaning:
+			return r.reconcileCleaning(ctx, cleaningPass{Logger: logger, Host: physicalHost, Redfish: rfClient})
+		case cleaningHeld(physicalHost) && cleaningEnabled(physicalHost):
+			logger.Info("Holding the host in Error after a failed cleaning run", "errorMessage", physicalHost.Status.ErrorMessage)
+			return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
+		case cleaningHeld(physicalHost):
+			logger.Info("cleaningMode set to Disabled on a host held after a failed cleaning run; releasing it without a wipe")
+			releaseUncleaned(physicalHost)
+		}
 		if physicalHost.Status.State != infrav1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")
 			r.updateStatus(physicalHost, infrav1.StateAvailable, true, "")
@@ -495,7 +518,7 @@ func (r *PhysicalHostReconciler) transientRetryInterval() time.Duration {
 func (r *PhysicalHostReconciler) retryTransientRedfishFailure(logger logr.Logger, physicalHost *infrav1.PhysicalHost, err error) ctrl.Result {
 	retry := r.transientRetryInterval()
 	msg := fmt.Sprintf("BMC unreachable (%s); retrying every %s", internalredfish.DescribeTransientConnectionError(err), retry)
-	if !inProvisioningSubState(physicalHost) {
+	if !hostStateHeld(physicalHost) {
 		r.updateStatus(physicalHost, infrav1.StateError, false, msg)
 	}
 	setFalse(physicalHost, infrav1.RedfishConnectionReadyCondition, infrav1.BMCUnreachableReason, "%s", msg)
@@ -572,7 +595,7 @@ func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logg
 	physicalHost.Status.Ready = true
 	physicalHost.Status.ErrorMessage = ""
 	if r.Recorder != nil {
-		r.Recorder.Eventf(physicalHost, corev1.EventTypeNormal, "AdoptedProvisionedClaim",
+		r.Recorder.Eventf(physicalHost, nil, corev1.EventTypeNormal, "AdoptedProvisionedClaim", "Adopt",
 			"Adopted Ready: consumer %s already holds this host by ProviderID", key.Name)
 	}
 }
@@ -698,7 +721,7 @@ func (r *PhysicalHostReconciler) applyRunAnnotations(ctx context.Context, logger
 // back at InUse, where its machine boots the inspector again. A failed run's
 // message is also the reason its machine fails with.
 func (r *PhysicalHostReconciler) setConnectionError(physicalHost *infrav1.PhysicalHost, msg string) {
-	if inProvisioningSubState(physicalHost) {
+	if hostStateHeld(physicalHost) {
 		return
 	}
 	r.updateStatus(physicalHost, infrav1.StateError, false, msg)
@@ -928,23 +951,28 @@ func (r *PhysicalHostReconciler) mirrorBootstrapCredentials(ctx context.Context,
 		}
 	} else {
 		creds = readBootstrapCredentials(secret)
-		if creds.consumer == "" {
+		if creds.consumer == "" && !creds.forCleaning() {
 			return
 		}
 	}
 
-	if physicalHost.Status.Bootstrap == nil {
-		physicalHost.Status.Bootstrap = &infrav1.BootstrapStatus{}
+	setBootstrapMirror(physicalHost, creds)
+	if creds.consumer != "" && r.BootstrapURLBase != "" {
+		physicalHost.Status.Bootstrap.URL = bootstrapURL(r.BootstrapURLBase, physicalHost)
 	}
-	bs := physicalHost.Status.Bootstrap
+}
+
+// setBootstrapMirror copies the hashes and lifetimes of creds into Status.Bootstrap.
+func setBootstrapMirror(host *infrav1.PhysicalHost, creds bootstrapCredentials) {
+	if host.Status.Bootstrap == nil {
+		host.Status.Bootstrap = &infrav1.BootstrapStatus{}
+	}
+	bs := host.Status.Bootstrap
 	bs.TokenHash = mirroredHash(creds.token)
 	bs.IssuedAt = mirroredTime(creds.tokenIssuedAt)
 	bs.ExpiresAt = mirroredTime(creds.tokenExpiresAt)
 	bs.BootNonceHash = mirroredHash(creds.nonce)
 	bs.BootNonceExpiresAt = mirroredTime(creds.nonceExpiresAt)
-	if creds.consumer != "" && r.BootstrapURLBase != "" {
-		bs.URL = bootstrapURL(r.BootstrapURLBase, physicalHost)
-	}
 }
 
 // bootstrapURL is where the host fetches its bootstrap data from the callback
@@ -1214,8 +1242,8 @@ func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger log
 	if physicalHost.Spec.ConsumerRef != nil {
 		logger.Info("Warning: Deleting PhysicalHost that is still claimed", "consumer", physicalHost.Spec.ConsumerRef.Name)
 		if r.Recorder != nil {
-			r.Recorder.Event(physicalHost, corev1.EventTypeWarning, "DeletingClaimedHost",
-				fmt.Sprintf("Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name))
+			r.Recorder.Eventf(physicalHost, nil, corev1.EventTypeWarning, "DeletingClaimedHost", "Delete",
+				"Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name)
 		}
 	}
 
@@ -1292,7 +1320,7 @@ func (r *PhysicalHostReconciler) validateAndDefault() error {
 	if r.BootstrapURLBase == "" {
 		return fmt.Errorf("PhysicalHostReconciler: BootstrapURLBase is empty; set --bootstrap-url-base")
 	}
-	return nil
+	return r.validateCleaningConfig()
 }
 
 // SetupWithManager sets up the controller with the Manager.

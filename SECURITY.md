@@ -153,10 +153,15 @@ Context that may help when assessing a finding:
 Please do not report these as vulnerabilities — but do tell us if you can escalate
 one beyond what is described:
 
-- **No disk sanitization on host release.** Releasing a `PhysicalHost` clears the
+- **No disk sanitization on host release by default.** Releasing a `PhysicalHost` clears the
   boot override and powers the host off; it does not wipe the disk. The previous
   tenant's OS — including the injected bootstrap config, which may carry a cluster
   join secret at `/oem/99_beskar7.yaml` — remains until the host is re-provisioned.
-  **Wipe hosts yourself before moving them between trust boundaries.**
+  Set `spec.cleaningMode: Metadata` on hosts that move between trust boundaries:
+  the inspector then wipes the partition tables, their GPT backups and `COS_OEM`
+  before the host is `Available` again, and a failed wipe holds the host in `Error`
+  ([docs/physicalhost.md](docs/physicalhost.md#disk-cleaning-on-release)). That is
+  **not a secure erase**: the data blocks stay on the disk. Wipe hosts yourself
+  where that matters.
 - **`insecureSkipVerify`** on `redfishConnection` disables BMC TLS verification.
   It is opt-in, mutually exclusive with `caBundleSecretRef`, and intended for labs.

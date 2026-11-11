@@ -34,7 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -166,7 +166,7 @@ var _ = Describe("PhysicalHost reconcile when the BMC is unreachable", func() {
 			Client:                 k8sClient,
 			Scheme:                 k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("ph-transient-test"),
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -375,7 +375,7 @@ var _ = Describe("PhysicalHost transient-failure retries under a running manager
 			Log:    ctrl.Log.WithName("ph-transient-mgr-test"),
 			// A fake recorder, not mgr.GetEventRecorderFor: that one is deprecated,
 			// and nothing here asserts on events.
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			BootstrapURLBase:       "https://example.com:8082",
 			TransientRetryInterval: retryInterval,

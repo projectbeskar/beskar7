@@ -164,6 +164,17 @@ watchNamespaces: []
 #   bmcProxy: http://proxy.example.com:3128
 bmcProxy: ""
 
+# Disk cleaning of released hosts (PhysicalHost spec.cleaningMode: Metadata).
+cleaning:
+  # HTTPS base URL serving the inspector vmlinuz and initrd.img a released host
+  # boots in clean mode, rendered as --cleaning-image-url. Usually the same
+  # inspector your Beskar7Machines boot. Empty leaves hosts that opted in
+  # Cleaning with HostCleaned=False (CleaningNotConfigured).
+  imageURL: ""
+  # How long a cleaning run may take from its boot to its report, rendered as
+  # --cleaning-timeout. Empty uses the manager default (20m); must stay below 30m.
+  timeout: ""
+
 # Network policies
 networkPolicy:
   enabled: false

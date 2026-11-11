@@ -177,6 +177,9 @@ type managerConfig struct {
 	inspectionTimeout       time.Duration
 	deploymentTimeout       time.Duration
 	maxConcurrentReconciles int
+
+	cleaningImageURL string
+	cleaningTimeout  time.Duration
 }
 
 // validate rejects flag combinations that contradict each other. It runs

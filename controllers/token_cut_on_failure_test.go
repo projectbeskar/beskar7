@@ -29,7 +29,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -258,7 +258,7 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 			hostReconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("failed-run-token-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			host := settlePhysicalHost(hostReconciler, hostKey)
@@ -297,7 +297,7 @@ var _ = Describe("A failed run's callback token is cut like a Ready one (D-036)"
 			hostReconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("failed-run-token-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			Expect(settlePhysicalHost(hostReconciler, hostKey).Status.State).To(Equal(infrav1.StateReady))

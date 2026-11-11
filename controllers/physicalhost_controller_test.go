@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -110,7 +110,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return mockRfClient, nil
 				},
@@ -483,7 +483,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-failed"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return nil, fmt.Errorf("connection timeout")
 				},
@@ -535,7 +535,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-tls-conflict"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					factoryCalled = true
 					return mockRfClient, nil
@@ -592,7 +592,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-with-bundle"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, caBundle []byte) (internalredfish.Client, error) {
 					// Capture for assertion. The factory is invoked once per reconcile;
 					// the latest call wins, which is what we want.
@@ -625,7 +625,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-missing-bundle"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(_ context.Context, _, _, _ string, _ bool, _ []byte) (internalredfish.Client, error) {
 					factoryCalled = true
 					return mockRfClient, nil
@@ -791,7 +791,7 @@ var _ = Describe("PhysicalHost Controller", func() {
 				Client:   k8sClient,
 				Scheme:   k8sClient.Scheme(),
 				Log:      ctrl.Log.WithName("physicalhost-test-pause"),
-				Recorder: record.NewFakeRecorder(100),
+				Recorder: events.NewFakeRecorder(100),
 				RedfishClientFactory: func(ctx context.Context, address, username, password string, insecure bool, caBundle []byte) (internalredfish.Client, error) {
 					return mockRfClient, nil
 				},

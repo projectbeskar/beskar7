@@ -121,6 +121,7 @@ func main() {
 		caBundleFile       string
 		connectTimeout     time.Duration
 		expectNetworkData  bool
+		mode               string
 	)
 
 	flag.StringVar(&namespace, "namespace", "", "Namespace containing the PhysicalHost (required).")
@@ -141,6 +142,9 @@ func main() {
 		"Total HTTP transaction budget for the inspection POST.")
 	flag.BoolVar(&expectNetworkData, "expect-network-data", false,
 		"Fail unless the host serves network data (contract v4.3). Without it, a 404 is fine.")
+	flag.StringVar(&mode, "mode", modeProvision,
+		"What the simulated inspector boots for: \"provision\" (inspect, then report provisioned) "+
+			"or \"clean\" (contract v4.4: report the disks of a Cleaning host wiped).")
 	flag.Parse()
 
 	if namespace == "" {
@@ -151,6 +155,9 @@ func main() {
 	}
 	if caBundleFile != "" && insecureSkipVerify {
 		log.Fatal("--ca-bundle-file and --insecure-skip-verify=true are mutually exclusive")
+	}
+	if mode != modeProvision && mode != modeClean {
+		log.Fatalf("--mode must be %q or %q", modeProvision, modeClean)
 	}
 
 	// Build the Kubernetes REST config.
@@ -169,6 +176,30 @@ func main() {
 	}
 
 	ctx := context.Background()
+
+	if mode == modeClean {
+		// Wait for Cleaning so the token read is the cleaning run's, not the claim's.
+		if err := waitForState(ctx, dynClient, namespace, hostName, waitForBootstrap, cleaningState); err != nil {
+			log.Fatalf("waiting for the host to be Cleaning: %v", err)
+		}
+		bootstrapURL, token, err := waitAndVerifyToken(ctx, dynClient, typedClient, namespace, hostName, waitForBootstrap)
+		if err != nil {
+			log.Fatalf("cleaning token verification failed: %v", err)
+		}
+		httpClient, err := buildHTTPClient(insecureSkipVerify, caBundleFile, connectTimeout)
+		if err != nil {
+			log.Fatalf("build HTTP client: %v", err)
+		}
+		cleanedURL, err := deriveCallbackURL(bootstrapURL, cleanedSeg)
+		if err != nil {
+			log.Fatalf("derive cleaned URL: %v", err)
+		}
+		if err := postCallback(ctx, httpClient, callbackPost{URL: cleanedURL, Token: token, Body: cleanedBody, Name: "cleaned"}); err != nil {
+			log.Fatalf("cleaned POST failed: %v", err)
+		}
+		log.Printf("mock-inspector: cleaned callback accepted for host %s/%s", namespace, hostName)
+		return
+	}
 
 	// Step 3+4: poll for Bootstrap.{URL,TokenHash} and verify the token.
 	bootstrapURL, token, err := waitAndVerifyToken(ctx, dynClient, typedClient, namespace, hostName, waitForBootstrap)
@@ -240,6 +271,20 @@ const (
 	inspectionSeg  = "/api/v1/inspection/"
 	provisionedSeg = "/api/v1/provisioned/"
 	networkDataSeg = "/api/v1/network-data/"
+	cleanedSeg     = "/api/v1/cleaned/"
+)
+
+// Simulated boot modes and the state the clean mode waits for.
+const (
+	modeProvision = "provision"
+	modeClean     = "clean"
+	cleaningState = "Cleaning"
+)
+
+// Advisory bodies of the completion callbacks.
+const (
+	provisionedBody = `{"status":"provisioned"}`
+	cleanedBody     = `{"status":"cleaned"}`
 )
 
 // deriveCallbackURL swaps the first bootstrapSeg in bootstrapURL for seg.
@@ -325,29 +370,43 @@ func waitForState(
 // is the fixed advisory JSON the controller treats as advisory-only; the
 // authenticated POST itself is the signal. Returns an error on a non-2xx status.
 func postProvisioned(ctx context.Context, httpClient *http.Client, url, token string) error {
-	body := []byte(`{"status":"provisioned"}`)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	return postCallback(ctx, httpClient, callbackPost{URL: url, Token: token, Body: provisionedBody, Name: "provisioned"})
+}
+
+// callbackPost is one bearer-authenticated completion callback.
+type callbackPost struct {
+	URL   string
+	Token string
+	Body  string
+	// Name labels the callback in logs and errors.
+	Name string
+}
+
+// postCallback POSTs a completion callback and returns an error on a non-2xx status.
+func postCallback(ctx context.Context, httpClient *http.Client, cb callbackPost) error {
+	body := []byte(cb.Body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cb.URL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
 	req.ContentLength = int64(len(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", "Bearer "+cb.Token)
 
-	log.Printf("POSTing provisioned callback to %s (tokenPresent: true)", url)
+	log.Printf("POSTing %s callback to %s (tokenPresent: true)", cb.Name, cb.URL)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("POST %s: %w", url, err)
+		return fmt.Errorf("POST %s: %w", cb.URL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("provisioned POST returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return fmt.Errorf("%s POST returned %d: %s", cb.Name, resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
-	log.Printf("provisioned POST succeeded: status=%d", resp.StatusCode)
+	log.Printf("%s POST succeeded: status=%d", cb.Name, resp.StatusCode)
 	return nil
 }
 

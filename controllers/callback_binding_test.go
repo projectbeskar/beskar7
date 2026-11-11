@@ -32,7 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -350,7 +350,7 @@ var _ = Describe("Callback signals are bound to the host's per-host token (SEC-1
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("callback-binding-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 	})
@@ -621,7 +621,7 @@ var _ = Describe("Callback signals are bound to the host's per-host token (SEC-1
 			reconciler := &PhysicalHostReconciler{
 				Client: flaky, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("callback-binding-unreadable"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 
@@ -659,7 +659,7 @@ var _ = Describe("Callback signals are bound to the host's per-host token (SEC-1
 			reconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  logr.New(capture.GetSink()),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})

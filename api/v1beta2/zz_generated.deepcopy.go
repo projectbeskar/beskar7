@@ -759,6 +759,10 @@ func (in *PhysicalHostStatus) DeepCopyInto(out *PhysicalHostStatus) {
 		in, out := &in.DeployingTimestamp, &out.DeployingTimestamp
 		*out = (*in).DeepCopy()
 	}
+	if in.CleaningTimestamp != nil {
+		in, out := &in.CleaningTimestamp, &out.CleaningTimestamp
+		*out = (*in).DeepCopy()
+	}
 	if in.Bootstrap != nil {
 		in, out := &in.Bootstrap, &out.Bootstrap
 		*out = new(BootstrapStatus)

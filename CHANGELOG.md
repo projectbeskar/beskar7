@@ -8,6 +8,23 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Added
 
+- **Opt-in disk wipe when a `PhysicalHost` is released (contract v4.4, #306).** New optional field
+  `PhysicalHost.spec.cleaningMode`: `Disabled` (default, unchanged behaviour) or `Metadata`. A host released with
+  `Metadata` goes to the new `Cleaning` state instead of `Available`: the PhysicalHost controller mints credentials for
+  the run alone, sets a one-time PXE boot and powers the host on, and `/boot` renders the inspector from the new
+  `--cleaning-image-url` with `beskar7.mode=clean` and none of a claim's parameters. The inspector wipes every disk's
+  metadata (the first and last 8 MiB of every disk and partition, so the GPT backup goes too) and reports through the new
+  `POST /api/v1/cleaned/{namespace}/{hostName}` or `POST /api/v1/clean-failed/{namespace}/{hostName}`, which accept the
+  cleaning token only; the cleaning token is accepted nowhere else, so a cleaning boot never reaches bootstrap data. On
+  `/cleaned` the host is powered off and becomes `Available`. A failed or timed-out run (`--cleaning-timeout`, default
+  `20m`) holds the host in `Error` until the operator sets `infrastructure.cluster.x-k8s.io/retry-cleaning` or
+  `cleaningMode: Disabled`. New `HostCleaned` condition, `status.cleaningTimestamp`, and metrics
+  `beskar7_controller_physicalhost_cleaning_total` / `_duration_seconds`. Chart values `cleaning.imageURL` and
+  `cleaning.timeout`. Not a secure erase. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean`
+  simulates one. RBAC: the PhysicalHost controller may now create and update Secrets (its own host's
+  bootstrap-token Secret, which the manager could already write) and emits events through `events.k8s.io`. See
+  [`docs/physicalhost.md`](docs/physicalhost.md#disk-cleaning-on-release).
+
 - **Per-host network data for the installed OS (contract v4.3, #302).** A `PhysicalHost` can name a Secret in
   `spec.networkDataSecretRef`. Its `networkData` key (cloud-init `network-config` v2 by convention) is served
   verbatim to the host's inspector by the new `GET /api/v1/network-data/{namespace}/{hostName}`, with the same
