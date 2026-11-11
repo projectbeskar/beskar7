@@ -8,6 +8,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Added
 
+- **Optional consumer check on the network data Secret.** The Secret
+  `PhysicalHost.spec.networkDataSecretRef` names may carry
+  `beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer: <uid>`. While the host is claimed, the value
+  must equal `spec.consumerRef.uid`, otherwise `NetworkDataReady=False (NetworkDataStale)` and the endpoint answers
+  `409`. This keeps a host claimed again right after a release from booting with the previous claim's network
+  while the Secret is not rendered again yet: the new machine waits with `WaitingForNetworkData` instead. An
+  unclaimed host does not check it, so it stays claimable. Secrets without the annotation behave as before. No
+  CRD, RBAC or wire change, and the inspector needs no change.
+
 - **Per-host network data for the installed OS (contract v4.3, #302).** A `PhysicalHost` can name a Secret in
   `spec.networkDataSecretRef`. Its `networkData` key (cloud-init `network-config` v2 by convention) is served
   verbatim to the host's inspector by the new `GET /api/v1/network-data/{namespace}/{hostName}`, with the same

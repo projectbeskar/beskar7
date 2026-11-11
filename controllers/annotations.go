@@ -77,6 +77,15 @@ const (
 // served to whoever holds the host's token.
 const NetworkDataHostAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/network-data-host"
 
+// NetworkDataConsumerAnnotation is optional and lives on the same Secret as
+// NetworkDataHostAnnotation. When set, its value must equal the UID in the
+// host's spec.consumerRef, or the Secret is not served while the host is
+// claimed. It binds the Secret to one claim, not only to the host, so a host
+// reclaimed before its Secret is rendered again never boots with the network
+// of the previous claim. Unclaimed hosts do not consult it, and a Secret
+// without it behaves as before.
+const NetworkDataConsumerAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer"
+
 // BootstrapURLAnnotation is retired. Releases before it signalled the per-host
 // bootstrap URL through it: the Beskar7Machine controller computed the URL and
 // annotated the PhysicalHost with it, and the PhysicalHost controller copied the
