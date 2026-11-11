@@ -172,6 +172,15 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 		t.Fatal("GET /bootstrap did not serve the bootstrap data Secret's value")
 	}
 
+	// /network-data (v4.3): reads the Secret spec.networkDataSecretRef names.
+	status, body = callbackRequest(t, c, http.MethodGet, fx.route(base, "network-data"), fx.token, "")
+	if status != http.StatusOK {
+		t.Fatalf("GET /network-data: status %d, want 200", status)
+	}
+	if string(body) != fx.networkData {
+		t.Fatal("GET /network-data did not serve the network data Secret's value")
+	}
+
 	// /provisioned and /provision-failed: annotate the host.
 	if status, _ := callbackRequest(t, c, http.MethodPost, fx.route(base, "provisioned"), fx.token, ""); status != http.StatusAccepted {
 		t.Fatalf("POST /provisioned: status %d, want 202", status)

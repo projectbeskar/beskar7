@@ -18,7 +18,6 @@ package controllers
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
@@ -27,7 +26,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
 // bootstrapDataSecretKey is the canonical key under which CAPI bootstrap
@@ -75,50 +73,17 @@ type BootstrapHandler struct {
 // the URL path. Authentication has already been validated by the bearer
 // middleware before this method runs.
 func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	namespace := r.PathValue("namespace")
-	hostName := r.PathValue("hostName")
-	log := h.Log.WithValues("method", r.Method, "namespace", namespace, "host", hostName, "remote", r.RemoteAddr)
-
-	// Defensive: the bearer middleware's verifier already validated non-empty
-	// path values before this handler runs. Re-checking here keeps this method
-	// safe to call directly in tests against an httptest.Server bound to the
-	// same path pattern.
-	if namespace == "" || hostName == "" {
-		log.V(1).Info("bootstrap GET: missing namespace or hostName in request path")
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
+	log := h.Log.WithValues("method", r.Method, "namespace", r.PathValue("namespace"), "host", r.PathValue("hostName"), "remote", r.RemoteAddr)
 	ctx := r.Context()
 
-	// 1. Get PhysicalHost. The bearer verifier already did the same Get for
-	// auth purposes, but we re-Get here to read Spec.ConsumerRef from the same
-	// resourceVersion as the rest of the chain walk.
-	ph := &infrav1.PhysicalHost{}
-	if err := h.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
-		log.V(1).Info("bootstrap GET: PhysicalHost lookup failed", "err", err.Error())
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-
-	// 2. Walk to the Beskar7Machine via Spec.ConsumerRef, and only to the one
-	// the host's credentials were minted for (SEC-12, D-029). The lookup is
-	// pinned to the host's own namespace, so a host in namespace A can never
-	// serve namespace B's bootstrap data, and the verifier's binding check is
-	// repeated against the host as read here: a ConsumerRef re-pointed after
-	// the verifier ran still cannot reach another machine's data.
-	creds, consumerKey, err := boundBootstrapCredentials(ctx, h.Client, ph)
+	// 1-2. The host, the Beskar7Machine its credentials are bound to, and the
+	// token checked again against them (boundCallbackHost). A host in
+	// namespace A can never serve namespace B's bootstrap data, and a
+	// ConsumerRef re-pointed after the verifier ran cannot reach another
+	// machine's data.
+	_, consumerKey, err := boundCallbackHost(h.Client, r)
 	if err != nil {
-		log.V(1).Info("bootstrap GET: PhysicalHost has no Beskar7Machine consumer bound to its credentials", "err", err.Error())
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	// The verifier checked the token against its own read of the Secret. A
-	// release and re-mint landing between that read and this one would pair
-	// the old token with the new claim, so the token is checked again against
-	// the credentials this walk is about to serve from.
-	if token, ok := auth.BearerToken(r); !ok || !creds.tokenValid(time.Now()) || !auth.Verify(token, auth.Hash(creds.token)) {
-		log.V(1).Info("bootstrap GET: bearer token does not match the host's current credentials")
+		log.V(1).Info("bootstrap GET: refused", "err", err.Error())
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -181,11 +146,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// HTTP-cache-aware clients do not retain bootstrap data on disk. We do
 	// not log the bytes nor any digest of them — the manager logs say only
 	// that a bootstrap fetch happened, not what it returned.
-	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Pragma", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	if _, err := w.Write(data); err != nil {
+	if err := writeNoStore(w, data); err != nil {
 		// Client disconnect mid-write is the typical case. V(1) — not actionable
 		// at INFO. Do not include any bytes-related detail in the log.
 		log.V(1).Info("bootstrap GET: response write failed", "err", err.Error())

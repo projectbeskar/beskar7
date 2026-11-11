@@ -8,6 +8,23 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Added
 
+- **Per-host network data for the installed OS (contract v4.3, #302).** A `PhysicalHost` can name a Secret in
+  `spec.networkDataSecretRef`. Its `networkData` key (cloud-init `network-config` v2 by convention) is served
+  verbatim to the host's inspector by the new `GET /api/v1/network-data/{namespace}/{hostName}`, with the same
+  token rule as `/bootstrap`, and the inspector writes it to `/oem/beskar7/network-data` next to `provider-id`. The
+  Secret must opt in with `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`, and the
+  endpoint checks it on a live read, never from the cache. A refused, missing or invalid Secret sets
+  `NetworkDataReady=False`. No `Beskar7Machine` claims such a host, so a usable host is taken instead, and the
+  machine's `PhysicalHostAssociated` message says how many hosts were skipped. A machine already holding the host
+  does not boot it: it waits with `InfrastructureReady=False (WaitingForNetworkData)` until the Secret is fixed, so
+  nothing is wiped. If the Secret breaks after the boot, the endpoint answers `409` and the inspector fails the
+  deploy, so the host is never installed without its network. The endpoint answers `404` only when the host has no
+  ref, `401` when the caller's claim or token no longer resolves, and `500` when a read fails, which the inspector
+  retries. Hosts without the field behave as before. CRD change (one optional field), no RBAC change. Needs an
+  inspector that implements v4.3. `cmd/mock-inspector` calls the endpoint, and the smoke test fails unless
+  `smoke-host-01` is served its network data. See
+  [`docs/inspector-contract.md`](docs/inspector-contract.md#46-get-apiv1network-datanamespacehostname-per-host-network-data).
+
 - **Metrics for resolving `spec.targetImageDigestURL` (D-038).** Operators can now alert on a checksum file
   that does not resolve, and on a checksum server that answers slowly, without reading every machine's
   condition. `beskar7_controller_target_image_digest_resolutions_total{outcome,namespace}` counts attempts, and

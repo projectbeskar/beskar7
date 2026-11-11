@@ -120,6 +120,7 @@ func main() {
 		insecureSkipVerify bool
 		caBundleFile       string
 		connectTimeout     time.Duration
+		expectNetworkData  bool
 	)
 
 	flag.StringVar(&namespace, "namespace", "", "Namespace containing the PhysicalHost (required).")
@@ -138,6 +139,8 @@ func main() {
 			"Mutually exclusive with --insecure-skip-verify=true.")
 	flag.DurationVar(&connectTimeout, "connect-timeout", 30*time.Second,
 		"Total HTTP transaction budget for the inspection POST.")
+	flag.BoolVar(&expectNetworkData, "expect-network-data", false,
+		"Fail unless the host serves network data (contract v4.3). Without it, a 404 is fine.")
 	flag.Parse()
 
 	if namespace == "" {
@@ -195,6 +198,21 @@ func main() {
 
 	log.Printf("mock-inspector: inspection accepted for host %s/%s", namespace, hostName)
 
+	// Step 7b (contract v4.3): fetch the network data, as a real inspector does
+	// before the disk write. A host without it answers 404.
+	networkDataURL, err := deriveNetworkDataURL(bootstrapURL)
+	if err != nil {
+		log.Fatalf("derive network-data URL: %v", err)
+	}
+	size, err := fetchNetworkData(ctx, httpClient, networkDataURL, token)
+	if err != nil {
+		log.Fatalf("network-data GET failed: %v", err)
+	}
+	if expectNetworkData && size == 0 {
+		log.Fatalf("network-data GET: host %s/%s served no network data, but --expect-network-data is set", namespace, hostName)
+	}
+	log.Printf("mock-inspector: network data for host %s/%s: %d bytes", namespace, hostName, size)
+
 	// Step 8 (contract v4 / D-015): after inspection the controller advances the
 	// host to StateDeploying and only sets StateReady/ProviderID once it receives
 	// the provisioning-complete callback. The real inspector POSTs /provisioned
@@ -216,18 +234,60 @@ func main() {
 	log.Printf("mock-inspector: provisioned callback accepted for host %s/%s", namespace, hostName)
 }
 
-// deriveProvisionedURL swaps "/api/v1/bootstrap/" for "/api/v1/provisioned/" in
-// the bootstrap URL (contract v4). Returns an error if the bootstrap path
-// segment is absent.
-func deriveProvisionedURL(bootstrapURL string) (string, error) {
-	const (
-		bootstrapSeg   = "/api/v1/bootstrap/"
-		provisionedSeg = "/api/v1/provisioned/"
-	)
+// Callback path segments, swapped into the bootstrap URL to reach the others.
+const (
+	bootstrapSeg   = "/api/v1/bootstrap/"
+	inspectionSeg  = "/api/v1/inspection/"
+	provisionedSeg = "/api/v1/provisioned/"
+	networkDataSeg = "/api/v1/network-data/"
+)
+
+// deriveCallbackURL swaps the first bootstrapSeg in bootstrapURL for seg.
+func deriveCallbackURL(bootstrapURL, seg string) (string, error) {
 	if !strings.Contains(bootstrapURL, bootstrapSeg) {
-		return "", fmt.Errorf("bootstrap URL %q does not contain %q; cannot derive provisioned URL", bootstrapURL, bootstrapSeg)
+		return "", fmt.Errorf("bootstrap URL %q does not contain %q; cannot derive %s URL", bootstrapURL, bootstrapSeg, seg)
 	}
-	return strings.Replace(bootstrapURL, bootstrapSeg, provisionedSeg, 1), nil
+	return strings.Replace(bootstrapURL, bootstrapSeg, seg, 1), nil
+}
+
+// deriveProvisionedURL returns the provisioned callback URL (contract v4).
+func deriveProvisionedURL(bootstrapURL string) (string, error) {
+	return deriveCallbackURL(bootstrapURL, provisionedSeg)
+}
+
+// deriveNetworkDataURL returns the network data URL (contract v4.3).
+func deriveNetworkDataURL(bootstrapURL string) (string, error) {
+	return deriveCallbackURL(bootstrapURL, networkDataSeg)
+}
+
+// fetchNetworkData GETs the host's network data (contract v4.3 §4.6) and
+// returns its size. 404 means the host has none and returns 0; any other
+// non-200 is an error, as it fails the deploy on a real inspector.
+func fetchNetworkData(ctx context.Context, httpClient *http.Client, url, token string) (int, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return 0, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("network-data GET returned %d", resp.StatusCode)
+	}
+	// The bytes are read only to be counted, never logged.
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("read network-data body: %w", err)
+	}
+	return int(n), nil
 }
 
 // waitForState polls PhysicalHost.Status.State until it equals one of wantStates
@@ -440,17 +500,9 @@ func hashEqual(a, b string) bool {
 	return a == b
 }
 
-// deriveInspectionURL swaps "/api/v1/bootstrap/" for "/api/v1/inspection/" in
-// the bootstrap URL. Returns an error if the bootstrap path segment is absent.
+// deriveInspectionURL returns the inspection report URL.
 func deriveInspectionURL(bootstrapURL string) (string, error) {
-	const (
-		bootstrapSeg  = "/api/v1/bootstrap/"
-		inspectionSeg = "/api/v1/inspection/"
-	)
-	if !strings.Contains(bootstrapURL, bootstrapSeg) {
-		return "", fmt.Errorf("bootstrap URL %q does not contain %q; cannot derive inspection URL", bootstrapURL, bootstrapSeg)
-	}
-	return strings.Replace(bootstrapURL, bootstrapSeg, inspectionSeg, 1), nil
+	return deriveCallbackURL(bootstrapURL, inspectionSeg)
 }
 
 // buildPayload returns the inspection report to POST. All field values are

@@ -20,7 +20,8 @@ metadata:
   name: capb7-callback-role
 rules:
 # The bearer verifier and /boot read <host>-bootstrap-token; /bootstrap reads
-# the Secret Machine.spec.bootstrap.dataSecretName names. All by name, live from
+# the Secret Machine.spec.bootstrap.dataSecretName names; /network-data reads the
+# Secret PhysicalHost.spec.networkDataSecretRef names. All by name, live from
 # the API server: no list, no watch.
 - apiGroups:
   - ""

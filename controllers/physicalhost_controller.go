@@ -295,6 +295,9 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 	r.applyProvisionFailedRequestAnnotation(ctx, logger, physicalHost)
 	r.applyProvisionedRequestAnnotation(ctx, logger, physicalHost)
 
+	// Needs nothing from the BMC either, so a BMC failure below never hides it.
+	r.reconcileNetworkData(ctx, logger, physicalHost)
+
 	// The credentials, and whether they may go to this host's address at all
 	// (D-030): nothing below may build a Redfish client without them.
 	access, err := resolveBMCAccess(ctx, r.Client, physicalHost)
@@ -1335,7 +1338,8 @@ func (r *PhysicalHostReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // SecretToPhysicalHosts maps Secret changes to PhysicalHost reconcile requests:
-// a host's BMC credentials Secret and its bootstrap-token Secret. The latter
+// a host's BMC credentials Secret, its network data Secret and its
+// bootstrap-token Secret. The latter
 // carries a controller reference to its host, but Owns would register a second
 // Secret watch; one mapper covers both. The watch has no predicate, so an edit
 // to the credentials Secret's annotations alone (D-030) reconciles every host
@@ -1357,10 +1361,12 @@ func (r *PhysicalHostReconciler) SecretToPhysicalHosts(ctx context.Context, obj 
 
 	var requests []reconcile.Request
 	for _, ph := range physicalHostList.Items {
-		// The BMC credentials a host connects with, and its bootstrap-token
-		// Secret, which mirrorBootstrapCredentials copies into its status.
+		// The BMC credentials a host connects with, its bootstrap-token
+		// Secret, which mirrorBootstrapCredentials copies into its status,
+		// and its network data Secret, which NetworkDataReady describes.
 		if ph.Spec.RedfishConnection.CredentialsSecretRef == secret.Name ||
-			bootstrapTokenSecretName(ph.Name) == secret.Name {
+			bootstrapTokenSecretName(ph.Name) == secret.Name ||
+			ph.Spec.NetworkDataSecretRef == secret.Name {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Namespace: ph.Namespace,

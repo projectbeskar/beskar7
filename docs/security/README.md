@@ -79,14 +79,15 @@ Beskar7 does not log usernames or passwords at any verbosity level, nor whether 
 
 ### 3. Per-host bearer-token authentication on the callback endpoint
 
-The manager runs an HTTPS server on `:8082` that hosts four host-scoped endpoints carrying the inspector's bearer token. It speaks HTTP/1.1 only ([control 11](#11-http11-only-on-the-callback-webhook-and-metrics-servers)):
+The manager runs an HTTPS server on `:8082` that hosts five host-scoped endpoints carrying the inspector's bearer token. It speaks HTTP/1.1 only ([control 11](#11-http11-only-on-the-callback-webhook-and-metrics-servers)):
 
 - `POST /api/v1/inspection/{namespace}/{hostName}` — receives inspection reports.
 - `GET  /api/v1/bootstrap/{namespace}/{hostName}` — serves bootstrap data Secret bytes.
+- `GET  /api/v1/network-data/{namespace}/{hostName}`: serves the network data Secret bytes of a claimed host (contract v4.3). The Secret must name the host in its `beskar7.infrastructure.cluster.x-k8s.io/network-data-host` annotation, so the right to patch a PhysicalHost does not let anyone have another Secret in the namespace served.
 - `POST /api/v1/provisioned/{namespace}/{hostName}` — the inspector's report that the OS image is written (D-015).
 - `POST /api/v1/provision-failed/{namespace}/{hostName}` — the inspector's report that deployment failed.
 
-All four are gated by the same `auth.RequireBearer` middleware. The same server also answers `GET /api/v1/boot/{namespace}/{hostName}/{nonce}`, which is gated by the host's boot nonce instead, because the iPXE client that fetches it cannot send a header (see [iPXE setup → Step 1](../ipxe-setup.md#step-1-controller-mints-secrets-and-pxe-boots-the-host)), and an unauthenticated `/healthz`. The verifier:
+All five are gated by the same `auth.RequireBearer` middleware. The same server also answers `GET /api/v1/boot/{namespace}/{hostName}/{nonce}`, which is gated by the host's boot nonce instead, because the iPXE client that fetches it cannot send a header (see [iPXE setup → Step 1](../ipxe-setup.md#step-1-controller-mints-secrets-and-pxe-boots-the-host)), and an unauthenticated `/healthz`. The verifier:
 
 1. Resolves `{namespace,hostName}` from the URL path.
 2. Loads the targeted `PhysicalHost` and its per-host Secret `<host>-bootstrap-token` (decision D-029). `PhysicalHost.Status.Bootstrap` is a read-only mirror of that Secret and is never consulted, so the right to patch PhysicalHosts does not let anyone mint a credential.

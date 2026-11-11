@@ -146,6 +146,25 @@ type PhysicalHostSpec struct {
 	// ConsumerRef is a reference to the Beskar7Machine that is using this host
 	// +optional
 	ConsumerRef *corev1.ObjectReference `json:"consumerRef,omitempty"`
+
+	// NetworkDataSecretRef is the name of a Secret in the PhysicalHost's
+	// namespace holding this host's network configuration for the installed
+	// OS in its "networkData" key. The bytes are opaque: the controller serves
+	// them verbatim, never parsed, to the inspector of a claimed host (contract
+	// v4.3 §4.6), which writes them to /oem/beskar7/network-data. The format is
+	// agreed between the Secret's author and the OS image; cloud-init
+	// network-config v2 by convention. The Secret must carry the
+	// beskar7.infrastructure.cluster.x-k8s.io/network-data-host annotation
+	// naming this PhysicalHost; otherwise it is refused and NetworkDataReady
+	// is False with NetworkDataNotAuthorized. While NetworkDataReady is not
+	// True for the current generation, the host is not claimed, and a host
+	// already claimed is not booted.
+	//
+	// When unset, no network data is delivered and behaviour is unchanged.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	NetworkDataSecretRef string `json:"networkDataSecretRef,omitempty"`
 }
 
 // InspectionPhase represents the current phase of hardware inspection
@@ -510,6 +529,26 @@ const (
 	// than failing: every Secret written before the annotations existed reads
 	// this way, and annotating it recovers the host.
 	CredentialsNotAuthorizedReason string = "CredentialsNotAuthorized"
+)
+
+// Network data condition and reasons. The condition is present only while
+// Spec.NetworkDataSecretRef is set.
+const (
+	// NetworkDataReadyCondition reports whether the Secret named by
+	// Spec.NetworkDataSecretRef can be served to the host's inspector.
+	NetworkDataReadyCondition = "NetworkDataReady"
+
+	// NetworkDataAvailableReason marks NetworkDataReady=True.
+	NetworkDataAvailableReason string = "NetworkDataAvailable"
+	// NetworkDataSecretNotFoundReason marks NetworkDataReady=False when the
+	// referenced Secret does not exist.
+	NetworkDataSecretNotFoundReason string = "NetworkDataSecretNotFound"
+	// NetworkDataNotAuthorizedReason marks NetworkDataReady=False when the
+	// Secret's network-data-host annotation does not name this host.
+	NetworkDataNotAuthorizedReason string = "NetworkDataNotAuthorized"
+	// NetworkDataInvalidReason marks NetworkDataReady=False when the Secret has
+	// no non-empty "networkData" key or the value exceeds the size cap.
+	NetworkDataInvalidReason string = "NetworkDataInvalid"
 )
 
 // +kubebuilder:object:root=true

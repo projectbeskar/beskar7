@@ -85,7 +85,13 @@ If the Secret does not authorise the address, or the host's `caBundleSecretRef`,
 |---|---|---|---|
 | `consumerRef` | `*ObjectReference` | no | Set by the `Beskar7Machine` reconciler when it claims the host. Acts as the lock. Cleared on Beskar7Machine deletion (best-effort BMC cleanup runs first; see `controllers/beskar7machine_controller.go:reconcileDelete`). |
 
-There are no other spec fields. Provisioning is driven by the consumer (the `Beskar7Machine`); the host itself only carries connection info and the consumer reference.
+#### `spec.networkDataSecretRef`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `networkDataSecretRef` | string | no | Name of a Secret in the same namespace holding this host's network configuration for the installed OS in its `networkData` key (cloud-init `network-config` v2 by convention, at most 64 KiB). Served verbatim to the inspector of a claimed host, which writes it to `/oem/beskar7/network-data` (contract v4.3 §4.6). The Secret must carry `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`; otherwise it is refused and `NetworkDataReady` is `False`. How the OS applies the file is up to the image. |
+
+There are no other spec fields. Provisioning is driven by the consumer (the `Beskar7Machine`); the host itself only carries connection info, the consumer reference and, optionally, its network data.
 
 ### `status`
 
@@ -153,13 +159,14 @@ Per-host bootstrap fetch coordinates, a read-only mirror of the host's callback 
 
 #### Conditions
 
-`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes exactly these three, each with a `reason` on both `True` and `False`:
+`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes these three, plus `NetworkDataReady` while `spec.networkDataSecretRef` is set, each with a `reason` on both `True` and `False`:
 
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|
 | `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `BMCUnreachable` (the BMC cannot be reached at the network level — retried every 15 s and clears by itself; a consuming `Beskar7Machine` waits it out), `CredentialsNotAuthorized` (the credentials Secret's [annotations](#credentials-secret-annotations) do not authorise `address` or its transport — no request is made; cleared by annotating the Secret, and a consuming `Beskar7Machine` waits for that too), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host — `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`). |
 | `HostInspected` | `PhysicalHost` | `HostInspected` | `HostReleased` (the host went back to `Available`; the prior inspection describes a run that ended, not the hardware). |
+| `NetworkDataReady` | `PhysicalHost` | `NetworkDataAvailable` | `NetworkDataSecretNotFound`, `NetworkDataNotAuthorized` (the Secret's `network-data-host` annotation does not name the host), `NetworkDataInvalid` (no non-empty `networkData` key, or over 64 KiB). While it is not `True` for the host's current generation, no `Beskar7Machine` claims the host, and one already holding it does not boot it and waits (`WaitingForNetworkData`); when it turns `True` on an `Available` host, machines waiting for a host are woken. If the Secret breaks after the boot, the `/network-data` endpoint answers `409` and the inspector fails the deploy. Removed when the ref is unset. |
 
 ### Example
 
@@ -254,7 +261,7 @@ There is no `status.failureReason` or `status.failureMessage` — both were remo
 | Type | Set by | True reason | False / other reasons |
 |---|---|---|---|
 | `Ready` | `Beskar7Machine` (summary) | Derived from the summarized conditions; carries the reason of the one that isn't `True` when only one is at fault. | Same, `False`/`Unknown`. |
-| `InfrastructureReady` | `Beskar7Machine` | `Provisioned` — the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForTargetImageDigest` (the machine names its digest by `targetImageDigestURL` and the file does not resolve yet; no host is claimed; not terminal — the controller retries every 30 seconds to 5 minutes); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address yet; not terminal — the machine carries on once the host does); `BootstrapCredentialsConflict` (a Secret the host does not own sits under its `<host>-bootstrap-token` name; not terminal — delete it and the next pass creates the host's own); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
+| `InfrastructureReady` | `Beskar7Machine` | `Provisioned`: the host reached `Ready` (inspector's provisioned callback received) and `providerID` is set. | `PhysicalHostNotReady` (host claimed but not yet `Ready`); `WaitingForTargetImageDigest` (the machine names its digest by `targetImageDigestURL` and the file does not resolve yet; no host is claimed; not terminal, the controller retries every 30 seconds to 5 minutes); `WaitingForBMC` (the host cannot reach its BMC, or its credentials Secret does not authorise the BMC's address yet; not terminal, the machine carries on once the host does); `WaitingForNetworkData` (the claimed host names a network data Secret that cannot be served, `NetworkDataReady` is not `True`; the host is not booted; not terminal, the machine carries on once the Secret is fixed); `BootstrapCredentialsConflict` (a Secret the host does not own sits under its `<host>-bootstrap-token` name; not terminal, delete it and the next pass creates the host's own); terminal: `HardwareRequirementsNotMet`, `InspectionFailed`, `InspectionTimedOut`, `DeploymentTimedOut`, `DeploymentFailed`, `PhysicalHostError`, `BootstrapDataUnavailable`, `InvalidHostSelector`. |
 | `PhysicalHostAssociated` | `Beskar7Machine` | `PhysicalHostAssociated` | `PhysicalHostAssociationFailed`, `WaitingForPhysicalHost` (no `Available` host at all), `NoMatchingPhysicalHost` (hosts are `Available` but none satisfies `hostSelector` / the Machine's failure domain), `InvalidHostSelector` (terminal). |
 | `BootstrapDataReady` | `Beskar7Machine` | `BootstrapDataReady` | `WaitingForBootstrapData`, `BootstrapDataUnavailable` (terminal). |
 | `Paused` | `sigs.k8s.io/cluster-api/util/paused` | `Paused` | `NotPaused`. |
