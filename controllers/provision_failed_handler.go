@@ -57,7 +57,10 @@ const (
 	// the reason is empty after sanitization. It carries the prefix like every other
 	// reason, because the prefix is what marks the host's Error as the run's
 	// (provisioningRunFailed) and names the Beskar7Machine's failure DeploymentFailed.
-	provisionFailedReasonGeneric = provisionFailedReasonPrefix + "no details provided"
+	provisionFailedReasonGeneric = provisionFailedReasonPrefix + reportedReasonNoDetails
+
+	// reportedReasonNoDetails stands in for a reason the inspector left empty.
+	reportedReasonNoDetails = "no details provided"
 )
 
 // ProvisionFailedHandler handles POST /api/v1/provision-failed/{namespace}/{hostName}
@@ -171,6 +174,12 @@ func (h *ProvisionFailedHandler) extractReason(log logr.Logger, r *http.Request,
 // inspector binary could be replaced or the host could be compromised. Stripping
 // control characters prevents log-injection; capping prevents etcd bloat.
 func sanitizeFailureReason(reason string) string {
+	return sanitizeReportedReason(reason, provisionFailedReasonPrefix)
+}
+
+// sanitizeReportedReason is sanitizeFailureReason with the prefix of the report
+// the reason came from.
+func sanitizeReportedReason(reason, prefix string) string {
 	// Strip control characters (including \n, \r, \t) and non-printable Unicode.
 	var b strings.Builder
 	b.Grow(len(reason))
@@ -181,7 +190,7 @@ func sanitizeFailureReason(reason string) string {
 	}
 	cleaned := strings.TrimSpace(b.String())
 	if cleaned == "" {
-		return provisionFailedReasonGeneric
+		return prefix + reportedReasonNoDetails
 	}
 	// Cap to provisionFailedReasonMaxLen before prepending the prefix. The cap is a
 	// byte length, but IsPrint admits multibyte runes, so a naive byte slice can
@@ -191,7 +200,7 @@ func sanitizeFailureReason(reason string) string {
 	if len(cleaned) > provisionFailedReasonMaxLen {
 		cleaned = strings.ToValidUTF8(cleaned[:provisionFailedReasonMaxLen], "")
 	}
-	return provisionFailedReasonPrefix + cleaned
+	return prefix + cleaned
 }
 
 // signalProvisionFailed fetches the PhysicalHost and patches the

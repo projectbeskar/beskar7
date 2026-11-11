@@ -28,7 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -103,7 +103,7 @@ var _ = Describe("The inspector's /provisioned report when a BMC Error holds a h
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("provisioned-bmc-error-host"),
-			Recorder:               record.NewFakeRecorder(10),
+			Recorder:               events.NewFakeRecorder(10),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -254,7 +254,7 @@ var _ = Describe("The inspector's /provision-failed report when the status write
 			refusingReconciler := &PhysicalHostReconciler{
 				Client: refusing, Scheme: k8sClient.Scheme(),
 				Log:                    ctrl.Log.WithName("report-status-write-refused"),
-				Recorder:               record.NewFakeRecorder(10),
+				Recorder:               events.NewFakeRecorder(10),
 				RedfishClientFactory:   gate.factory(),
 				TransientRetryInterval: 2 * time.Second,
 			}
@@ -297,7 +297,7 @@ var _ = Describe("The inspector's /provision-failed report when the status write
 		refusingReconciler := &PhysicalHostReconciler{
 			Client: refusing, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("report-status-write-refused-bmc"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 

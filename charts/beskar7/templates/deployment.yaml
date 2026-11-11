@@ -56,6 +56,12 @@ spec:
         {{- with (.Values.callback | default dict).trustedProxies }}
         - --trusted-proxies={{ join "," . }}
         {{- end }}
+        {{- with (.Values.cleaning | default dict).imageURL }}
+        - {{ printf "--cleaning-image-url=%s" . | quote }}
+        {{- end }}
+        {{- with (.Values.cleaning | default dict).timeout }}
+        - {{ printf "--cleaning-timeout=%s" . | quote }}
+        {{- end }}
         ports:
         - containerPort: 8443
           name: metrics

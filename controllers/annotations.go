@@ -145,3 +145,12 @@ const ProvisionedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provisione
 // the failure signal; the reason is advisory only and MUST be treated as untrusted input.
 // The reconciler acts on it only with its binding (callback_binding.go, D-034).
 const ProvisionFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/provision-failed-request"
+
+// CleanedRequestAnnotation carries the inspector's bound /cleaned report; value "cleaned".
+const CleanedRequestAnnotation = "infrastructure.cluster.x-k8s.io/cleaned-request"
+
+// CleanFailedRequestAnnotation carries the inspector's bound /clean-failed report; value the sanitized reason.
+const CleanFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/clean-failed-request"
+
+// RetryCleaningAnnotation restarts the cleaning of a held host; unbound, since it can only wipe a host already waiting to be wiped.
+const RetryCleaningAnnotation = "infrastructure.cluster.x-k8s.io/retry-cleaning"

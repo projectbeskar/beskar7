@@ -128,6 +128,18 @@ func newCallbackSigner(ctx context.Context, c client.Reader, host *infrav1.Physi
 	return newCallbackBinder(host, creds)
 }
 
+// newCleaningCallbackSigner is newCallbackSigner against the host's cleaning credentials.
+func newCleaningCallbackSigner(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost, presentedToken string) (*callbackBinder, error) {
+	creds, err := boundCleaningCredentials(ctx, c, host)
+	if err != nil {
+		return nil, fmt.Errorf("read the cleaning credentials to bind the callback to: %w", err)
+	}
+	if !creds.tokenValid(time.Now()) || !auth.Verify(presentedToken, auth.Hash(creds.token)) {
+		return nil, errors.New("the callback's bearer token does not match the host's cleaning credentials")
+	}
+	return newCallbackBinder(host, creds)
+}
+
 // newRequestSigner returns the binder the Beskar7Machine controller signs an
 // inspection request with when it did not just mint the credentials (D-037):
 // the credentials in the host's bootstrap-token Secret, under the checks
@@ -244,6 +256,22 @@ const (
 // binding, no value.
 func verifyCallbackAnnotation(ctx context.Context, c client.Reader, logger logr.Logger, host *infrav1.PhysicalHost, key, digest string) callbackVerdict {
 	creds, _, err := boundBootstrapCredentials(ctx, c, host)
+	return checkCallbackAnnotation(callbackCheck{Logger: logger, Host: host, Key: key, Digest: digest, Creds: creds, CredsErr: err})
+}
+
+// callbackCheck is a signal and the credentials, or the error reading them, it must be bound to.
+type callbackCheck struct {
+	Logger   logr.Logger
+	Host     *infrav1.PhysicalHost
+	Key      string
+	Digest   string
+	Creds    bootstrapCredentials
+	CredsErr error
+}
+
+// checkCallbackAnnotation decides a signal against credentials already read.
+func checkCallbackAnnotation(in callbackCheck) callbackVerdict {
+	logger, host, key, digest, creds, err := in.Logger, in.Host, in.Key, in.Digest, in.Creds, in.CredsErr
 	if err != nil {
 		if errors.Is(err, errBootstrapSecretUnreadable) {
 			logger.Error(err, "Cannot read the host's bootstrap-token Secret to check a callback annotation; leaving it for the next reconcile",

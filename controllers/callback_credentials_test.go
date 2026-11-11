@@ -32,7 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -232,7 +232,7 @@ var _ = Describe("Callback credentials come only from the host's bootstrap-token
 		hostR = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("callback-credentials-host"),
-			Recorder:             record.NewFakeRecorder(100),
+			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: reachableBMC(),
 		}
 		machineR = &Beskar7MachineReconciler{

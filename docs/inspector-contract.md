@@ -1,6 +1,6 @@
 # Beskar7 Controller ↔ Inspector Contract
 
-**Contract version: `v4.3`, FROZEN for v0.4.0 GA**
+**Contract version: `v4.4`, FROZEN for v0.4.0 GA**
 
 > The wire contract is **frozen** as of `v0.4.0`. Within the `v4.x` line, changes
 > MUST be additive and backward-compatible, as specified in
@@ -16,6 +16,17 @@ ramdisk (`beskar7-inspector`). Both repositories pin to a contract version; a
 change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture
 (see [Versioning and anti-drift](#10-versioning-and-anti-drift)).
+
+> **v4.4 in one line:** adds an opt-in clean mode for released hosts
+> (`PhysicalHost.spec.cleaningMode: Metadata`, #306): `/boot` renders
+> `beskar7.mode=clean` (§5) with none of a claim's parameters, and the inspector
+> wipes every disk's metadata and reports through two new endpoints,
+> `POST /api/v1/cleaned/{ns}/{host}` (§4.7) and
+> `POST /api/v1/clean-failed/{ns}/{host}` (§4.8), gated by a token minted for
+> the cleaning run alone. In clean mode the inspector never fetches bootstrap
+> data and never writes an image (§9.3). Additive and backward-compatible: a
+> v4.3 inspector ignores the unknown param, so hosts that opt in need a v4.4
+> inspector. **No §6 report or existing endpoint change.**
 
 > **v4.3 in one line:** adds optional per-host network data for the installed
 > OS: a new endpoint `GET /api/v1/network-data/{ns}/{host}` (§4.6), same token
@@ -235,6 +246,14 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
   be logged (the nonce hash MAY be).
 - **Rate limiting**: this route is ungated; it MUST be rate-limited per source IP
   (and SHOULD be per `{namespace}/{hostName}`).
+
+- **Cleaning boot** (v4.4): on a host in state `Cleaning`, the nonce is checked
+  against the cleaning run's credentials instead (§4.7), which the
+  `PhysicalHost` controller mints for an unclaimed host, and the script boots
+  the inspector from `--cleaning-image-url` with only `beskar7.api`,
+  `beskar7.namespace`, `beskar7.host`, `beskar7.token`, `beskar7.mode=clean`,
+  `beskar7.ca` and the optional `BOOTIF`. No target image, digest, disk,
+  static IP or provider ID is rendered.
 
 **Rendered output** (`Content-Type: text/plain`): a complete iPXE script that
 boots the inspector image with the §5 parameters on the kernel cmdline:
@@ -517,6 +536,38 @@ provider renders that per `Machine`, before beskar7 claims a host.
   the file. The controller docs state the minimum inspector version for
   `networkDataSecretRef`. A v4.2 controller + v4.3 inspector → `404`, no file.
 
+### 4.7 `POST /api/v1/cleaned/{namespace}/{hostName}`: disks wiped
+
+Added in v4.4. The inspector of a cleaning boot (`beskar7.mode=clean`) reports
+that every disk has been wiped (§9.3).
+
+- **Auth**: bearer, but only the token of the host's **cleaning run**: the
+  bootstrap-token Secret holds it with `purpose: clean` and no consumer, and the
+  host is unclaimed and `Cleaning`. No claim's token is accepted here, and the
+  cleaning token is accepted on no other bearer-gated route (§4.2 to §4.6), so a
+  cleaning boot can never reach bootstrap data. The token lives
+  `auth.CleaningTokenLifetime` (30 min) and is removed when the run ends.
+- **Body**: advisory, `{"status":"cleaned"}`.
+- **Success**: `202 Accepted`. The handler leaves a bound annotation (D-034);
+  the `PhysicalHost` controller marks `HostCleaned=True`, clears the boot
+  override, forces the host off and moves it to `Available`. A report on a host
+  that is not `Cleaning` is acknowledged and ignored.
+- **Failure**: opaque `401`; `500` when the host cannot be annotated.
+- **Inspector MUST**: call it only after every disk has been wiped, and retry a
+  transport failure or `5xx` as for §4.4. After a `2xx` it MAY power off; the
+  controller forces the host off either way.
+
+### 4.8 `POST /api/v1/clean-failed/{namespace}/{hostName}`: wipe failed
+
+Added in v4.4. Same auth as §4.7. Body `{"reason":"<short description>"}`,
+sanitized and stored like §4.5's with the prefix
+`inspector reported clean failure: `. The controller moves the host to `Error`
+with `HostCleaned=False`, reason `CleaningFailed`, and holds it there: an
+unclaimed host in that Error is never made `Available` until the operator sets
+the `infrastructure.cluster.x-k8s.io/retry-cleaning` annotation (a new run) or
+`cleaningMode: Disabled` (release without a wipe). The inspector SHOULD call it
+when any disk could not be wiped, then exit.
+
 ---
 
 ## 5. Kernel cmdline parameters
@@ -535,6 +586,7 @@ these from `/proc/cmdline`.
 | `beskar7.provider-id` | yes (v4.2) | `b7://{PhysicalHost.Namespace}/{PhysicalHost.Name}` — the exact string `providerID(ph.Namespace, ph.Name)` computes, which is also the value stamped onto `Beskar7Machine.Spec.ProviderID` once the host is ready. **Always rendered** (the controller always knows the host's identity); there is no omitted form, unlike the bracketed optional params below. The inspector MUST write it verbatim (no trailing newline, mode `0600`, root-owned) to `/oem/beskar7/provider-id` on the `COS_OEM` partition during the same mount session as `99_beskar7.yaml` (§9.1 step 5.4). This is the P2 mechanism that lets a *shared* bootstrap template produce a *per-host* kubelet `--provider-id`, so the workload Node's `ProviderID` matches its Machine's without a hand-authored-per-host config — required for templated `MachineDeployment` pools and multi-replica control planes (see D-014/D-017, `docs/beskar7machine.md`). Anchored server-side by `validateProviderID` (`^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth — the value is controller-computed from already-validated k8s object names, so this guard cannot fail in production). Non-secret. |
 | `beskar7.ca` | yes | Base64-encoded PEM of the CA the inspector uses to verify the callback's TLS cert. **Inline only.** `/boot` sources it from the manager's callback cert dir (`ca.crt` if present — cert-manager and the chart's self-signed path both provide it — else the self-signed `tls.crt`). Bounded by kernel cmdline length (~2–4 KiB): a single self-signed/issuer cert fits; a full multi-cert chain may not. A `beskar7.ca-url` fetch variant for chain delivery is deferred to a later contract version. See §8. Note: this CA verifies **only** the callback endpoints (`/inspection`, `/bootstrap`); it does NOT verify `beskar7.target` (§8.1). |
 | `beskar7.disk` | no | Operator override pinning the target disk — a stable device path (`/dev/disk/by-id/...`, `/dev/disk/by-path/...`) or a kernel name (`/dev/nvme0n1`, `sda`). When **absent**, the inspector auto-selects the smallest eligible disk (§9.1 step 2). When **present**, the inspector MUST resolve it once to its canonical whole-disk kernel device (`/dev/<kname>`, following any `by-id`/`by-path` symlink) and thereafter use *that resolved node* for both validation and the write, so the device validated is the device written (no TOCTOU re-lookup). It MUST use exactly that device and MUST abort — never silently falling back to auto-selection (a wrong pin fails loudly) — if the device is missing, not a block device, **not a whole disk** (a partition, `dm`/loop, or other non-whole-disk node), removable, read-only, **backs the running ramdisk**, or is smaller than the image. The image's size is known only once it streams, so that last check is the §8.1 size bound: the write is capped at the pinned disk's capacity, and an image that does not fit aborts as a size-limit breach. Sourced from the optional `Beskar7Machine.Spec.TargetDisk` field, rendered by `/boot` after `beskar7.ca` when set. Non-secret. |
+| `beskar7.mode` | no (v4.4) | `clean` on a cleaning boot (§4.1, §9.3). **Absent** means a provisioning run, as before v4.4. A cleaning boot carries none of `beskar7.target`, `beskar7.target-digest`, `beskar7.provider-id`, `beskar7.disk` or `beskar7.ip`; an inspector that sees `beskar7.mode=clean` MUST NOT act on them if present. Any other value MUST be refused. Non-secret. |
 | `beskar7.timeout` | no | Inspector-side overall timeout (seconds). |
 | `beskar7.debug` | no | `true` to enable verbose logging / debug shell on failure. |
 | `BOOTIF` | no | The provisioning NIC's MAC in the pxelinux/iPXE form `01-aa-bb-cc-dd-ee-ff` (a `01` hardware-type prefix + the MAC with dashes). **Not** a `beskar7.*` key — it is the established netboot convention. `/boot` renders it from a `?mac=<mac>` query the operator's first-stage iPXE appends (e.g. `${net0/mac}`); see §4.1, §8.2. The inspector DHCP-configures the matching interface. **Absent** → a single-NIC host uses its one NIC; a multi-NIC host DHCP-races all links and applies the gatewayed winner (§8.2). `BOOTIF` is the deterministic pin and is the way to select a specific network. Non-secret. |
@@ -985,6 +1037,27 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
   the inspector retrying across reboots. There is no in-ramdisk persistence of the
   poll position.
 
+### 9.3 Clean mode (v4.4)
+
+With `beskar7.mode=clean` on the cmdline the inspector:
+
+1. Brings up the network (§8.2) and MUST NOT call `/inspection`, `/bootstrap`
+   or `/network-data`, and MUST NOT fetch or write any image.
+2. Waits for the disk list to settle, then, for every whole disk that target
+   selection would accept (physical, non-removable, writable, not backing the
+   running ramdisk), zeroes at least the first and the last 8 MiB of the disk
+   and of every partition on it. The disk's last range removes the GPT backup
+   header, and the partition ranges remove filesystem, RAID and LVM signatures.
+   This removes the partition table, `COS_OEM` and `/oem/99_beskar7.yaml` with
+   the previous join secret. No eligible disk at all is a failure. It is **not** a secure
+   erase and MUST NOT be described as one.
+3. Calls `/cleaned` (§4.7) when every disk was wiped, or `/clean-failed`
+   (§4.8) when any was not.
+
+The controller fails a run that reports nothing within `--cleaning-timeout`
+(default 20 min) with `HostCleaned=False`, reason `CleaningTimedOut`, and
+holds the host like a reported failure.
+
 ---
 
 ## 10. Versioning and anti-drift
@@ -1064,6 +1137,8 @@ apart. The inspector therefore MUST treat the GET as a **poll**, not a one-shot:
 | **v4.1** | **Deploy-failure fast-fail callback — §5 cmdline, §6 report schema, and golden fixture unchanged. Backward-compatible additive endpoint.** Adds a fifth HTTPS endpoint: `POST /api/v1/provision-failed/{ns}/{host}` (§4.5), bearer-gated with the same per-host token as §4.2–§4.4, advisory body `{"reason":"<short description>"}`, success response `202 Accepted`. The inspector SHOULD call it when Phase 2 fails (image fetch, digest verify, disk write, `COS_OEM` inject) before exiting, so the controller can fail the `Beskar7Machine` promptly (a terminal `InfrastructureReady=False` reason `DeploymentFailed`) instead of waiting out the 20-min `--deployment-timeout`. The `PhysicalHost` transitions `StateDeploying → StateError` immediately with `Status.ErrorMessage` carrying the sanitized reason. A `404` response (v4 controller without the endpoint) MUST be tolerated by the inspector — the host falls back to timing out. A v4.1 controller with a v4 inspector leaves the endpoint unused. **Controller side**: `controllers/provision_failed_handler.go` (new); `ProvisionFailedRequestAnnotation` (new); `applyProvisionFailedRequestAnnotation` in `PhysicalHostReconciler`; `DeploymentFailedReason` constant; `handlePhysicalHostState` `StateError` case updated to attribute the failure to `DeploymentFailed` vs. `PhysicalHostError` based on `ErrorMessage` prefix; route registered in `SetupCallbackServer`. Inspector side: `CONTRACT_VERSION="v4.1"`, `client::provision_failed()`, called from `src/run.rs` on Phase 2 errors. |
 | **v4.2** | **Per-host `ProviderID` delivery for templated pools/HA (D-014 P2) — §6 report schema and golden fixture unchanged. Additive and backward-compatible.** A shared `Beskar7MachineTemplate`/bootstrap-config template cannot pin a per-host `ProviderID` (P1's hand-authored, one-Machine-at-a-time pattern breaks for `MachineDeployment` pools and multi-replica control planes). Adds a new required cmdline param `beskar7.provider-id=b7://{ns}/{host}` (§5), rendered by `/boot` immediately after `beskar7.target-digest` and before `beskar7.ca`, and **always** rendered (the controller always knows the host's identity — no omitted form). The value is `providerID(ph.Namespace, ph.Name)`, the identical call `handleReadyHost` uses to stamp `Beskar7Machine.Spec.ProviderID`, so the rendered and stamped values cannot diverge by construction. Adds a new `COS_OEM` artifact `/oem/beskar7/provider-id` (§9.1 step 5.4): the inspector writes the cmdline value verbatim (no trailing newline, mode `0600`, root-owned) during the *same* mount session as `99_beskar7.yaml`, no new mount or fetch. A shared boot-time stage in the node's bootstrap config reads this file to set a per-host kubelet `--provider-id` before the k8s distro starts — the residual per-distro glue that lets a shared template still produce a correct, unique `Node.spec.providerID` per replica. **Backward-compatible:** a v4.1 inspector ignores the unknown cmdline param and never writes the new artifact (P1's single hand-authored Machine path is unaffected); a v4.2 controller tolerates a v4.1 inspector. **Controller side**: `controllers/boot_handler.go` — `validateProviderID` (anchored `^b7://[a-z0-9.-]+/[a-z0-9.-]+$`, SEC-7 defence-in-depth) + the `beskar7.provider-id` render in `buildBootIPXEScript`/`renderBootScript`; new golden fixtures `test/contract/golden_boot_cmdline.txt` and `test/contract/golden_provider_id_artifact.json` (§10); `controllers/deploy_contract_test.go` (new). Inspector side: `CONTRACT_VERSION="v4.2"`, cmdline parser + `COS_OEM` writer for `/oem/beskar7/provider-id`, per `.claude/context/GA-P2-VALIDATION.md` §1.5 (spec only from this repo's side — cross-repo). |
 | **v4.3** | **Per-host network data for the installed OS (#283, #300). §5 cmdline, §6 report schema and existing golden fixtures unchanged. Additive and backward-compatible.** Adds a sixth HTTPS endpoint, `GET /api/v1/network-data/{ns}/{host}` (§4.6): bearer-gated with the same rule as §4.3, it serves verbatim the `networkData` key of the Secret `PhysicalHost.spec.networkDataSecretRef` names, which must opt in with `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <hostName>`. `200` bytes (≤64 KiB), `404` only when the host has no ref, `401` for the bearer gate and any resolution failure after it, `409` ref set but Secret refused, `500` read error. A host whose `NetworkDataReady` is not `True` is not claimed, and a claimed one is not booted (`WaitingForNetworkData`), so `409` only covers a Secret that changes after that check. Adds a `COS_OEM` artifact `/oem/beskar7/network-data` (§9.1 step 5.4), written in the same mount session as `99_beskar7.yaml`, removed on inject failure (step 5.8), and removed on `404` when the image already carries one; the inspector fetches it before the disk write (step 4). New golden fixture `test/contract/golden_network_data_artifact.json`. Controller side: #302. Inspector side: `CONTRACT_VERSION="v4.3"`, beskar7-inspector#69. |
+
+| **v4.4** | **Opt-in disk wipe on release (#306). §6 report schema and golden fixtures unchanged. Additive.** `PhysicalHost.spec.cleaningMode` (`Disabled` default, or `Metadata`). A host released with `Metadata` goes `Cleaning` instead of `Available`: the `PhysicalHost` controller mints cleaning credentials (bootstrap-token Secret keys `purpose: clean` and `cleaning-image-url`, no consumer), sets a one-time PXE boot and powers the host on. `/boot` renders `beskar7.mode=clean` (§5) from `--cleaning-image-url` with none of a claim's parameters. Two new endpoints, `POST /api/v1/cleaned/{ns}/{host}` (§4.7) and `POST /api/v1/clean-failed/{ns}/{host}` (§4.8), accept only the cleaning token, which no other route accepts. Clean-mode inspector behaviour in §9.3. **Controller side**: `controllers/physicalhost_cleaning.go`, `controllers/cleaning_handler.go` (new); `boundCleaningCredentials`; `StateCleaning`, `HostCleaned` condition, `status.cleaningTimestamp`; flags `--cleaning-image-url`, `--cleaning-timeout`. Inspector side: `CONTRACT_VERSION="v4.4"`, the clean mode. |
 
 ### 10.2 Clarifications (no version bump)
 

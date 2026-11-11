@@ -839,6 +839,11 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 
 	var changed bool
 	switch {
+	case creds.purpose != "":
+		// A cleaning run's credentials never carry into a claim.
+		logger.Info("Bootstrap credentials were minted for a cleaning run; minting fresh ones",
+			"host", physicalHost.Name)
+		creds = bootstrapCredentials{}
 	case creds.consumer == "" && (creds.token != "" || creds.nonce != ""):
 		logger.Info("Bootstrap credentials carry no consumer binding (written before D-029); minting fresh ones",
 			"host", physicalHost.Name)
@@ -921,14 +926,7 @@ func (r *Beskar7MachineReconciler) getBootstrapTokenSecret(ctx context.Context, 
 }
 
 // writeBootstrapCredentials stores creds in the host's bootstrap-token Secret
-// in one write. existing is the Secret creds were computed from, or nil when
-// there was none: the write updates it at the resourceVersion it was read at,
-// or creates the Secret, so a write computed from a stale read fails instead
-// of replacing a newer one. The Secret is owned by the PhysicalHost (GC'd with
-// it, D-006). An existing Secret the host does not own is refused with
-// errBootstrapSecretNotOwned, never adopted (D-031): SetControllerReference
-// alone would take over one nobody controls, and one a deleted host of the
-// same name controlled. Neither plaintext is ever logged.
+// (writeBootstrapCredentialsSecret). Neither plaintext is ever logged.
 func (r *Beskar7MachineReconciler) writeBootstrapCredentials(
 	ctx context.Context,
 	logger logr.Logger,
@@ -936,36 +934,16 @@ func (r *Beskar7MachineReconciler) writeBootstrapCredentials(
 	existing *corev1.Secret,
 	creds bootstrapCredentials,
 ) error {
-	if existing != nil && !bootstrapSecretOwnedBy(existing, physicalHost) {
-		return fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, existing.Name)
-	}
-	secret := existing
-	if secret == nil {
-		secret = &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      bootstrapTokenSecretName(physicalHost.Name),
-				Namespace: physicalHost.Namespace,
-			},
-			Type: corev1.SecretTypeOpaque,
-		}
-	}
-	if secret.Labels == nil {
-		secret.Labels = map[string]string{}
-	}
-	secret.Labels[inspectionResultLabelOwnedBy] = "beskar7-controller-manager"
-	secret.Labels[inspectionResultLabelHost] = physicalHost.Name
-	if err := controllerutil.SetControllerReference(physicalHost, secret, r.Scheme); err != nil {
-		return fmt.Errorf("set controller reference on bootstrap-token Secret: %w", err)
-	}
-	creds.writeTo(secret)
-	if existing == nil {
-		if err := r.Create(ctx, secret); err != nil {
-			return err
-		}
-	} else if err := r.Update(ctx, secret); err != nil {
+	if err := writeBootstrapCredentialsSecret(ctx, writeCredentialsParams{
+		Client:   r.Client,
+		Scheme:   r.Scheme,
+		Host:     physicalHost,
+		Existing: existing,
+		Creds:    creds,
+	}); err != nil {
 		return err
 	}
-	logger.Info("Stored bootstrap credentials", "host", physicalHost.Name, "secret", secret.Name, "consumer", creds.consumer)
+	logger.Info("Stored bootstrap credentials", "host", physicalHost.Name, "secret", bootstrapTokenSecretName(physicalHost.Name), "consumer", creds.consumer)
 	return nil
 }
 

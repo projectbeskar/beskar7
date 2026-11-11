@@ -42,6 +42,7 @@ import (
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/controllers"
+	"github.com/projectbeskar/beskar7/internal/auth"
 )
 
 // callbackOnlyRBACDir is the opt-in RBAC component for a --controllers=none
@@ -196,6 +197,73 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 		t.Fatal("POST /provision-failed succeeded without annotating the host")
 	}
 	requireBinding(controllers.ProvisionFailedRequestAnnotation)
+
+	// /cleaned and /clean-failed (v4.4): the host is released into a cleaning
+	// run whose own token is the only one these routes accept.
+	cleaningToken := startCleaningRun(t, admin, hostKey)
+	for _, report := range []struct{ route, annotation string }{
+		{"cleaned", controllers.CleanedRequestAnnotation},
+		{"clean-failed", controllers.CleanFailedRequestAnnotation},
+	} {
+		// The handler ignores a host its cache does not show Cleaning yet, so poll.
+		deadline := time.Now().Add(10 * time.Second)
+		for host().Annotations[report.annotation] == "" {
+			if status, _ := callbackRequest(t, c, http.MethodPost, fx.route(base, report.route), cleaningToken, ""); status != http.StatusAccepted {
+				t.Fatalf("POST /%s: status %d, want 202", report.route, status)
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("POST /%s never annotated the host", report.route)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		requireBinding(report.annotation)
+	}
+}
+
+// startCleaningRun releases the host into a booted cleaning run, as the
+// PhysicalHost controller leaves it, and returns the run's token.
+func startCleaningRun(t *testing.T, admin client.Client, hostKey types.NamespacedName) string {
+	t.Helper()
+	ctx := context.Background()
+	host := &infrav1.PhysicalHost{}
+	if err := admin.Get(ctx, hostKey, host); err != nil {
+		t.Fatalf("get PhysicalHost: %v", err)
+	}
+	host.Spec.ConsumerRef = nil
+	host.Spec.CleaningMode = infrav1.CleaningModeMetadata
+	if err := admin.Update(ctx, host); err != nil {
+		t.Fatalf("release PhysicalHost: %v", err)
+	}
+	now := metav1.Now()
+	host.Status.State = infrav1.StateCleaning
+	host.Status.CleaningTimestamp = &now
+	if err := admin.Status().Update(ctx, host); err != nil {
+		t.Fatalf("set PhysicalHost Cleaning: %v", err)
+	}
+	token, _, err := auth.MintToken()
+	if err != nil {
+		t.Fatalf("mint cleaning token: %v", err)
+	}
+	nonce, _, err := auth.MintToken()
+	if err != nil {
+		t.Fatalf("mint cleaning nonce: %v", err)
+	}
+	secret := &corev1.Secret{}
+	if err := admin.Get(ctx, types.NamespacedName{Namespace: hostKey.Namespace, Name: hostKey.Name + "-bootstrap-token"}, secret); err != nil {
+		t.Fatalf("get bootstrap-token Secret: %v", err)
+	}
+	expires := []byte(time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	secret.Data = map[string][]byte{
+		"plaintext-token":       []byte(token),
+		"token-expires-at":      expires,
+		"plaintext-boot-nonce":  []byte(nonce),
+		"boot-nonce-expires-at": expires,
+		"purpose":               []byte("clean"),
+	}
+	if err := admin.Update(ctx, secret); err != nil {
+		t.Fatalf("store cleaning credentials: %v", err)
+	}
+	return token
 }
 
 // requireSecretAccess asks the apiserver, as the identity cfg authenticates as,
