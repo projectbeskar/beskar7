@@ -200,6 +200,28 @@ var (
 		},
 		[]string{"outcome", "namespace"},
 	)
+
+	// PhysicalHost disk cleaning metrics
+	PhysicalHostCleaningTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: MetricNamespace,
+			Subsystem: MetricSubsystem,
+			Name:      "physicalhost_cleaning_total",
+			Help:      "Total number of finished PhysicalHost disk cleaning runs, by outcome",
+		},
+		[]string{"outcome", "namespace"},
+	)
+
+	PhysicalHostCleaningDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: MetricNamespace,
+			Subsystem: MetricSubsystem,
+			Name:      "physicalhost_cleaning_duration_seconds",
+			Help:      "Time from booting a released PhysicalHost into its cleaning run to the run's outcome",
+			Buckets:   []float64{30, 60, 120, 180, 300, 600, 900, 1200, 1800},
+		},
+		[]string{"outcome", "namespace"},
+	)
 )
 
 // ReconciliationOutcome represents the result of a reconciliation
@@ -274,6 +296,10 @@ func Init() {
 		// Target image digest resolution metrics
 		TargetImageDigestResolutionsTotal,
 		TargetImageDigestResolutionDuration,
+
+		// PhysicalHost disk cleaning metrics
+		PhysicalHostCleaningTotal,
+		PhysicalHostCleaningDuration,
 	)
 }
 
@@ -449,4 +475,24 @@ const (
 func RecordTargetImageDigestResolution(namespace string, outcome DigestResolutionOutcome, duration time.Duration) {
 	TargetImageDigestResolutionsTotal.WithLabelValues(string(outcome), namespace).Inc()
 	TargetImageDigestResolutionDuration.WithLabelValues(string(outcome), namespace).Observe(duration.Seconds())
+}
+
+// CleaningOutcome is how a PhysicalHost cleaning run ended.
+type CleaningOutcome string
+
+const (
+	// CleaningOutcomeCleaned: the inspector reported the wipe.
+	CleaningOutcomeCleaned CleaningOutcome = "cleaned"
+	// CleaningOutcomeFailed: the inspector reported that the wipe failed.
+	CleaningOutcomeFailed CleaningOutcome = "failed"
+	// CleaningOutcomeTimedOut: nothing reported before the cleaning timeout.
+	CleaningOutcomeTimedOut CleaningOutcome = "timed_out"
+	// CleaningOutcomeSkipped: CleaningMode was set to Disabled during the run.
+	CleaningOutcomeSkipped CleaningOutcome = "skipped"
+)
+
+// RecordPhysicalHostCleaning records one finished cleaning run, timed from its boot.
+func RecordPhysicalHostCleaning(namespace string, outcome CleaningOutcome, duration time.Duration) {
+	PhysicalHostCleaningTotal.WithLabelValues(string(outcome), namespace).Inc()
+	PhysicalHostCleaningDuration.WithLabelValues(string(outcome), namespace).Observe(duration.Seconds())
 }

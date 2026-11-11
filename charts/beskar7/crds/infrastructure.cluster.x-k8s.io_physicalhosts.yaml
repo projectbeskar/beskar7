@@ -47,6 +47,12 @@ spec:
             type: object
           spec:
             properties:
+              cleaningMode:
+                default: Disabled
+                enum:
+                - Disabled
+                - Metadata
+                type: string
               consumerRef:
                 properties:
                   apiVersion:
@@ -136,6 +142,9 @@ spec:
                   url:
                     type: string
                 type: object
+              cleaningTimestamp:
+                format: date-time
+                type: string
               conditions:
                 items:
                   properties:

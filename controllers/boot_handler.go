@@ -204,9 +204,9 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Beskar7Machine the Secret was minted for, and the nonce must be the
 	// Secret's, unexpired, compared in constant time. Any failure is opaque —
 	// no oracle for "unclaimed" vs "bad nonce" vs "expired" vs "consumed".
-	creds, consumerKey, err := boundBootstrapCredentials(ctx, h.Client, ph)
+	creds, consumerKey, err := bootCredentials(ctx, h.Client, ph)
 	if err != nil {
-		log.V(1).Info("boot GET: no credentials bound to the host's claim", "err", err.Error())
+		log.V(1).Info("boot GET: no credentials bound to the host's claim or cleaning run", "err", err.Error())
 		h.opaqueFailure(w)
 		return
 	}
@@ -279,7 +279,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// anything else is judged: the conflict may come with a newer mint
 			// (or a changed claim), and the fresh consume record would then
 			// describe that nonce, not this one.
-			creds, consumerKey, err = boundBootstrapCredentials(ctx, h.Client, ph)
+			creds, consumerKey, err = bootCredentials(ctx, h.Client, ph)
 			if err != nil || !verifyBootNonce(nonce, creds, time.Now()) {
 				log.V(1).Info("boot GET: nonce no longer valid after conflict re-get")
 				h.opaqueFailure(w)
@@ -317,7 +317,12 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// as the provisioning interface. The value is optional: single-NIC hosts work
 	// without it (the inspector falls back to its own NIC selection heuristic).
 	mac := r.URL.Query().Get("mac")
-	script, err := h.renderBootScript(ctx, log, ph, consumerKey, creds.token, mac)
+	var script string
+	if creds.forCleaning() {
+		script, err = h.renderCleaningBootScript(ph, creds, mac)
+	} else {
+		script, err = h.renderBootScript(ctx, log, ph, consumerKey, creds.token, mac)
+	}
 	if err != nil {
 		log.V(1).Info("boot GET: render failed", "err", err.Error())
 		h.opaqueFailure(w)
@@ -710,6 +715,84 @@ func buildBootIPXEScript(
 		staticIPParam,
 		bootifParam,
 		inspectionImageURL,
+	)
+}
+
+// bootCredentials returns the cleaning run's credentials on a Cleaning host and the claim's on any other.
+func bootCredentials(ctx context.Context, c client.Reader, ph *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
+	if ph.Status.State != infrav1.StateCleaning {
+		return boundBootstrapCredentials(ctx, c, ph)
+	}
+	creds, err := boundCleaningCredentials(ctx, c, ph)
+	return creds, types.NamespacedName{}, err
+}
+
+// renderCleaningBootScript renders a cleaning boot with beskar7.mode=clean and none of a claim's parameters.
+func (h *BootHandler) renderCleaningBootScript(ph *infrav1.PhysicalHost, creds bootstrapCredentials, macParam string) (string, error) {
+	log := h.Log.WithValues("namespace", ph.Namespace, "host", ph.Name)
+	if err := validateBootURL("cleaning image URL", creds.cleaningImage); err != nil {
+		return "", err
+	}
+	if creds.token == "" {
+		return "", fmt.Errorf("cleaning credentials of %s/%s hold no token", ph.Namespace, ph.Name)
+	}
+	if h.Config.CA == nil {
+		return "", fmt.Errorf("no callback CA configured")
+	}
+	caBytes, err := h.Config.CA()
+	if err != nil {
+		log.Error(err, "boot GET: cannot read the callback CA from the cert dir")
+		return "", fmt.Errorf("read callback CA: %w", err)
+	}
+	bootif, _ := formatBootif(macParam)
+	script := buildCleaningIPXEScript(cleaningScriptParams{
+		InspectionImageURL: creds.cleaningImage,
+		APIBase:            h.Config.APIBase,
+		Namespace:          ph.Namespace,
+		HostName:           ph.Name,
+		Token:              creds.token,
+		CABase64:           base64.StdEncoding.EncodeToString(caBytes),
+		Bootif:             bootif,
+	})
+	if len(script) > bootScriptMaxBytes {
+		log.Info("boot GET: rendered cleaning script exceeds maximum allowed size; operator must shorten CA or URL fields",
+			"scriptBytes", len(script), "maxBytes", bootScriptMaxBytes)
+		return "", fmt.Errorf("rendered boot script (%d bytes) exceeds bootScriptMaxBytes (%d)", len(script), bootScriptMaxBytes)
+	}
+	return script, nil
+}
+
+// bootModeClean is the beskar7.mode value of a cleaning boot.
+const bootModeClean = "clean"
+
+// cleaningScriptParams are the inputs of buildCleaningIPXEScript.
+type cleaningScriptParams struct {
+	InspectionImageURL string
+	APIBase            string
+	Namespace          string
+	HostName           string
+	Token              string
+	CABase64           string
+	Bootif             string
+}
+
+// buildCleaningIPXEScript renders api, namespace, host, token, mode, ca and the optional BOOTIF, in that order.
+func buildCleaningIPXEScript(p cleaningScriptParams) string {
+	bootifParam := ""
+	if p.Bootif != "" {
+		bootifParam = " BOOTIF=" + p.Bootif
+	}
+	return fmt.Sprintf(
+		"#!ipxe\nkernel %s/vmlinuz beskar7.api=%s beskar7.namespace=%s beskar7.host=%s beskar7.token=%s beskar7.mode=%s beskar7.ca=%s%s\ninitrd %s/initrd.img\nboot\n",
+		p.InspectionImageURL,
+		p.APIBase,
+		p.Namespace,
+		p.HostName,
+		p.Token,
+		bootModeClean,
+		p.CABase64,
+		bootifParam,
+		p.InspectionImageURL,
 	)
 }
 

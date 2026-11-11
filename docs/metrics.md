@@ -68,6 +68,7 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 - `Inspecting`
 - `Deploying`
 - `Ready`
+- `Cleaning`
 - `Error`
 - `Enrolling` and `Unknown` — always 0: the API defines these states, but the controller never sets them
 - `""` (empty) — a host the controller has not given a state yet
@@ -91,6 +92,16 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 **Type:** Gauge  
 **Labels:** `namespace`  
 **Description:** Availability ratio of PhysicalHosts (available/total).
+
+#### `beskar7_controller_physicalhost_cleaning_total`
+**Type:** Counter  
+**Labels:** `outcome`, `namespace`  
+**Description:** Finished disk cleaning runs of released PhysicalHosts (`spec.cleaningMode: Metadata`). `outcome` is `cleaned`, `failed` (the inspector's `/clean-failed`), `timed_out` or `skipped` (`cleaningMode` set to `Disabled` during the run).
+
+#### `beskar7_controller_physicalhost_cleaning_duration_seconds`
+**Type:** Histogram  
+**Labels:** `outcome`, `namespace`  
+**Description:** Time from the cleaning boot to the run's outcome (buckets from 30 s to 30 min). Zero for a run skipped before it booted.
 
 ### Beskar7Machine Metrics
 

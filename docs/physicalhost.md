@@ -24,6 +24,7 @@ spec:
     credentialsSecretRef: "bmc-credentials"
     insecureSkipVerify: false        # default
     # caBundleSecretRef: bmc-ca-bundle  # optional, mutually exclusive with insecureSkipVerify=true
+  # cleaningMode: Metadata           # optional, wipe the disks on release (default Disabled)
   # consumerRef is set by the Beskar7Machine controller; do not set manually
 ```
 
@@ -78,10 +79,28 @@ InUse or unclaimed → Error                     (BMC unreachable, TLS conflict,
 Inspecting/Deploying/Ready → unchanged         (claimed; BMC unreachable, missing/refused credentials, credentials not authorised for the address, a rejected certificate, a malformed address, no ComputerSystem, or the insecureSkipVerify/CA-bundle conflict: only RedfishConnectionReady reports it, and the run goes on)
 Error → Available, or InUse if claimed         (operator fixes spec, BMC recovers)
 Error of a failed run (claimed) → unchanged    (the two run failures above: kept until release, whatever the BMC does)
-any claimed state → Available                  (Beskar7Machine deletion clears consumerRef)
+any claimed state → Available                  (Beskar7Machine deletion clears consumerRef; cleaningMode Disabled)
+any claimed state → Cleaning                   (Beskar7Machine deletion clears consumerRef; cleaningMode Metadata)
+Cleaning → Available                           (inspector POSTs /api/v1/cleaned; host powered off)
+Cleaning → Error                               (inspector POSTs /api/v1/clean-failed, or --cleaning-timeout; held until retry or cleaningMode Disabled)
 ```
 
 For the diagram and the full transition table, see [State Management](state-management.md).
+
+## Disk cleaning on release
+
+By default a released host goes straight back to `Available` with its disks as they were, including the previous OS and the join secret in `/oem/99_beskar7.yaml`. Set `spec.cleaningMode: Metadata` to have the host wiped first. The field is on the host, so the host's owner decides; the `Beskar7Machine` that held it cannot turn it off.
+
+1. When the claim is released, the host goes to `Cleaning` (`HostCleaned=False`, `CleaningPending`; `HostAvailable=False`, `HostCleaning`). Machine deletion does not wait for the wipe.
+2. Once the BMC answers, the controller mints credentials for the run into `<host>-bootstrap-token` (`purpose: clean`, no `consumer`), sets a one-time PXE boot and powers the host on, or restarts it if it is on (`CleaningInProgress`, `status.cleaningTimestamp`).
+3. `/boot` renders the inspector from `--cleaning-image-url` with `beskar7.mode=clean` and none of a claim's parameters. The inspector zeroes the first and last 8 MiB of every disk and of every partition on it, then posts `/api/v1/cleaned` (contract v4.4 §4.7, §9.3). The cleaning token is accepted there and on `/api/v1/clean-failed` only; it never reaches bootstrap data.
+4. On `/cleaned` the controller clears the boot override, forces the host off, removes the run's credentials and makes the host `Available` (`HostCleaned=True`).
+
+This is not a secure erase: it removes the partition tables, their GPT backups and `COS_OEM`, not the data blocks.
+
+A run that reports `/clean-failed`, or nothing within `--cleaning-timeout` (default `20m`), leaves the host in `Error` with `HostCleaned=False` (`CleaningFailed` or `CleaningTimedOut`), and the controller holds it there: it is never made `Available` with its disks unwiped. To go on, either set `infrastructure.cluster.x-k8s.io/retry-cleaning` (any value) on the host to run the cleaning again, or set `cleaningMode: Disabled` to release it as it is (`HostCleaned=False`, `CleaningSkipped`). Setting `Disabled` while the host is `Cleaning` stops the run the same way.
+
+Without `--cleaning-image-url` (chart value `cleaning.imageURL`), hosts that opted in wait in `Cleaning` with `HostCleaned=False`, `CleaningNotConfigured`.
 
 ## Bootstrap signaling
 
@@ -118,8 +137,9 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 | Type | Meaning | True reason | Other reasons |
 |---|---|---|---|
 | `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `BMCUnreachable` (the BMC cannot be reached at the network level; retried every 15 s and clears by itself, so a `Beskar7Machine` holding the host waits for it), `CredentialsNotAuthorized` (the credentials Secret does not [authorise the address, or the CA Secret](#binding-the-credentials-to-their-bmc); no request is made, and a `Beskar7Machine` holding the host waits for the Secret to be annotated), `MissingCredentials` (the credentials Secret is missing, unreadable, or lacks `username`/`password`), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
-| `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only — BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released). |
+| `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only; BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released), `HostCleaning` (released and being wiped), `CleaningFailed` and `CleaningTimedOut` (held after a failed wipe). |
 | `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
+| `HostCleaned` | The disks of a released host with `cleaningMode: Metadata` were wiped. Present once such a host has been released. | `HostCleaned` | `CleaningPending`, `CleaningInProgress`, `CleaningFailed`, `CleaningTimedOut`, `CleaningNotConfigured`, `CleaningSkipped`. See [Disk cleaning on release](#disk-cleaning-on-release). |
 
 ## Deletion
 

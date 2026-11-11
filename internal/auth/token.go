@@ -75,6 +75,9 @@ const (
 	// retries and little else.
 	TokenReadyGrace = 5 * time.Minute
 
+	// CleaningTokenLifetime bounds a cleaning boot's bearer token and must stay above the cleaning timeout.
+	CleaningTokenLifetime = 30 * time.Minute
+
 	// BootNonceLifetime is the validity window for per-host boot nonces (D-009).
 	// Shorter than TokenLifetime because the nonce is consumed at the first
 	// GET /api/v1/boot call: a long window only extends the race window for a
