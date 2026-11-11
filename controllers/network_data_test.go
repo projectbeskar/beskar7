@@ -24,6 +24,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -35,6 +36,9 @@ const (
 	networkDataTestNamespace = "netdata"
 	networkDataTestHost      = "paris"
 	networkDataTestSecret    = "paris-net"
+
+	networkDataTestConsumerUID = types.UID("uid-machine-b")
+	networkDataTestOldUID      = "uid-machine-a"
 )
 
 var networkDataTestBytes = []byte("network:\n  version: 2\n")
@@ -92,6 +96,53 @@ func TestLoadNetworkData(t *testing.T) {
 			}
 			if !bytes.Equal(data, tt.wantData) {
 				t.Fatalf("data = %q, want %q", data, tt.wantData)
+			}
+		})
+	}
+}
+
+func networkDataTestSecretForConsumer(consumer string) *corev1.Secret {
+	secret := networkDataTestSecretFor(networkDataTestHost, networkDataTestBytes)
+	secret.Annotations[NetworkDataConsumerAnnotation] = consumer
+	return secret
+}
+
+func networkDataTestClaimedHost() *infrav1.PhysicalHost {
+	host := networkDataTestHostWithRef(networkDataTestSecret)
+	host.Spec.ConsumerRef = &corev1.ObjectReference{UID: networkDataTestConsumerUID}
+	return host
+}
+
+func TestLoadNetworkDataConsumer(t *testing.T) {
+	tests := []struct {
+		name       string
+		host       *infrav1.PhysicalHost
+		secret     *corev1.Secret
+		wantReason string
+	}{
+		{name: "claimed, no consumer annotation", host: networkDataTestClaimedHost(), secret: networkDataTestSecretFor(networkDataTestHost, networkDataTestBytes)},
+		{name: "claimed, consumer matches", host: networkDataTestClaimedHost(), secret: networkDataTestSecretForConsumer(string(networkDataTestConsumerUID))},
+		{name: "claimed, consumer is the previous claim", host: networkDataTestClaimedHost(), secret: networkDataTestSecretForConsumer(networkDataTestOldUID), wantReason: infrav1.NetworkDataStaleReason},
+		{name: "claimed, consumer annotation empty", host: networkDataTestClaimedHost(), secret: networkDataTestSecretForConsumer(""), wantReason: infrav1.NetworkDataStaleReason},
+		{name: "unclaimed, consumer is the previous claim", host: networkDataTestHostWithRef(networkDataTestSecret), secret: networkDataTestSecretForConsumer(networkDataTestOldUID)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := fake.NewClientBuilder().WithScheme(newSchemeForTest(t)).WithObjects(tt.secret).Build()
+
+			data, err := loadNetworkData(context.Background(), c, tt.host)
+
+			if got := networkDataReason(err); got != tt.wantReason {
+				t.Fatalf("reason = %q, want %q (err: %v)", got, tt.wantReason, err)
+			}
+			if tt.wantReason != "" {
+				if data != nil {
+					t.Fatalf("data = %q, want none", data)
+				}
+				return
+			}
+			if err != nil || !bytes.Equal(data, networkDataTestBytes) {
+				t.Fatalf("data = %q, err = %v, want %q", data, err, networkDataTestBytes)
 			}
 		})
 	}

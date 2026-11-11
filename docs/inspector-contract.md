@@ -476,8 +476,14 @@ provider renders that per `Machine`, before beskar7 claims a host.
   `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <hostName>`;
   otherwise it is refused. The annotation sits on the Secret because anyone who
   may patch a PhysicalHost could otherwise point it at any Secret in the
-  namespace. The controller publishes the result of the same checks on the
-  host's `NetworkDataReady` condition.
+  namespace. The Secret MAY also carry
+  `beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer: <uid>`.
+  When it does and the host is claimed, the value MUST equal
+  `spec.consumerRef.uid`; otherwise it is refused. This binds the Secret to
+  one claim, so a host claimed again before its Secret is rendered again is not
+  served the network of the previous claim. An unclaimed host does not check
+  it. The controller publishes the result of the same checks on the host's
+  `NetworkDataReady` condition.
 - **Success**: `200` with the `networkData` bytes, verbatim and never parsed
   (`Content-Type: application/octet-stream`, `Cache-Control: no-store`), at most
   64 KiB. The format is cloud-init `network-config` v2 by convention; the
@@ -490,8 +496,8 @@ provider renders that per `Machine`, before beskar7 claims a host.
   changed during the request. Unlike on `/bootstrap` (§4.3), these are not
   `404`s, because a `404` here means "install without the file".
 - **`409`**: the ref is set but the controller cannot serve it: the Secret is
-  missing, does not opt in for this host, has no non-empty `networkData` key,
-  or is over the cap. The endpoint checks all of this on its own live read of
+  missing, does not opt in for this host, names another consumer, has no
+  non-empty `networkData` key, or is over the cap. The endpoint checks all of this on its own live read of
   the Secret; the condition is for operators and is never an input.
 - **`500`**: the Secret could not be read (a transient API error).
 - **Controller side**: a host whose ref is set and whose `NetworkDataReady` is
@@ -1162,6 +1168,15 @@ change. These are not new contract versions.
   the disk aborts during the write and is reported through `/provision-failed`.
   The text now says so, and §10 no longer lists disk-selection tests as missing.
   Nothing changed in the inspector, the controller or on the wire.
+- **Network data consumer (2026-11-11):** §4.6 bound the network data Secret
+  to the host only, so a host claimed again before whatever renders its Secret
+  had caught up was served the previous claim's network. The Secret may now
+  carry the optional `network-data-consumer` annotation; when it does, a
+  claimed host is served only if it equals `spec.consumerRef.uid`, and
+  `NetworkDataReady` is `False` with reason `NetworkDataStale` otherwise.
+  **The wire is unchanged** and an inspector needs no change: a mismatch is one
+  more `409`, which already fails the deploy before the disk write. A Secret
+  without the annotation behaves as before.
 
 ---
 

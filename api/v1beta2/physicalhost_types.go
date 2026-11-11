@@ -549,6 +549,10 @@ const (
 	// NetworkDataInvalidReason marks NetworkDataReady=False when the Secret has
 	// no non-empty "networkData" key or the value exceeds the size cap.
 	NetworkDataInvalidReason string = "NetworkDataInvalid"
+	// NetworkDataStaleReason marks NetworkDataReady=False when the host is
+	// claimed and the Secret's optional network-data-consumer annotation does
+	// not name the UID in Spec.ConsumerRef.
+	NetworkDataStaleReason string = "NetworkDataStale"
 )
 
 // +kubebuilder:object:root=true
