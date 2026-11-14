@@ -41,6 +41,7 @@ var (
 	errNetworkDataSecretNotFound = errors.New("network data Secret not found")
 	errNetworkDataNotAuthorized  = errors.New("network data Secret does not name this host in its " + NetworkDataHostAnnotation + " annotation")
 	errNetworkDataInvalid        = errors.New("network data Secret has no usable " + networkDataSecretKey + " value")
+	errNetworkDataStale          = errors.New("network data Secret was rendered for another consumer in its " + NetworkDataConsumerAnnotation + " annotation")
 )
 
 // loadNetworkData returns the network data bytes for host. It returns nil and
@@ -62,6 +63,9 @@ func loadNetworkData(ctx context.Context, c client.Reader, host *infrav1.Physica
 	if secret.Annotations[NetworkDataHostAnnotation] != host.Name {
 		return nil, fmt.Errorf("%w: %s", errNetworkDataNotAuthorized, name)
 	}
+	if !networkDataConsumerMatches(secret, host) {
+		return nil, fmt.Errorf("%w: %s", errNetworkDataStale, name)
+	}
 	data := secret.Data[networkDataSecretKey]
 	if len(data) == 0 {
 		return nil, fmt.Errorf("%w: %s: key missing or empty", errNetworkDataInvalid, name)
@@ -70,6 +74,17 @@ func loadNetworkData(ctx context.Context, c client.Reader, host *infrav1.Physica
 		return nil, fmt.Errorf("%w: %s: exceeds %d bytes", errNetworkDataInvalid, name, maxNetworkDataSize)
 	}
 	return data, nil
+}
+
+// networkDataConsumerMatches reports whether the Secret's optional consumer
+// annotation, when set, names the UID of the machine holding host. An unclaimed
+// host passes, so it stays claimable while the Secret still names the old claim.
+func networkDataConsumerMatches(secret *corev1.Secret, host *infrav1.PhysicalHost) bool {
+	consumer, ok := secret.Annotations[NetworkDataConsumerAnnotation]
+	if !ok || host.Spec.ConsumerRef == nil {
+		return true
+	}
+	return consumer != "" && consumer == string(host.Spec.ConsumerRef.UID)
 }
 
 // networkDataReason maps a loadNetworkData error to its NetworkDataReady
@@ -82,6 +97,8 @@ func networkDataReason(err error) string {
 		return infrav1.NetworkDataNotAuthorizedReason
 	case errors.Is(err, errNetworkDataInvalid):
 		return infrav1.NetworkDataInvalidReason
+	case errors.Is(err, errNetworkDataStale):
+		return infrav1.NetworkDataStaleReason
 	}
 	return ""
 }

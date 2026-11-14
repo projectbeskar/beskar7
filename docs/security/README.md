@@ -83,7 +83,7 @@ The manager runs an HTTPS server on `:8082` that hosts five host-scoped endpoint
 
 - `POST /api/v1/inspection/{namespace}/{hostName}` — receives inspection reports.
 - `GET  /api/v1/bootstrap/{namespace}/{hostName}` — serves bootstrap data Secret bytes.
-- `GET  /api/v1/network-data/{namespace}/{hostName}`: serves the network data Secret bytes of a claimed host (contract v4.3). The Secret must name the host in its `beskar7.infrastructure.cluster.x-k8s.io/network-data-host` annotation, so the right to patch a PhysicalHost does not let anyone have another Secret in the namespace served.
+- `GET  /api/v1/network-data/{namespace}/{hostName}`: serves the network data Secret bytes of a claimed host (contract v4.3). The Secret must name the host in its `beskar7.infrastructure.cluster.x-k8s.io/network-data-host` annotation, so the right to patch a PhysicalHost does not let anyone have another Secret in the namespace served. With the optional `network-data-consumer` annotation, a claimed host is served only a Secret rendered for its current `consumerRef.uid`.
 - `POST /api/v1/provisioned/{namespace}/{hostName}` — the inspector's report that the OS image is written (D-015).
 - `POST /api/v1/provision-failed/{namespace}/{hostName}` — the inspector's report that deployment failed.
 

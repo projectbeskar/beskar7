@@ -28,6 +28,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -58,6 +59,7 @@ var _ = Describe("Network data GET handler (v4.3)", func() {
 		physicalHost *infrav1.PhysicalHost
 		server       *httptest.Server
 		token        string
+		b7machineUID types.UID
 		payload      = []byte("network:\n  version: 2\n  ethernets:\n    boot:\n      dhcp4: true\n")
 	)
 
@@ -121,6 +123,7 @@ var _ = Describe("Network data GET handler (v4.3)", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, b7machine)).To(Succeed())
+		b7machineUID = b7machine.UID
 
 		hostKey := client.ObjectKeyFromObject(physicalHost)
 		setHostConsumer(hostKey, machineName)
@@ -178,6 +181,21 @@ var _ = Describe("Network data GET handler (v4.3)", func() {
 	It("refuses a Secret without the opt-in annotation (409)", func() {
 		setRef(secretName)
 		putNetworkDataSecret("", payload)
+		expectStatus(token, http.StatusConflict)
+	})
+
+	It("refuses a Secret rendered for another consumer (409)", func() {
+		setRef(secretName)
+		putNetworkDataSecret(hostName, payload)
+		ph := getPhysicalHost(client.ObjectKeyFromObject(physicalHost))
+		base := ph.DeepCopy()
+		ph.Spec.ConsumerRef.UID = b7machineUID
+		Expect(k8sClient.Patch(ctx, ph, client.MergeFrom(base))).To(Succeed())
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: testNs.Name, Name: secretName}, secret)).To(Succeed())
+		secretBase := secret.DeepCopy()
+		secret.Annotations[NetworkDataConsumerAnnotation] = "previous-claim-uid"
+		Expect(k8sClient.Patch(ctx, secret, client.MergeFrom(secretBase))).To(Succeed())
 		expectStatus(token, http.StatusConflict)
 	})
 

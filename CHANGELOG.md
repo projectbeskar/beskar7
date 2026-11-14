@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **A host claimed again right after a release no longer boots with the previous claim's network data.** The
+  Secret `PhysicalHost.spec.networkDataSecretRef` names may carry
+  `beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer: <uid>`. While the host is claimed, the value
+  must equal `spec.consumerRef.uid`, otherwise `NetworkDataReady=False (NetworkDataStale)` and the endpoint answers
+  `409`, so the new machine waits with `WaitingForNetworkData` until the Secret is rendered for its claim. An
+  unclaimed host does not check it, so it stays claimable. Secrets without the annotation behave as before. No
+  CRD, RBAC or wire change, and the inspector needs no change.
+  ([#312](https://github.com/projectbeskar/beskar7/pull/312), issue #311)
+
 ## [v0.11.0] - 2026-11-14
 
 Per-host network data for the installed OS (contract `v4.3`), claim-time hardware matching

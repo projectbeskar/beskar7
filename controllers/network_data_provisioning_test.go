@@ -43,6 +43,8 @@ const (
 	networkDataRunMachine = "netdata-machine"
 	networkDataRunHost    = "netdata-host"
 	networkDataRunSecret  = "netdata-host-network"
+	// networkDataRunPreviousUID stands for the claim that released the host.
+	networkDataRunPreviousUID = "previous-claim-uid"
 	// networkDataRunWake is well under the machine's one-minute no-host
 	// requeue, so a claim inside it proves the host event woke the machine.
 	networkDataRunWake = 20 * time.Second
@@ -128,6 +130,16 @@ var _ = Describe("Network data gates the claim and the boot under a running mana
 		Expect(k8sClient.Patch(ctx, secret, client.MergeFrom(base))).To(Succeed())
 	}
 
+	// setNetworkDataConsumer sets the Secret's consumer annotation, as a
+	// renderer does when it writes the network for a claim.
+	setNetworkDataConsumer := func(uid string) {
+		secret := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: testNs.Name, Name: networkDataRunSecret}, secret)).To(Succeed())
+		base := secret.DeepCopy()
+		secret.Annotations[NetworkDataConsumerAnnotation] = uid
+		Expect(k8sClient.Patch(ctx, secret, client.MergeFrom(base))).To(Succeed())
+	}
+
 	createHost := func(consumer string) {
 		host := &infrav1.PhysicalHost{
 			ObjectMeta: metav1.ObjectMeta{Name: networkDataRunHost, Namespace: testNs.Name},
@@ -199,12 +211,13 @@ var _ = Describe("Network data gates the claim and the boot under a running mana
 		g.Expect(k8sClient.Get(ctx, machineKey(), m)).To(Succeed())
 		return m
 	}
-	hostRefused := func(g Gomega) {
+	hostNetworkDataFalse := func(g Gomega, reason string) {
 		cond := conditions.Get(getHost(g), infrav1.NetworkDataReadyCondition)
 		g.Expect(cond).NotTo(BeNil())
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-		g.Expect(cond.Reason).To(Equal(infrav1.NetworkDataNotAuthorizedReason))
+		g.Expect(cond.Reason).To(Equal(reason))
 	}
+	hostRefused := func(g Gomega) { hostNetworkDataFalse(g, infrav1.NetworkDataNotAuthorizedReason) }
 	hostBooted := func(g Gomega) {
 		g.Expect(getHost(g).Status.State).To(Equal(infrav1.StateInspecting))
 	}
@@ -254,4 +267,34 @@ var _ = Describe("Network data gates the claim and the boot under a running mana
 		fixNetworkDataSecret()
 		Eventually(hostBooted, networkDataRunWake, 100*time.Millisecond).Should(Succeed())
 	})
+
+	It("does not boot a host claimed while its Secret names another consumer, and boots it once it names the claim",
+		func() {
+			createNetworkDataSecret(networkDataRunHost)
+			setNetworkDataConsumer(networkDataRunPreviousUID)
+			createHost("")
+			Eventually(func(g Gomega) {
+				g.Expect(conditions.IsTrue(getHost(g), infrav1.NetworkDataReadyCondition)).To(BeTrue(),
+					"an unclaimed host does not check the consumer, so it stays claimable")
+				g.Expect(getHost(g).Status.State).To(Equal(infrav1.StateAvailable))
+			}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
+
+			By("claiming the host while the Secret still names the previous claim")
+			createMachine()
+			Eventually(func(g Gomega) {
+				g.Expect(getHost(g).Spec.ConsumerRef).NotTo(BeNil())
+				hostNetworkDataFalse(g, infrav1.NetworkDataStaleReason)
+				g.Expect(conditions.GetReason(getMachine(g), infrav1.InfrastructureReadyCondition)).
+					To(Equal(infrav1.WaitingForNetworkDataReason))
+			}, 30*time.Second, 100*time.Millisecond).Should(Succeed())
+			Consistently(func(g Gomega) {
+				g.Expect(getHost(g).Status.State).NotTo(Equal(infrav1.StateInspecting),
+					"a host must not boot with the network data of the previous claim")
+			}, networkDataRunHold, 100*time.Millisecond).Should(Succeed())
+
+			By("rendering the Secret for the new claim")
+			setNetworkDataConsumer(string(getMachine(Default).UID))
+			Eventually(hostBooted, networkDataRunWake, 100*time.Millisecond).Should(Succeed(),
+				"the host's NetworkDataReady turning True must wake the waiting machine")
+		})
 })
