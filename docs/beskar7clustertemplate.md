@@ -40,7 +40,9 @@ spec:
 
 ### Why `spec` is empty
 
-`Beskar7ClusterSpec` has exactly one field, `controlPlaneEndpoint`, and that is precisely the field you should **not**
+`Beskar7ClusterSpec` has two fields. `setNodeProviderID` (off by default, see
+[Beskar7Cluster → Setting Node providerIDs](beskar7cluster.md#setting-node-providerids)) is a per-class choice and can
+be templated. `controlPlaneEndpoint` is precisely the field you should **not**
 template. Every cluster needs its own endpoint, and Beskar7 does not discover one (see
 [Beskar7Cluster → control-plane endpoint](beskar7cluster.md)) — setting it in the template would hand every cluster
 in the `ClusterClass` the same endpoint. Instead, each `Cluster` supplies its own value another way: a
@@ -48,8 +50,7 @@ in the `ClusterClass` the same endpoint. Instead, each `Cluster` supplies its ow
 `spec.controlPlaneEndpoint` (see [`examples/clusterclass.yaml`](../examples/clusterclass.yaml)), or
 `Cluster.spec.controlPlaneEndpoint` set directly on the topology `Cluster`.
 
-So `spec: {}` is the normal, correct content. The template earns its keep by existing, not by carrying configuration.
-If `Beskar7ClusterSpec` grows genuinely per-class fields later, they belong here.
+So `spec: {}`, or `spec: {setNodeProviderID: true}`, is the normal, correct content.
 
 ### `spec.template.metadata`
 

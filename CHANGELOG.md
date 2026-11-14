@@ -37,6 +37,29 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `smoke-host-01` is served its network data. See
   [`docs/inspector-contract.md`](docs/inspector-contract.md#46-get-apiv1network-datanamespacehostname-per-host-network-data).
 
+- **Opt-in: the controller sets `Node.spec.providerID` on the workload cluster (#297).** A Node that registered
+  without a providerID left its CAPI `Machine` at `Provisioned` with no `nodeRef`, and CAPI kept the
+  `node.cluster.x-k8s.io/uninitialized` taint on it. A new `Beskar7Cluster` field, `spec.setNodeProviderID`
+  (also on `Beskar7ClusterTemplate`), **off by default**, turns this on per cluster. Then, once the host is
+  `Ready` and until the `Machine` has a `nodeRef`, the `Beskar7Machine` controller reads the Node named after the
+  `Machine` through Cluster API's ClusterCache and, if its `spec.providerID` is empty, sets it to
+  `b7://<namespace>/<host>`. It never changes a non-empty value. Progress shows on a new `Beskar7Machine`
+  condition, `NodeProviderIDReady` (`NodeProviderIDSet`, or `False` with `NodeNotFound`, `NodeProviderIDMismatch`
+  or `WorkloadClusterUnreachable`), which is not part of the `Ready` summary and is absent on a cluster that has
+  not opted in. The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation
+  `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id`, and the manager's ClusterCache only connects to
+  a `Cluster` backed by a `Beskar7Cluster` that carries it: no other cluster's kubeconfig is read or
+  health-checked, including clusters of other infrastructure providers. Flipping the switch on a running cluster
+  takes effect without a restart. The workload cluster is reached with the `<cluster>-kubeconfig` Secret.
+  **RBAC:** the manager now needs `patch` on `cluster.x-k8s.io` `clusters` (generated role, Helm chart and
+  namespace-scoped overlay). The per-distro image stages and `/oem/beskar7/provider-id` (contract v4.2) are
+  unchanged, remain the default, and are still needed where the Node is not named after the `Machine` (k3s, k0s
+  on Kairos) or registers its own providerID (k3s). See
+  [`docs/beskar7machine.md`](docs/beskar7machine.md#providerid--node-association).
+- **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
+  "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
+  that makes the machine Ready.
+
 - **Metrics for resolving `spec.targetImageDigestURL` (D-038).** Operators can now alert on a checksum file
   that does not resolve, and on a checksum server that answers slowly, without reading every machine's
   condition. `beskar7_controller_target_image_digest_resolutions_total{outcome,namespace}` counts attempts, and

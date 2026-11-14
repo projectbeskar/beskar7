@@ -594,6 +594,16 @@ kubectl --kubeconfig <workload.kubeconfig> get node <node> -o jsonpath='{.spec.p
 # If this is e.g. "k3s://<hostname>" instead of "b7://<namespace>/<host-name>", that is the bug.
 ```
 
+**First, read the `Beskar7Machine`'s `NodeProviderIDReady` condition** (#297). With `spec.setNodeProviderID: true` on the `Beskar7Cluster` the controller sets an empty Node `providerID` itself, and the reason says why it could not. No condition at all means the cluster has not opted in: turn the switch on, or use an image-side route below.
+
+```bash
+kubectl get beskar7machine <name> -o jsonpath='{.status.conditions[?(@.type=="NodeProviderIDReady")]}'
+```
+
+- `NodeNotFound`: no Node in the workload cluster is named after the `Machine`. Either it has not joined yet, or the distro names Nodes after the hostname (k3s, k0s on Kairos): use an image-side route below.
+- `NodeProviderIDMismatch`: the Node registered a different providerID (the message names it). It cannot be changed in place; fix the bootstrap or image as below and re-provision.
+- `WorkloadClusterUnreachable`: the controller has no client for the workload cluster. Check the `<cluster>-kubeconfig` Secret and that the control plane endpoint is reachable from the management cluster.
+
 **Cause:** CAPI marks a `Machine` `Running` only after it matches the Machine's `spec.providerID` to a Node's `spec.providerID` (they must be **equal**). Beskar7 stamps `b7://<namespace>/<host-name>` on the Machine, but the node's kubelet, left to its defaults, self-registers a different value (k3s uses `k3s://<hostname>`). The mismatch means CAPI never associates the Node, so the Machine never reaches `Running` — even though the node itself is healthy and `Ready`.
 
 **Solution:** Tell the node's kubelet to register with the exact ProviderID Beskar7 assigns — `b7://<namespace>/<host-name>` (the `<host-name>` is the **PhysicalHost** name) — via the per-machine bootstrap config. For k3s, add to the `k3s.args` in the bootstrap `#cloud-config`:

@@ -50,10 +50,14 @@ rules:
   resources: ["secrets"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 
-# Cluster API: read-only on Cluster and Machine for owner-walks and endpoint
-# derivation.
+# Cluster API: Cluster patch is only for the set-node-provider-id annotation the
+# Beskar7Cluster controller mirrors from spec.setNodeProviderID.
 - apiGroups: ["cluster.x-k8s.io"]
-  resources: ["clusters", "clusters/status", "machines", "machines/status"]
+  resources: ["clusters"]
+  verbs: ["get", "list", "patch", "watch"]
+# Read-only on Cluster status and Machine for owner-walks and endpoint derivation.
+- apiGroups: ["cluster.x-k8s.io"]
+  resources: ["clusters/status", "machines", "machines/status"]
   verbs: ["get", "list", "watch"]
 
 # Leases: leader election.
@@ -196,7 +200,7 @@ The manager pod does not need to be restarted between steps 2 and 4 — Kubernet
 |---|---|---|
 | `PhysicalHostReconciler` | `physicalhosts`, `physicalhosts/status`, `physicalhosts/finalizers`, `secrets` (get + list/watch via informer), `configmaps` (get + create/delete/patch/update + list/watch via informer), `events` | Manage the host's lifecycle, fetch BMC credentials, consume the inspection-result ConfigMap (handoff from the inspection HTTP handler). |
 | `Beskar7MachineReconciler` | `beskar7machines`, `beskar7machines/status`, `beskar7machines/finalizers`, `physicalhosts` (get + patch), `secrets` (get + create/update/patch/delete), `machines` / `machines/status` (read), `cluster.x-k8s.io` resources (read) | Claim a host, read bootstrap data, mint per-host token Secret, walk to owner Machine. |
-| `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `clusters` / `clusters/status` (read; also watched, so a Cluster edit wakes the reconciler), `physicalhosts` (read for failure-domain discovery) | Mirror the control-plane endpoint already set on `Cluster` or `Beskar7Cluster` spec and discover failure domains. |
+| `Beskar7ClusterReconciler` | `beskar7clusters`, `beskar7clusters/status`, `beskar7clusters/finalizers`, `clusters` / `clusters/status` (read; also watched, so a Cluster edit wakes the reconciler), `clusters` (patch, only the `set-node-provider-id` annotation), `physicalhosts` (read for failure-domain discovery) | Mirror the control-plane endpoint already set on `Cluster` or `Beskar7Cluster` spec, mirror `spec.setNodeProviderID` onto the `Cluster`, and discover failure domains. |
 
 ## Residual cluster-wide scope
 
