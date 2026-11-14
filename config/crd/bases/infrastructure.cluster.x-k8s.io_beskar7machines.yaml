@@ -51,6 +51,12 @@ spec:
             properties:
               hardwareRequirements:
                 properties:
+                  matchAt:
+                    default: Inspection
+                    enum:
+                    - Inspection
+                    - Claim
+                    type: string
                   minCPUCores:
                     format: int32
                     minimum: 1

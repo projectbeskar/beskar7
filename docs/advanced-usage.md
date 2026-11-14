@@ -44,6 +44,8 @@ Validation rules:
 
 If any minimum is violated, the controller calls `markTerminalFailure(HardwareRequirementsNotMet, msg)`, which sets `Status.Phase=Failed`, `Status.Ready=false`, and marks the `InfrastructureReady` condition `False` with reason `HardwareRequirementsNotMet` and the shortfall in the message, then stops requeueing. The BMC's hardware does not change at runtime — the failure is terminal. Recovery: lower the requirement, allocate to a different host, or replace the hardware (then delete-and-recreate the Beskar7Machine).
 
+By default the minimums are checked only against the claimed host's own inspection. With `hardwareRequirements.matchAt: Claim` they also filter the claim: a host is claimed only if the inspection report it already holds meets them, and otherwise the machine waits with `NoMatchingPhysicalHost`, which is not terminal. The claim's own fresh report is still checked as above. See [Matching hardware at claim](beskar7machine.md#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
+
 You can use `hardwareRequirements` to enforce node-class invariants before bootstrap:
 
 ```yaml

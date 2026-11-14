@@ -455,15 +455,15 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason,
 				"PhysicalHost %q is claimed and not provisioned yet", physicalHost.Name)
 		}
-	} else if placement != nil {
+	} else if placement != nil || claimTimeHardwareMatching(b7machine) {
 		// Distinct from an empty inventory: hosts may well be Available, just
 		// not where CAPI placed this Machine. Requeue, never terminal — a host in
 		// that domain can free up, or the operator can label one. The minute is
 		// a backstop: a host entering Available re-enqueues the machine at once
 		// (AvailablePhysicalHostToWaitingBeskar7Machines).
-		logger.Info("No available PhysicalHost satisfies the placement constraint, requeuing", "placement", placement.String())
-		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "No available PhysicalHost matches the placement constraint %s%s",
-			placement.String(), r.noClaimableHostNote(ctx, b7machine, placement))
+		logger.Info("No available PhysicalHost satisfies the placement or hardware constraint, requeuing")
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.NoMatchingPhysicalHostReason, "No available PhysicalHost matches %s%s",
+			claimConstraintDescription(b7machine, placement), r.noClaimableHostNote(ctx, b7machine, placement))
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	} else {
 		logger.Info("No available or associated PhysicalHost found, requeuing")
@@ -1120,58 +1120,19 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 
 	report := physicalHost.Status.InspectionReport
 
-	// Validate hardware requirements if specified
-	if b7machine.Spec.HardwareRequirements != nil {
-		reqs := b7machine.Spec.HardwareRequirements
-
-		// Calculate total cores from all CPUs
-		var totalCores int32
-		for _, cpu := range report.CPUs {
-			totalCores += cpu.Cores
-		}
-
-		// Hardware-validation failures are terminal. The BMC's hardware does not
-		// change at runtime; requeueing forever would just churn. Operator must
-		// lower the requirements, allocate to a different host, or replace the
-		// hardware. The reason and message surface on the Machine's
-		// InfrastructureReady condition in `kubectl describe machine`.
-		if reqs.MinCPUCores > 0 && totalCores < reqs.MinCPUCores {
-			msg := fmt.Sprintf("insufficient CPU cores: found %d, required %d", totalCores, reqs.MinCPUCores)
-			logger.Info("Hardware validation failed (terminal)", "check", "MinCPUCores", "found", totalCores, "required", reqs.MinCPUCores)
-			r.markTerminalFailure(b7machine, infrav1.HardwareRequirementsNotMetReason, msg)
-			return ctrl.Result{}, nil
-		}
-
-		// Calculate total memory from all DIMMs
-		var totalMemoryGB int32
-		for _, mem := range report.Memory {
-			memGB, err := parseMemoryCapacityGB(mem.Capacity)
-			if err != nil {
-				logger.Error(err, "Failed to parse memory capacity", "capacity", mem.Capacity)
-				continue
-			}
-			totalMemoryGB += int32(memGB)
-		}
-
-		if reqs.MinMemoryGB > 0 && totalMemoryGB < reqs.MinMemoryGB {
-			msg := fmt.Sprintf("insufficient memory: found %d GB, required %d GB", totalMemoryGB, reqs.MinMemoryGB)
-			logger.Info("Hardware validation failed (terminal)", "check", "MinMemoryGB", "found", totalMemoryGB, "required", reqs.MinMemoryGB)
-			r.markTerminalFailure(b7machine, infrav1.HardwareRequirementsNotMetReason, msg)
-			return ctrl.Result{}, nil
-		}
-
-		if reqs.MinDiskGB > 0 {
-			var totalDisk int32
-			for _, disk := range report.Disks {
-				totalDisk += disk.SizeGB
-			}
-			if totalDisk < reqs.MinDiskGB {
-				msg := fmt.Sprintf("insufficient disk space: found %d GB, required %d GB", totalDisk, reqs.MinDiskGB)
-				logger.Info("Hardware validation failed (terminal)", "check", "MinDiskGB", "found", totalDisk, "required", reqs.MinDiskGB)
-				r.markTerminalFailure(b7machine, infrav1.HardwareRequirementsNotMetReason, msg)
-				return ctrl.Result{}, nil
-			}
-		}
+	// Hardware-validation failures are terminal. The BMC's hardware does not
+	// change at runtime; requeueing forever would just churn. Operator must
+	// lower the requirements, allocate to a different host, or replace the
+	// hardware. The reason and message surface on the Machine's
+	// InfrastructureReady condition in `kubectl describe machine`.
+	shortfall, memoryErrs := checkHardwareRequirements(b7machine.Spec.HardwareRequirements, report)
+	for _, err := range memoryErrs {
+		logger.Error(err, "Failed to parse memory capacity")
+	}
+	if shortfall != nil {
+		logger.Info("Hardware validation failed (terminal)", "check", shortfall.check, "found", shortfall.found, "required", shortfall.required)
+		r.markTerminalFailure(b7machine, infrav1.HardwareRequirementsNotMetReason, shortfall.message())
+		return ctrl.Result{}, nil
 	}
 
 	logger.Info("Hardware validation passed")
@@ -1495,8 +1456,12 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		host := &hostList.Items[i]
 		// A host whose network data cannot be served would only hold this
 		// machine in WaitingForNetworkData while a usable host sits idle.
-		if hostWaitingForNetworkData(host) {
-			logger.V(1).Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", networkDataWaitMessage(host))
+		switch skip, why := claimSkip(b7machine, host); skip {
+		case claimSkipNetworkData:
+			logger.V(1).Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", why)
+			continue
+		case claimSkipNoReport, claimSkipHardware:
+			logger.V(1).Info("Skipping PhysicalHost that does not meet the hardware requirements at claim", "host", host.Name, "reason", why)
 			continue
 		}
 		// ConsumerRef is on Spec (not indexed); keep the in-loop guard defensively.
@@ -1559,26 +1524,43 @@ func availableHostListOptions(b7machine *infrav1.Beskar7Machine, placement label
 	return append(opts, client.MatchingLabelsSelector{Selector: placement})
 }
 
-// noClaimableHostNote says how many Available hosts the claim skipped for
-// their network data, so the operator looks at their NetworkDataReady.
-// Empty when none was skipped or the hosts cannot be listed.
+// noClaimableHostNote says how many Available hosts the claim skipped and why,
+// so the operator looks at the host's NetworkDataReady condition or inspection
+// report. Empty when none was skipped or the hosts cannot be listed.
 func (r *Beskar7MachineReconciler) noClaimableHostNote(ctx context.Context, b7machine *infrav1.Beskar7Machine, placement labels.Selector) string {
 	hosts := &infrav1.PhysicalHostList{}
 	if err := r.List(ctx, hosts, availableHostListOptions(b7machine, placement)...); err != nil {
 		return ""
 	}
-	skipped := 0
+	var network, noReport, short int
 	for i := range hosts.Items {
 		h := &hosts.Items[i]
-		if h.Spec.ConsumerRef == nil && hostWaitingForNetworkData(h) {
-			skipped++
+		if h.Spec.ConsumerRef != nil {
+			continue
+		}
+		switch skip, _ := claimSkip(b7machine, h); skip {
+		case claimSkipNetworkData:
+			network++
+		case claimSkipNoReport:
+			noReport++
+		case claimSkipHardware:
+			short++
 		}
 	}
-	if skipped == 0 {
-		return ""
+	var note string
+	if network > 0 {
+		note += fmt.Sprintf("; %d Available PhysicalHost(s) skipped because their network data is not ready, see their %s condition",
+			network, infrav1.NetworkDataReadyCondition)
 	}
-	return fmt.Sprintf("; %d Available PhysicalHost(s) skipped because their network data is not ready, see their %s condition",
-		skipped, infrav1.NetworkDataReadyCondition)
+	if noReport > 0 {
+		note += fmt.Sprintf("; %d Available PhysicalHost(s) skipped because they have no inspection report to match hardwareRequirements against",
+			noReport)
+	}
+	if short > 0 {
+		note += fmt.Sprintf("; %d Available PhysicalHost(s) skipped because their inspection report does not meet hardwareRequirements",
+			short)
+	}
+	return note
 }
 
 // reconcileDelete handles deletion. The sequence is:

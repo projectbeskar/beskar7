@@ -25,6 +25,7 @@ spec:
     minCPUCores: 4
     minMemoryGB: 8
     minDiskGB:   50
+    matchAt:     Inspection                                             # default; Claim also filters hosts at claim, see "Matching hardware at claim"
   hostSelector:                                                         # optional; see "Steering the claim"
     matchLabels:
       node-role: control-plane
@@ -92,9 +93,30 @@ By default a Beskar7Machine claims the first `Available` PhysicalHost in its nam
   `matchExpressions` work too (`In`, `NotIn`, `Exists`, `DoesNotExist`). An absent or empty selector means any host, so existing deployments are unaffected. See [`examples/host-pools.yaml`](../examples/host-pools.yaml).
 - **`Machine.spec.failureDomain`** — CAPI's placement. `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone` label on hosts; when CAPI assigns a Machine to one, the claim only considers hosts carrying that zone label.
 
-Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place.
+Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. By default `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place, or opt in to [claim-time matching](#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
 
 When hosts are `Available` but none satisfies the constraint, `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (an empty inventory reports `WaitingForPhysicalHost`) and the machine requeues every minute — sooner if a `PhysicalHost` in the namespace becomes `Available` in the meantime, which re-enqueues every machine still waiting for a host. A selector that cannot be parsed (an unknown operator, for example) is terminal: `InvalidHostSelector`.
+
+## Matching hardware at claim: `hardwareRequirements.matchAt: Claim`
+
+`spec.hardwareRequirements.matchAt` says when the minimums are checked:
+
+- **`Inspection`** (the default, also when the field is unset) — today's behaviour. The minimums are checked against the report of the claim's own inspection run, and a miss is terminal (`HardwareRequirementsNotMet`).
+- **`Claim`** — the minimums are also a claim filter. A host is a candidate only if it **already holds an inspection report** that meets them. A host with no report, or with a report that falls short, is skipped. The filter applies on top of `hostSelector` and the Machine's failure domain; a machine never claims outside its failure domain, however well a host elsewhere fits.
+
+```yaml
+spec:
+  hardwareRequirements:
+    matchAt: Claim
+    minCPUCores: 16
+    minMemoryGB: 64
+```
+
+A report outlives the claim that produced it: releasing a host clears the run state (`inspectionPhase`, timestamps) but keeps `status.inspectionReport` until the next run replaces it. So `Claim` only matches hosts that an earlier claim has already inspected; a host that has never been claimed has no report and is skipped. A pool of untouched hosts therefore stays unmatched until something else inspects them.
+
+When no host qualifies the machine waits, which is **not** terminal: `PhysicalHostAssociated=False` with reason `NoMatchingPhysicalHost` and a requeue every minute, sooner when a host becomes `Available`. The message names the hardware constraint and says how many `Available` hosts were skipped for having no report, and how many for a report that falls short. An empty inventory reports `NoMatchingPhysicalHost` too, with the same constraint named, so the reason does not change when the first host appears.
+
+The claim run's own fresh report is still validated after inspection, and a miss there stays terminal: hardware can change between runs. `minDiskGB` keeps its meaning (the sum over all inspected disks; see [Disk capacity requirement](#disk-capacity-requirement)). `matchAt: Claim` does nothing while none of the three minimums is set.
 
 ## Reconcile flow
 
@@ -105,7 +127,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 3. **Find or claim a host.** `findAndClaimOrGetAssociatedHost` runs three lookups in order:
     1. If `Spec.ProviderID` is set (only once the host has reached `Ready`), `Get` the host directly by the encoded `<ns>/<name>` and return it.
     2. List PhysicalHosts in the namespace and return the one whose `Spec.ConsumerRef.Name` matches this Beskar7Machine — covers the window between claim and `ProviderID` assignment. Without this branch the controller would forget its own claim after the first reconcile (the host has transitioned to `InUse` so the next branch's `Available` filter skips it). The match also requires `ConsumerRef.Namespace` to be empty or equal to the host's own namespace (`resolveConsumerBeskar7Machine`), so a host claimed "by" a same-named machine in a different namespace is never mistaken for this machine's host (SEC-12).
-    3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available` — and by the machine's placement constraint: `spec.hostSelector` when set, ANDed with the label `topology.kubernetes.io/zone=<domain>` when CAPI has placed the owning `Machine` into a failure domain (`Machine.spec.failureDomain`; the same label `Beskar7Cluster` derives its failure domains from). The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. If hosts are `Available` but none is in the Machine's failure domain, the condition `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (as opposed to `WaitingForPhysicalHost` for an empty inventory) and the machine requeues; it never claims a host outside its domain. Placement applies only to a fresh claim — lookups 1 and 2 return the host the machine already holds.
+    3. List `PhysicalHost` objects in the namespace filtered by the `status.state` field index for `Available` — and, when `hardwareRequirements.matchAt` is `Claim`, by a stored inspection report that meets the minimums (see [Matching hardware at claim](#matching-hardware-at-claim-hardwarerequirementsmatchat-claim)) — and by the machine's placement constraint: `spec.hostSelector` when set, ANDed with the label `topology.kubernetes.io/zone=<domain>` when CAPI has placed the owning `Machine` into a failure domain (`Machine.spec.failureDomain`; the same label `Beskar7Cluster` derives its failure domains from). The first host with no `ConsumerRef` is claimed via an optimistic-locking patch. Concurrent claims fail fast with `Conflict`; the loser requeues. If hosts are `Available` but none is in the Machine's failure domain, the condition `PhysicalHostAssociated=False` carries reason `NoMatchingPhysicalHost` (as opposed to `WaitingForPhysicalHost` for an empty inventory) and the machine requeues; it never claims a host outside its domain. Placement applies only to a fresh claim — lookups 1 and 2 return the host the machine already holds.
 
     See `controllers/beskar7machine_controller.go:findAndClaimOrGetAssociatedHost`.
 4. **Bootstrap data check.** `ensureBootstrapDataReady` runs only *after* a host is claimed. A host is taken from the pool regardless of whether the bootstrap Secret is ready yet.
@@ -120,7 +142,7 @@ The reconciler runs through these phases. Each phase corresponds to a state of t
 
     If the host is in `Error` instead because it cannot reach its BMC, or because its credentials Secret does not authorise the BMC's address, the machine waits rather than failing and picks up here once the host is back at `InUse` — see [A BMC outage is not a terminal failure](#a-bmc-outage-is-not-a-terminal-failure).
 6. **Wait for inspection.** While the host is `Inspecting`, monitor `Status.InspectionPhase`. If `Status.InspectionTimestamp` is older than the inspection timeout (default 10 minutes; override with the `--inspection-timeout` manager flag for slow-POST hardware), call `markTerminalFailure(InspectionTimedOut, ...)` and stop. Inspection timeout is terminal — the operator must investigate (likely an iPXE misconfiguration) and delete-and-recreate.
-7. **Validate hardware.** When `Status.InspectionPhase == Complete`, sum CPU cores across `report.cpus[]`, parse memory across `report.memory[]` (using the `parseMemoryCapacityGB` helper for `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` suffixes), and sum disk size across `report.disks[]`. If any minimum is violated, call `markTerminalFailure(HardwareRequirementsNotMet, ...)`. Hardware-validation failures are terminal — the BMC's hardware does not change at runtime.
+7. **Validate hardware.** (One pure function, shared with the claim-time filter.) When `Status.InspectionPhase == Complete`, sum CPU cores across `report.cpus[]`, parse memory across `report.memory[]` (using the `parseMemoryCapacityGB` helper for `GB`/`GiB`/`MB`/`MiB`/`TB`/`TiB` suffixes), and sum disk size across `report.disks[]`. If any minimum is violated, call `markTerminalFailure(HardwareRequirementsNotMet, ...)`. Hardware-validation failures are terminal — the BMC's hardware does not change at runtime.
 8. **Start deployment.** When validation passes, signal the host (`inspection-request: inspect-complete`, signed like `inspect`), which moves the host to `Deploying` and records `Status.DeployingTimestamp`. The inspector does not wait for that (contract §9.2): once `/bootstrap` answers it writes the digest-pinned image to the target disk, injects the bootstrap data, and reports `POST /provisioned`, or `POST /provision-failed` on a failure.
 9. **Wait for deployment.** While the host is `Deploying`, the machine reports phase `Provisioning` and `InfrastructureReady=False` (`PhysicalHostNotReady`). If `Status.DeployingTimestamp` is older than the deployment timeout (default 20 minutes; override with the `--deployment-timeout` manager flag), call `markTerminalFailure(DeploymentTimedOut, ...)` and stop. A `/provision-failed` report puts the host in `Error` with the reported reason, and the machine fails with `DeploymentFailed`.
 10. **Mark ready.** When the host's reconciler applies the bound `/provisioned` report, the host moves to `Ready`. The Beskar7Machine then sets `Spec.ProviderID = b7://<ns>/<name>`, copies addresses from the host, sets `InfrastructureReady=True` (`Provisioned`), `Status.Ready=true`, and `Status.Initialization.Provisioned=true` (the CAPI v1beta2 contract field that CAPI core lifts into `Machine.status.initialization.infrastructureProvisioned` and uses to advance the parent Machine past `Pending`). On that first pass it also clears the host's boot override, and it cuts the host's callback token to 5 minutes (decision D-031).
