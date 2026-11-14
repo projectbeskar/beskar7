@@ -254,7 +254,7 @@ What the instance needs:
   It cannot list or watch Secrets, so it cannot enumerate them, and the instance
   holds none in memory. An instance older than this behaviour caches Secrets and
   needs `list` and `watch` on them: upgrade the instance before you apply this
-  Role ([Upgrading](upgrading.md#v0102--unreleased--a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role)).
+  Role ([Upgrading](upgrading.md#2-a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role)).
 - **A kubeconfig for that ServiceAccount.** A token from `kubectl create token`
   expires (`--duration`, capped by the API server's
   `--service-account-max-token-expiration`). Write it to a file, point the

@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.10.2`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.11.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.11.0` | `v4.3` **frozen** |
 | `v0.10.2` | `v4.2` **frozen** |
 | `v0.10.1` | `v4.2` **frozen** |
 | `v0.10.0` | `v4.2` **frozen** |
@@ -85,6 +86,7 @@ From a source checkout of the matching tag:
 ```bash
 # alpha.9 and later carry a machine-readable marker:
 git show v0.4.0:test/contract/VERSION      # -> v4.2
+git show v0.11.0:test/contract/VERSION     # -> v4.3
 
 # earlier tags predate that file — read the contract doc header instead:
 git show v0.4.0-alpha.8:docs/inspector-contract.md | head -5
@@ -97,18 +99,65 @@ Each inspector release states its contract version, ships it as
 `contract-version.txt`, and tags its image accordingly:
 
 ```bash
-docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2
+docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.3
 ```
 
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
 
-## `v0.10.2` → unreleased — a callback-only instance reads Secrets live; upgrade it before its Role
+## `v0.10.2` → `v0.11.0` — network data, claim-time matching; upgrade a callback-only instance before its Role
 
-This applies from the first release after `v0.10.2`. **If you do not run a separate callback-only instance** (the
-second copy of the manager started with `--controllers=none`), there is nothing to do: the controller, the chart
-and the CRDs are unchanged, and so is the controller's RBAC.
+`v0.11.0` adds two optional CRD fields, moves the controller↔inspector contract from `v4.2` to `v4.3`, narrows the
+callback-only instance's Secret access, and carries security fixes: Go 1.27.4, Go 1.27.3 with `golang.org/x/net`
+0.62.0, and OpenTelemetry 1.47.0. **Upgrade promptly:** every earlier release is built with a Go standard library
+that carries GO-2026-6859 (an HTTP/1 server crash `govulncheck` reports reachable through the callback, webhook and
+metrics servers) and GO-2026-6809 (`crypto/x509`). The [CHANGELOG](../CHANGELOG.md) lists them. Nothing in this
+release needs a decision before you upgrade, except the two ordering rules below. No new manager flag, and no change
+to the Helm chart's templates.
+
+Coming from `v0.10.1` or earlier, do the sections between your release and `v0.10.2` first, as each says (for
+`v0.10.0`, [`v0.10.0` → `v0.10.1`](#v0100--v0101--optional-targetimagedigesturl-crds-go-before-the-controller)).
+Coming from `v0.9.x` you can go straight to `v0.11.0`, installing it wherever the `v0.9.x` → `v0.10.0` section
+names `v0.10.0` or `v0.10.1`.
+
+### 1. Apply the CRDs, then upgrade the controller
+
+Three CRDs change, each by one optional field:
+
+- `PhysicalHost` gains `spec.networkDataSecretRef`. The controller publishes the result of checking it on a new
+  `NetworkDataReady` condition.
+- `Beskar7Machine` and `Beskar7MachineTemplate` gain `spec.hardwareRequirements.matchAt` (`Inspection` or `Claim`),
+  defaulted to `Inspection` by the CRD.
+
+Apply the CRDs before the controller, so the API server does not prune the new fields. Helm does not upgrade CRDs
+on `helm upgrade`:
+
+```bash
+# Helm install: CRDs first, from the chart you are about to install.
+helm pull beskar7/beskar7 --version 0.11.0 --untar --untardir ./beskar7-0.11.0
+kubectl apply -f ./beskar7-0.11.0/beskar7/crds/
+# Check the stored CRDs have the new fields; each prints "string":
+kubectl get crd physicalhosts.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.networkDataSecretRef.type}{"\n"}'
+# Then the controller.
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.11.0 --reset-then-reuse-values
+```
+
+```bash
+# Release-manifest install: the manifest lists the five CRDs before the Deployment, so one apply does both.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.11.0/beskar7-manifests-v0.11.0.yaml
+```
+
+The controller's RBAC and the chart's RBAC templates are unchanged: `git diff v0.10.2 v0.11.0 -- config/rbac/
+charts/beskar7/templates` shows only the callback-only Role described in step 2. The chart does not install a
+callback-only instance.
+
+### 2. A callback-only instance reads Secrets live; upgrade it before its Role
+
+**If you do not run a separate callback-only instance** (the second copy of the manager started with
+`--controllers=none`), skip this step: the controller, the chart and the full manager's RBAC are as they were.
 
 A callback-only instance now reads Secrets from the API server one object at a time, by name, instead of through
 the manager's cache. Until now its first Secret read started a Secret informer, so its Role had to grant `list`
@@ -143,6 +192,73 @@ leaving the Role as it is only leaves the extra grants in place.
 
 To go back to `v0.10.2` or earlier, apply that release's `config/rbac/callback-only/watched-namespace` first, then
 move the instance.
+
+### 3. Network data needs inspector `v0.4.0`; upgrade the inspector before you set the field
+
+`PhysicalHost.spec.networkDataSecretRef` is optional, and a host without it behaves as before. A host that sets it
+gets its network configuration from the new endpoint `GET /api/v1/network-data/{namespace}/{hostName}` (contract
+`v4.3`, [§4.6](inspector-contract.md#46-get-apiv1network-datanamespacehostname-per-host-network-data)), and only an
+inspector that implements `v4.3` calls it.
+
+**Use inspector `v0.4.0` before you set `networkDataSecretRef` on any host.** A `v4.2` inspector never calls the
+endpoint, so the host still installs, but without the file `/oem/beskar7/network-data`; the controller cannot tell,
+and the host's `NetworkDataReady` condition reads `True` either way. The other pairing is safe too: a `v4.3`
+inspector against a `v0.10.2` controller gets `404` and installs without the file. Pull the new inspector pair
+as [Matching the inspector to the controller](#matching-the-inspector-to-the-controller) says, and update the
+`vmlinuz` and `initrd.img` copies on your boot server.
+
+Once you set the field:
+
+- The Secret must carry the annotation `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`
+  and a non-empty `networkData` key of at most 64 KiB; otherwise `NetworkDataReady` is `False`.
+- A host with the field set and `NetworkDataReady` not `True` is not claimed; a machine already holding it waits
+  with `InfrastructureReady=False (WaitingForNetworkData)` and does not boot it, so nothing is wiped.
+- A callback-only instance reads that Secret by name, which its Role's `get` on `secrets` already allows.
+
+### 4. Behaviour changes
+
+- **A released host that ignores the graceful shutdown is forced off.** Deleting a `Beskar7Machine` whose host is
+  `Ready` shuts the host down gracefully. The controller now follows the host until it reads `Off`, checking every
+  5 seconds, sends `ForcePowerOff` once if it is still on 90 seconds after the request, and releases the host
+  anyway after 30 more seconds if the BMC cannot be reached. The request time is kept in the annotation
+  `infrastructure.cluster.x-k8s.io/release-power-off-requested-at` on the `Beskar7Machine`. A machine deletion
+  therefore takes as long as the OS takes to shut down, and about two minutes at most when it ignores the request
+  (it used to end when the request was sent). The `force-release` annotation still ends the wait. Allow for the
+  longer deletion in any timeout of your own around `Machine` removal.
+- **The `PhysicalHost` computes `status.bootstrap.url`.** It is still
+  `<--bootstrap-url-base>/api/v1/bootstrap/<namespace>/<host>`, now written in the same patch as
+  `status.bootstrap.tokenHash`. The annotation `infrastructure.cluster.x-k8s.io/bootstrap-url`, which used to carry
+  it, is retired: nothing reads it, and the controller removes one it finds on a host. Tooling that hand-sets that
+  annotation to publish the URL has no effect any more; read `status.bootstrap.url` instead.
+- **`hardwareRequirements.matchAt` is opt-in, and the default is unchanged.** Without it, or with `Inspection`,
+  the requirements are checked against the claim run's own inspection report, as before. With `Claim`, a host is a
+  claim candidate only if it already holds a report that meets `minCPUCores`, `minMemoryGB` and `minDiskGB`, so only
+  hosts an earlier claim has inspected qualify; when none does, the machine waits with
+  `PhysicalHostAssociated=False (NoMatchingPhysicalHost)`. See
+  [Matching hardware at claim](beskar7machine.md#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
+- **Metrics.** `beskar7_controller_beskar7machine_states_total` now reports machines in the
+  `Provisioning` phase and machines with no phase yet, and the new `beskar7_controller_target_image_digest_*`
+  series count and time `targetImageDigestURL` resolutions
+  ([metrics](metrics.md#target-image-digest-metrics)).
+
+Code that embeds the reconcilers: `BootstrapURLBase` moved from `Beskar7MachineReconciler` to
+`PhysicalHostReconciler`. `cmd/manager` is wired accordingly.
+
+### 5. Check the result
+
+```bash
+# Every image ends in :v0.11.0 (callback-only instances too; run it in each instance's cluster and namespace).
+kubectl get pods -n capb7-system -o jsonpath='{.items[*].spec.containers[*].image}{"\n"}'
+# The stored Beskar7Machine CRD has the new field; this prints "Inspection":
+kubectl get crd beskar7machines.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.hardwareRequirements.properties.matchAt.default}{"\n"}'
+# A host that sets networkDataSecretRef reports NetworkDataReady (host, status, reason):
+kubectl get physicalhosts -A -o jsonpath='{range .items[?(@.spec.networkDataSecretRef)]}{.metadata.name}{"\t"}{.status.conditions[?(@.type=="NetworkDataReady")].status}{"\t"}{.status.conditions[?(@.type=="NetworkDataReady")].reason}{"\n"}{end}'
+```
+
+Going back to `v0.10.2` needs no CRD step; the new fields stay in the CRDs and in any object that set them, and the
+old controller ignores them, so a host with `networkDataSecretRef` loses its network data and a `Claim` machine
+matches at inspection again. Go back with the callback-only Role of `v0.10.2` first, as step 2 says.
 
 ## `v0.10.1` → `v0.10.2` — Go and x/net security fixes; HTTP/1.1 only
 
@@ -923,14 +1039,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. These commands install the current release, v0.10.2. From v0.8.x or earlier, stop on v0.9.x first:
+# 0. These commands install the current release, v0.11.0. From v0.8.x or earlier, stop on v0.9.x first:
 #    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
-#    v0.9.x → v0.10.0 section above, installing v0.10.2 where it names v0.10.0.
+#    v0.9.x → v0.10.0 section above, installing v0.11.0 where it names v0.10.0, and then the sections after it.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.10.2/beskar7-manifests-v0.10.2.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.11.0/beskar7-manifests-v0.11.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.10.2 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.11.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

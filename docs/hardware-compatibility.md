@@ -144,8 +144,8 @@ leaving the machine to time out (see [When a driver is missing](#when-a-driver-i
 Your boot server serves its own copy of `vmlinuz` and `initrd.img`, so an
 older copy keeps booting until you replace it. Take the new pair from the
 [inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases)
-or from the image `ghcr.io/projectbeskar/beskar7-inspector:contract-v4.2`, which
-tracks the newest `v4.2` release.
+or from the image `ghcr.io/projectbeskar/beskar7-inspector:contract-v4.3`, which
+tracks the newest `v4.3` release.
 
 ### Supported drivers
 
