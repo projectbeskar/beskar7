@@ -3,8 +3,8 @@
 # supply-chain provenance explicit. To bump: pull the new tag and run
 #   docker inspect <tag> --format '{{index .RepoDigests 0}}'
 # then update both the digest and the human-readable tag comment below.
-# golang:1.27.3 (refreshed 2026-10-27) — go1.27.3
-FROM golang:1.27.3@sha256:921f61120011c774a7b37fd80bd3c3d259636090d3cd002b6a344322a0328082 as builder
+# golang:1.27.4 (refreshed 2026-11-14) — go1.27.4
+FROM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d as builder
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY go.mod go.mod
