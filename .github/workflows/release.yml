@@ -269,7 +269,7 @@ jobs:
         echo "IMAGE_REF=${image}" >> "$GITHUB_ENV"
 
     - name: Scan ${{ matrix.image.name }} with OSV-Scanner
-      uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+      uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
       continue-on-error: true # exits 1 on findings; the report is the deliverable
       with:
         scan-args: |-
@@ -281,7 +281,7 @@ jobs:
           --output=osv-image-results.json
 
     - name: Convert the ${{ matrix.image.name }} scan to SARIF
-      uses: google/osv-scanner-action/osv-reporter-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+      uses: google/osv-scanner-action/osv-reporter-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
       with:
         scan-args: |-
           --new=osv-image-results.json
@@ -296,7 +296,7 @@ jobs:
         category: osv-scanner-release-${{ matrix.image.name }}
 
     - name: Write the human-readable ${{ matrix.image.name }} report
-      uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+      uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
       continue-on-error: true
       with:
         scan-args: |-
