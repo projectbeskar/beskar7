@@ -103,5 +103,10 @@ updates:
       # (setup-go v5 → v7, upload-artifact v4 → v7, build-push-action v5 → v7,
       # codecov v4 → v7 …), which is not reviewable as a unit. Minors and
       # patches within a major still flow; majors are a deliberate pass.
+      #
+      # Majors are excluded here too, so a runtime move (Node 20 -> Node 24 was
+      # a major for checkout, setup-go, upload/download-artifact, setup-helm,
+      # codeql-action, action-gh-release, codecov and all four docker/* actions)
+      # never arrives on its own: watch the run annotations and bump by hand.
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
