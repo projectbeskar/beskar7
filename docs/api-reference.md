@@ -89,7 +89,7 @@ If the Secret does not authorise the address, or the host's `caBundleSecretRef`,
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `networkDataSecretRef` | string | no | Name of a Secret in the same namespace holding this host's network configuration for the installed OS in its `networkData` key (cloud-init `network-config` v2 by convention, at most 64 KiB). Served verbatim to the inspector of a claimed host, which writes it to `/oem/beskar7/network-data` (contract v4.3 §4.6). The Secret must carry `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`; otherwise it is refused and `NetworkDataReady` is `False`. How the OS applies the file is up to the image. |
+| `networkDataSecretRef` | string | no | Name of a Secret in the same namespace holding this host's network configuration for the installed OS in its `networkData` key (cloud-init `network-config` v2 by convention, at most 64 KiB). Served verbatim to the inspector of a claimed host, which writes it to `/oem/beskar7/network-data` (contract v4.3 §4.6). The Secret must carry `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`; otherwise it is refused and `NetworkDataReady` is `False`. How the OS applies the file is up to the image. Needs inspector `v0.4.0` (contract v4.3): an older inspector never fetches it, so the host installs without the file. |
 
 There are no other spec fields. Provisioning is driven by the consumer (the `Beskar7Machine`); the host itself only carries connection info, the consumer reference and, optionally, its network data.
 

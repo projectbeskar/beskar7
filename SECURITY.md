@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.10.2` (latest) | ✅ |
+| `v0.11.0` (latest) | ✅ |
+| `v0.10.2` | ✅ |
 | `v0.10.1` | ✅ |
 | `v0.10.0` | ✅ |
 | `v0.9.0` | ✅ |
@@ -80,6 +81,21 @@ before it checks any bearer token. All are fixed in `v0.10.2`, which also stops 
 and metrics servers from serving HTTP/2 at all; see the [CHANGELOG](CHANGELOG.md). Until you can
 upgrade, let only the provisioning network reach `:8082`, on a callback-only instance as well:
 firewall the port, or limit the source ranges of the load balancer or Ingress in front of it.
+
+**Every release before `v0.11.0`** is built with a Go standard library and `golang.org/x/net` that
+carry four advisories published after `v0.10.2` shipped (`v0.10.2`: Go 1.27.2 and x/net 0.60.0).
+GO-2026-6859 is an HTTP/1 server crash in `net/http` (a `MaxBytesReader` header
+race); `govulncheck` reports it reachable through the callback endpoint (`:8082`), the webhook server
+and the metrics server, which serve HTTP/1.1 only since `v0.10.2`. GO-2026-6809 is `crypto/x509` trusting compromised intermediate
+certificates, reachable through `Certificate.Verify` on the BMC and API-server TLS paths. GO-2026-6860
+and GO-2026-6866 are in `golang.org/x/net/html`, which is in the dependency graph, and `govulncheck`
+finds no call path to them. They are fixed in Go 1.27.3 and x/net 0.62.0 (`v0.11.0` is built with Go
+1.27.4, which also fixes GO-2026-6859); see the [CHANGELOG](CHANGELOG.md). `v0.11.0` also moves the
+OpenTelemetry core modules from 1.45.0 (what `v0.10.0` to `v0.10.2` link) to 1.47.0
+(GHSA-q7gw-24fr-5p69, an `AttributeValueLengthLimit` bypass in `otel/sdk` and `otel/trace`; the
+manager configures no tracer provider). Until you can upgrade, let
+only the provisioning network reach `:8082`, on a callback-only instance as well: firewall the port,
+or limit the source ranges of the load balancer or Ingress in front of it.
 
 ## Verifying what you run
 

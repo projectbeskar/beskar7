@@ -4,11 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [v0.11.0] - 2026-11-14
+
+Per-host network data for the installed OS (contract `v4.3`), claim-time hardware matching
+(`hardwareRequirements.matchAt: Claim`), a forced power-off for a released host that ignores the graceful
+shutdown, a callback-only instance that no longer lists or watches Secrets, and security fixes: Go 1.27.4,
+Go 1.27.3 and `golang.org/x/net` 0.62.0, and OpenTelemetry 1.47.0. Contract `v4.2` becomes `v4.3`, additively: pair
+it with inspector **`v0.4.0`**. A `v4.2` inspector keeps working, but it never asks for network data, so a host
+that sets `networkDataSecretRef` installs without it. CRD changes only add optional fields:
+`PhysicalHost.spec.networkDataSecretRef`, and `hardwareRequirements.matchAt` on `Beskar7Machine` and
+`Beskar7MachineTemplate`. No new manager flag, and no chart-template change.
+
+> **Upgrade notes.** Details and commands are in
+> [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.11.0/docs/upgrading.md#v0102--v0110--network-data-claim-time-matching-upgrade-a-callback-only-instance-before-its-role),
+> section `v0.10.2` → `v0.11.0`.
+>
+> 1. **Apply the CRDs before the controller** (Helm does not upgrade CRDs on `helm upgrade`). A release-manifest
+>    install does both in one apply.
+> 2. **If you run a callback-only instance (`--controllers=none`), upgrade its image first, and apply the
+>    tightened Role afterwards.** The new Role grants `get` only on Secrets; an instance still on `v0.10.2`
+>    caches Secrets, and under that Role its callback routes stop answering.
+> 3. **Upgrade the inspector to `v0.4.0` before you set `networkDataSecretRef` on a host.** An older inspector
+>    never fetches the network data, so the host installs without it.
+> 4. Deleting a `Beskar7Machine` whose host is `Ready` now takes as long as the OS takes to shut down, and about
+>    two minutes at most when the host ignores the shutdown request.
+> 5. Every release before `v0.11.0` is built with a Go standard library that carries GO-2026-6859 (an HTTP/1 server
+>    crash reachable through the callback, webhook and metrics servers), GO-2026-6809 and two `x/net/html`
+>    advisories. **Upgrade promptly, and upgrade a callback-only instance too.**
 
 ### Added
 
-- **Claim-time hardware matching (`hardwareRequirements.matchAt: Claim`, #285).** `Beskar7Machine`
+- **Claim-time hardware matching (`hardwareRequirements.matchAt: Claim`).** `Beskar7Machine`
   `spec.hardwareRequirements` has a new optional `matchAt` field, `Inspection` (the default, today's behaviour) or
   `Claim`. With `Claim` a host is a claim candidate only if it already holds an inspection report that meets
   `minCPUCores`, `minMemoryGB` and `minDiskGB`; a host with no report, or with one that falls short, is skipped,
@@ -18,9 +44,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   miss there stays terminal (`HardwareRequirementsNotMet`). A report outlives the claim that produced it, so
   `Claim` matches only hosts an earlier claim has inspected. `minDiskGB` keeps its meaning (sum of all disks).
   Templates get the field through the embedded spec. CRD change (one optional field with a default), no RBAC
-  change. See [`docs/beskar7machine.md`](docs/beskar7machine.md#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
+  change. See [`docs/beskar7machine.md`](https://github.com/projectbeskar/beskar7/blob/v0.11.0/docs/beskar7machine.md#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
+  ([#314](https://github.com/projectbeskar/beskar7/pull/314), issue #285)
 
-- **Per-host network data for the installed OS (contract v4.3, #302).** A `PhysicalHost` can name a Secret in
+- **Per-host network data for the installed OS (contract v4.3).** A `PhysicalHost` can name a Secret in
   `spec.networkDataSecretRef`. Its `networkData` key (cloud-init `network-config` v2 by convention) is served
   verbatim to the host's inspector by the new `GET /api/v1/network-data/{namespace}/{hostName}`, with the same
   token rule as `/bootstrap`, and the inspector writes it to `/oem/beskar7/network-data` next to `provider-id`. The
@@ -33,9 +60,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   deploy, so the host is never installed without its network. The endpoint answers `404` only when the host has no
   ref, `401` when the caller's claim or token no longer resolves, and `500` when a read fails, which the inspector
   retries. Hosts without the field behave as before. CRD change (one optional field), no RBAC change. Needs an
-  inspector that implements v4.3. `cmd/mock-inspector` calls the endpoint, and the smoke test fails unless
+  inspector that implements v4.3 (`v0.4.0`). `cmd/mock-inspector` calls the endpoint, and the smoke test fails unless
   `smoke-host-01` is served its network data. See
-  [`docs/inspector-contract.md`](docs/inspector-contract.md#46-get-apiv1network-datanamespacehostname-per-host-network-data).
+  [`docs/inspector-contract.md`](https://github.com/projectbeskar/beskar7/blob/v0.11.0/docs/inspector-contract.md#46-get-apiv1network-datanamespacehostname-per-host-network-data).
+  ([#299](https://github.com/projectbeskar/beskar7/pull/299), issues #283 and #302)
 
 - **Metrics for resolving `spec.targetImageDigestURL` (D-038).** Operators can now alert on a checksum file
   that does not resolve, and on a checksum server that answers slowly, without reading every machine's
@@ -46,7 +74,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `invalid_entry` and `canceled`; the URL, its host, the image's file name and the digest are never labels. One
   attempt is one fetch: a reconcile that finds the digest already pinned, a machine waiting out its backoff, and
   a machine that sets `spec.targetImageDigest` count nothing. No CRD, API, RBAC or chart change. See
-  [`docs/metrics.md`](docs/metrics.md#target-image-digest-metrics), which also has example alerts.
+  [`docs/metrics.md`](https://github.com/projectbeskar/beskar7/blob/v0.11.0/docs/metrics.md#target-image-digest-metrics), which also has example alerts.
+  ([#280](https://github.com/projectbeskar/beskar7/pull/280))
 
 ### Changed
 
@@ -58,9 +87,19 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   does not clear it. `cmd/mock-inspector` and `hack/smoke` wait for the URL and the token hash together
   and need no change. The `Beskar7Machine` controller no longer patches the host to signal it, which also
   removes one source of `the object has been modified` conflicts on claimed hosts.
+  ([#281](https://github.com/projectbeskar/beskar7/pull/281))
 - **Code that embeds the reconcilers:** `BootstrapURLBase` moved from `Beskar7MachineReconciler` to
   `PhysicalHostReconciler`, and `PhysicalHostReconciler.SetupWithManager` refuses an empty one as the
   machine reconciler did. `cmd/manager` is wired accordingly; no flag changes.
+  ([#281](https://github.com/projectbeskar/beskar7/pull/281))
+
+- **Dependency maintenance.** `sigs.k8s.io/cluster-api` v1.13.6 to v1.13.8, `k8s.io/*` v0.35.9 to v0.35.10,
+  `github.com/stmcginnis/gofish` v0.26.0 to v0.27.0, `github.com/prometheus/client_golang` v1.24.1 to v1.25.0 and
+  `github.com/onsi/ginkgo/v2` v2.33.0 to v2.34.0, with the pinned `distroless/static` base image and the
+  GitHub Actions pins refreshed. The Go, `golang.org/x/net` and OpenTelemetry moves are under Security.
+  ([#268](https://github.com/projectbeskar/beskar7/pull/268), [#272](https://github.com/projectbeskar/beskar7/pull/272), [#274](https://github.com/projectbeskar/beskar7/pull/274), [#273](https://github.com/projectbeskar/beskar7/pull/273),
+  [#294](https://github.com/projectbeskar/beskar7/pull/294), [#295](https://github.com/projectbeskar/beskar7/pull/295), [#296](https://github.com/projectbeskar/beskar7/pull/296), [#307](https://github.com/projectbeskar/beskar7/pull/307),
+  [#308](https://github.com/projectbeskar/beskar7/pull/308), [#309](https://github.com/projectbeskar/beskar7/pull/309))
 
 ### Fixed
 
@@ -85,8 +124,51 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   shut down (it used to end when the request was sent), and at most about two minutes when the host ignores
   it, before the owning `Machine`'s deletion completes. There is no CRD, API or contract change and no new
   flag or RBAC; the annotation is written by the controller on an object that is already being deleted.
+  ([#282](https://github.com/projectbeskar/beskar7/pull/282))
+
+- **`beskar7_controller_beskar7machine_states_total` never showed a machine in the `Provisioning` phase.** The
+  gauge is set only for the phases the controller lists, and the list had `Pending`, `Inspecting`, `Provisioned`
+  and `Failed`, so a machine that was deploying (`Provisioning`) was counted and then dropped, and so was a
+  machine with no phase yet. The list now has `Provisioning` and the empty phase (`""`). The phase names are
+  constants in `api/v1beta2` next to `PhaseFailed`; no value changes. No CRD, API, RBAC or chart change.
+  ([#278](https://github.com/projectbeskar/beskar7/pull/278))
+
+### Documentation
+
+- Clarify that `hardwareRequirements.minDiskGB` sums all inspected disks
+  ([#292](https://github.com/projectbeskar/beskar7/pull/292)), and describe the inspector's target-disk selection in the contract the way the inspector
+  does it ([#293](https://github.com/projectbeskar/beskar7/pull/293)). Add the network-data endpoint to the contract
+  ([#304](https://github.com/projectbeskar/beskar7/pull/304)).
 
 ### Security
+
+- **`net/http` could crash an HTTP/1 server through a `MaxBytesReader` header race, and the manager's callback,
+  webhook and metrics servers are HTTP/1.1 servers; the images are now built with Go 1.27.4 (GO-2026-6859).**
+  [GO-2026-6859](https://osv.dev/GO-2026-6859), "HTTP/1 server crash due to MaxBytesReader header race in
+  net/http", is fixed in Go 1.27.4. An OSV scan of the `v0.11.0` candidate manager image listed it, and
+  `govulncheck` reports it reachable through the callback endpoint (`:8082`), the webhook server and the metrics
+  server, which serve HTTP/1.1 only since `v0.10.2`. The three Dockerfiles now pin `golang:1.27.4` by digest and
+  `go.mod` names `toolchain go1.27.4`. Upgrade a callback-only instance too: it is the same image.
+  ([#315](https://github.com/projectbeskar/beskar7/pull/315))
+
+- **The OpenTelemetry core modules move from 1.45.0 to 1.47.0, which fixes an `AttributeValueLengthLimit` bypass
+  in `otel/sdk` and `otel/trace`.** [GHSA-q7gw-24fr-5p69](https://github.com/advisories/GHSA-q7gw-24fr-5p69):
+  attribute values made of valid U+FFFD runes bypassed the limit. The SDK is linked only through
+  `k8s.io/component-base/tracing`; the manager configures no tracer provider, and `govulncheck` has no entry for
+  it, so this is a clean image scan and not a reachable exposure. `go.opentelemetry.io/otel`, `metric`, `trace`,
+  `sdk` and `log` (which `sdk` 1.47.0 requires) move; the `otlptrace` exporters stay at 1.45.0, because
+  `otlptracegrpc` 1.47.0 would pull a much wider set of dependencies.
+  ([#315](https://github.com/projectbeskar/beskar7/pull/315))
+
+- **Go 1.27.2 and `golang.org/x/net` 0.60.0 carried three advisories published after `v0.10.2` shipped; the images
+  are now built with Go 1.27.3 and `golang.org/x/net` 0.62.0.** An OSV scan of the published `v0.10.2` manager
+  image listed them. [GO-2026-6809](https://osv.dev/GO-2026-6809), "Distrust compromised intermediate certificates
+  in crypto/x509", is fixed in Go 1.27.3, and `govulncheck` reports it reachable through `Certificate.Verify` on
+  the BMC and API-server TLS paths. [GO-2026-6860](https://osv.dev/GO-2026-6860), "Avoid quadratic complexity when
+  coalescing text nodes in html in golang.org/x/net", and [GO-2026-6866](https://osv.dev/GO-2026-6866), "Check all
+  ancestor namespace transitions when rendering raw text in html in golang.org/x/net", are fixed in 0.62.0: the
+  package is in the dependency graph, and `govulncheck` finds no call path to the affected symbols.
+  ([#277](https://github.com/projectbeskar/beskar7/pull/277))
 
 - **A callback-only instance (`--controllers=none`) no longer lists or watches Secrets, and its Role drops `list`
   and `watch` on `secrets` (CALLBACK-SECRET-READ).** The instance read Secrets through the manager's cache, so its
@@ -106,7 +188,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   old Role works, so the order is instance first, then `kubectl apply -n <namespace> -k
   config/rbac/callback-only/watched-namespace` in each watched namespace. Nothing changes for an install without a
   callback-only instance. See
-  [`docs/upgrading.md`](docs/upgrading.md#v0102--unreleased--a-callback-only-instance-reads-secrets-live-upgrade-it-before-its-role).
+  [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.11.0/docs/upgrading.md#v0102--v0110--network-data-claim-time-matching-upgrade-a-callback-only-instance-before-its-role).
+  ([#279](https://github.com/projectbeskar/beskar7/pull/279))
 
 - **Anyone allowed to patch a `PhysicalHost` could set `status.bootstrap.url` to any value.** The
   `Beskar7Machine` controller computed the host's bootstrap URL and left it in the
@@ -121,6 +204,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   retired. One found on a host, whether a forgery or one an older controller had not applied yet, is
   removed on sight without being read. A spec that hand-sets the annotation fails on the previous code
   (`status.bootstrap.url` becomes the hand-set value).
+  ([#281](https://github.com/projectbeskar/beskar7/pull/281))
 
 ## [v0.10.2] - 2026-10-10
 
@@ -2508,7 +2592,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.11.0...HEAD
+[v0.11.0]: https://github.com/projectbeskar/beskar7/compare/v0.10.2...v0.11.0
 [v0.10.2]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...v0.10.2
 [v0.10.1]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...v0.10.1
 [v0.10.0]: https://github.com/projectbeskar/beskar7/compare/v0.9.0...v0.10.0
