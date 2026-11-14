@@ -8,6 +8,18 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Added
 
+- **Claim-time hardware matching (`hardwareRequirements.matchAt: Claim`, #285).** `Beskar7Machine`
+  `spec.hardwareRequirements` has a new optional `matchAt` field, `Inspection` (the default, today's behaviour) or
+  `Claim`. With `Claim` a host is a claim candidate only if it already holds an inspection report that meets
+  `minCPUCores`, `minMemoryGB` and `minDiskGB`; a host with no report, or with one that falls short, is skipped,
+  on top of `hostSelector` and the Machine's failure domain. When nothing qualifies the machine waits with
+  `PhysicalHostAssociated=False (NoMatchingPhysicalHost)`, which is not terminal, and the message names the
+  hardware constraint and how many hosts were skipped. The claim run's own fresh report is still validated and a
+  miss there stays terminal (`HardwareRequirementsNotMet`). A report outlives the claim that produced it, so
+  `Claim` matches only hosts an earlier claim has inspected. `minDiskGB` keeps its meaning (sum of all disks).
+  Templates get the field through the embedded spec. CRD change (one optional field with a default), no RBAC
+  change. See [`docs/beskar7machine.md`](docs/beskar7machine.md#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
+
 - **Per-host network data for the installed OS (contract v4.3, #302).** A `PhysicalHost` can name a Secret in
   `spec.networkDataSecretRef`. Its `networkData` key (cloud-init `network-config` v2 by convention) is served
   verbatim to the host's inspector by the new `GET /api/v1/network-data/{namespace}/{hostName}`, with the same

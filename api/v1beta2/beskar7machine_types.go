@@ -288,8 +288,33 @@ type Beskar7MachineSpec struct {
 	HostSelector *metav1.LabelSelector `json:"hostSelector,omitempty"`
 }
 
+// HardwareMatchPoint says when a machine's HardwareRequirements are checked.
+// +kubebuilder:validation:Enum=Inspection;Claim
+type HardwareMatchPoint string
+
+const (
+	// HardwareMatchAtInspection checks the requirements only against the report
+	// of the claim's own inspection run; a miss is terminal. This is the default.
+	HardwareMatchAtInspection HardwareMatchPoint = "Inspection"
+	// HardwareMatchAtClaim additionally makes the requirements a claim filter: a
+	// host is claimed only if it already holds an inspection report, left by an
+	// earlier run, that meets them. A host without one, or with one that falls
+	// short, is skipped and the machine waits with NoMatchingPhysicalHost.
+	HardwareMatchAtClaim HardwareMatchPoint = "Claim"
+)
+
 // HardwareRequirements specifies hardware requirements for a machine.
 type HardwareRequirements struct {
+	// MatchAt says when the requirements are checked. Inspection (the default)
+	// checks them after the claimed host's inspection and treats a miss as
+	// terminal. Claim also requires a host to already hold an inspection report
+	// that meets them before it is claimed, and so only matches hosts inspected
+	// by an earlier claim; the claim's own fresh report is still validated and a
+	// miss there stays terminal. Claim has no effect while no minimum below is set.
+	// +optional
+	// +kubebuilder:default=Inspection
+	MatchAt HardwareMatchPoint `json:"matchAt,omitempty"`
+
 	// MinCPUCores is the minimum number of CPU cores required.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
