@@ -181,7 +181,7 @@ nodeProviderID:
   apiServerPorts:
     - 6443
 
-# Disk cleaning of released hosts (PhysicalHost spec.cleaningMode: Metadata).
+# Disk cleaning of released hosts (PhysicalHost spec.cleaning.mode: Metadata).
 cleaning:
   # HTTPS base URL serving the inspector vmlinuz and initrd.img a released host
   # boots in clean mode, rendered as --cleaning-image-url. Usually the same

@@ -96,7 +96,7 @@ These metrics track the state and health of physical hosts managed by Beskar7.
 #### `beskar7_controller_physicalhost_cleaning_total`
 **Type:** Counter  
 **Labels:** `outcome`, `namespace`  
-**Description:** Finished disk cleaning runs of released PhysicalHosts (`spec.cleaningMode: Metadata`). `outcome` is `cleaned`, `failed` (the inspector's `/clean-failed`), `timed_out` or `skipped` (`cleaningMode` set to `Disabled` during the run).
+**Description:** Finished disk cleaning runs of released PhysicalHosts (`spec.cleaning.mode: Metadata`). `outcome` is `cleaned`, `failed` (the inspector's `/clean-failed`), `timed_out` or `skipped` (`cleaning.mode` set to `Disabled` during the run).
 
 #### `beskar7_controller_physicalhost_cleaning_duration_seconds`
 **Type:** Histogram  

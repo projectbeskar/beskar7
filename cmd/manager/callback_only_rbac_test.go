@@ -230,13 +230,13 @@ func startCleaningRun(t *testing.T, admin client.Client, hostKey types.Namespace
 		t.Fatalf("get PhysicalHost: %v", err)
 	}
 	host.Spec.ConsumerRef = nil
-	host.Spec.CleaningMode = infrav1.CleaningModeMetadata
+	host.Spec.Cleaning = &infrav1.CleaningSpec{Mode: infrav1.CleaningModeMetadata}
 	if err := admin.Update(ctx, host); err != nil {
 		t.Fatalf("release PhysicalHost: %v", err)
 	}
 	now := metav1.Now()
 	host.Status.State = infrav1.StateCleaning
-	host.Status.CleaningTimestamp = &now
+	host.SetCleaningStartedAt(&now)
 	if err := admin.Status().Update(ctx, host); err != nil {
 		t.Fatalf("set PhysicalHost Cleaning: %v", err)
 	}

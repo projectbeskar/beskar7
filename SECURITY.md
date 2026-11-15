@@ -173,7 +173,7 @@ one beyond what is described:
   boot override and powers the host off; it does not wipe the disk. The previous
   tenant's OS — including the injected bootstrap config, which may carry a cluster
   join secret at `/oem/99_beskar7.yaml` — remains until the host is re-provisioned.
-  Set `spec.cleaningMode: Metadata` on hosts that move between trust boundaries:
+  Set `spec.cleaning.mode: Metadata` on hosts that move between trust boundaries:
   the inspector then wipes the partition tables, their GPT backups and `COS_OEM`
   before the host is `Available` again, and a failed wipe holds the host in `Error`
   ([docs/physicalhost.md](docs/physicalhost.md#disk-cleaning-on-release)). That is

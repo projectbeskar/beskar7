@@ -47,12 +47,18 @@ spec:
             type: object
           spec:
             properties:
-              cleaningMode:
-                default: Disabled
-                enum:
-                - Disabled
-                - Metadata
-                type: string
+              cleaning:
+                properties:
+                  mode:
+                    default: Disabled
+                    enum:
+                    - Disabled
+                    - Metadata
+                    type: string
+                  request:
+                    maxLength: 253
+                    type: string
+                type: object
               consumerRef:
                 properties:
                   apiVersion:
@@ -142,9 +148,14 @@ spec:
                   url:
                     type: string
                 type: object
-              cleaningTimestamp:
-                format: date-time
-                type: string
+              cleaning:
+                properties:
+                  observedRequest:
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                type: object
               conditions:
                 items:
                   properties:

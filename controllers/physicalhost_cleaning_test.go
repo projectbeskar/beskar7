@@ -60,7 +60,7 @@ func bindCleaningReport(key client.ObjectKey, annotation, value string) {
 	Expect(k8sClient.Patch(ctx, reported, client.MergeFrom(current))).To(Succeed())
 }
 
-var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", func() {
+var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)", func() {
 	var (
 		ns  *corev1.Namespace
 		bmc *internalredfish.MockClient
@@ -101,7 +101,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		key := provisioningHost(ns.Name, name, name+"-machine", infrav1.StateReady, nil)
 		current := getPhysicalHost(key)
 		withMode := current.DeepCopy()
-		withMode.Spec.CleaningMode = mode
+		withMode.Spec.Cleaning = &infrav1.CleaningSpec{Mode: mode}
 		Expect(k8sClient.Patch(ctx, withMode, client.MergeFrom(current))).To(Succeed())
 		ensureCallbackCredentials(key)
 		releasePhysicalHost(key)
@@ -113,7 +113,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 	bootedHost := func(r *PhysicalHostReconciler, name string) client.ObjectKey {
 		key := releasedHost(name, infrav1.CleaningModeMetadata)
 		reconcile(r, key)
-		Expect(getPhysicalHost(key).Status.CleaningTimestamp).NotTo(BeNil())
+		Expect(getPhysicalHost(key).CleaningStartedAt()).NotTo(BeNil())
 		return key
 	}
 
@@ -127,7 +127,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		host := getPhysicalHost(key)
 		Expect(host.Status.State).To(Equal(infrav1.StateCleaning))
 		Expect(host.Status.Ready).To(BeFalse())
-		Expect(host.Status.CleaningTimestamp).NotTo(BeNil())
+		Expect(host.CleaningStartedAt()).NotTo(BeNil())
 		Expect(conditions.GetReason(host, infrav1.HostCleanedCondition)).To(Equal(infrav1.CleaningInProgressReason))
 		Expect(conditions.GetReason(host, infrav1.HostAvailableCondition)).To(Equal(infrav1.HostCleaningReason))
 		Expect(result.RequeueAfter).To(BeNumerically(">", 0))
@@ -160,7 +160,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		host := getPhysicalHost(key)
 		Expect(host.Status.State).To(Equal(infrav1.StateAvailable))
 		Expect(host.Status.Ready).To(BeTrue())
-		Expect(host.Status.CleaningTimestamp).To(BeNil())
+		Expect(host.CleaningStartedAt()).To(BeNil())
 		Expect(conditions.IsTrue(host, infrav1.HostCleanedCondition)).To(BeTrue())
 		Expect(conditions.IsTrue(host, infrav1.HostAvailableCondition)).To(BeTrue())
 		Expect(host.Annotations).NotTo(HaveKey(CleanedRequestAnnotation))
@@ -195,7 +195,23 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		Expect(host.Annotations).NotTo(HaveKey(CleanedRequestAnnotation))
 	})
 
-	It("holds the host in Error after /clean-failed, until the retry annotation", func() {
+	// failRun reports /clean-failed for a booted host and applies it.
+	failRun := func(r *PhysicalHostReconciler, key client.ObjectKey) {
+		bindCleaningReport(key, CleanFailedRequestAnnotation,
+			sanitizeReportedReason("no disks found", cleanFailedReasonPrefix))
+		reconcile(r, key)
+		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+	}
+
+	// setCleaningRequest sets spec.cleaning.request on the host.
+	setCleaningRequest := func(key client.ObjectKey, request string) {
+		current := getPhysicalHost(key)
+		changed := current.DeepCopy()
+		changed.Spec.Cleaning.Request = request
+		Expect(k8sClient.Patch(ctx, changed, client.MergeFrom(current))).To(Succeed())
+	}
+
+	It("holds the host in Error after /clean-failed, until spec.cleaning.request changes", func() {
 		r := newReconciler()
 		key := bootedHost(r, "clean-failed")
 		bindCleaningReport(key, CleanFailedRequestAnnotation, sanitizeReportedReason("no disks found", cleanFailedReasonPrefix))
@@ -212,15 +228,48 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
 
 		By("asking for a retry")
-		current := getPhysicalHost(key)
-		retry := current.DeepCopy()
-		retry.Annotations = map[string]string{RetryCleaningAnnotation: "true"}
-		Expect(k8sClient.Patch(ctx, retry, client.MergeFrom(current))).To(Succeed())
+		setCleaningRequest(key, "retry-1")
 		reconcile(r, key)
 		retried := getPhysicalHost(key)
 		Expect(retried.Status.State).To(Equal(infrav1.StateCleaning))
-		Expect(retried.Status.CleaningTimestamp).NotTo(BeNil())
-		Expect(retried.Annotations).NotTo(HaveKey(RetryCleaningAnnotation))
+		Expect(retried.CleaningStartedAt()).NotTo(BeNil())
+		Expect(retried.ObservedCleaningRequest()).To(Equal("retry-1"))
+
+		By("failing again: the same request value does not retry a second time")
+		failRun(r, key)
+		reconcile(r, key)
+		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+	})
+
+	It("records a request set before the failure, so it never retries the failure on its own", func() {
+		r := newReconciler()
+		key := bootedHost(r, "clean-early-request")
+
+		By("changing the request while the run is still Cleaning")
+		setCleaningRequest(key, "early")
+		reconcile(r, key)
+		running := getPhysicalHost(key)
+		Expect(running.Status.State).To(Equal(infrav1.StateCleaning))
+		Expect(running.ObservedCleaningRequest()).To(Equal("early"))
+
+		By("failing the run: the host stays held")
+		failRun(r, key)
+		reconcile(r, key)
+		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+	})
+
+	It("does not retry when the request is cleared", func() {
+		r := newReconciler()
+		key := bootedHost(r, "clean-cleared-request")
+		setCleaningRequest(key, "before")
+		reconcile(r, key)
+		failRun(r, key)
+
+		setCleaningRequest(key, "")
+		reconcile(r, key)
+		host := getPhysicalHost(key)
+		Expect(host.Status.State).To(Equal(infrav1.StateError))
+		Expect(host.ObservedCleaningRequest()).To(BeEmpty())
 	})
 
 	It("holds the host in Error when the run does not report in time", func() {
@@ -229,7 +278,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		current := getPhysicalHost(key)
 		late := current.DeepCopy()
 		past := metav1.NewTime(time.Now().Add(-2 * time.Minute))
-		late.Status.CleaningTimestamp = &past
+		late.SetCleaningStartedAt(&past)
 		Expect(k8sClient.Status().Patch(ctx, late, client.MergeFrom(current))).To(Succeed())
 
 		reconcile(r, key)
@@ -240,12 +289,12 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		Expect(bmc.ForcePowerOffCalled).To(BeTrue())
 	})
 
-	It("makes the host Available without a wipe when the owner sets cleaningMode Disabled mid-run", func() {
+	It("makes the host Available without a wipe when the owner sets spec.cleaning.mode Disabled mid-run", func() {
 		r := newReconciler()
 		key := bootedHost(r, "clean-skip")
 		current := getPhysicalHost(key)
 		disabled := current.DeepCopy()
-		disabled.Spec.CleaningMode = infrav1.CleaningModeDisabled
+		disabled.Spec.Cleaning.Mode = infrav1.CleaningModeDisabled
 		Expect(k8sClient.Patch(ctx, disabled, client.MergeFrom(current))).To(Succeed())
 
 		reconcile(r, key)
@@ -281,7 +330,7 @@ var _ = Describe("Cleaning a released PhysicalHost (cleaningMode Metadata)", fun
 		Expect(conditions.GetReason(host, infrav1.HostCleanedCondition)).To(Equal(infrav1.CleaningPendingReason))
 	})
 
-	It("makes a host released with cleaningMode Disabled Available at once", func() {
+	It("makes a host released with spec.cleaning.mode Disabled Available at once", func() {
 		key := releasedHost("no-clean", infrav1.CleaningModeDisabled)
 		reconcile(newReconciler(), key)
 		host := getPhysicalHost(key)

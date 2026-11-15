@@ -68,7 +68,7 @@ const (
 
 // cleaningEnabled reports whether the host's owner asked for a wipe on release.
 func cleaningEnabled(host *infrav1.PhysicalHost) bool {
-	return host.Spec.CleaningMode == infrav1.CleaningModeMetadata
+	return host.CleaningMode() == infrav1.CleaningModeMetadata
 }
 
 // cleaningHeld reports whether an unclaimed host is held in Error by a failed cleaning run, read from HostCleaned so a BMC error cannot release it.
@@ -106,7 +106,7 @@ func enterCleaning(host *infrav1.PhysicalHost) {
 	host.Status.State = infrav1.StateCleaning
 	host.Status.Ready = false
 	host.Status.ErrorMessage = ""
-	host.Status.CleaningTimestamp = nil
+	host.SetCleaningStartedAt(nil)
 	setFalse(host, infrav1.HostCleanedCondition, infrav1.CleaningPendingReason, "Waiting to boot the cleaning run")
 	setFalse(host, infrav1.HostAvailableCondition, infrav1.HostCleaningReason, "Wiping the disks before the host is Available again")
 }
@@ -116,24 +116,28 @@ func (r *PhysicalHostReconciler) startCleaningOnRelease(logger logr.Logger, host
 	if !releasedForCleaning(host) {
 		return
 	}
-	logger.Info("Host released with cleaningMode Metadata; wiping its disks before it is Available", "previousState", host.Status.State)
+	logger.Info("Host released with spec.cleaning.mode Metadata; wiping its disks before it is Available",
+		"previousState", host.Status.State)
 	enterCleaning(host)
 	r.event(host, corev1.EventTypeNormal, eventCleaningStarted, "Host released; cleaning its disks before it is Available")
 }
 
-// applyRetryCleaningAnnotation restarts the cleaning of a held host and always consumes the annotation.
-func (r *PhysicalHostReconciler) applyRetryCleaningAnnotation(logger logr.Logger, host *infrav1.PhysicalHost) {
-	if _, ok := host.Annotations[RetryCleaningAnnotation]; !ok {
+// applyCleaningRequest records a changed spec.cleaning.request and, on a held host, starts one new cleaning run.
+func (r *PhysicalHostReconciler) applyCleaningRequest(logger logr.Logger, host *infrav1.PhysicalHost) {
+	request := host.CleaningRequest()
+	if request == host.ObservedCleaningRequest() {
 		return
 	}
-	delete(host.Annotations, RetryCleaningAnnotation)
-	if !cleaningHeld(host) || !cleaningEnabled(host) {
-		logger.Info("Ignoring the retry-cleaning annotation: the host is not held after a failed cleaning run", "state", host.Status.State)
+	host.SetObservedCleaningRequest(request)
+	if request == "" || !cleaningHeld(host) || !cleaningEnabled(host) {
+		logger.Info("Recorded spec.cleaning.request without a new run: the host is not held after a failed cleaning run",
+			"request", request, "state", host.Status.State)
 		return
 	}
-	logger.Info("Retrying the cleaning run as requested by annotation")
+	logger.Info("Retrying the cleaning run as requested by spec.cleaning.request", "request", request)
 	enterCleaning(host)
-	r.event(host, corev1.EventTypeNormal, eventCleaningStarted, "Cleaning retried by annotation")
+	r.event(host, corev1.EventTypeNormal, eventCleaningStarted,
+		fmt.Sprintf("Cleaning retried by spec.cleaning.request %q", request))
 }
 
 // applyCleanedRequestAnnotation marks HostCleaned True for a bound /cleaned report on a booted run.
@@ -147,8 +151,9 @@ func (r *PhysicalHostReconciler) applyCleanedRequestAnnotation(ctx context.Conte
 		return
 	}
 	dropCallbackAnnotation(host, CleanedRequestAnnotation)
-	if val != cleanedRequestValue || host.Status.CleaningTimestamp == nil {
-		logger.Info("Ignoring a cleaned report the host's cleaning run cannot have sent", "booted", host.Status.CleaningTimestamp != nil)
+	if val != cleanedRequestValue || host.CleaningStartedAt() == nil {
+		logger.Info("Ignoring a cleaned report the host's cleaning run cannot have sent",
+			"booted", host.CleaningStartedAt() != nil)
 		return
 	}
 	logger.Info("Inspector reported the disks wiped")
@@ -166,7 +171,7 @@ func (r *PhysicalHostReconciler) applyCleanFailedRequestAnnotation(ctx context.C
 		return
 	}
 	dropCallbackAnnotation(host, CleanFailedRequestAnnotation)
-	if host.Status.CleaningTimestamp == nil || conditions.IsTrue(host, infrav1.HostCleanedCondition) {
+	if host.CleaningStartedAt() == nil || conditions.IsTrue(host, infrav1.HostCleanedCondition) {
 		logger.Info("Ignoring a clean-failed report the host's cleaning run cannot have sent")
 		return
 	}
@@ -191,11 +196,12 @@ type cleaningFailure struct {
 func (r *PhysicalHostReconciler) failCleaning(ctx context.Context, logger logr.Logger, host *infrav1.PhysicalHost, failure cleaningFailure) {
 	logger.Info("Cleaning run failed; holding the host in Error", "reason", failure.Reason, "message", failure.Message)
 	internalmetrics.RecordPhysicalHostCleaning(host.Namespace, failure.Outcome, cleaningElapsed(host))
-	host.Status.CleaningTimestamp = nil
+	host.SetCleaningStartedAt(nil)
 	r.updateStatus(host, infrav1.StateError, false, failure.Message)
 	setFalse(host, infrav1.HostCleanedCondition, failure.Reason, "%s", failure.Message)
 	setFalse(host, infrav1.HostAvailableCondition, failure.Reason,
-		"The disks may still hold the previous claim's data; set the %s annotation to retry, or cleaningMode Disabled to release the host as it is", RetryCleaningAnnotation)
+		"The disks may still hold the previous claim's data; set a new spec.cleaning.request to retry, "+
+			"or spec.cleaning.mode Disabled to release the host as it is")
 	if err := r.retireCleaningCredentials(ctx, logger, host); err != nil {
 		logger.Error(err, "Failed to retire the cleaning run's credentials")
 	}
@@ -204,10 +210,11 @@ func (r *PhysicalHostReconciler) failCleaning(ctx context.Context, logger logr.L
 
 // cleaningElapsed is the time since the run booted, or zero before it has.
 func cleaningElapsed(host *infrav1.PhysicalHost) time.Duration {
-	if host.Status.CleaningTimestamp == nil {
+	startedAt := host.CleaningStartedAt()
+	if startedAt == nil {
 		return 0
 	}
-	return time.Since(host.Status.CleaningTimestamp.Time)
+	return time.Since(startedAt.Time)
 }
 
 // cleaningPass is one reconcile pass over a Cleaning host whose BMC answered.
@@ -225,7 +232,7 @@ func (r *PhysicalHostReconciler) reconcileCleaning(ctx context.Context, pass cle
 		return r.skipCleaning(ctx, pass)
 	case conditions.IsTrue(host, infrav1.HostCleanedCondition):
 		return r.finishCleaning(ctx, pass)
-	case host.Status.CleaningTimestamp != nil:
+	case host.CleaningStartedAt() != nil:
 		return r.watchCleaningRun(ctx, pass)
 	default:
 		return r.bootCleaningRun(ctx, pass)
@@ -261,7 +268,7 @@ func (r *PhysicalHostReconciler) bootCleaningRun(ctx context.Context, pass clean
 	}
 
 	now := metav1.Now()
-	host.Status.CleaningTimestamp = &now
+	host.SetCleaningStartedAt(&now)
 	setFalse(host, infrav1.HostCleanedCondition, infrav1.CleaningInProgressReason, "Booted the inspector in clean mode")
 	logger.Info("Booted the cleaning run")
 	r.event(host, corev1.EventTypeNormal, eventCleaningBooted, "Booted the inspector in clean mode")
@@ -319,7 +326,7 @@ func (r *PhysicalHostReconciler) finishCleaning(ctx context.Context, pass cleani
 		return ctrl.Result{}, err
 	}
 	internalmetrics.RecordPhysicalHostCleaning(host.Namespace, internalmetrics.CleaningOutcomeCleaned, cleaningElapsed(host))
-	host.Status.CleaningTimestamp = nil
+	host.SetCleaningStartedAt(nil)
 	r.updateStatus(host, infrav1.StateAvailable, true, "")
 	setTrue(host, infrav1.HostAvailableCondition, infrav1.HostAvailableReason)
 	pass.Logger.Info("Disks wiped; host is Available")
@@ -330,7 +337,7 @@ func (r *PhysicalHostReconciler) finishCleaning(ctx context.Context, pass cleani
 // skipCleaning ends a run the owner disabled and makes the host Available without a wipe.
 func (r *PhysicalHostReconciler) skipCleaning(ctx context.Context, pass cleaningPass) (ctrl.Result, error) {
 	host := pass.Host
-	if host.Status.CleaningTimestamp != nil {
+	if host.CleaningStartedAt() != nil {
 		if err := r.powerOffAfterCleaning(ctx, pass); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -340,19 +347,20 @@ func (r *PhysicalHostReconciler) skipCleaning(ctx context.Context, pass cleaning
 	}
 	internalmetrics.RecordPhysicalHostCleaning(host.Namespace, internalmetrics.CleaningOutcomeSkipped, cleaningElapsed(host))
 	releaseUncleaned(host)
-	pass.Logger.Info("cleaningMode set to Disabled during the cleaning run; host is Available without a wipe")
-	r.event(host, corev1.EventTypeWarning, eventCleaningSkipped, "cleaningMode set to Disabled; host is Available without a wipe")
+	pass.Logger.Info("spec.cleaning.mode set to Disabled during the cleaning run; host is Available without a wipe")
+	r.event(host, corev1.EventTypeWarning, eventCleaningSkipped,
+		"spec.cleaning.mode set to Disabled; host is Available without a wipe")
 	return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
 }
 
 // releaseUncleaned makes a host Available without a wipe and records that in HostCleaned.
 func releaseUncleaned(host *infrav1.PhysicalHost) {
-	host.Status.CleaningTimestamp = nil
+	host.SetCleaningStartedAt(nil)
 	host.Status.State = infrav1.StateAvailable
 	host.Status.Ready = true
 	host.Status.ErrorMessage = ""
 	setFalse(host, infrav1.HostCleanedCondition, infrav1.CleaningSkippedReason,
-		"cleaningMode was set to Disabled; the disks were not wiped")
+		"spec.cleaning.mode was set to Disabled; the disks were not wiped")
 	setTrue(host, infrav1.HostAvailableCondition, infrav1.HostAvailableReason)
 }
 

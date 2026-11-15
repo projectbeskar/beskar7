@@ -286,7 +286,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 
 	// Cleaning is entered, and its reports applied, before anything can make the host Available.
 	r.startCleaningOnRelease(logger, physicalHost)
-	r.applyRetryCleaningAnnotation(logger, physicalHost)
+	r.applyCleaningRequest(logger, physicalHost)
 	r.applyCleanFailedRequestAnnotation(ctx, logger, physicalHost)
 	r.applyCleanedRequestAnnotation(ctx, logger, physicalHost)
 
@@ -452,7 +452,8 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 			logger.Info("Holding the host in Error after a failed cleaning run", "errorMessage", physicalHost.Status.ErrorMessage)
 			return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
 		case cleaningHeld(physicalHost):
-			logger.Info("cleaningMode set to Disabled on a host held after a failed cleaning run; releasing it without a wipe")
+			logger.Info("spec.cleaning.mode set to Disabled on a host held after a failed cleaning run; " +
+				"releasing it without a wipe")
 			releaseUncleaned(physicalHost)
 		}
 		if physicalHost.Status.State != infrav1.StateAvailable {

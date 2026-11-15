@@ -168,6 +168,3 @@ const CleanedRequestAnnotation = "infrastructure.cluster.x-k8s.io/cleaned-reques
 
 // CleanFailedRequestAnnotation carries the inspector's bound /clean-failed report; value the sanitized reason.
 const CleanFailedRequestAnnotation = "infrastructure.cluster.x-k8s.io/clean-failed-request"
-
-// RetryCleaningAnnotation restarts the cleaning of a held host; unbound, since it can only wipe a host already waiting to be wiped.
-const RetryCleaningAnnotation = "infrastructure.cluster.x-k8s.io/retry-cleaning"

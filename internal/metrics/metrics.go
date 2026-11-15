@@ -487,7 +487,7 @@ const (
 	CleaningOutcomeFailed CleaningOutcome = "failed"
 	// CleaningOutcomeTimedOut: nothing reported before the cleaning timeout.
 	CleaningOutcomeTimedOut CleaningOutcome = "timed_out"
-	// CleaningOutcomeSkipped: CleaningMode was set to Disabled during the run.
+	// CleaningOutcomeSkipped: spec.cleaning.mode was set to Disabled during the run.
 	CleaningOutcomeSkipped CleaningOutcome = "skipped"
 )
 

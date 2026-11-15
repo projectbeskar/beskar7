@@ -141,7 +141,7 @@ func main() {
 			"slow storage or very large OS images (D-015).")
 	flag.StringVar(&cleaningImageURL, "cleaning-image-url", "",
 		"HTTPS base URL serving the inspector vmlinuz and initrd.img that a released "+
-			"PhysicalHost with spec.cleaningMode Metadata boots to wipe its disks. Empty "+
+			"PhysicalHost with spec.cleaning.mode Metadata boots to wipe its disks. Empty "+
 			"leaves such hosts Cleaning with HostCleaned=False (CleaningNotConfigured).")
 	flag.DurationVar(&cleaningTimeout, "cleaning-timeout", controllers.DefaultCleaningTimeout,
 		"How long a cleaning run may take from its boot to the inspector's report before "+
