@@ -18,6 +18,12 @@ package controllers
 
 import (
 	"context"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -26,11 +32,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
+	"sigs.k8s.io/cluster-api/util/secret"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -49,7 +58,48 @@ const (
 	npidPoll       = 250 * time.Millisecond
 	// npidConsistently is how long an opted-out cluster is watched for a connection that must never come.
 	npidConsistently = 2 * time.Second
+
+	// npidManagerToken stands in for the manager's own service account token on its disk.
+	npidManagerToken = "manager-sa-token"
+
+	// npidKubeconfigEntry names the cluster, user and context of a hand-built kubeconfig.
+	npidKubeconfigEntry = "workload"
 )
+
+// tokenRecorder stands in for a tenant's API server and records whether npidManagerToken reached it.
+type tokenRecorder struct {
+	sawToken atomic.Bool
+}
+
+func (t *tokenRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get("Authorization") == "Bearer "+npidManagerToken {
+		t.sawToken.Store(true)
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// recorderKubeconfig points at srv and authenticates with authInfo.
+func recorderKubeconfig(srv *httptest.Server, authInfo *clientcmdapi.AuthInfo) []byte {
+	cfg := clientcmdapi.NewConfig()
+	cfg.Clusters[npidKubeconfigEntry] = &clientcmdapi.Cluster{
+		Server:                   srv.URL,
+		CertificateAuthorityData: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw}),
+	}
+	cfg.AuthInfos[npidKubeconfigEntry] = authInfo
+	cfg.Contexts[npidKubeconfigEntry] = &clientcmdapi.Context{Cluster: npidKubeconfigEntry, AuthInfo: npidKubeconfigEntry}
+	cfg.CurrentContext = npidKubeconfigEntry
+	data, err := clientcmd.Write(*cfg)
+	Expect(err).NotTo(HaveOccurred())
+	return data
+}
+
+// startTokenRecorder serves a tokenRecorder over TLS until the spec ends.
+func startTokenRecorder() (*tokenRecorder, *httptest.Server) {
+	recorder := &tokenRecorder{}
+	srv := httptest.NewTLSServer(recorder)
+	DeferCleanup(srv.Close)
+	return recorder, srv
+}
 
 // npidReconcileEnv is one namespace with a Ready host, its machine, and a manager running the real ClusterCache.
 type npidReconcileEnv struct {
@@ -229,6 +279,16 @@ func (env *npidReconcileEnv) setSwitch(on bool) {
 	Expect(k8sClient.Patch(ctx, b7cluster, client.MergeFrom(before))).To(Succeed())
 }
 
+// setKubeconfig replaces the kubeconfig in the Cluster's <cluster>-kubeconfig Secret.
+func (env *npidReconcileEnv) setKubeconfig(data []byte) {
+	s := &corev1.Secret{}
+	key := client.ObjectKey{Namespace: env.ns, Name: secret.Name(env.cluster.Name, secret.Kubeconfig)}
+	Expect(k8sClient.Get(ctx, key, s)).To(Succeed())
+	before := s.DeepCopy()
+	s.Data[secret.KubeconfigDataName] = data
+	Expect(k8sClient.Patch(ctx, s, client.MergeFrom(before))).To(Succeed())
+}
+
 func (env *npidReconcileEnv) nodeProviderID(g Gomega) string {
 	node := &corev1.Node{}
 	g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(env.node), node)).To(Succeed())
@@ -303,5 +363,42 @@ var _ = Describe("Node providerID through Reconcile with the real ClusterCache (
 			g.Expect(conditions.Has(b7m, infrav1.NodeProviderIDReadyCondition)).To(BeFalse())
 			g.Expect(env.connected()).To(BeFalse())
 		}, npidEventually, npidPoll).Should(Succeed())
+	})
+
+	// Control for the tokenFile spec below: proves the recorder sees a token that is sent.
+	It("sends an inline kubeconfig token to the workload API server", func() {
+		env = newNPIDReconcileEnv(false)
+		env.reconcileCluster(false)
+		recorder, srv := startTokenRecorder()
+		env.setKubeconfig(recorderKubeconfig(srv, &clientcmdapi.AuthInfo{Token: npidManagerToken}))
+
+		env.setSwitch(true)
+		env.reconcileCluster(true)
+
+		Eventually(recorder.sawToken.Load, npidEventually, npidPoll).Should(BeTrue())
+	})
+
+	// A tokenFile resolves on the manager's disk, so it could hand the manager's own token to a tenant's server.
+	It("never uses a kubeconfig that reads its token from a file", func() {
+		env = newNPIDReconcileEnv(false)
+		env.reconcileCluster(false)
+		recorder, srv := startTokenRecorder()
+		tokenFile := filepath.Join(GinkgoT().TempDir(), "token")
+		Expect(os.WriteFile(tokenFile, []byte(npidManagerToken), 0o600)).To(Succeed())
+		env.setKubeconfig(recorderKubeconfig(srv, &clientcmdapi.AuthInfo{TokenFile: tokenFile}))
+
+		env.setSwitch(true)
+		env.reconcileCluster(true)
+
+		Eventually(func(g Gomega) {
+			cond := conditions.Get(env.reconcileMachine(g), infrav1.NodeProviderIDReadyCondition)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Reason).To(Equal(infrav1.WorkloadClusterUnreachableReason))
+		}, npidEventually, npidPoll).Should(Succeed())
+		Consistently(func(g Gomega) {
+			g.Expect(env.connected()).To(BeFalse())
+			g.Expect(recorder.sawToken.Load()).To(BeFalse(), "the manager's token must never reach a tenant's server")
+			g.Expect(env.nodeProviderID(g)).To(BeEmpty())
+		}, npidConsistently, npidPoll).Should(Succeed())
 	})
 })
