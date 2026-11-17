@@ -1643,6 +1643,11 @@ func deletedBeforePatch(b7machine *infrav1.Beskar7Machine, err error) bool {
 	if b7machine.DeletionTimestamp.IsZero() {
 		return false
 	}
+	return onlyNotFound(err)
+}
+
+// onlyNotFound reports whether err, or every error of the patch helper's aggregate in it, is NotFound.
+func onlyNotFound(err error) bool {
 	var agg kerrors.Aggregate
 	if errors.As(err, &agg) {
 		for _, e := range agg.Errors() {

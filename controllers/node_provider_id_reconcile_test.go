@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/cluster-api/util/secret"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -117,21 +118,32 @@ type npidReconcileEnv struct {
 }
 
 func newNPIDReconcileEnv(setNodeProviderID bool) *npidReconcileEnv {
+	return newNPIDReconcileEnvWith(setNodeProviderID, false)
+}
+
+// newLiveNPIDReconcileEnv also runs NodeProviderIDReconciler in the manager, so its watches decide when it runs.
+func newLiveNPIDReconcileEnv(setNodeProviderID bool) *npidReconcileEnv {
+	return newNPIDReconcileEnvWith(setNodeProviderID, true)
+}
+
+func newNPIDReconcileEnvWith(setNodeProviderID, live bool) *npidReconcileEnv {
 	env := &npidReconcileEnv{stopManager: func() {}}
 	nsObj := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "npid-reconcile-"}}
 	Expect(k8sClient.Create(ctx, nsObj)).To(Succeed())
 	env.ns = nsObj.Name
-	env.startClusterCache()
+	env.startClusterCache(live)
 	env.seedCluster(setNodeProviderID)
 	env.seedReadyMachine()
 	return env
 }
 
-// startClusterCache runs the production ClusterCache setup, filter included, in its own manager.
-func (env *npidReconcileEnv) startClusterCache() {
+// startClusterCache runs the production ClusterCache setup, filter included, in its own manager,
+// and with live the NodeProviderIDReconciler too.
+func (env *npidReconcileEnv) startClusterCache(live bool) {
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:  k8sClient.Scheme(),
-		Metrics: metricsserver.Options{BindAddress: "0"},
+		Scheme:     k8sClient.Scheme(),
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: ptr.To(true)},
 	})
 	Expect(err).NotTo(HaveOccurred())
 	mgrCtx, stop := context.WithCancel(ctx)
@@ -143,6 +155,13 @@ func (env *npidReconcileEnv) startClusterCache() {
 		ClusterFilter: NewNodeProviderIDClusterFilter(mgr.GetClient()),
 	}, controller.Options{SkipNameValidation: ptr.To(true)})
 	Expect(err).NotTo(HaveOccurred())
+	if live {
+		Expect((&NodeProviderIDReconciler{
+			Client:       mgr.GetClient(),
+			Log:          ctrl.Log.WithName("npid-live"),
+			ClusterCache: env.cache,
+		}).SetupWithManager(mgr)).To(Succeed())
+	}
 	go func() {
 		defer GinkgoRecover()
 		Expect(mgr.Start(mgrCtx)).To(Succeed())
@@ -304,6 +323,26 @@ func (env *npidReconcileEnv) setSwitch(on bool) {
 	Expect(k8sClient.Patch(ctx, b7cluster, client.MergeFrom(before))).To(Succeed())
 }
 
+func (env *npidReconcileEnv) setClusterPaused(paused bool) {
+	cluster := &clusterv1.Cluster{}
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(env.cluster), cluster)).To(Succeed())
+	before := cluster.DeepCopy()
+	cluster.Spec.Paused = ptr.To(paused)
+	Expect(k8sClient.Patch(ctx, cluster, client.MergeFrom(before))).To(Succeed())
+}
+
+// markMachineReady gives the machine its providerID and Ready status by hand, as the Beskar7Machine controller would.
+func (env *npidReconcileEnv) markMachineReady() {
+	b7m := &infrav1.Beskar7Machine{}
+	Expect(k8sClient.Get(ctx, env.b7machine, b7m)).To(Succeed())
+	before := b7m.DeepCopy()
+	b7m.Spec.ProviderID = providerID(env.ns, npidReconcileHost)
+	Expect(k8sClient.Patch(ctx, b7m, client.MergeFrom(before))).To(Succeed())
+	before = b7m.DeepCopy()
+	b7m.Status.Ready = true
+	Expect(k8sClient.Status().Patch(ctx, b7m, client.MergeFrom(before))).To(Succeed())
+}
+
 // annotateCluster sets NodeProviderIDAnnotation on the Cluster by hand, bypassing the mirror.
 func (env *npidReconcileEnv) annotateCluster() {
 	cluster := &clusterv1.Cluster{}
@@ -373,6 +412,25 @@ var _ = Describe("Node providerID through Reconcile with the real ClusterCache (
 		env.reconcileCluster(true)
 
 		env.expectNodeLinked()
+	})
+
+	// The controller runs live here, so only its own watches can bring it back after the unpause.
+	It("links the Node once a Cluster that was paused while the machine became Ready is unpaused", func() {
+		env = newLiveNPIDReconcileEnv(true)
+		env.reconcileCluster(true)
+
+		By("pausing the Cluster, then marking the machine Ready with its providerID")
+		env.setClusterPaused(true)
+		env.markMachineReady()
+		Consistently(func(g Gomega) {
+			g.Expect(env.nodeProviderID(g)).To(BeEmpty(), "a paused Cluster's Node is left alone")
+		}, npidConsistently, npidPoll).Should(Succeed())
+
+		By("unpausing the Cluster, which alone must wake the controller")
+		env.setClusterPaused(false)
+		Eventually(func(g Gomega) {
+			g.Expect(env.nodeProviderID(g)).To(Equal(providerID(env.ns, npidReconcileHost)))
+		}, npidEventually, npidPoll).Should(Succeed())
 	})
 
 	It("links the Node only from its own controller, and the Beskar7Machine reconcile keeps its condition", func() {

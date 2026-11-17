@@ -38,7 +38,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - **Workload cluster calls run in their own controller.** The Node providerID work above runs in a controller with
   its own queue and `--max-concurrent-reconciles` workers, and each call to a workload API server has a 5 second
   deadline, so a slow or hostile one never holds the `Beskar7Machine` workers that claim, power and release hosts.
-  The two controllers write their own conditions only. The manager now runs four controllers.
+  The two controllers write their own conditions only. The manager now runs four controllers. Pausing the
+  `Cluster` (`spec.paused` or the paused annotation) or the machine stops it, and unpausing wakes it again.
 - **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
   "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
   that makes the machine Ready. It no longer requeues while the Node joins.

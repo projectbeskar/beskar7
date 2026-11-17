@@ -21,11 +21,13 @@ import (
 	"errors"
 
 	"github.com/go-logr/logr"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/controllers/clustercache"
+	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
+	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -72,7 +74,8 @@ func (r *NodeProviderIDReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		err := patchHelper.Patch(ctx, b7machine, patch.WithOwnedConditions{Conditions: []string{
 			infrav1.NodeProviderIDReadyCondition,
 		}})
-		if err != nil && !apierrors.IsNotFound(err) {
+		// A machine deleted while this pass ran is gone, which is not an error.
+		if err != nil && !onlyNotFound(err) {
 			reterr = errors.Join(reterr, err)
 		}
 	}()
@@ -87,19 +90,39 @@ func (r *NodeProviderIDReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(
 			&infrav1.Beskar7Machine{},
 			builder.WithPredicates(nodeProviderIDCandidate())).
-		// Flipping setNodeProviderID reaches the Cluster as an annotation; a linked machine has no timer to notice it.
+		// An opt-in flip or an unpause changes nothing on the machine, and a paused pass sets no timer.
 		Watches(
 			&clusterv1.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(r.ClusterToBeskar7Machines),
-			builder.WithPredicates(nodeProviderIDAnnotationChanged())).
+			builder.WithPredicates(nodeProviderIDClusterChanged(mgr.GetScheme(), r.Log))).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),
 		}).
 		Complete(r)
 }
 
+// nodeProviderIDClusterChanged passes a Cluster update that changes what this controller does for its machines:
+// the opt-in annotation, or a pause or unpause through spec.paused or the paused annotation.
+func nodeProviderIDClusterChanged(scheme *runtime.Scheme, logger logr.Logger) predicate.Funcs {
+	optIn := nodeProviderIDAnnotationChanged()
+	pausedSpec := predicates.ClusterPausedTransitions(scheme, logger)
+	return predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+			return optIn.Update(e) || pausedSpec.Update(e) ||
+				annotations.HasPaused(e.ObjectOld) != annotations.HasPaused(e.ObjectNew)
+		},
+	}
+}
+
 // nodeProviderIDCandidate passes a Beskar7Machine this controller may act on: Ready, or still carrying its condition.
-// Updates pass only when Ready or the providerID changed, so this controller's own status writes do not wake it.
+// Updates pass only when Ready, the providerID or the paused annotation changed, so this controller's own status
+// writes do not wake it.
 func nodeProviderIDCandidate() predicate.Funcs {
 	candidate := func(obj client.Object) (*infrav1.Beskar7Machine, bool) {
 		b7machine, ok := obj.(*infrav1.Beskar7Machine)
@@ -120,7 +143,8 @@ func nodeProviderIDCandidate() predicate.Funcs {
 				return false
 			}
 			return oldMachine.Status.Ready != newMachine.Status.Ready ||
-				oldMachine.Spec.ProviderID != newMachine.Spec.ProviderID
+				oldMachine.Spec.ProviderID != newMachine.Spec.ProviderID ||
+				annotations.HasPaused(oldMachine) != annotations.HasPaused(newMachine)
 		},
 		DeleteFunc:  func(event.DeleteEvent) bool { return false },
 		GenericFunc: func(event.GenericEvent) bool { return false },
