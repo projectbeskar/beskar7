@@ -77,7 +77,11 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 		return ctrl.Result{}, fmt.Errorf("get Cluster of Machine %q: %w", machine.Name, err)
 	}
 	// Same check as the ClusterCache filter, so an opted-out cluster is never asked for and carries no condition.
-	if !NodeProviderIDClusterFilter(cluster) {
+	optedIn, err := nodeProviderIDOptedIn(ctx, r.Client, cluster)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("read the setNodeProviderID of Cluster %q: %w", cluster.Name, err)
+	}
+	if !optedIn {
 		conditions.Delete(b7machine, infrav1.NodeProviderIDReadyCondition)
 		return ctrl.Result{}, nil
 	}

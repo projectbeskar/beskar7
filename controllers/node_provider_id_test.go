@@ -52,6 +52,7 @@ const (
 // nodeProviderIDFixture is a Beskar7Machine with its owner Machine and Cluster.
 type nodeProviderIDFixture struct {
 	cluster   *clusterv1.Cluster
+	b7cluster *infrav1.Beskar7Cluster
 	machine   *clusterv1.Machine
 	b7machine *infrav1.Beskar7Machine
 }
@@ -88,16 +89,20 @@ func newNodeProviderIDFixture(namespace string) nodeProviderIDFixture {
 		},
 		Spec: infrav1.Beskar7MachineSpec{ProviderID: providerID(namespace, nodeProviderIDTestHost)},
 	}
-	return nodeProviderIDFixture{cluster: cluster, machine: machine, b7machine: b7machine}
+	b7cluster := &infrav1.Beskar7Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: nodeProviderIDTestCluster, Namespace: namespace},
+		Spec:       infrav1.Beskar7ClusterSpec{SetNodeProviderID: true},
+	}
+	return nodeProviderIDFixture{cluster: cluster, b7cluster: b7cluster, machine: machine, b7machine: b7machine}
 }
 
 func beskar7ClusterRef(name string) clusterv1.ContractVersionedObjectReference {
 	return clusterv1.ContractVersionedObjectReference{APIGroup: infrav1.GroupVersion.Group, Kind: beskar7ClusterKind, Name: name}
 }
 
-// optOut turns the fixture's Cluster into one that has not opted in.
+// optOut switches the fixture's Beskar7Cluster off and leaves the Cluster annotation, which must not count.
 func (f nodeProviderIDFixture) optOut() {
-	delete(f.cluster.Annotations, NodeProviderIDAnnotation)
+	f.b7cluster.Spec.SetNodeProviderID = false
 }
 
 func (f nodeProviderIDFixture) clusterKey() client.ObjectKey {
@@ -130,7 +135,7 @@ type nodeProviderIDCase struct {
 func (c nodeProviderIDCase) run(t *testing.T) (ctrl.Result, error) {
 	t.Helper()
 	management := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).
-		WithObjects(c.fixture.cluster, c.fixture.machine).Build()
+		WithObjects(c.fixture.cluster, c.fixture.b7cluster, c.fixture.machine).Build()
 	r := &Beskar7MachineReconciler{Client: management, ClusterCache: c.cache, Log: ctrl.Log.WithName("npid")}
 	return r.reconcileNodeProviderID(context.Background(), r.Log, c.fixture.b7machine)
 }
@@ -349,6 +354,7 @@ var _ = Describe("Node providerID on the workload cluster (#297)", func() {
 		f.machine.Name = nodeProviderIDTestMachine + "-" + rand.String(5)
 		f.machine.UID = ""
 		Expect(k8sClient.Create(ctx, f.cluster)).To(Succeed())
+		Expect(k8sClient.Create(ctx, f.b7cluster)).To(Succeed())
 		Expect(k8sClient.Create(ctx, f.machine)).To(Succeed())
 		f.b7machine.OwnerReferences[0].Name = f.machine.Name
 		f.b7machine.OwnerReferences[0].UID = f.machine.UID

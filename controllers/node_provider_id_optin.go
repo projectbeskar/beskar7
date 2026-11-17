@@ -19,9 +19,11 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -30,23 +32,64 @@ import (
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 )
 
-// beskar7ClusterKind is the infrastructure kind a Cluster must reference to opt in.
-const beskar7ClusterKind = "Beskar7Cluster"
+const (
+	// beskar7ClusterKind is the infrastructure kind a Cluster must reference to opt in.
+	beskar7ClusterKind = "Beskar7Cluster"
 
-// NodeProviderIDClusterFilter is the ClusterCache filter: it passes only a Cluster backed by a Beskar7Cluster that opted in.
-func NodeProviderIDClusterFilter(cluster *clusterv1.Cluster) bool {
+	// nodeProviderIDFilterTimeout bounds the filter's Beskar7Cluster read, which has no caller context.
+	nodeProviderIDFilterTimeout = 5 * time.Second
+)
+
+// beskar7ClusterKey is the key of the Beskar7Cluster the Cluster's infrastructureRef names; false for any other ref.
+func beskar7ClusterKey(cluster *clusterv1.Cluster) (client.ObjectKey, bool) {
 	if cluster == nil {
-		return false
+		return client.ObjectKey{}, false
 	}
 	ref := cluster.Spec.InfrastructureRef
-	if ref.Kind != beskar7ClusterKind || ref.APIGroup != infrav1.GroupVersion.Group {
-		return false
+	if ref.Kind != beskar7ClusterKind || ref.APIGroup != infrav1.GroupVersion.Group || ref.Name == "" {
+		return client.ObjectKey{}, false
 	}
-	return cluster.GetAnnotations()[NodeProviderIDAnnotation] == NodeProviderIDAnnotationValue
+	return client.ObjectKey{Namespace: cluster.Namespace, Name: ref.Name}, true
+}
+
+// nodeProviderIDOptedIn reads spec.setNodeProviderID from the Beskar7Cluster the Cluster's infrastructureRef names.
+func nodeProviderIDOptedIn(ctx context.Context, reader client.Reader, cluster *clusterv1.Cluster) (bool, error) {
+	key, ok := beskar7ClusterKey(cluster)
+	if !ok {
+		return false, nil
+	}
+	b7cluster := &infrav1.Beskar7Cluster{}
+	if err := reader.Get(ctx, key, b7cluster); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return b7cluster.Spec.SetNodeProviderID, nil
+}
+
+// NewNodeProviderIDClusterFilter returns the ClusterCache filter, which passes only a Cluster whose Beskar7Cluster
+// opted in. NodeProviderIDAnnotation only makes ClusterCache run it again; a failed read keeps the Cluster out.
+func NewNodeProviderIDClusterFilter(reader client.Reader) func(*clusterv1.Cluster) bool {
+	logger := ctrl.Log.WithName("node-provider-id-filter")
+	return func(cluster *clusterv1.Cluster) bool {
+		ctx, cancel := context.WithTimeout(context.Background(), nodeProviderIDFilterTimeout)
+		defer cancel()
+		optedIn, err := nodeProviderIDOptedIn(ctx, reader, cluster)
+		if err != nil {
+			logger.Error(err, "Failed to read the Beskar7Cluster; not connecting",
+				"cluster", client.ObjectKeyFromObject(cluster))
+			return false
+		}
+		return optedIn
+	}
 }
 
 // reconcileNodeProviderIDAnnotation mirrors spec.setNodeProviderID onto the owner Cluster as NodeProviderIDAnnotation.
 func (r *Beskar7ClusterReconciler) reconcileNodeProviderIDAnnotation(ctx context.Context, logger logr.Logger, cluster *clusterv1.Cluster, b7cluster *infrav1.Beskar7Cluster) error {
+	// Only the Beskar7Cluster the Cluster's infrastructureRef names may switch it.
+	if key, ok := beskar7ClusterKey(cluster); !ok || key.Name != b7cluster.Name {
+		logger.V(1).Info("Cluster's infrastructureRef names another object; not mirroring setNodeProviderID")
+		return nil
+	}
+
 	want := b7cluster.Spec.SetNodeProviderID
 	value, has := cluster.GetAnnotations()[NodeProviderIDAnnotation]
 	if want && value == NodeProviderIDAnnotationValue {

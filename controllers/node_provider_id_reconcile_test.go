@@ -109,6 +109,7 @@ type npidReconcileEnv struct {
 	b7machine   client.ObjectKey
 	node        *corev1.Node
 	cache       clustercache.ClusterCache
+	mgrClient   client.Client
 	clusterRec  *Beskar7ClusterReconciler
 	machineRec  *Beskar7MachineReconciler
 	stopManager context.CancelFunc
@@ -134,10 +135,11 @@ func (env *npidReconcileEnv) startClusterCache() {
 	Expect(err).NotTo(HaveOccurred())
 	mgrCtx, stop := context.WithCancel(ctx)
 	env.stopManager = stop
+	env.mgrClient = mgr.GetClient()
 	env.cache, err = clustercache.SetupWithManager(mgrCtx, mgr, clustercache.Options{
 		SecretClient:  mgr.GetClient(),
 		Client:        clustercache.ClientOptions{UserAgent: "beskar7-npid-test"},
-		ClusterFilter: NodeProviderIDClusterFilter,
+		ClusterFilter: NewNodeProviderIDClusterFilter(mgr.GetClient()),
 	}, controller.Options{SkipNameValidation: ptr.To(true)})
 	Expect(err).NotTo(HaveOccurred())
 	go func() {
@@ -172,7 +174,12 @@ func (env *npidReconcileEnv) seedCluster(setNodeProviderID bool) {
 		Spec: infrav1.Beskar7ClusterSpec{SetNodeProviderID: setNodeProviderID},
 	}
 	Expect(k8sClient.Create(ctx, env.b7cluster)).To(Succeed())
-	env.clusterRec = &Beskar7ClusterReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Log: ctrl.Log.WithName("npid-cluster")}
+	// Same cache as the filter, as in the manager, so the filter never reads an older spec than the mirror did.
+	env.clusterRec = &Beskar7ClusterReconciler{
+		Client: env.mgrClient,
+		Scheme: k8sClient.Scheme(),
+		Log:    ctrl.Log.WithName("npid-cluster"),
+	}
 }
 
 // seedReadyMachine claims a Ready host for a Beskar7Machine and registers its Node without a providerID.
@@ -258,7 +265,8 @@ func (env *npidReconcileEnv) reconcileCluster(want bool) {
 		g.Expect(err).NotTo(HaveOccurred())
 		cluster := &clusterv1.Cluster{}
 		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(env.cluster), cluster)).To(Succeed())
-		g.Expect(NodeProviderIDClusterFilter(cluster)).To(Equal(want))
+		annotated := cluster.GetAnnotations()[NodeProviderIDAnnotation] == NodeProviderIDAnnotationValue
+		g.Expect(annotated).To(Equal(want))
 	}, npidEventually, npidPoll).Should(Succeed())
 }
 
@@ -277,6 +285,18 @@ func (env *npidReconcileEnv) setSwitch(on bool) {
 	before := b7cluster.DeepCopy()
 	b7cluster.Spec.SetNodeProviderID = on
 	Expect(k8sClient.Patch(ctx, b7cluster, client.MergeFrom(before))).To(Succeed())
+}
+
+// annotateCluster sets NodeProviderIDAnnotation on the Cluster by hand, bypassing the mirror.
+func (env *npidReconcileEnv) annotateCluster() {
+	cluster := &clusterv1.Cluster{}
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(env.cluster), cluster)).To(Succeed())
+	before := cluster.DeepCopy()
+	if cluster.Annotations == nil {
+		cluster.Annotations = map[string]string{}
+	}
+	cluster.Annotations[NodeProviderIDAnnotation] = NodeProviderIDAnnotationValue
+	Expect(k8sClient.Patch(ctx, cluster, client.MergeFrom(before))).To(Succeed())
 }
 
 // setKubeconfig replaces the kubeconfig in the Cluster's <cluster>-kubeconfig Secret.
@@ -363,6 +383,16 @@ var _ = Describe("Node providerID through Reconcile with the real ClusterCache (
 			g.Expect(conditions.Has(b7m, infrav1.NodeProviderIDReadyCondition)).To(BeFalse())
 			g.Expect(env.connected()).To(BeFalse())
 		}, npidEventually, npidPoll).Should(Succeed())
+	})
+
+	It("never connects when the annotation is set by hand but the Beskar7Cluster did not opt in", func() {
+		env = newNPIDReconcileEnv(false)
+		env.reconcileCluster(false)
+
+		By("setting the annotation by hand, as on a paused Cluster where the mirror does not run")
+		env.annotateCluster()
+
+		env.expectReadyAndUntouched()
 	})
 
 	// Control for the tokenFile spec below: proves the recorder sees a token that is sent.

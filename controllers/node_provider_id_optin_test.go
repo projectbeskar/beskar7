@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"testing"
 
@@ -42,28 +43,57 @@ func clusterWith(ref clusterv1.ContractVersionedObjectReference, annotations map
 	}
 }
 
+func beskar7ClusterWith(name string, setNodeProviderID bool) *infrav1.Beskar7Cluster {
+	return &infrav1.Beskar7Cluster{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: nodeProviderIDTestNamespace},
+		Spec:       infrav1.Beskar7ClusterSpec{SetNodeProviderID: setNodeProviderID},
+	}
+}
+
 func TestNodeProviderIDClusterFilter(t *testing.T) {
-	optedIn := map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue}
-	foreignKind := clusterv1.ContractVersionedObjectReference{APIGroup: infrav1.GroupVersion.Group, Kind: "Metal3Cluster", Name: "x"}
-	foreignGroup := clusterv1.ContractVersionedObjectReference{APIGroup: "example.com", Kind: beskar7ClusterKind, Name: "x"}
+	annotated := map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue}
+	foreignKind := clusterv1.ContractVersionedObjectReference{
+		APIGroup: infrav1.GroupVersion.Group, Kind: "Metal3Cluster", Name: "on",
+	}
+	foreignGroup := clusterv1.ContractVersionedObjectReference{
+		APIGroup: "example.com", Kind: beskar7ClusterKind, Name: "on",
+	}
+	reader := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).
+		WithObjects(beskar7ClusterWith("on", true), beskar7ClusterWith("off", false)).Build()
 
 	cases := map[string]struct {
 		cluster *clusterv1.Cluster
 		want    bool
 	}{
 		"nil Cluster":                      {cluster: nil},
-		"no infrastructureRef":             {cluster: clusterWith(clusterv1.ContractVersionedObjectReference{}, optedIn)},
-		"another provider's kind":          {cluster: clusterWith(foreignKind, optedIn)},
-		"Beskar7Cluster kind, other group": {cluster: clusterWith(foreignGroup, optedIn)},
-		"Beskar7Cluster, no annotation":    {cluster: clusterWith(beskar7ClusterRef("x"), nil)},
-		"Beskar7Cluster, annotation false": {cluster: clusterWith(beskar7ClusterRef("x"), map[string]string{NodeProviderIDAnnotation: "false"})},
-		"Beskar7Cluster, opted in":         {cluster: clusterWith(beskar7ClusterRef("x"), optedIn), want: true},
+		"no infrastructureRef":             {cluster: clusterWith(clusterv1.ContractVersionedObjectReference{}, annotated)},
+		"another provider's kind":          {cluster: clusterWith(foreignKind, annotated)},
+		"Beskar7Cluster kind, other group": {cluster: clusterWith(foreignGroup, annotated)},
+		"Beskar7Cluster does not exist":    {cluster: clusterWith(beskar7ClusterRef("missing"), annotated)},
+		"spec off, annotation set by hand": {cluster: clusterWith(beskar7ClusterRef("off"), annotated)},
+		"spec on, annotation not yet set":  {cluster: clusterWith(beskar7ClusterRef("on"), nil), want: true},
+		"spec on, annotation set":          {cluster: clusterWith(beskar7ClusterRef("on"), annotated), want: true},
 	}
+	filter := NewNodeProviderIDClusterFilter(reader)
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			NewWithT(t).Expect(NodeProviderIDClusterFilter(tc.cluster)).To(Equal(tc.want))
+			NewWithT(t).Expect(filter(tc.cluster)).To(Equal(tc.want))
 		})
 	}
+}
+
+func TestNodeProviderIDClusterFilterFailsClosed(t *testing.T) {
+	base := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).
+		WithObjects(beskar7ClusterWith("on", true)).Build()
+	reader := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+			return errors.New("API server unavailable")
+		},
+	})
+
+	filter := NewNodeProviderIDClusterFilter(reader)
+
+	NewWithT(t).Expect(filter(clusterWith(beskar7ClusterRef("on"), nil))).To(BeFalse())
 }
 
 // mirrorCase runs reconcileNodeProviderIDAnnotation once and returns the stored Cluster and the patch count.
@@ -78,7 +108,7 @@ func mirrorCase(t *testing.T, cluster *clusterv1.Cluster, setNodeProviderID bool
 		},
 	})
 	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
-	b7cluster := &infrav1.Beskar7Cluster{Spec: infrav1.Beskar7ClusterSpec{SetNodeProviderID: setNodeProviderID}}
+	b7cluster := beskar7ClusterWith(cluster.Spec.InfrastructureRef.Name, setNodeProviderID)
 
 	if err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, cluster, b7cluster); err != nil {
 		t.Fatalf("mirror: %v", err)
@@ -139,13 +169,28 @@ func TestReconcileNodeProviderIDAnnotationOffKeepsConcurrentAnnotations(t *testi
 	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(live).Build()
 	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
 
-	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, read, &infrav1.Beskar7Cluster{})
+	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, read, beskar7ClusterWith("x", false))
 	g.Expect(err).NotTo(HaveOccurred())
 
 	stored := &clusterv1.Cluster{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(read), stored)).To(Succeed())
 	g.Expect(stored.Annotations).NotTo(HaveKey(NodeProviderIDAnnotation))
 	g.Expect(stored.Annotations).To(HaveKeyWithValue(clusterv1.PausedAnnotation, "true"))
+}
+
+// A Beskar7Cluster owned by the Cluster but not named by its infrastructureRef switches nothing.
+func TestReconcileNodeProviderIDAnnotationIgnoresAnotherBeskar7Cluster(t *testing.T) {
+	g := NewWithT(t)
+	cluster := clusterWith(beskar7ClusterRef("x"), nil)
+	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(cluster).Build()
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+
+	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, cluster, beskar7ClusterWith("x-2", true))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	stored := &clusterv1.Cluster{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored)).To(Succeed())
+	g.Expect(stored.Annotations).NotTo(HaveKey(NodeProviderIDAnnotation))
 }
 
 func TestNodeProviderIDAnnotationChanged(t *testing.T) {

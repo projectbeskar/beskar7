@@ -18,8 +18,10 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   condition, `NodeProviderIDReady` (`NodeProviderIDSet`, or `False` with `NodeNotFound`, `NodeProviderIDMismatch`
   or `WorkloadClusterUnreachable`), which is not part of the `Ready` summary and is absent on a cluster that has
   not opted in. The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation
-  `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id`, and the manager's ClusterCache only connects to
-  a `Cluster` backed by a `Beskar7Cluster` that carries it: no other cluster's kubeconfig is read or
+  `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id`, which only wakes the manager's ClusterCache up.
+  The ClusterCache then reads `spec.setNodeProviderID` from the `Beskar7Cluster` the `Cluster`'s
+  `infrastructureRef` names, and connects only when it is `true`, so an annotation set by hand does not count and
+  the mirror ignores a `Beskar7Cluster` the `infrastructureRef` does not name: no other cluster's kubeconfig is read or
   health-checked, including clusters of other infrastructure providers. Flipping the switch on a running cluster
   takes effect without a restart. The workload cluster is reached with the `<cluster>-kubeconfig` Secret.
   **RBAC:** the manager now needs `patch` on `cluster.x-k8s.io` `clusters` (generated role, Helm chart and

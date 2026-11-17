@@ -267,7 +267,7 @@ spec:
   setNodeProviderID: true
 ```
 
-The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id: "true"`, and removes it when the switch is off. Cluster API's ClusterCache only connects to a `Cluster` whose `infrastructureRef` is a `Beskar7Cluster` and that carries the annotation, so the manager never reads the kubeconfig of, or health-checks, any other cluster, including clusters of other infrastructure providers on the same management cluster. Flipping the switch on a running cluster takes effect without a restart, and flipping it off disconnects and removes the `NodeProviderIDReady` condition.
+The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id: "true"`, and removes it when the switch is off. The annotation only wakes the ClusterCache up: Cluster API's ClusterCache only connects to a `Cluster` whose `infrastructureRef` names a `Beskar7Cluster` with `spec.setNodeProviderID: true`, and an annotation set by hand does not count, so the manager never reads the kubeconfig of, or health-checks, any other cluster, including clusters of other infrastructure providers on the same management cluster. Flipping the switch on a running cluster takes effect without a restart, and flipping it off disconnects and removes the `NodeProviderIDReady` condition.
 
 Once the host is `Ready`, and until the owner `Machine` has a `nodeRef`, it reads the workload cluster Node **named after the `Machine`** and:
 

@@ -392,10 +392,11 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 
 	// The cached client already holds Secrets in this mode and honors --watch-namespaces.
 	// The filter keeps every Cluster that did not opt in out of the cache: no kubeconfig read, no health checks.
+	// It reads the Beskar7Cluster from the cache the mirror reads, so it never sees an older spec than the mirror did.
 	clusterCache, err := clustercache.SetupWithManager(context.Background(), mgr, clustercache.Options{
 		SecretClient:  mgr.GetClient(),
 		Client:        clustercache.ClientOptions{UserAgent: clusterCacheUserAgent},
-		ClusterFilter: controllers.NodeProviderIDClusterFilter,
+		ClusterFilter: controllers.NewNodeProviderIDClusterFilter(mgr.GetClient()),
 	}, controller.Options{MaxConcurrentReconciles: cfg.maxConcurrentReconciles})
 	if err != nil {
 		return fmt.Errorf("unable to create ClusterCache: %w", err)
