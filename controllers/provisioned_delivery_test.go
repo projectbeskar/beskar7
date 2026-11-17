@@ -28,7 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -113,7 +113,7 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("provisioned-race-host"),
-			Recorder:               record.NewFakeRecorder(10),
+			Recorder:               events.NewFakeRecorder(10),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -351,7 +351,7 @@ var _ = Describe("The inspector's /provisioned report when it races the host's s
 		refusingReconciler := &PhysicalHostReconciler{
 			Client: refusing, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("provisioned-race-refused-status"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 
@@ -457,7 +457,7 @@ var _ = Describe("A deployment reported while the controllers were away, with bo
 			Client:                 mgr.GetClient(),
 			Scheme:                 mgr.GetScheme(),
 			Log:                    ctrl.Log.WithName("provisioned-race-mgr-host"),
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: time.Second,
 			BootstrapURLBase:       "https://example.com:8082",

@@ -27,7 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -230,7 +230,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:      ctrl.Log.WithName("move-host"),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: events.NewFakeRecorder(10),
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return mockRf, nil
 			},
@@ -344,7 +344,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("move-late-creds"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: failingBMC(errors.New("must not be reached: adoption needs no BMC")),
 		}
 		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(host)})
@@ -374,7 +374,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:      ctrl.Log.WithName("move-wrong-host"),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: events.NewFakeRecorder(10),
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
@@ -424,7 +424,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:      ctrl.Log.WithName("move-xns"),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: events.NewFakeRecorder(10),
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
@@ -460,7 +460,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:      ctrl.Log.WithName("move-deploying-guard"),
-			Recorder: record.NewFakeRecorder(10),
+			Recorder: events.NewFakeRecorder(10),
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},
@@ -636,7 +636,7 @@ var _ = Describe("PhysicalHostReconciler's Beskar7Machine watch", func() {
 		Expect((&PhysicalHostReconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 			Log:      ctrl.Log.WithName("move-watch-live-host"),
-			Recorder: record.NewFakeRecorder(100),
+			Recorder: events.NewFakeRecorder(100),
 			RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 				return internalredfish.NewMockClient(), nil
 			},

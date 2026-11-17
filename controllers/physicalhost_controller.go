@@ -35,7 +35,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -85,7 +85,7 @@ type PhysicalHostReconciler struct {
 	client.Client
 	Log                  logr.Logger
 	Scheme               *runtime.Scheme
-	Recorder             record.EventRecorder
+	Recorder             events.EventRecorder
 	RedfishClientFactory internalredfish.RedfishClientFactory
 	// APIReader reads the host's bootstrap-token Secret straight from the API
 	// server, to check the binding of the annotations the reconciler acts on
@@ -118,7 +118,7 @@ func NewPhysicalHostReconciler(
 	scheme *runtime.Scheme,
 	redfishFactory internalredfish.RedfishClientFactory,
 	logger logr.Logger,
-	recorder record.EventRecorder,
+	recorder events.EventRecorder,
 ) *PhysicalHostReconciler {
 	return &PhysicalHostReconciler{
 		Client:               c,
@@ -152,6 +152,7 @@ func NewPhysicalHostReconciler(
 // note that omitted these is superseded by the inspection-handler design.
 //+kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+//+kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // beskar7machines is read-only here: adoptProvisionedClaim looks up the
 // consumer named by ConsumerRef.Name to compare its ProviderID against this
 // host, and SetupWithManager watches Beskar7Machine so a newly-landed machine
@@ -572,7 +573,7 @@ func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logg
 	physicalHost.Status.Ready = true
 	physicalHost.Status.ErrorMessage = ""
 	if r.Recorder != nil {
-		r.Recorder.Eventf(physicalHost, corev1.EventTypeNormal, "AdoptedProvisionedClaim",
+		r.Recorder.Eventf(physicalHost, nil, corev1.EventTypeNormal, "AdoptedProvisionedClaim", "Adopt",
 			"Adopted Ready: consumer %s already holds this host by ProviderID", key.Name)
 	}
 }
@@ -1214,8 +1215,8 @@ func (r *PhysicalHostReconciler) reconcileDelete(ctx context.Context, logger log
 	if physicalHost.Spec.ConsumerRef != nil {
 		logger.Info("Warning: Deleting PhysicalHost that is still claimed", "consumer", physicalHost.Spec.ConsumerRef.Name)
 		if r.Recorder != nil {
-			r.Recorder.Event(physicalHost, corev1.EventTypeWarning, "DeletingClaimedHost",
-				fmt.Sprintf("Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name))
+			r.Recorder.Eventf(physicalHost, nil, corev1.EventTypeWarning, "DeletingClaimedHost", "Delete",
+				"Deleting host that is still claimed by %s", physicalHost.Spec.ConsumerRef.Name)
 		}
 	}
 

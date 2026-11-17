@@ -33,7 +33,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -171,7 +171,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("inspection-request-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 	})
@@ -460,7 +460,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			cached := &PhysicalHostReconciler{
 				Client: frozenSecretClient(key, nil), APIReader: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-stale-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			applied := settlePhysicalHost(cached, key)
@@ -486,7 +486,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			cached := &PhysicalHostReconciler{
 				Client: frozenSecretClient(key, cachedSecret), APIReader: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-stale-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			applied := settlePhysicalHost(cached, key)
@@ -509,7 +509,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 				cached := &PhysicalHostReconciler{
 					Client: frozenSecretClient(key, cachedSecret), APIReader: k8sClient, Scheme: k8sClient.Scheme(),
 					Log:                  ctrl.Log.WithName("inspection-request-stale-signal-host"),
-					Recorder:             record.NewFakeRecorder(10),
+					Recorder:             events.NewFakeRecorder(10),
 					RedfishClientFactory: reachableBMC(),
 				}
 				signal.applied(settlePhysicalHost(cached, key))
@@ -569,7 +569,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			reconciler := &PhysicalHostReconciler{
 				Client: clientReads, APIReader: apiReads, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-reader-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			applied := settlePhysicalHost(reconciler, key)
@@ -597,7 +597,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			reconciler := &PhysicalHostReconciler{
 				Client: k8sClient, APIReader: flaky, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-unreadable"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -626,7 +626,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			unset := &PhysicalHostReconciler{
 				Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-setup"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 				BootstrapURLBase:     "https://example.com:8082",
 			}
@@ -638,7 +638,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			given := &PhysicalHostReconciler{
 				Client: mgr.GetClient(), APIReader: k8sClient, Scheme: mgr.GetScheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-setup"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 				BootstrapURLBase:     "https://example.com:8082",
 			}
@@ -663,7 +663,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			Expect((&PhysicalHostReconciler{
 				Client: mgr.GetClient(), Scheme: mgr.GetScheme(),
 				Log:                  ctrl.Log.WithName("inspection-request-managed-host"),
-				Recorder:             record.NewFakeRecorder(100),
+				Recorder:             events.NewFakeRecorder(100),
 				RedfishClientFactory: reachableBMC(),
 				BootstrapURLBase:     "https://example.com:8082",
 			}).SetupWithManager(mgr)).To(Succeed())
@@ -784,7 +784,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			reconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  logr.New(capture.GetSink()),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -822,7 +822,7 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 			reconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  logr.New(capture.GetSink()),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: reachableBMC(),
 			}
 			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})

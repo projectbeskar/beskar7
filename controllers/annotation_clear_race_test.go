@@ -27,7 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -82,7 +82,7 @@ var _ = Describe("A PhysicalHost reconcile that clears the host's last annotatio
 		reconciler := &PhysicalHostReconciler{
 			Client: racing, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("annotation-clear-race"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 		_, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
