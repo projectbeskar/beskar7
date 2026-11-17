@@ -37,8 +37,13 @@ rules:
   resources: ["configmaps"]
   verbs: ["create", "delete", "get", "list", "patch", "update", "watch"]
 
-# Events: emitted by the controllers for major lifecycle changes.
+# Events: emitted by the controllers for major lifecycle changes. The core
+# group is for leader election (legacy recorder); events.k8s.io is for the
+# PhysicalHost controller (events.EventRecorder).
 - apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["events.k8s.io"]
   resources: ["events"]
   verbs: ["create", "patch"]
 

@@ -373,8 +373,7 @@ var _ = Describe("PhysicalHost transient-failure retries under a running manager
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
 			Log:    ctrl.Log.WithName("ph-transient-mgr-test"),
-			// A fake recorder, not mgr.GetEventRecorderFor: that one is deprecated,
-			// and nothing here asserts on events.
+			// A fake recorder: nothing here asserts on events.
 			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			BootstrapURLBase:       "https://example.com:8082",
