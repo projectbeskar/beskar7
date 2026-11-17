@@ -91,6 +91,8 @@ func main() {
 	var controllersRaw string
 	var bmcProxyRaw string
 	var enableNodeProviderID bool
+	var cleaningImageURL string
+	var cleaningTimeout time.Duration
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -137,6 +139,14 @@ func main() {
 		"How long a host may stay in the Deploying phase before the Beskar7Machine is "+
 			"marked terminally failed (DeploymentTimedOut). Raise this for hardware with "+
 			"slow storage or very large OS images (D-015).")
+	flag.StringVar(&cleaningImageURL, "cleaning-image-url", "",
+		"HTTP(S) base URL serving the inspector vmlinuz and initrd.img that a released "+
+			"PhysicalHost with spec.cleaning.mode Metadata boots to wipe its disks. Empty "+
+			"leaves such hosts Cleaning with HostCleaned=False (CleaningNotConfigured).")
+	flag.DurationVar(&cleaningTimeout, "cleaning-timeout", controllers.DefaultCleaningTimeout,
+		"How long a cleaning run may take from its boot to the inspector's report before "+
+			"the host is held in Error (CleaningTimedOut). Must be above zero and below 30m, "+
+			"the cleaning token lifetime.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", controllers.DefaultMaxConcurrentReconciles,
 		"Number of concurrent reconcile workers per controller. The default (1) matches "+
 			"controller-runtime and preserves historical behaviour. Raise it when a fleet is "+
@@ -242,6 +252,8 @@ func main() {
 		inspectionTimeout:       inspectionTimeout,
 		deploymentTimeout:       deploymentTimeout,
 		maxConcurrentReconciles: maxConcurrentReconciles,
+		cleaningImageURL:        cleaningImageURL,
+		cleaningTimeout:         cleaningTimeout,
 	}
 	// flag.Visit only sees flags that were actually given, which is how
 	// validate tells the --leader-elect default apart from an explicit request.
@@ -464,6 +476,8 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
 		RedfishClientFactory:    redfishFactory,
 		BootstrapURLBase:        cfg.bootstrapURLBase,
+		CleaningImageURL:        cfg.cleaningImageURL,
+		CleaningTimeout:         cfg.cleaningTimeout,
 		Recorder:                mgr.GetEventRecorder("beskar7-physicalhost-controller"),
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {

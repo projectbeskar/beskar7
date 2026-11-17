@@ -490,6 +490,7 @@ var _ = Describe("Deploy failure with both controllers under a running manager",
 			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: reachableBMC(),
 			BootstrapURLBase:     "https://example.com:8082",
+			CleaningTimeout:      DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 		// The host is Deploying from the start, so the machine never has a reason
 		// to reach for the BMC; before the fix it did, to boot the inspector again.

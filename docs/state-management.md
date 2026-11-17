@@ -10,7 +10,7 @@ The state constants are defined in `api/v1beta2/physicalhost_types.go`. The tran
 
 | Constant | Status string | Meaning |
 |---|---|---|
-| `StateNone` | `""` | A new host, until its first successful BMC contact moves it to `Available` (a failed one moves it to `Error`). |
+| `StateNone` | `""` | A new host, until its first successful BMC contact moves it to `Available` (a failed one moves it to `Error`). An unclaimed host with `spec.cleaning.mode: Metadata` goes to `Cleaning` instead, also after `clusterctl move`, which drops `status`. |
 | `StateUnknown` | `"Unknown"` | Defined in the API but never set by the controller. |
 | `StateEnrolling` | `"Enrolling"` | Defined in the API but never set by the controller. |
 | `StateAvailable` | `"Available"` | BMC reachable; no consumer claim. Eligible for a Beskar7Machine to claim. |
@@ -18,6 +18,7 @@ The state constants are defined in `api/v1beta2/physicalhost_types.go`. The tran
 | `StateInspecting` | `"Inspecting"` | The inspection image is booting / running on the host. |
 | `StateDeploying` | `"Deploying"` | Hardware inspection passed and the inspector is writing the OS image to disk. Entered when the inspection report is accepted; left through the inspector's provisioned or provision-failed callback. The deployment timeout fails only the Beskar7Machine and does not signal the host. |
 | `StateReady` | `"Ready"` | OS deployment complete (the inspector's provisioned callback was received). `Beskar7Machine.Spec.ProviderID`, `Status.Ready`, and `Status.Initialization.Provisioned` are set at this point. |
+| `StateCleaning` | `"Cleaning"` | A host released with `spec.cleaning.mode: Metadata` is booting the inspector in clean mode to wipe its disks. Left for `Available` on the inspector's `/cleaned` report, or for a held `Error` on `/clean-failed` or the cleaning timeout. Never claimable. See [PhysicalHost → Disk cleaning on release](physicalhost.md#disk-cleaning-on-release). |
 | `StateError` | `"Error"` | A terminal-or-recoverable error condition. See `Status.ErrorMessage`. An unreachable BMC (`RedfishConnectionReady` reason `BMCUnreachable`) is the kind that clears by itself. A failed provisioning run — the inspector's `/provision-failed` report or an inspection timeout — is the kind that does not: a claimed host keeps that `Error` until it is released. |
 
 The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings from v0.3 are gone. The Go code previously kept deprecated alias constants (`StateClaimed = "InUse"`, etc.); those aliases have been removed. Code that imported them must switch to the canonical state constants above.
@@ -66,6 +67,7 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
 | From | To | Trigger | Where |
 |---|---|---|---|
 | (no state) | `Available` | First successful Redfish reconcile, no `ConsumerRef`. | `physicalhost_controller.go:reconcileNormal` |
+| (no state) | `Cleaning` | No `ConsumerRef` and `spec.cleaning.mode: Metadata`: a new host, or one moved by `clusterctl move`, which drops `status`. Before the BMC is tried. | `physicalhost_cleaning.go:startCleaningOnRelease` |
 | `Available` | `InUse` | A Beskar7Machine writes `Spec.ConsumerRef`. | `beskar7machine_controller.go:findAndClaimOrGetAssociatedHost` |
 | `InUse` | `Inspecting` | Beskar7Machine writes `inspection-request: inspect` annotation. It is applied only to a host that is `InUse`; on a host in any other state it is removed and nothing changes, so a duplicate never takes an `Inspecting` or `Deploying` host back to the start of its run. A host that went to `Error` about its BMC just after the machine booted it drops the request, and the machine sends it again once the host is back `InUse`; an inspection report that arrived meanwhile is kept (`InspectionPhase` stays `Complete`). | `beskar7machine_controller.go:triggerInspection`, `physicalhost_controller.go:applyInspectionRequest` |
 | `Inspecting` | `Deploying` | PhysicalHost controller consumes the inspection-result ConfigMap, validates the report, and advances the phase. Beskar7Machine then drives the state forward via `inspection-request: inspect-complete`. | `physicalhost_controller.go:applyInspectionResultAnnotation`, `beskar7machine_controller.go:validateInspectionReport` |
@@ -83,6 +85,12 @@ The legacy `Claimed`, `Provisioning`, `Provisioned`, `Deprovisioning` strings fr
 | `Error` from a failed run (claimed) | unchanged | Any BMC failure, and the BMC's recovery. `RedfishConnectionReady` reports the BMC; `Status.ErrorMessage` keeps the run's reason. An `inspection-request` annotation is consumed without effect — the `Beskar7Machine` can send `inspect-complete` a second time after reading a copy of the host from before its first request was applied. | `physicalhost_controller.go:provisioningRunFailed`, `physicalhost_controller.go:applyInspectionRequest` |
 | `Error` | `Available`, or `InUse` if claimed | The underlying error clears (BMC reachable again, secret fixed or annotated, TLS config fixed). Not the `Error` of a failed run, which a claimed host keeps until it is released. | `physicalhost_controller.go:reconcileNormal` |
 | `InUse` / `Inspecting` / `Deploying` / `Ready` / `Error` | `Available` | Beskar7Machine deletion clears `Spec.ConsumerRef`. | `beskar7machine_controller.go:reconcileDelete` |
+| `InUse` / `Inspecting` / `Deploying` / `Ready` / `Error` | `Cleaning` | The same release, on a host with `spec.cleaning.mode: Metadata`. Before the BMC is tried, so an outage cannot skip the wipe. | `physicalhost_cleaning.go:startCleaningOnRelease` |
+| `Cleaning` | `Available` | The inspector's `/cleaned` report, bound to this run's credentials (`HostCleaned=True`). | `physicalhost_cleaning.go:finishCleaning` |
+| `Cleaning` | `Error` (held) | The inspector's `/clean-failed` report, or no report within `--cleaning-timeout`. The host stays in `Error` and is never made `Available` by itself. | `physicalhost_cleaning.go:failCleaning` |
+| `Error` held after a failed cleaning run | `Cleaning` | A new non-empty `spec.cleaning.request`. A change in any other state is only recorded in `status.cleaning.observedRequest`. | `physicalhost_cleaning.go:applyCleaningRequest` |
+| `Cleaning` / `Error` held after a failed cleaning run | `Available` | `spec.cleaning.mode: Disabled` (`HostCleaned=False`, `CleaningSkipped`). | `physicalhost_cleaning.go:skipCleaning` |
+| `Cleaning` / `Error` held after a failed cleaning run | unchanged | BMC unreachable, or another BMC fault. A booted run keeps `status.cleaning.startedAt`, and a held host keeps the failure in `Status.ErrorMessage` and `HostCleaned`, also after the BMC recovers. `RedfishConnectionReady` reports the BMC. | `physicalhost_cleaning.go:hostStateHeld` |
 
 ## Atomic claim
 

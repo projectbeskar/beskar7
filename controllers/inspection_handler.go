@@ -63,6 +63,8 @@ const (
 	// inspectionResultLabelHost links the ConfigMap back to its PhysicalHost by
 	// name (the namespace is implicit).
 	inspectionResultLabelHost = "infrastructure.cluster.x-k8s.io/host"
+	// inspectionResultOwnerValue is the inspectionResultLabelOwnedBy value.
+	inspectionResultOwnerValue = "beskar7-controller-manager"
 )
 
 // InspectionHandler handles HTTP requests from inspection images.
@@ -339,7 +341,7 @@ func (h *InspectionHandler) upsertResultConfigMap(
 		if cm.Labels == nil {
 			cm.Labels = map[string]string{}
 		}
-		cm.Labels[inspectionResultLabelOwnedBy] = "beskar7-controller-manager"
+		cm.Labels[inspectionResultLabelOwnedBy] = inspectionResultOwnerValue
 		cm.Labels[inspectionResultLabelHost] = physicalHost.Name
 		// Owner ref so the ConfigMap is GC'd on host deletion. We use the
 		// PhysicalHost as both owner and controller — this ConfigMap is
@@ -579,6 +581,11 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Log:    provisionFailedLog,
 	}
 
+	cleanedLog := ctrl.Log.WithName("cleaned-handler")
+	cleanedHandler := &CleaningReportHandler{Client: mgr.GetClient(), Log: cleanedLog}
+	cleanFailedLog := ctrl.Log.WithName("clean-failed-handler")
+	cleanFailedHandler := &CleaningReportHandler{Client: mgr.GetClient(), Log: cleanFailedLog, Failed: true}
+
 	bootLog := ctrl.Log.WithName("boot-handler")
 	bootHandler := &BootHandler{
 		Client: mgr.GetClient(),
@@ -619,6 +626,11 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// A v4 controller without this route returns 404, which the v4.1 inspector tolerates.
 	mux.Handle("POST /api/v1/provision-failed/{namespace}/{hostName}",
 		auth.RequireBearer(provisionFailedLog, provisionFailedVerifier, provisionFailedHandler))
+	// Cleaning reports (v4.4) take only the cleaning run's token.
+	mux.Handle("POST /api/v1/cleaned/{namespace}/{hostName}",
+		auth.RequireBearer(cleanedLog, newCleaningTokenVerifier(mgr.GetClient(), cleanedLog), cleanedHandler))
+	mux.Handle("POST /api/v1/clean-failed/{namespace}/{hostName}",
+		auth.RequireBearer(cleanFailedLog, newCleaningTokenVerifier(mgr.GetClient(), cleanFailedLog), cleanFailedHandler))
 	// /boot is NOT bearer-gated. Rate limiting is applied inside BootHandler.ServeHTTP.
 	mux.Handle("GET /api/v1/boot/{namespace}/{hostName}/{nonce}", bootHandler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -723,6 +735,38 @@ func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
 		}
 		return nil
 	}
+	return loggedVerifier(log, verify)
+}
+
+// newCleaningTokenVerifier accepts only the unexpired token of the host's cleaning run.
+func newCleaningTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
+	verify := func(token string, r *http.Request) error {
+		namespace := r.PathValue("namespace")
+		hostName := r.PathValue("hostName")
+		if namespace == "" || hostName == "" {
+			return fmt.Errorf("missing namespace or hostName in request path")
+		}
+		ph := &infrav1.PhysicalHost{}
+		if err := c.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: hostName}, ph); err != nil {
+			return fmt.Errorf("get PhysicalHost: %w", err)
+		}
+		creds, err := boundCleaningCredentials(r.Context(), c, ph)
+		if err != nil {
+			return err
+		}
+		if !creds.tokenValid(time.Now()) {
+			return fmt.Errorf("no unexpired cleaning token for host %s/%s", namespace, hostName)
+		}
+		if !auth.Verify(token, auth.Hash(creds.token)) {
+			return fmt.Errorf("cleaning token mismatch for host %s/%s", namespace, hostName)
+		}
+		return nil
+	}
+	return loggedVerifier(log, verify)
+}
+
+// loggedVerifier logs each rejection with the host and remote address, never the token.
+func loggedVerifier(log logr.Logger, verify auth.Verifier) auth.Verifier {
 	return func(token string, r *http.Request) error {
 		err := verify(token, r)
 		if err != nil {

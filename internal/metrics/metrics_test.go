@@ -307,6 +307,7 @@ func TestPhysicalHostCanonicalStatesCoversEveryAPIState(t *testing.T) {
 		infrav1.StateDeploying,
 		infrav1.StateReady,
 		infrav1.StateError,
+		infrav1.StateCleaning,
 	}
 	listed := make(map[string]bool, len(physicalHostCanonicalStates))
 	for _, s := range physicalHostCanonicalStates {

@@ -641,6 +641,7 @@ var _ = Describe("PhysicalHostReconciler's Beskar7Machine watch", func() {
 				return internalredfish.NewMockClient(), nil
 			},
 			BootstrapURLBase: "https://example.com:8082",
+			CleaningTimeout:  DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, mgrCancel := context.WithCancel(ctx)

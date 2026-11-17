@@ -85,6 +85,7 @@ var _ = Describe("Network data gates the claim and the boot under a running mana
 			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: bmc,
 			BootstrapURLBase:     "https://example.com:8082",
+			CleaningTimeout:      DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),

@@ -378,6 +378,7 @@ var _ = Describe("PhysicalHost transient-failure retries under a running manager
 			RedfishClientFactory:   gate.factory(),
 			BootstrapURLBase:       "https://example.com:8082",
 			TransientRetryInterval: retryInterval,
+			CleaningTimeout:        DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 
 		mgrCtx, mgrCancel = context.WithCancel(ctx)

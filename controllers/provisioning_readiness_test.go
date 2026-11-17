@@ -309,6 +309,7 @@ var _ = Describe("Beskar7Machine provisioned under a running manager", func() {
 			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: bmc,
 			BootstrapURLBase:     "https://example.com:8082",
+			CleaningTimeout:      DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),

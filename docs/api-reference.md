@@ -91,6 +91,13 @@ If the Secret does not authorise the address, or the host's `caBundleSecretRef`,
 |---|---|---|---|
 | `networkDataSecretRef` | string | no | Name of a Secret in the same namespace holding this host's network configuration for the installed OS in its `networkData` key (cloud-init `network-config` v2 by convention, at most 64 KiB). Served verbatim to the inspector of a claimed host, which writes it to `/oem/beskar7/network-data` (contract v4.3 §4.6). The Secret must carry `beskar7.infrastructure.cluster.x-k8s.io/network-data-host: <host name>`; otherwise it is refused and `NetworkDataReady` is `False`. It may also carry `beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer: <uid>`: while the host is claimed, the value must equal `spec.consumerRef.uid`, so a Secret rendered for the previous claim is not served after a reclaim. How the OS applies the file is up to the image. Needs inspector `v0.4.0` (contract v4.3): an older inspector never fetches it, so the host installs without the file. |
 
+#### `spec.cleaning`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `cleaning.mode` | string | no | `Disabled` (default) or `Metadata`. With `Metadata`, a released host goes through `Cleaning` before it is `Available`: the inspector boots in clean mode, wipes every disk's metadata and reports through `/api/v1/cleaned` (contract v4.4). Not a secure erase. See [PhysicalHost → Disk cleaning on release](physicalhost.md#disk-cleaning-on-release). |
+| `cleaning.request` | string | no | Opaque, at most 253 characters. A new non-empty value starts one new cleaning run of a host held in `Error` after a failed or timed-out run. A change in any other state is only recorded in `status.cleaning.observedRequest`. |
+
 There are no other spec fields. Provisioning is driven by the consumer (the `Beskar7Machine`); the host itself only carries connection info, the consumer reference and, optionally, its network data.
 
 ### `status`
@@ -98,7 +105,7 @@ There are no other spec fields. Provisioning is driven by the consumer (the `Bes
 | Field | Type | Description |
 |---|---|---|
 | `ready` | bool | True when the host is reachable via Redfish and has a current state. |
-| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go`. The controller sets `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"` and `"Error"`; a host reads `""` until its first successful BMC contact. `"Unknown"` and `"Enrolling"` are defined but never set. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
+| `state` | string | One of the constants in `api/v1beta2/physicalhost_types.go`. The controller sets `"Available"`, `"InUse"`, `"Inspecting"`, `"Deploying"`, `"Ready"`, `"Cleaning"` and `"Error"`; a host reads `""` until its first successful BMC contact. `"Unknown"` and `"Enrolling"` are defined but never set. `Deploying` is entered after the inspection-complete signal while the inspector writes the OS image to disk, and left only when the inspector POSTs the provisioned callback (D-015). See [State Management](state-management.md). |
 | `observedPowerState` | string | Last observed Redfish power state (e.g. `On`, `Off`). |
 | `errorMessage` | string | Set when state is `Error`; cleared when the host recovers. |
 | `hardwareDetails` | `HardwareDetails` | Manufacturer, model, serial, and BMC-reported health. Populated from `GetSystemInfo`. |
@@ -106,6 +113,8 @@ There are no other spec fields. Provisioning is driven by the consumer (the `Bes
 | `inspectionReport` | `*InspectionReport` | Hardware report from the inspection image. Populated by the `PhysicalHost` reconciler after consuming the inspection-result ConfigMap (see [Inspection workflow](architecture.md#inspection-workflow)). |
 | `inspectionPhase` | string | One of `Pending`, `Booting`, `InProgress`, `Complete`, `Failed`, `Timeout`. |
 | `inspectionTimestamp` | `*metav1.Time` | Time the inspection started. |
+| `cleaning.startedAt` | `*metav1.Time` | Time the controller booted the host into its cleaning run; `--cleaning-timeout` is measured from it. Cleared when the run ends. |
+| `cleaning.observedRequest` | string | Last `spec.cleaning.request` the controller has seen, whether or not it started a run. |
 | `bootstrap` | `*BootstrapStatus` | Per-host bootstrap data fetch coordinates and the hashed bearer token. See below. |
 | `conditions` | `[]metav1.Condition` | Native Kubernetes conditions; key types listed below. Max 32 entries. |
 
@@ -159,12 +168,13 @@ Per-host bootstrap fetch coordinates, a read-only mirror of the host's callback 
 
 #### Conditions
 
-`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes these three, plus `NetworkDataReady` while `spec.networkDataSecretRef` is set, each with a `reason` on both `True` and `False`:
+`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes these three, plus `NetworkDataReady` while `spec.networkDataSecretRef` is set and `HostCleaned` from the release of a host with `spec.cleaning.mode: Metadata` until its next claim, each with a `reason` on both `True` and `False`:
 
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|
 | `RedfishConnectionReady` | `PhysicalHost` | `RedfishConnected` | `MissingCredentials` (covers a missing secret ref, a secret that doesn't exist, a `Get` error, or a missing `username`/`password` key — the controller collapses all credential-fetch failures to this one reason), `BMCUnreachable` (the BMC cannot be reached at the network level — retried every 15 s and clears by itself; a consuming `Beskar7Machine` waits it out), `CredentialsNotAuthorized` (the credentials Secret's [annotations](#credentials-secret-annotations) do not authorise `address` or its transport — no request is made; cleared by annotating the Secret, and a consuming `Beskar7Machine` waits for that too), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
-| `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host — `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`). |
+| `HostAvailable` | `PhysicalHost` | `HostAvailable` | `HostClaimed` (a consumer holds the host: `spec.consumerRef` is set; the condition returns to `True` once the claim is released. It follows the claim only: BMC health is `RedfishConnectionReady`), `HostCleaning` (released and being wiped), `CleaningFailed` / `CleaningTimedOut` (held after a failed wipe). |
+| `HostCleaned` | `PhysicalHost` | `HostCleaned` | `CleaningPending`, `CleaningInProgress`, `CleaningFailed` (the inspector's `/clean-failed`), `CleaningTimedOut`, `CleaningNotConfigured` (no `--cleaning-image-url`), `CleaningSkipped` (`cleaning.mode` set to `Disabled` before the wipe finished). |
 | `HostInspected` | `PhysicalHost` | `HostInspected` | `HostReleased` (the host went back to `Available`; the prior inspection describes a run that ended, not the hardware). |
 | `NetworkDataReady` | `PhysicalHost` | `NetworkDataAvailable` | `NetworkDataSecretNotFound`, `NetworkDataNotAuthorized` (the Secret's `network-data-host` annotation does not name the host), `NetworkDataInvalid` (no non-empty `networkData` key, or over 64 KiB). While it is not `True` for the host's current generation, no `Beskar7Machine` claims the host, and one already holding it does not boot it and waits (`WaitingForNetworkData`); when it turns `True` on an `Available` host, machines waiting for a host are woken. If the Secret breaks after the boot, the `/network-data` endpoint answers `409` and the inspector fails the deploy. Removed when the ref is unset. |
 

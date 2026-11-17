@@ -493,6 +493,7 @@ var _ = Describe("Upgrading with an unannotated BMC credentials Secret, both con
 			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: bmc.factory(),
 			BootstrapURLBase:     "https://example.com:8082",
+			CleaningTimeout:      DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),
