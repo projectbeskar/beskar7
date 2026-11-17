@@ -129,10 +129,15 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 		return ctrl.Result{RequeueAfter: nodeProviderIDMismatchRequeue}, nil
 	}
 
-	// The API server rejects changing a non-empty providerID, so a racing writer wins.
+	// The lock makes a racing writer win even without the API server's providerID immutability rule.
 	before := node.DeepCopy()
 	node.Spec.ProviderID = want
-	if err := workloadClient.Patch(ctx, node, client.MergeFrom(before)); err != nil {
+	err = workloadClient.Patch(ctx, node, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	if apierrors.IsConflict(err) {
+		logger.V(1).Info("Node changed since it was read; reading it again", "node", node.Name)
+		return ctrl.Result{RequeueAfter: requeueShortly}, nil
+	}
+	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("set providerID on Node %q: %q", node.Name, boundWorkloadValue(err.Error()))
 	}
 	logger.Info("Set providerID on the workload cluster Node", "node", node.Name, "providerID", want)

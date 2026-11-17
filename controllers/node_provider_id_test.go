@@ -300,6 +300,38 @@ func TestReconcileNodeProviderID_PatchRejectionIsAnError(t *testing.T) {
 	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
 }
 
+// A writer that changes the Node between our read and our patch wins, even without the API server's providerID rule.
+func TestReconcileNodeProviderID_ConcurrentNodeChangeIsNotOverwritten(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	base := workloadWith(t, registeredNode("")).(client.WithWatch)
+	workload := interceptor.NewClient(base, interceptor.Funcs{
+		Get: func(
+			ctx context.Context,
+			c client.WithWatch,
+			key client.ObjectKey,
+			obj client.Object,
+			opts ...client.GetOption,
+		) error {
+			if err := c.Get(ctx, key, obj, opts...); err != nil {
+				return err
+			}
+			racing := obj.DeepCopyObject().(*corev1.Node)
+			racing.Spec.ProviderID = foreignProviderID
+			return c.Update(ctx, racing)
+		},
+	})
+	cache := clustercache.NewFakeClusterCache(workload, f.clusterKey())
+
+	result, err := nodeProviderIDCase{fixture: f, workload: workload, cache: cache}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(requeueShortly))
+	node := &corev1.Node{}
+	g.Expect(base.Get(context.Background(), client.ObjectKey{Name: nodeProviderIDTestMachine}, node)).To(Succeed())
+	g.Expect(node.Spec.ProviderID).To(Equal(foreignProviderID))
+}
+
 // The suite's API server stands in for the workload cluster, so the Node immutability rules are real.
 var _ = Describe("Node providerID on the workload cluster (#297)", func() {
 	var (
