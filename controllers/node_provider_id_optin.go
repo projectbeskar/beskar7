@@ -56,18 +56,19 @@ func (r *Beskar7ClusterReconciler) reconcileNodeProviderIDAnnotation(ctx context
 		return nil
 	}
 
-	before := cluster.DeepCopy()
-	annotations := cluster.GetAnnotations()
+	// Deletes only our key: a MergeFrom of an emptied map sends "annotations": null and drops other writers' keys.
+	patch := removeAnnotationsPatch(NodeProviderIDAnnotation)
 	if want {
+		before := cluster.DeepCopy()
+		annotations := cluster.GetAnnotations()
 		if annotations == nil {
 			annotations = map[string]string{}
 		}
 		annotations[NodeProviderIDAnnotation] = NodeProviderIDAnnotationValue
-	} else {
-		delete(annotations, NodeProviderIDAnnotation)
+		cluster.SetAnnotations(annotations)
+		patch = client.MergeFrom(before)
 	}
-	cluster.SetAnnotations(annotations)
-	if err := r.Patch(ctx, cluster, client.MergeFrom(before)); err != nil {
+	if err := r.Patch(ctx, cluster, patch); err != nil {
 		return fmt.Errorf("mirror setNodeProviderID onto Cluster %q: %w", cluster.Name, err)
 	}
 	logger.Info("Mirrored setNodeProviderID onto the Cluster", "setNodeProviderID", want)

@@ -104,7 +104,11 @@ func TestReconcileNodeProviderIDAnnotation(t *testing.T) {
 		"on and already mirrored":       {annotations: map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue}, switchOn: true, wantValue: NodeProviderIDAnnotationValue, wantHas: true},
 		"on fixes a hand-edited value":  {annotations: map[string]string{NodeProviderIDAnnotation: "yes"}, switchOn: true, wantPatches: 1, wantValue: NodeProviderIDAnnotationValue, wantHas: true},
 		"off removes the annotation":    {annotations: map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue, "keep": "me"}, wantPatches: 1},
-		"off and nothing to remove":     {annotations: other},
+		"off and ours is the only one": {
+			annotations: map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue},
+			wantPatches: 1,
+		},
+		"off and nothing to remove": {annotations: other},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -120,6 +124,28 @@ func TestReconcileNodeProviderIDAnnotation(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Switching off must delete only our key, even when ours was the only annotation we read.
+func TestReconcileNodeProviderIDAnnotationOffKeepsConcurrentAnnotations(t *testing.T) {
+	g := NewWithT(t)
+	read := clusterWith(
+		beskar7ClusterRef("x"),
+		map[string]string{NodeProviderIDAnnotation: NodeProviderIDAnnotationValue})
+
+	// Another writer paused the Cluster after our read.
+	live := read.DeepCopy()
+	live.Annotations[clusterv1.PausedAnnotation] = "true"
+	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(live).Build()
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+
+	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, read, &infrav1.Beskar7Cluster{})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	stored := &clusterv1.Cluster{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(read), stored)).To(Succeed())
+	g.Expect(stored.Annotations).NotTo(HaveKey(NodeProviderIDAnnotation))
+	g.Expect(stored.Annotations).To(HaveKeyWithValue(clusterv1.PausedAnnotation, "true"))
 }
 
 func TestNodeProviderIDAnnotationChanged(t *testing.T) {
