@@ -73,7 +73,18 @@ spec:
       port: 80
     - protocol: TCP
       port: 8000
-  
+  {{- $nodeProviderID := .Values.nodeProviderID | default dict }}
+  {{- if and $nodeProviderID.enabled $nodeProviderID.apiServerPorts }}
+
+  # Allow workload cluster API servers (--enable-node-provider-id)
+  - to: []
+    ports:
+    {{- range $nodeProviderID.apiServerPorts }}
+    - protocol: TCP
+      port: {{ . }}
+    {{- end }}
+  {{- end }}
+
   # Allow LDAP/AD authentication if needed
   - to: []
     ports:

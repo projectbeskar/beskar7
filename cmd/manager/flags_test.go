@@ -160,6 +160,15 @@ func TestManagerConfigValidate(t *testing.T) {
 			cfg:     managerConfig{controllers: controllersNone, enableWebhook: true},
 			wantErr: "--enable-webhook=true contradicts --controllers=none",
 		},
+		{
+			name: "all mode accepts --enable-node-provider-id",
+			cfg:  managerConfig{controllers: controllersAll, enableLeaderElection: true, enableNodeProviderID: true},
+		},
+		{
+			name:    "callback-only rejects --enable-node-provider-id",
+			cfg:     managerConfig{controllers: controllersNone, enableNodeProviderID: true},
+			wantErr: "--enable-node-provider-id contradicts --controllers=none",
+		},
 	}
 
 	for _, tc := range cases {

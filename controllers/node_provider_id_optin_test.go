@@ -107,7 +107,7 @@ func mirrorCase(t *testing.T, cluster *clusterv1.Cluster, setNodeProviderID bool
 			return c.Patch(ctx, obj, patch, opts...)
 		},
 	})
-	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror"), NodeProviderIDEnabled: true}
 	b7cluster := beskar7ClusterWith(cluster.Spec.InfrastructureRef.Name, setNodeProviderID)
 
 	if err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, cluster, b7cluster); err != nil {
@@ -167,7 +167,7 @@ func TestReconcileNodeProviderIDAnnotationOffKeepsConcurrentAnnotations(t *testi
 	live := read.DeepCopy()
 	live.Annotations[clusterv1.PausedAnnotation] = "true"
 	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(live).Build()
-	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror"), NodeProviderIDEnabled: true}
 
 	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, read, beskar7ClusterWith("x", false))
 	g.Expect(err).NotTo(HaveOccurred())
@@ -178,12 +178,27 @@ func TestReconcileNodeProviderIDAnnotationOffKeepsConcurrentAnnotations(t *testi
 	g.Expect(stored.Annotations).To(HaveKeyWithValue(clusterv1.PausedAnnotation, "true"))
 }
 
+// With --enable-node-provider-id off the mirror writes nothing, whatever the Beskar7Cluster says.
+func TestReconcileNodeProviderIDAnnotationOperatorSwitchOff(t *testing.T) {
+	g := NewWithT(t)
+	cluster := clusterWith(beskar7ClusterRef("x"), nil)
+	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(cluster).Build()
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+
+	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, cluster, beskar7ClusterWith("x", true))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	stored := &clusterv1.Cluster{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(cluster), stored)).To(Succeed())
+	g.Expect(stored.Annotations).NotTo(HaveKey(NodeProviderIDAnnotation))
+}
+
 // A Beskar7Cluster owned by the Cluster but not named by its infrastructureRef switches nothing.
 func TestReconcileNodeProviderIDAnnotationIgnoresAnotherBeskar7Cluster(t *testing.T) {
 	g := NewWithT(t)
 	cluster := clusterWith(beskar7ClusterRef("x"), nil)
 	c := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).WithObjects(cluster).Build()
-	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror")}
+	r := &Beskar7ClusterReconciler{Client: c, Log: ctrl.Log.WithName("npid-mirror"), NodeProviderIDEnabled: true}
 
 	err := r.reconcileNodeProviderIDAnnotation(context.Background(), r.Log, cluster, beskar7ClusterWith("x-2", true))
 	g.Expect(err).NotTo(HaveOccurred())

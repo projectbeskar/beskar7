@@ -60,7 +60,12 @@ func boundWorkloadValue(s string) string {
 
 // reconcileNodeProviderID sets the machine's ProviderID on the workload Node named after the owner Machine while that Node has none (#297).
 func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (ctrl.Result, error) {
-	if r.ClusterCache == nil || b7machine.Spec.ProviderID == "" {
+	// No ClusterCache means --enable-node-provider-id is off; a condition left from when it was on would never change.
+	if r.ClusterCache == nil {
+		conditions.Delete(b7machine, infrav1.NodeProviderIDReadyCondition)
+		return ctrl.Result{}, nil
+	}
+	if b7machine.Spec.ProviderID == "" {
 		return ctrl.Result{}, nil
 	}
 

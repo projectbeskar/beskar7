@@ -252,6 +252,19 @@ func TestReconcileNodeProviderID_NoClusterCacheIsNoop(t *testing.T) {
 	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
 }
 
+// Turning --enable-node-provider-id off leaves no ClusterCache, and no condition that would never change again.
+func TestReconcileNodeProviderID_NoClusterCacheRemovesCondition(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	setFalse(f.b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeNotFoundReason, "left over")
+
+	result, err := nodeProviderIDCase{fixture: f}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(nodeProviderIDCondition(f.b7machine)).To(BeNil())
+}
+
 func TestReconcileNodeProviderID_OptedOutNeverAsksClusterCache(t *testing.T) {
 	g := NewWithT(t)
 	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)

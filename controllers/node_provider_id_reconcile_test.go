@@ -176,9 +176,10 @@ func (env *npidReconcileEnv) seedCluster(setNodeProviderID bool) {
 	Expect(k8sClient.Create(ctx, env.b7cluster)).To(Succeed())
 	// Same cache as the filter, as in the manager, so the filter never reads an older spec than the mirror did.
 	env.clusterRec = &Beskar7ClusterReconciler{
-		Client: env.mgrClient,
-		Scheme: k8sClient.Scheme(),
-		Log:    ctrl.Log.WithName("npid-cluster"),
+		Client:                env.mgrClient,
+		Scheme:                k8sClient.Scheme(),
+		Log:                   ctrl.Log.WithName("npid-cluster"),
+		NodeProviderIDEnabled: true,
 	}
 }
 

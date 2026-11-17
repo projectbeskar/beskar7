@@ -58,7 +58,7 @@ CAPI uses these for placement: a `KubeadmControlPlane` or equivalent spreads its
 
 ### Setting Node providerIDs
 
-`spec.setNodeProviderID: true` lets the `Beskar7Machine` controller set an empty `Node.spec.providerID` on the workload cluster, using its admin kubeconfig (see [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association)). Off by default.
+`spec.setNodeProviderID: true` lets the `Beskar7Machine` controller set an empty `Node.spec.providerID` on the workload cluster, using its admin kubeconfig (see [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association)). Off by default, and it only takes effect when the manager runs with `--enable-node-provider-id` (Helm: `nodeProviderID.enabled`), which is off by default too; without that flag this controller does not mirror the switch.
 
 Cluster API's ClusterCache re-checks a cluster only when its `Cluster` object changes, so this controller mirrors the switch onto the owner `Cluster` as the annotation `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id: "true"`, and removes it when the switch is off. That annotation is the only write it makes to the `Cluster`, and it is what lets a change to the switch reach a running manager without a restart. It is only a trigger: the ClusterCache then reads `spec.setNodeProviderID` from the `Beskar7Cluster` the `Cluster`'s `infrastructureRef` names, and connects only when it is `true`. An annotation set by hand, for example on a paused `Cluster` where this controller does not run, connects nothing. A `Beskar7Cluster` that the `infrastructureRef` does not name never writes the annotation.
 

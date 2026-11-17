@@ -177,6 +177,8 @@ The chart ships a NetworkPolicy that allows ingress on:
 - `:9443` — webhook server (when `webhook.enabled=true`).
 - `:8082` — callback endpoint for the inspection POST and bootstrap GET. Bare-metal IPs cannot be allow-listed at the policy level — the bearer token is the access control.
 
+With `nodeProviderID.enabled` it also allows egress to the workload API server ports in `nodeProviderID.apiServerPorts` (see [control 12](#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297)).
+
 Source: `charts/beskar7/templates/networkpolicy.yaml`.
 
 ### 8. Container image
@@ -228,6 +230,29 @@ A client that offers *only* `h2` is refused at the TLS handshake (`no applicatio
 
 Source: `internal/http1only`; `SetupCallbackServer` in `controllers/inspection_handler.go`; `buildWebhookOptions` and `buildMetricsOptions` in `cmd/manager/servers.go`. Tests: `TestCallbackServerServesHTTP1Only` and `TestWebhookAndMetricsServersServeHTTP1Only` in `cmd/manager`.
 
+### 12. Setting `Node.spec.providerID` on workload clusters (`--enable-node-provider-id`, #297)
+
+This is the only feature that makes the manager connect to a workload cluster. It needs two switches, both off by default:
+
+1. **The operator's:** the manager flag `--enable-node-provider-id` (Helm: `nodeProviderID.enabled`). Without it the manager creates no ClusterCache, so it never reads a `<cluster>-kubeconfig` Secret or opens a connection to a workload API server, whatever a `Beskar7Cluster` says.
+2. **The tenant's:** `Beskar7Cluster.spec.setNodeProviderID: true`. The manager connects only to a `Cluster` whose `infrastructureRef` names a `Beskar7Cluster` with this set; an annotation on the `Cluster` alone never counts.
+
+Turn the flag on only if you accept what it gives every user who can create a `Cluster`, a `Beskar7Cluster` and a `<cluster>-kubeconfig` Secret in a watched namespace:
+
+- **They choose the server.** The kubeconfig's `server:` is any address they like, and the manager connects to it from its own network position, which reaches the BMC networks. They can see from the machine's `NodeProviderIDReady` condition whether the connection worked.
+- **The response is read into the manager's memory.** client-go reads a response whole, and the chart's memory limit is 128Mi, so a hostile server can push the manager into an out-of-memory restart.
+
+What bounds it, enforced in code:
+
+- The kubeconfig is always read from the `Cluster`'s own namespace, so one namespace cannot use another's credentials.
+- Cluster API's ClusterCache (1.13.8 or later) refuses a kubeconfig with an exec or auth-provider plugin, or with file-based credentials (`tokenFile`, client cert or key file, CA file). A `tokenFile` would otherwise be read from the manager's disk, for example its own service account token, and sent to the tenant's server.
+- The manager only reads the Node named after the `Machine`, and only sets an empty `spec.providerID`, with an optimistic lock. A non-empty value is never changed.
+- Values from the workload cluster (the Node's providerID, error texts) are cut to 256 bytes and quoted before they reach a condition, a log line or an error.
+
+**NetworkPolicy.** The chart's NetworkPolicy allows egress to TCP 443 but not to 6443, the usual API server port. With `networkPolicy.enabled` and `nodeProviderID.enabled` both on, the chart adds egress to the ports in `nodeProviderID.apiServerPorts` (default `[6443]`). Narrow that rule to your workload clusters' addresses if you can.
+
+Source: `setupNodeProviderIDClusterCache` in `cmd/manager/main.go`; `controllers/node_provider_id.go`; `controllers/node_provider_id_optin.go`. Tests: `TestSetupManager` in `cmd/manager`; `controllers/node_provider_id_*_test.go`.
+
 ## Configuration entry points
 
 | What | How |
@@ -237,6 +262,7 @@ Source: `internal/http1only`; `SetupCallbackServer` in `controllers/inspection_h
 | Use a private CA on a BMC | `PhysicalHost.spec.redfishConnection.caBundleSecretRef: <secret>` |
 | Name the image digest by checksum file instead of pasting it | `Beskar7Machine.spec.targetImageDigestURL: https://...` (exactly one of it and `targetImageDigest`); read it as [control 10](#10-image-digest-from-a-checksum-url-targetimagedigesturl-d-038) first |
 | Force-release a host whose BMC is dead | annotate the consuming Beskar7Machine: `infrastructure.cluster.x-k8s.io/force-release=true` |
+| Let the manager set `Node.spec.providerID` on workload clusters | manager flag `--enable-node-provider-id` (Helm: `nodeProviderID.enabled`), then `Beskar7Cluster.spec.setNodeProviderID: true` per cluster; read [control 12](#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297) first |
 | Open metrics for plain-HTTP development | manager flag `--secure-metrics=false` |
 
 ## What is NOT enforced

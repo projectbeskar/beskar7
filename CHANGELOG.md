@@ -10,8 +10,14 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 - **Opt-in: the controller sets `Node.spec.providerID` on the workload cluster (#297).** A Node that registered
   without a providerID left its CAPI `Machine` at `Provisioned` with no `nodeRef`, and CAPI kept the
-  `node.cluster.x-k8s.io/uninitialized` taint on it. A new `Beskar7Cluster` field, `spec.setNodeProviderID`
-  (also on `Beskar7ClusterTemplate`), **off by default**, turns this on per cluster. Then, once the host is
+  `node.cluster.x-k8s.io/uninitialized` taint on it. It takes two switches, both **off by default**. The
+  operator's is a new manager flag, `--enable-node-provider-id` (Helm: `nodeProviderID.enabled`): without it the
+  manager creates no ClusterCache and never connects to a workload cluster. With it on, a user who can create a
+  `Cluster`, a `Beskar7Cluster` and a `<cluster>-kubeconfig` Secret chooses a server the manager connects to, so
+  read [control 12](docs/security/README.md#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297)
+  first. With NetworkPolicy on, the chart then also allows egress to `nodeProviderID.apiServerPorts` (default
+  `6443`). The tenant's is a new `Beskar7Cluster` field, `spec.setNodeProviderID`
+  (also on `Beskar7ClusterTemplate`), which turns this on per cluster. Then, once the host is
   `Ready` and until the `Machine` has a `nodeRef`, the `Beskar7Machine` controller reads the Node named after the
   `Machine` through Cluster API's ClusterCache and, if its `spec.providerID` is empty, sets it to
   `b7://<namespace>/<host>`. It never changes a non-empty value. Progress shows on a new `Beskar7Machine`

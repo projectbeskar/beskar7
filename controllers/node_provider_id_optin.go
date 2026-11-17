@@ -84,6 +84,10 @@ func NewNodeProviderIDClusterFilter(reader client.Reader) func(*clusterv1.Cluste
 
 // reconcileNodeProviderIDAnnotation mirrors spec.setNodeProviderID onto the owner Cluster as NodeProviderIDAnnotation.
 func (r *Beskar7ClusterReconciler) reconcileNodeProviderIDAnnotation(ctx context.Context, logger logr.Logger, cluster *clusterv1.Cluster, b7cluster *infrav1.Beskar7Cluster) error {
+	// With the operator switch off the manager writes nothing to the Cluster, so no tenant sees an opt-in take effect.
+	if !r.NodeProviderIDEnabled {
+		return nil
+	}
 	// Only the Beskar7Cluster the Cluster's infrastructureRef names may switch it.
 	if key, ok := beskar7ClusterKey(cluster); !ok || key.Name != b7cluster.Name {
 		logger.V(1).Info("Cluster's infrastructureRef names another object; not mirroring setNodeProviderID")

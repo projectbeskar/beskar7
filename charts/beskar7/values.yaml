@@ -164,6 +164,23 @@ watchNamespaces: []
 #   bmcProxy: http://proxy.example.com:3128
 bmcProxy: ""
 
+# Setting Node.spec.providerID on workload clusters (#297). Rendered into the
+# manager's --enable-node-provider-id flag. Off (the default) creates no
+# ClusterCache: the manager never reads a <cluster>-kubeconfig Secret or
+# connects to a workload API server, whatever a Beskar7Cluster says. When on,
+# a Beskar7Cluster still has to opt in with spec.setNodeProviderID: true.
+#
+# Know before you turn it on: a user who can create a Cluster, a Beskar7Cluster
+# and its <cluster>-kubeconfig Secret then chooses a server the manager
+# connects to, from the manager's network position, which reaches the BMC
+# networks. See docs/security/README.md, control 12.
+nodeProviderID:
+  enabled: false
+  # TCP ports of the workload API servers. Added to the NetworkPolicy's egress
+  # when networkPolicy.enabled is also on; 443 is already allowed.
+  apiServerPorts:
+    - 6443
+
 # Network policies
 networkPolicy:
   enabled: false

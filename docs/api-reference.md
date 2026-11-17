@@ -359,7 +359,7 @@ kind: Beskar7Cluster
 |---|---|---|
 | `controlPlaneEndpoint.host` | string | Optional. The endpoint in effect is `Cluster.spec.controlPlaneEndpoint` when that is set, otherwise this one; with neither, `ControlPlaneEndpointReady=False`. The controller never derives an endpoint (D-027). |
 | `controlPlaneEndpoint.port` | int32 | Optional. |
-| `setNodeProviderID` | bool | Optional, default `false`. Lets the controller set an empty `Node.spec.providerID` on the workload cluster with its admin kubeconfig. Mirrored onto the owner `Cluster` as the `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id` annotation, which makes the manager's ClusterCache read this field again; the ClusterCache connects only when the `Beskar7Cluster` the `Cluster`'s `infrastructureRef` names has it `true`, and the annotation alone never connects a cluster. See [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association). |
+| `setNodeProviderID` | bool | Optional, default `false`. Lets the controller set an empty `Node.spec.providerID` on the workload cluster with its admin kubeconfig, when the manager runs with `--enable-node-provider-id` (off by default). Mirrored onto the owner `Cluster` as the `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id` annotation, which makes the manager's ClusterCache read this field again; the ClusterCache connects only when the `Beskar7Cluster` the `Cluster`'s `infrastructureRef` names has it `true`, and the annotation alone never connects a cluster. See [Beskar7Machine → ProviderID & Node association](beskar7machine.md#providerid--node-association). |
 
 ### `status`
 

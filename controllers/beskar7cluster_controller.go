@@ -58,6 +58,8 @@ type Beskar7ClusterReconciler struct {
 	// MaxConcurrentReconciles is the worker count for this controller. Zero
 	// means DefaultMaxConcurrentReconciles (1).
 	MaxConcurrentReconciles int
+	// NodeProviderIDEnabled is --enable-node-provider-id; when false, spec.setNodeProviderID is never mirrored.
+	NodeProviderIDEnabled bool
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,verbs=get;list;watch;create;update;patch;delete
