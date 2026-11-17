@@ -27,6 +27,14 @@ type Beskar7ClusterSpec struct {
 	// omitzero: an endpoint is legitimately absent until the control plane has
 	// an address, and the v1beta2 APIEndpoint schema rejects an empty object.
 	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty,omitzero"`
+
+	// SetNodeProviderID lets the controller set an empty Node.spec.providerID on
+	// the workload cluster to the Beskar7Machine's ProviderID. The controller
+	// then connects to the workload cluster with its admin kubeconfig (the
+	// <cluster>-kubeconfig Secret). Off by default, and a cluster that has not
+	// opted in is never connected to.
+	// +optional
+	SetNodeProviderID bool `json:"setNodeProviderID,omitempty"`
 }
 
 // Beskar7ClusterInitializationStatus carries CAPI v1beta2 contract fields

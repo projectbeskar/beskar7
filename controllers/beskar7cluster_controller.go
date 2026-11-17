@@ -58,12 +58,15 @@ type Beskar7ClusterReconciler struct {
 	// MaxConcurrentReconciles is the worker count for this controller. Zero
 	// means DefaultMaxConcurrentReconciles (1).
 	MaxConcurrentReconciles int
+	// NodeProviderIDEnabled is --enable-node-provider-id; when false, spec.setNodeProviderID is never mirrored.
+	NodeProviderIDEnabled bool
 }
 
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=beskar7clusters/finalizers,verbs=update
-//+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
+//+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters,verbs=get;list;watch;patch
+//+kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters/status,verbs=get;list;watch
 // Needed to discover failure domains.
 //+kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=physicalhosts,verbs=get;list;watch
 
@@ -194,6 +197,10 @@ func (r *Beskar7ClusterReconciler) reconcileNormal(ctx context.Context, logger l
 	// watch (see SetupWithManager) wakes this reconcile the moment either
 	// changes.
 	reconcileControlPlaneEndpoint(logger, cluster, b7cluster)
+
+	if err := r.reconcileNodeProviderIDAnnotation(ctx, logger, cluster, b7cluster); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	logger.Info("Beskar7Cluster reconciliation complete")
 	return ctrl.Result{}, nil

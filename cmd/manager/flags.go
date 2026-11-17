@@ -169,6 +169,9 @@ type managerConfig struct {
 	// bmcProxy is the parsed --bmc-proxy; nil means BMC connections are direct.
 	bmcProxy *url.URL
 
+	// enableNodeProviderID is --enable-node-provider-id; without it no workload cluster is ever connected to.
+	enableNodeProviderID bool
+
 	bootstrapURLBase  string
 	inspectionPort    int
 	inspectionCertDir string
@@ -195,6 +198,10 @@ func (c managerConfig) validate() error {
 	if c.bmcProxy != nil {
 		return errors.New("--bmc-proxy contradicts --controllers=none: a callback-only " +
 			"instance never connects to a BMC, so the proxy would go unused; drop --bmc-proxy")
+	}
+	if c.enableNodeProviderID {
+		return errors.New("--enable-node-provider-id contradicts --controllers=none: a callback-only " +
+			"instance runs no reconciler, so no Node would ever be patched; drop --enable-node-provider-id")
 	}
 	if c.leaderElectSet && c.enableLeaderElection {
 		return errors.New("--leader-elect=true contradicts --controllers=none: a callback-only " +

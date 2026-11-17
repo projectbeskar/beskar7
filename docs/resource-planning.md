@@ -200,7 +200,7 @@ args:
 - --controllers=all
 ```
 
-`--max-concurrent-reconciles` sets the worker count for **all three** controllers
+`--max-concurrent-reconciles` sets the worker count for **all four** controllers (`Beskar7Machine`, `Beskar7Cluster`, `PhysicalHost` and the Node providerID controller, which has its own queue)
 (default `1`, matching controller-runtime). There is no `--reconciliation-interval`
 flag; per-resource requeue intervals are encoded in the controllers themselves
 (steady-state `PhysicalHost` resync is 5 minutes).

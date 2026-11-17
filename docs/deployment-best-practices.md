@@ -729,8 +729,8 @@ args:
 - --max-concurrent-reconciles=1       # default 1; raise for larger fleets
 ```
 
-`--max-concurrent-reconciles` sets the reconcile worker count for all three
-controllers; the default `1` matches controller-runtime, so leaving it unset
+`--max-concurrent-reconciles` sets the reconcile worker count for all four
+controllers (the Node providerID controller has a queue of its own); the default `1` matches controller-runtime, so leaving it unset
 preserves the historical serial behaviour exactly. There is no `--worker-count`
 or `--resync-period` flag.
 

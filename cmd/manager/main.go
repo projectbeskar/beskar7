@@ -32,6 +32,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
@@ -46,6 +47,9 @@ import (
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 	//+kubebuilder:scaffold:imports
 )
+
+// clusterCacheUserAgent identifies this manager's requests to workload clusters.
+const clusterCacheUserAgent = "beskar7-controller-manager"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -86,6 +90,7 @@ func main() {
 	var trustedProxies string
 	var controllersRaw string
 	var bmcProxyRaw string
+	var enableNodeProviderID bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8443", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -168,6 +173,13 @@ func main() {
 			"the proxy in clear (https:// BMCs are tunnelled with CONNECT, TLS end to end). The "+
 			"credentials in the URL are visible to anyone who can read the Deployment. Rejected "+
 			"with --controllers=none, which never connects to a BMC.")
+	flag.BoolVar(&enableNodeProviderID, "enable-node-provider-id", false,
+		"Let a Beskar7Cluster with spec.setNodeProviderID: true have the manager set an empty "+
+			"Node.spec.providerID on its workload cluster (#297). Off (the default) creates no "+
+			"ClusterCache, so the manager never reads a <cluster>-kubeconfig Secret or connects "+
+			"to a workload API server, whatever a Beskar7Cluster says. When on, a user who can "+
+			"create a Cluster, a Beskar7Cluster and that Secret chooses a server the manager "+
+			"connects to from its own network position. Rejected with --controllers=none.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -226,6 +238,7 @@ func main() {
 		inspectionCertDir:       inspectionCertDir,
 		trustedProxies:          parsedTrustedProxies,
 		bmcProxy:                parsedBMCProxy,
+		enableNodeProviderID:    enableNodeProviderID,
 		inspectionTimeout:       inspectionTimeout,
 		deploymentTimeout:       deploymentTimeout,
 		maxConcurrentReconciles: maxConcurrentReconciles,
@@ -378,13 +391,40 @@ func setupManager(mgr ctrl.Manager, cfg managerConfig) error {
 	return nil
 }
 
-// setupControllers registers the three reconcilers. The two that talk to BMCs
+// setupNodeProviderIDClusterCache creates the ClusterCache for --enable-node-provider-id, and nil when it is off.
+func setupNodeProviderIDClusterCache(mgr ctrl.Manager, cfg managerConfig) (clustercache.ClusterCache, error) {
+	if !cfg.enableNodeProviderID {
+		setupLog.Info("Setting Node.spec.providerID is off; no workload cluster is connected to")
+		return nil, nil
+	}
+	setupLog.Info("Setting Node.spec.providerID is on for Beskar7Clusters that opt in")
+
+	// The cached client already holds Secrets in this mode and honors --watch-namespaces.
+	// The filter keeps every Cluster that did not opt in out of the cache: no kubeconfig read, no health checks.
+	// It reads the Beskar7Cluster from the cache the mirror reads, so it never sees an older spec than the mirror did.
+	clusterCache, err := clustercache.SetupWithManager(context.Background(), mgr, clustercache.Options{
+		SecretClient:  mgr.GetClient(),
+		Client:        clustercache.ClientOptions{UserAgent: clusterCacheUserAgent},
+		ClusterFilter: controllers.NewNodeProviderIDClusterFilter(mgr.GetClient()),
+	}, controller.Options{MaxConcurrentReconciles: cfg.maxConcurrentReconciles})
+	if err != nil {
+		return nil, fmt.Errorf("unable to create ClusterCache: %w", err)
+	}
+	return clusterCache, nil
+}
+
+// setupControllers registers the four reconcilers. The two that talk to BMCs
 // get their Redfish client factory here, from --bmc-proxy (D-035): with no
 // proxy it is internalredfish.NewClient, which connects directly, and either
 // way the environment's proxy is never used.
 func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 	setupLog.Info("Reconciler concurrency", "maxConcurrentReconciles", cfg.maxConcurrentReconciles)
 	redfishFactory := internalredfish.NewClientFactory(cfg.bmcProxy)
+
+	clusterCache, err := setupNodeProviderIDClusterCache(mgr, cfg)
+	if err != nil {
+		return err
+	}
 
 	if err := (&controllers.Beskar7MachineReconciler{
 		Client:            mgr.GetClient(),
@@ -399,10 +439,21 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
 	}
 
+	// Registered even with the flag off, so it can clear a NodeProviderIDReady condition left from when it was on.
+	if err := (&controllers.NodeProviderIDReconciler{
+		Client:                  mgr.GetClient(),
+		Log:                     ctrl.Log.WithName("controllers").WithName("NodeProviderID"),
+		ClusterCache:            clusterCache,
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller %s: %w", "NodeProviderID", err)
+	}
+
 	if err := (&controllers.Beskar7ClusterReconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+		NodeProviderIDEnabled:   cfg.enableNodeProviderID,
 	}).SetupWithManager(context.Background(), mgr, controller.Options{}); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Cluster", err)
 	}

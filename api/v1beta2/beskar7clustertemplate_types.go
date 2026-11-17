@@ -41,9 +41,9 @@ type Beskar7ClusterTemplateResource struct {
 
 	// Spec is the Beskar7ClusterSpec each generated Beskar7Cluster starts from.
 	//
-	// It is normal for this to be empty. The only field Beskar7ClusterSpec has is
-	// controlPlaneEndpoint, and that is exactly the field you should NOT template:
-	// every cluster needs its own endpoint. Beskar7 does not discover one, so a
+	// It is normal for this to be empty, or to carry only setNodeProviderID.
+	// controlPlaneEndpoint is exactly the field you should NOT template: every
+	// cluster needs its own endpoint. Beskar7 does not discover one, so a
 	// ClusterClass using this template supplies it another way — a
 	// controlPlaneEndpoint ClusterClass variable patched into the generated
 	// Beskar7Cluster, or Cluster.spec.controlPlaneEndpoint set directly on the

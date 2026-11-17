@@ -53,6 +53,9 @@ spec:
         {{- with .Values.bmcProxy }}
         - {{ printf "--bmc-proxy=%s" . | quote }}
         {{- end }}
+        {{- if (.Values.nodeProviderID | default dict).enabled }}
+        - --enable-node-provider-id=true
+        {{- end }}
         {{- with (.Values.callback | default dict).trustedProxies }}
         - --trusted-proxies={{ join "," . }}
         {{- end }}

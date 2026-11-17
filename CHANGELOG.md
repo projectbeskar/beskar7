@@ -6,6 +6,44 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in: the controller sets `Node.spec.providerID` on the workload cluster (#297).** A Node that registered
+  without a providerID left its CAPI `Machine` at `Provisioned` with no `nodeRef`, and CAPI kept the
+  `node.cluster.x-k8s.io/uninitialized` taint on it. It takes two switches, both **off by default**. The
+  operator's is a new manager flag, `--enable-node-provider-id` (Helm: `nodeProviderID.enabled`): without it the
+  manager creates no ClusterCache and never connects to a workload cluster. With it on, a user who can create a
+  `Cluster`, a `Beskar7Cluster` and a `<cluster>-kubeconfig` Secret chooses a server the manager connects to, so
+  read [control 12](docs/security/README.md#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297)
+  first. With NetworkPolicy on, the chart then also allows egress to `nodeProviderID.apiServerPorts` (default
+  `6443`). The tenant's is a new `Beskar7Cluster` field, `spec.setNodeProviderID`
+  (also on `Beskar7ClusterTemplate`), which turns this on per cluster. Then, once the host is
+  `Ready` and until the `Machine` has a `nodeRef`, a new controller reads the Node named after the
+  `Machine` through Cluster API's ClusterCache and, if its `spec.providerID` is empty, sets it to
+  `b7://<namespace>/<host>`. It never changes a non-empty value. Progress shows on a new `Beskar7Machine`
+  condition, `NodeProviderIDReady` (`NodeProviderIDSet`, or `False` with `NodeNotFound`, `NodeProviderIDMismatch`
+  or `WorkloadClusterUnreachable`), which is not part of the `Ready` summary and is absent on a cluster that has
+  not opted in. The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation
+  `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id`, which only wakes the manager's ClusterCache up.
+  The ClusterCache then reads `spec.setNodeProviderID` from the `Beskar7Cluster` the `Cluster`'s
+  `infrastructureRef` names, and connects only when it is `true`, so an annotation set by hand does not count and
+  the mirror ignores a `Beskar7Cluster` the `infrastructureRef` does not name: no other cluster's kubeconfig is read or
+  health-checked, including clusters of other infrastructure providers. Flipping the switch on a running cluster
+  takes effect without a restart. The workload cluster is reached with the `<cluster>-kubeconfig` Secret.
+  **RBAC:** the manager now needs `patch` on `cluster.x-k8s.io` `clusters` (generated role, Helm chart and
+  namespace-scoped overlay). The per-distro image stages and `/oem/beskar7/provider-id` (contract v4.2) are
+  unchanged, remain the default, and are still needed where the Node is not named after the `Machine` (k3s, k0s
+  on Kairos) or registers its own providerID (k3s). See
+  [`docs/beskar7machine.md`](docs/beskar7machine.md#providerid--node-association).
+- **Workload cluster calls run in their own controller.** The Node providerID work above runs in a controller with
+  its own queue and `--max-concurrent-reconciles` workers, and each call to a workload API server has a 5 second
+  deadline, so a slow or hostile one never holds the `Beskar7Machine` workers that claim, power and release hosts.
+  The two controllers write their own conditions only. The manager now runs four controllers. Pausing the
+  `Cluster` (`spec.paused` or the paused annotation) or the machine stops it, and unpausing wakes it again.
+- **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
+  "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
+  that makes the machine Ready. It no longer requeues while the Node joins.
+
 ### Changed
 
 - **The PhysicalHost controller emits its events through `events.k8s.io`.** It now uses the

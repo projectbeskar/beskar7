@@ -86,6 +86,14 @@ const NetworkDataHostAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/netwo
 // without it behaves as before.
 const NetworkDataConsumerAnnotation = "beskar7.infrastructure.cluster.x-k8s.io/network-data-consumer"
 
+// NodeProviderIDAnnotation on a CAPI Cluster mirrors Beskar7Cluster.spec.setNodeProviderID.
+// ClusterCache's filter only sees the Cluster, so the switch has to live on it;
+// the Beskar7Cluster controller owns the annotation and removes it when the switch is off.
+const (
+	NodeProviderIDAnnotation      = "beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id"
+	NodeProviderIDAnnotationValue = "true"
+)
+
 // BootstrapURLAnnotation is retired. Releases before it signalled the per-host
 // bootstrap URL through it: the Beskar7Machine controller computed the URL and
 // annotated the PhysicalHost with it, and the PhysicalHost controller copied the
