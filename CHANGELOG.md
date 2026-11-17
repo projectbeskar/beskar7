@@ -6,6 +6,35 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.12.0] - 2026-11-17
+
+An opt-in disk wipe when a `PhysicalHost` is released (contract `v4.4`), an opt-in `Node.spec.providerID` on the
+workload cluster, and the PhysicalHost controller's events on `events.k8s.io`. Both features are off by default, and
+nothing changes for a host or cluster until you turn them on. Contract `v4.3` becomes `v4.4`, additively: pair it
+with inspector **`v0.5.0`**. A `v4.3` inspector keeps working for claims, but cannot run a wipe. CRD changes only
+add optional fields: `PhysicalHost.spec.cleaning` and `status.cleaning`, and `spec.setNodeProviderID` on
+`Beskar7Cluster` and `Beskar7ClusterTemplate`. New manager flags `--cleaning-image-url`, `--cleaning-timeout` and
+`--enable-node-provider-id`, with chart values `cleaning.*` and `nodeProviderID.*`. No security fixes: like
+`v0.11.0`, it is built with Go 1.27.4, and an OSV scan of the release-candidate image found no advisories.
+
+> **Upgrade notes.** Details and commands are in
+> [`docs/upgrading.md`](https://github.com/projectbeskar/beskar7/blob/v0.12.0/docs/upgrading.md#v0110--v0120--opt-in-disk-wipe-and-node-providerid-events-on-eventsk8sio),
+> section `v0.11.0` → `v0.12.0`.
+>
+> 1. **Apply the CRDs before the controller** (Helm does not upgrade CRDs on `helm upgrade`). A release-manifest
+>    install does both in one apply.
+> 2. **A hand-maintained manager Role needs `create` and `patch` on `events.k8s.io` events**, or the PhysicalHost
+>    controller's events are dropped, and `patch` on `cluster.x-k8s.io` `clusters` if you turn on
+>    `--enable-node-provider-id`. The generated role, the chart and the namespace-scoped overlay carry both. The
+>    callback-only Role is unchanged.
+> 3. **Before you set `spec.cleaning.mode: Metadata` on a host,** upgrade every callback-only instance to
+>    `v0.12.0` (only `v0.12.0` serves the cleaning boot and its two callbacks) and point `--cleaning-image-url` at
+>    inspector `v0.5.0`. A host created with `Metadata`, or arriving through `clusterctl move`, is wiped before it
+>    is first `Available`.
+> 4. **Read [security control 12](https://github.com/projectbeskar/beskar7/blob/v0.12.0/docs/security/README.md#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297)
+>    before you turn on `--enable-node-provider-id`.** With it on, whoever can create a `Cluster`, a `Beskar7Cluster`
+>    and its kubeconfig Secret chooses a server the manager connects to.
+
 ### Added
 
 - **Opt-in: the controller sets `Node.spec.providerID` on the workload cluster (#297).** A Node that registered
@@ -40,9 +69,6 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   deadline, so a slow or hostile one never holds the `Beskar7Machine` workers that claim, power and release hosts.
   The two controllers write their own conditions only. The manager now runs four controllers. Pausing the
   `Cluster` (`spec.paused` or the paused annotation) or the machine stops it, and unpausing wakes it again.
-- **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
-  "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
-  that makes the machine Ready. It no longer requeues while the Node joins.
 - **Opt-in disk wipe when a `PhysicalHost` is released (contract v4.4, #306).** New optional field
   `PhysicalHost.spec.cleaning.mode`: `Disabled` (default, unchanged behaviour) or `Metadata`. A host released with
   `Metadata` goes to the new `Cleaning` state instead of `Available`: the PhysicalHost controller mints credentials for
@@ -51,18 +77,22 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   metadata (the first and last 8 MiB of every disk and partition, so the GPT backup goes too) and reports through the
   new `POST /api/v1/cleaned/{namespace}/{hostName}` or `POST /api/v1/clean-failed/{namespace}/{hostName}`, which accept
   the cleaning token only; the cleaning token is accepted nowhere else, so a cleaning boot never reaches bootstrap data.
-  On `/cleaned` the host is powered off and becomes `Available`. A failed or timed-out run (`--cleaning-timeout`,
+  On `/cleaned` the host is powered off and becomes `Available`. A host created with `Metadata`, or arriving through
+  `clusterctl move` (which drops `status`), is wiped once before it is first `Available`. A failed or timed-out run (`--cleaning-timeout`,
   default `20m`) holds the host in `Error` until the operator sets a new `spec.cleaning.request` (one new run) or
   `spec.cleaning.mode: Disabled`. A request changed in any other state is only recorded in
   `status.cleaning.observedRequest`, so it never retries a later failure on its own. New `HostCleaned` condition,
   `status.cleaning.startedAt`, and metrics `beskar7_controller_physicalhost_cleaning_total` / `_duration_seconds`. Chart
   values `cleaning.imageURL` and `cleaning.timeout`. Not a secure erase: the data blocks stay on the disk and are
-  recoverable. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean` simulates one. RBAC: the
+  recoverable. Needs inspector `v0.5.0` (contract v4.4); `cmd/mock-inspector --mode clean` simulates one. RBAC: the
   PhysicalHost controller may now create and update Secrets (its own host's bootstrap-token Secret, which the manager
   could already write). See [`docs/physicalhost.md`](docs/physicalhost.md#disk-cleaning-on-release).
 
 ### Changed
 
+- **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
+  "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
+  that makes the machine Ready. It no longer requeues while the Node joins.
 - **The PhysicalHost controller emits its events through `events.k8s.io`.** It now uses the
   `k8s.io/client-go/tools/events` recorder instead of the deprecated `tools/record` one, the follow-up D-023 left
   open. Event reasons and messages are unchanged, and `kubectl get events` shows them as before. RBAC: the manager
@@ -2669,7 +2699,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.12.0...HEAD
+[v0.12.0]: https://github.com/projectbeskar/beskar7/compare/v0.11.0...v0.12.0
 [v0.11.0]: https://github.com/projectbeskar/beskar7/compare/v0.10.2...v0.11.0
 [v0.10.2]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...v0.10.2
 [v0.10.1]: https://github.com/projectbeskar/beskar7/compare/v0.10.0...v0.10.1
