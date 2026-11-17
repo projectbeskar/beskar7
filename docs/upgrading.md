@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.11.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.12.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.12.0` | `v4.4` **frozen** |
 | `v0.11.0` | `v4.3` **frozen** |
 | `v0.10.2` | `v4.2` **frozen** |
 | `v0.10.1` | `v4.2` **frozen** |
@@ -87,6 +88,7 @@ From a source checkout of the matching tag:
 # alpha.9 and later carry a machine-readable marker:
 git show v0.4.0:test/contract/VERSION      # -> v4.2
 git show v0.11.0:test/contract/VERSION     # -> v4.3
+git show v0.12.0:test/contract/VERSION     # -> v4.4
 
 # earlier tags predate that file — read the contract doc header instead:
 git show v0.4.0-alpha.8:docs/inspector-contract.md | head -5
@@ -99,12 +101,114 @@ Each inspector release states its contract version, ships it as
 `contract-version.txt`, and tags its image accordingly:
 
 ```bash
-docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.3
+docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.4
 ```
 
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.11.0` → `v0.12.0` — opt-in disk wipe and Node providerID; events on `events.k8s.io`
+
+`v0.12.0` adds two opt-in features, both off by default: a disk wipe when a `PhysicalHost` is released, and setting
+`Node.spec.providerID` on the workload cluster. It moves the controller↔inspector contract from `v4.3` to `v4.4`,
+additively, and the PhysicalHost controller now records its events through `events.k8s.io`. It carries no security
+fixes. Nothing changes for a host or a cluster until you turn a feature on, so the only step every install needs is
+the CRDs before the controller, plus the RBAC rule in step 2 if you maintain the manager's Role by hand.
+
+Coming from `v0.10.2` or earlier, do the
+[`v0.10.2` → `v0.11.0`](#v0102--v0110--network-data-claim-time-matching-upgrade-a-callback-only-instance-before-its-role)
+steps too, installing `v0.12.0` wherever that section names `v0.11.0`.
+
+### 1. Apply the CRDs, then upgrade the controller
+
+Three CRDs change, each by optional fields only:
+
+- `PhysicalHost` gains `spec.cleaning` (`mode`, defaulted to `Disabled`, and `request`) and `status.cleaning`
+  (`startedAt`, `observedRequest`). The controller adds a `Cleaning` state and a `HostCleaned` condition.
+- `Beskar7Cluster` and `Beskar7ClusterTemplate` gain `spec.setNodeProviderID`.
+
+Apply the CRDs before the controller, so the API server does not prune the new fields. Helm does not upgrade CRDs
+on `helm upgrade`:
+
+```bash
+# Helm install: CRDs first, from the chart you are about to install.
+helm pull beskar7/beskar7 --version 0.12.0 --untar --untardir ./beskar7-0.12.0
+kubectl apply -f ./beskar7-0.12.0/beskar7/crds/
+# Check the stored CRD has the new field; this prints "object":
+kubectl get crd physicalhosts.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.cleaning.type}{"\n"}'
+# Then the controller.
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.12.0 --reset-then-reuse-values
+```
+
+```bash
+# Release-manifest install: the manifest lists the five CRDs before the Deployment, so one apply does both.
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+```
+
+Upgrade each callback-only instance (`--controllers=none`) to `v0.12.0` as well. Its Role is unchanged, so the order
+does not matter, but only `v0.12.0` serves the cleaning boot and its two callbacks (step 3).
+
+### 2. RBAC: `events.k8s.io` events, and `patch` on `clusters`
+
+The manager role gains two rules. The generated role (`config/rbac/role.yaml`), the chart's ClusterRole and
+per-namespace Roles, and the namespace-scoped overlay carry both; `git diff v0.11.0 v0.12.0 -- config/rbac/
+charts/beskar7/templates/rbac.yaml` shows them. A Role you maintain by hand needs:
+
+- **`create` and `patch` on `events` in `events.k8s.io`**, next to the core-group rule, which stays for leader
+  election. Without it the PhysicalHost controller's events are dropped. `kubectl get events` shows them as before.
+- **`patch` on `cluster.x-k8s.io` `clusters`**, used only with `--enable-node-provider-id` (step 4), to mirror
+  `spec.setNodeProviderID` onto the `Cluster` as an annotation.
+
+The callback-only Role is unchanged.
+
+### 3. The disk wipe needs inspector `v0.5.0`
+
+A host is wiped only when its `spec.cleaning.mode` is `Metadata`. Before you set it on any host:
+
+1. Upgrade every callback-only instance to `v0.12.0`.
+2. Serve inspector `v0.5.0`'s `vmlinuz` and `initrd.img` and point `--cleaning-image-url` (Helm:
+   `cleaning.imageURL`) at their base URL. Without it a `Metadata` host stays `Cleaning` with `HostCleaned=False`
+   (`CleaningNotConfigured`). An older inspector refuses the cleaning boot before it touches a disk, because the
+   boot carries none of a claim's parameters: the run times out after `--cleaning-timeout` (default `20m`,
+   Helm: `cleaning.timeout`) and the host is held in `Error`.
+
+Setting `Metadata` on an `Available` host does not wipe it; the wipe runs at its next release. A host **created**
+with `Metadata`, or arriving through `clusterctl move` (which drops `status`), is wiped once before it is first
+`Available`. The wipe is not a secure erase: data blocks stay on the disk and are recoverable. See
+[Disk cleaning on release](physicalhost.md#disk-cleaning-on-release), including how to retry a failed run.
+
+### 4. Node providerID needs the operator's switch
+
+The manager connects to no workload cluster unless you start it with `--enable-node-provider-id` (Helm:
+`nodeProviderID.enabled`), and then only for a `Beskar7Cluster` with `spec.setNodeProviderID: true`. Read
+[security control 12](security/README.md#12-setting-nodespecproviderid-on-workload-clusters---enable-node-provider-id-297)
+before you turn it on: whoever can create a `Cluster`, a `Beskar7Cluster` and its kubeconfig Secret then chooses a
+server the manager connects to. With `networkPolicy.enabled`, the chart also allows egress to
+`nodeProviderID.apiServerPorts` (default `[6443]`). The per-distro image stages and `/oem/beskar7/provider-id`
+remain the default and are unchanged.
+
+### 5. Behaviour changes
+
+- **Four controllers.** The manager runs a new `beskar7machine-nodeproviderid` controller next to the three
+  existing ones, also with the flag off (it then only removes a stale `NodeProviderIDReady` condition). It shows in
+  the controller-runtime metrics and logs under that name.
+- **Quieter `Ready` path.** "deployment complete", "marking infrastructure as ready" and "Copied network
+  addresses" log at `V(1)`, and "infrastructure is ready" logs once, on the pass that makes the machine Ready.
+
+### 6. Check the result
+
+```bash
+# Every image ends in :v0.12.0 (callback-only instances too; run it in each instance's cluster and namespace).
+kubectl -n capb7-system get deploy -o jsonpath='{range .items[*]}{.spec.template.spec.containers[*].image}{"\n"}{end}'
+# The stored PhysicalHost CRD has the new field; this prints "object":
+kubectl get crd physicalhosts.infrastructure.cluster.x-k8s.io \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.cleaning.type}{"\n"}'
+# A host with cleaning on shows the mode and, after a release, HostCleaned (host, mode, state, status, reason):
+kubectl get physicalhosts -A -o jsonpath='{range .items[?(@.spec.cleaning.mode=="Metadata")]}{.metadata.name}{"\t"}{.spec.cleaning.mode}{"\t"}{.status.state}{"\t"}{.status.conditions[?(@.type=="HostCleaned")].status}{"\t"}{.status.conditions[?(@.type=="HostCleaned")].reason}{"\n"}{end}'
+```
 
 ## `v0.10.2` → `v0.11.0` — network data, claim-time matching; upgrade a callback-only instance before its Role
 
@@ -1039,14 +1143,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. These commands install the current release, v0.11.0. From v0.8.x or earlier, stop on v0.9.x first:
+# 0. These commands install the current release, v0.12.0. From v0.8.x or earlier, stop on v0.9.x first:
 #    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
-#    v0.9.x → v0.10.0 section above, installing v0.11.0 where it names v0.10.0, and then the sections after it.
+#    v0.9.x → v0.10.0 section above, installing v0.12.0 where it names v0.10.0, and then the sections after it.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.11.0/beskar7-manifests-v0.11.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.11.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.12.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

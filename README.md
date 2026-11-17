@@ -26,9 +26,9 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.11.0 — per-host network data for the installed OS (`PhysicalHost.spec.networkDataSecretRef`, contract `v4.3`; it needs inspector `v0.4.0`), claim-time hardware matching (`hardwareRequirements.matchAt: Claim`), a forced power-off for a released host that ignores the graceful shutdown, and security fixes: Go 1.27.4 (GO-2026-6859, an HTTP/1 server crash `govulncheck` reports reachable through the callback, webhook and metrics servers), Go 1.27.3 with `golang.org/x/net` 0.62.0, and OpenTelemetry 1.47.0. **Every earlier release is affected by the Go advisories: upgrade promptly, and upgrade every callback-only instance too.** The CRD changes add optional fields only: apply the CRDs before the controller, and upgrade a callback-only instance before you apply its tightened Role. Coming from `v0.10.1` or earlier, the steps of the releases in between apply too (coming from `v0.9.x`: fully qualified BMC names, the CA Secret annotation, `--bmc-proxy`, no host mid-run): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
+**Version:** v0.12.0 — an opt-in disk wipe when a `PhysicalHost` is released (`spec.cleaning.mode: Metadata`, contract `v4.4`; it needs inspector `v0.5.0` behind the new `--cleaning-image-url`), an opt-in `Node.spec.providerID` on the workload cluster (`--enable-node-provider-id` plus `Beskar7Cluster.spec.setNodeProviderID`), and the PhysicalHost controller's events on `events.k8s.io`. Both features are off by default. The CRD changes add optional fields only: apply the CRDs before the controller. A hand-maintained manager Role needs the `events.k8s.io` events rule. Upgrade every callback-only instance too before you turn the wipe on. Coming from `v0.10.2` or earlier, the steps of the releases in between apply too (from `v0.10.2`: upgrade a callback-only instance before its tightened Role): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
-**Contract:** controller↔inspector wire contract **v4.3, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.3` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
+**Contract:** controller↔inspector wire contract **v4.4, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.4` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
 
 ## Installation
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.11.0/beskar7-manifests-v0.11.0.yaml
+kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
