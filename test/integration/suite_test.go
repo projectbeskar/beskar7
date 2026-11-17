@@ -173,7 +173,7 @@ var _ = BeforeSuite(func() {
 		Client:               mgr.GetClient(),
 		Scheme:               mgr.GetScheme(),
 		Log:                  ctrl.Log.WithName("integration-physicalhost"),
-		Recorder:             mgr.GetEventRecorderFor("beskar7-physicalhost-controller"),
+		Recorder:             mgr.GetEventRecorder("beskar7-physicalhost-controller"),
 		RedfishClientFactory: mockFactory,
 		// Use a stable local URL for bootstrap URL computation; the callback
 		// server is not started in this suite (we simulate the inspector

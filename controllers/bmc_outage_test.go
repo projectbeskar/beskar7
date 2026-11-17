@@ -32,7 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -156,7 +156,7 @@ var _ = Describe("Beskar7Machine whose claimed PhysicalHost loses its BMC", func
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("bmc-outage-host"),
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -248,7 +248,7 @@ var _ = Describe("PhysicalHost versions published while it recovers from a BMC o
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("bmc-recovery-host"),
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: time.Second,
 		}
@@ -372,7 +372,7 @@ var _ = Describe("Beskar7Machine against each way its PhysicalHost reaches Error
 			hostReconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("bmc-fault-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: fault.factory,
 			}
 			_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: hostKey})
@@ -524,7 +524,7 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 			hostReconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                    ctrl.Log.WithName("bmc-substate-host"),
-				Recorder:               record.NewFakeRecorder(10),
+				Recorder:               events.NewFakeRecorder(10),
 				RedfishClientFactory:   gate.factory(),
 				TransientRetryInterval: retryInterval,
 			}
@@ -683,7 +683,7 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 			hostReconciler := &PhysicalHostReconciler{
 				Client: k8sClient, Scheme: k8sClient.Scheme(),
 				Log:                  ctrl.Log.WithName("bmc-substate-fault-host"),
-				Recorder:             record.NewFakeRecorder(10),
+				Recorder:             events.NewFakeRecorder(10),
 				RedfishClientFactory: fault.factory,
 			}
 			// The failures that need a change return their error for the
@@ -741,7 +741,7 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("bmc-substate-401-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
 		}
 		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: hostKey})
@@ -781,7 +781,7 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("bmc-substate-runon-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: failingBMC(schemas.ConstructError(401, []byte("unauthorized"))),
 		}
 		_, err := hostReconciler.Reconcile(ctx, ctrl.Request{NamespacedName: key})
@@ -808,7 +808,7 @@ var _ = Describe("Claimed PhysicalHost part-way through provisioning when its BM
 		hostReconciler := &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("bmc-substate-host"),
-			Recorder:               record.NewFakeRecorder(10),
+			Recorder:               events.NewFakeRecorder(10),
 			RedfishClientFactory:   (&bmcGate{reachable: false}).factory(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -876,7 +876,7 @@ var _ = Describe("BMC outage with both controllers under a running manager", fun
 			Client:                 mgr.GetClient(),
 			Scheme:                 mgr.GetScheme(),
 			Log:                    ctrl.Log.WithName("bmc-outage-mgr-host"),
-			Recorder:               record.NewFakeRecorder(100),
+			Recorder:               events.NewFakeRecorder(100),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 			BootstrapURLBase:       "https://example.com:8082",

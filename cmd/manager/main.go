@@ -413,7 +413,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		Log:                     ctrl.Log.WithName("controllers").WithName("PhysicalHost"),
 		RedfishClientFactory:    redfishFactory,
 		BootstrapURLBase:        cfg.bootstrapURLBase,
-		Recorder:                mgr.GetEventRecorderFor("beskar7-physicalhost-controller"), //nolint:staticcheck // legacy recorder: moving to events.EventRecorder changes every Eventf call site; follow-up to D-023
+		Recorder:                mgr.GetEventRecorder("beskar7-physicalhost-controller"),
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "PhysicalHost", err)

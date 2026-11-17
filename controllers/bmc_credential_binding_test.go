@@ -28,7 +28,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -178,7 +178,7 @@ var _ = Describe("BMC credentials leave only for the addresses their Secret list
 		return &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("bmc-binding-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: bmc.factory(),
 		}
 	}
@@ -490,7 +490,7 @@ var _ = Describe("Upgrading with an unannotated BMC credentials Secret, both con
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("bmc-binding-mgr-host"),
-			Recorder:             record.NewFakeRecorder(100),
+			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: bmc.factory(),
 			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())

@@ -26,7 +26,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -130,7 +130,7 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("outage-run-host"),
-			Recorder:               record.NewFakeRecorder(10),
+			Recorder:               events.NewFakeRecorder(10),
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: retryInterval,
 		}

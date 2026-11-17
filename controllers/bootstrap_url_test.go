@@ -24,7 +24,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -59,7 +59,7 @@ var _ = Describe("PhysicalHost.Status.Bootstrap.URL is derived by the reconciler
 		hostR = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("bootstrap-url-host"),
-			Recorder:             record.NewFakeRecorder(100),
+			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: reachableBMC(),
 			BootstrapURLBase:     callbackBase,
 		}

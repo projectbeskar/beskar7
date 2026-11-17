@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Changed
+
+- **The PhysicalHost controller emits its events through `events.k8s.io`.** It now uses the
+  `k8s.io/client-go/tools/events` recorder instead of the deprecated `tools/record` one, the follow-up D-023 left
+  open. Event reasons and messages are unchanged, and `kubectl get events` shows them as before. RBAC: the manager
+  role, the chart and the namespace-scoped watch role grant `create` and `patch` on `events.k8s.io` events next to
+  the core ones. A hand-maintained Role needs the same rule, otherwise the controller's events are dropped. No CRD
+  or wire change.
+
 ### Fixed
 
 - **A host claimed again right after a release no longer boots with the previous claim's network data.** The

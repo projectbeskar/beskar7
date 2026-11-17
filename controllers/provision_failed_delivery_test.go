@@ -30,7 +30,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -147,7 +147,7 @@ var _ = Describe("The inspector's /provision-failed report when the host's BMC f
 		return &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                    ctrl.Log.WithName("report-bmc-host"),
-			Recorder:               record.NewFakeRecorder(10),
+			Recorder:               events.NewFakeRecorder(10),
 			RedfishClientFactory:   reachableBMC(),
 			TransientRetryInterval: retryInterval,
 		}
@@ -412,7 +412,7 @@ var _ = Describe("The inspector's /provision-failed report when it arrives befor
 		hostReconciler = &PhysicalHostReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(),
 			Log:                  ctrl.Log.WithName("report-early-host"),
-			Recorder:             record.NewFakeRecorder(10),
+			Recorder:             events.NewFakeRecorder(10),
 			RedfishClientFactory: reachableBMC(),
 		}
 	})
@@ -652,7 +652,7 @@ var _ = Describe("A fast deploy failure with both controllers under a running ma
 			Client:               mgr.GetClient(),
 			Scheme:               mgr.GetScheme(),
 			Log:                  ctrl.Log.WithName("report-early-mgr-host"),
-			Recorder:             record.NewFakeRecorder(100),
+			Recorder:             events.NewFakeRecorder(100),
 			RedfishClientFactory: reachableBMC(),
 			BootstrapURLBase:     "https://example.com:8082",
 		}).SetupWithManager(mgr)).To(Succeed())
