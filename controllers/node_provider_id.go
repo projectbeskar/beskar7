@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -41,7 +42,21 @@ const (
 
 	// nodeProviderIDMismatchRequeue is the backstop for a mismatched Node, whose fix no watch here sees.
 	nodeProviderIDMismatchRequeue = 5 * time.Minute
+
+	// workloadValueMaxLen caps a value from the workload cluster before it reaches a condition, a log or an error.
+	workloadValueMaxLen = 256
+
+	// workloadValueCutMarker ends a value cut at workloadValueMaxLen.
+	workloadValueCutMarker = "..."
 )
+
+// boundWorkloadValue cuts s to workloadValueMaxLen bytes without splitting a rune; callers quote it with %q.
+func boundWorkloadValue(s string) string {
+	if len(s) <= workloadValueMaxLen {
+		return s
+	}
+	return strings.ToValidUTF8(s[:workloadValueMaxLen], "") + workloadValueCutMarker
+}
 
 // reconcileNodeProviderID sets the machine's ProviderID on the workload Node named after the owner Machine while that Node has none (#297).
 func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (ctrl.Result, error) {
@@ -76,9 +91,10 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	// Uncached, so no Node informer runs on every workload cluster for a few reads.
 	workloadClient, err := r.ClusterCache.GetUncachedClient(ctx, client.ObjectKeyFromObject(cluster))
 	if err != nil {
-		logger.V(1).Info("No client for the workload cluster yet", "cluster", cluster.Name, "err", err)
+		reason := boundWorkloadValue(err.Error())
+		logger.V(1).Info("No client for the workload cluster yet", "cluster", cluster.Name, "err", reason)
 		setFalse(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.WorkloadClusterUnreachableReason,
-			"Workload cluster %q is not reachable: %v", cluster.Name, err)
+			"Workload cluster %q is not reachable: %q", cluster.Name, reason)
 		return ctrl.Result{RequeueAfter: workloadClusterUnreachableRequeue}, nil
 	}
 
@@ -90,7 +106,10 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 			return ctrl.Result{RequeueAfter: nodeNotFoundRequeue}, nil
 		}
 		setFalse(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.WorkloadClusterUnreachableReason,
-			"Reading Node %q from workload cluster %q failed: %v", machine.Name, cluster.Name, err)
+			"Reading Node %q from workload cluster %q failed: %q",
+			machine.Name,
+			cluster.Name,
+			boundWorkloadValue(err.Error()))
 		return ctrl.Result{RequeueAfter: workloadClusterUnreachableRequeue}, nil
 	}
 
@@ -102,10 +121,11 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	case "":
 		// Fall through to the patch below.
 	default:
-		logger.Info("Node has a different providerID; not changing it", "node", node.Name,
-			"nodeProviderID", node.Spec.ProviderID, "providerID", want)
+		nodeProviderID := boundWorkloadValue(node.Spec.ProviderID)
+		logger.V(1).Info("Node has a different providerID; not changing it", "node", node.Name,
+			"nodeProviderID", nodeProviderID, "providerID", want)
 		setFalse(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeProviderIDMismatchReason,
-			"Node %q has providerID %q, expected %q", node.Name, node.Spec.ProviderID, want)
+			"Node %q has providerID %q, expected %q", node.Name, nodeProviderID, want)
 		return ctrl.Result{RequeueAfter: nodeProviderIDMismatchRequeue}, nil
 	}
 
@@ -113,7 +133,7 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	before := node.DeepCopy()
 	node.Spec.ProviderID = want
 	if err := workloadClient.Patch(ctx, node, client.MergeFrom(before)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("set providerID on Node %q: %w", node.Name, err)
+		return ctrl.Result{}, fmt.Errorf("set providerID on Node %q: %q", node.Name, boundWorkloadValue(err.Error()))
 	}
 	logger.Info("Set providerID on the workload cluster Node", "node", node.Name, "providerID", want)
 	setTrue(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeProviderIDSetReason)
