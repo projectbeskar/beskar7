@@ -112,7 +112,7 @@ type PhysicalHostReconciler struct {
 	TransientRetryInterval time.Duration
 	// CleaningImageURL is the inspector base URL a released host boots to be wiped (--cleaning-image-url).
 	CleaningImageURL string
-	// CleaningTimeout bounds a cleaning run (--cleaning-timeout); zero means DefaultCleaningTimeout.
+	// CleaningTimeout bounds a cleaning run (--cleaning-timeout); required, above zero.
 	CleaningTimeout time.Duration
 }
 
@@ -286,6 +286,7 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 
 	// Cleaning is entered, and its reports applied, before anything can make the host Available.
 	r.startCleaningOnRelease(logger, physicalHost)
+	forgetCleaningOnClaim(physicalHost)
 	r.applyCleaningRequest(logger, physicalHost)
 	r.applyCleanFailedRequestAnnotation(ctx, logger, physicalHost)
 	r.applyCleanedRequestAnnotation(ctx, logger, physicalHost)
@@ -449,12 +450,14 @@ func (r *PhysicalHostReconciler) reconcileNormal(ctx context.Context, logger log
 		case physicalHost.Status.State == infrav1.StateCleaning:
 			return r.reconcileCleaning(ctx, cleaningPass{Logger: logger, Host: physicalHost, Redfish: rfClient})
 		case cleaningHeld(physicalHost) && cleaningEnabled(physicalHost):
+			// failCleaning only logs a failed retire, so it is retried here.
+			if err := r.retireCleaningCredentials(ctx, logger, physicalHost); err != nil {
+				return ctrl.Result{}, err
+			}
 			logger.Info("Holding the host in Error after a failed cleaning run", "errorMessage", physicalHost.Status.ErrorMessage)
 			return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
 		case cleaningHeld(physicalHost):
-			logger.Info("spec.cleaning.mode set to Disabled on a host held after a failed cleaning run; " +
-				"releasing it without a wipe")
-			releaseUncleaned(physicalHost)
+			return r.skipCleaning(ctx, cleaningPass{Logger: logger, Host: physicalHost, Redfish: rfClient})
 		}
 		if physicalHost.Status.State != infrav1.StateAvailable {
 			logger.Info("Host available, transitioning to Available")

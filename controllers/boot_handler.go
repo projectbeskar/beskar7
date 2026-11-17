@@ -318,10 +318,15 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// without it (the inspector falls back to its own NIC selection heuristic).
 	mac := r.URL.Query().Get("mac")
 	var script string
-	if creds.forCleaning() {
-		script, err = h.renderCleaningBootScript(ph, creds, mac)
-	} else {
+	switch creds.purpose {
+	case credentialPurposeClaim:
 		script, err = h.renderBootScript(ctx, log, ph, consumerKey, creds.token, mac)
+	case credentialPurposeClean:
+		script, err = h.renderCleaningBootScript(ph, creds, mac)
+	default:
+		log.V(1).Info("boot GET: credentials carry an unknown purpose", "purpose", creds.purpose)
+		h.opaqueFailure(w)
+		return
 	}
 	if err != nil {
 		log.V(1).Info("boot GET: render failed", "err", err.Error())

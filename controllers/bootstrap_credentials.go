@@ -73,8 +73,13 @@ const (
 	cleaningImageURLSecretKey = "cleaning-image-url"
 )
 
-// credentialPurposeClean is the purpose of credentials minted for a cleaning run.
-const credentialPurposeClean = "clean"
+// Purposes of the credentials in a bootstrap-token Secret.
+const (
+	// credentialPurposeClaim is the purpose of a claim's credentials, stored as no value.
+	credentialPurposeClaim = ""
+	// credentialPurposeClean is the purpose of credentials minted for a cleaning run.
+	credentialPurposeClean = "clean"
+)
 
 // bootstrapTokenSecretName returns the deterministic name of the per-host
 // Secret holding the callback credentials (D-006).
@@ -238,7 +243,7 @@ func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infra
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("%w: %s", errBootstrapSecretNotOwned, key.Name)
 	}
 	creds := readBootstrapCredentials(secret)
-	if creds.purpose != "" {
+	if creds.purpose != credentialPurposeClaim {
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("bootstrap-token Secret %s holds credentials for a %s run, not a claim", key.Name, creds.purpose)
 	}
 	if creds.consumer == "" || creds.consumer != consumer.Name {
@@ -284,7 +289,14 @@ type writeCredentialsParams struct {
 	Creds    bootstrapCredentials
 }
 
-// writeBootstrapCredentialsSecret stores Creds in the host-owned Secret at Existing's resourceVersion, never adopting one the host does not own (D-031).
+// writeBootstrapCredentialsSecret stores Creds in the host's bootstrap-token Secret
+// in one write. It updates Existing at the resourceVersion it was read at, or
+// creates the Secret, so a write computed from a stale read fails instead of
+// replacing a newer one. The Secret is owned by the PhysicalHost (GC'd with it,
+// D-006). An existing Secret the host does not own is refused with
+// errBootstrapSecretNotOwned, never adopted (D-031): SetControllerReference
+// alone would take over one nobody controls, and one a deleted host of the same
+// name controlled. Neither plaintext is ever logged.
 func writeBootstrapCredentialsSecret(ctx context.Context, params writeCredentialsParams) error {
 	host := params.Host
 	if params.Existing != nil && !bootstrapSecretOwnedBy(params.Existing, host) {

@@ -320,7 +320,7 @@ func RecordError(controller string, namespace string, errorType ErrorType) {
 var physicalHostCanonicalStates = []string{
 	infrav1.StateNone, infrav1.StateUnknown, infrav1.StateEnrolling, infrav1.StateAvailable,
 	infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady,
-	infrav1.StateError,
+	infrav1.StateError, infrav1.StateCleaning,
 }
 
 // beskar7MachineCanonicalPhases lists every phase string that can appear in

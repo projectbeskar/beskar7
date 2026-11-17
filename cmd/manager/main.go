@@ -140,13 +140,13 @@ func main() {
 			"marked terminally failed (DeploymentTimedOut). Raise this for hardware with "+
 			"slow storage or very large OS images (D-015).")
 	flag.StringVar(&cleaningImageURL, "cleaning-image-url", "",
-		"HTTPS base URL serving the inspector vmlinuz and initrd.img that a released "+
+		"HTTP(S) base URL serving the inspector vmlinuz and initrd.img that a released "+
 			"PhysicalHost with spec.cleaning.mode Metadata boots to wipe its disks. Empty "+
 			"leaves such hosts Cleaning with HostCleaned=False (CleaningNotConfigured).")
 	flag.DurationVar(&cleaningTimeout, "cleaning-timeout", controllers.DefaultCleaningTimeout,
 		"How long a cleaning run may take from its boot to the inspector's report before "+
-			"the host is held in Error (CleaningTimedOut). Must stay below 30m, the cleaning "+
-			"token lifetime.")
+			"the host is held in Error (CleaningTimedOut). Must be above zero and below 30m, "+
+			"the cleaning token lifetime.")
 	flag.IntVar(&maxConcurrentReconciles, "max-concurrent-reconciles", controllers.DefaultMaxConcurrentReconciles,
 		"Number of concurrent reconcile workers per controller. The default (1) matches "+
 			"controller-runtime and preserves historical behaviour. Raise it when a fleet is "+

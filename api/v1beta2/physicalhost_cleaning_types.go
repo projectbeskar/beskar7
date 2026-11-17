@@ -38,11 +38,13 @@ type CleaningSpec struct {
 	// released. Disabled (the default) leaves them as they are. Metadata takes
 	// the host through Cleaning before it is Available again: the inspector
 	// boots in clean mode and zeroes the first and last 8 MiB of every disk
-	// and partition, removing the partition table, its GPT backup and the
-	// COS_OEM partition with the previous join secret. It is not a secure
-	// erase. A change takes effect at the next release; setting Disabled while
-	// the host is Cleaning, or held in Error after a failed run, makes the host
-	// Available as it is.
+	// and partition, removing the partition tables, their GPT backups and
+	// the filesystem, RAID and LVM signatures, so nothing stale boots or
+	// assembles. The data blocks, including the previous join secret, stay on
+	// the disk and are recoverable: it is not a secure erase. A host with no
+	// state yet, new or moved by clusterctl, is wiped too. A change takes effect
+	// at the next release; setting Disabled while the host is Cleaning, or held
+	// in Error after a failed run, makes the host Available as it is.
 	// +kubebuilder:default=Disabled
 	// +optional
 	Mode CleaningMode `json:"mode,omitempty"`

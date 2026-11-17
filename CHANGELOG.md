@@ -56,8 +56,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `spec.cleaning.mode: Disabled`. A request changed in any other state is only recorded in
   `status.cleaning.observedRequest`, so it never retries a later failure on its own. New `HostCleaned` condition,
   `status.cleaning.startedAt`, and metrics `beskar7_controller_physicalhost_cleaning_total` / `_duration_seconds`.
-  Chart values `cleaning.imageURL` and `cleaning.timeout`. Not a secure erase. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean`
-  simulates one. RBAC: the PhysicalHost controller may now create and update Secrets (its own host's
+  Chart values `cleaning.imageURL` and `cleaning.timeout`. Not a secure erase: the data blocks stay on the disk and
+  are recoverable. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean` simulates one. RBAC: the PhysicalHost controller may now create and update Secrets (its own host's
   bootstrap-token Secret, which the manager could already write). See
   [`docs/physicalhost.md`](docs/physicalhost.md#disk-cleaning-on-release).
 

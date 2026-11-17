@@ -138,6 +138,7 @@ func TestSetupManager(t *testing.T) {
 			inspectionTimeout:       controllers.DefaultInspectionTimeout,
 			deploymentTimeout:       controllers.DefaultDeploymentTimeout,
 			maxConcurrentReconciles: controllers.DefaultMaxConcurrentReconciles,
+			cleaningTimeout:         controllers.DefaultCleaningTimeout,
 		}
 	}
 

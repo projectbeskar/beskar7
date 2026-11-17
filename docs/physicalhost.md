@@ -98,7 +98,7 @@ By default a released host goes straight back to `Available` with its disks as t
 3. `/boot` renders the inspector from `--cleaning-image-url` with `beskar7.mode=clean` and none of a claim's parameters. The inspector zeroes the first and last 8 MiB of every disk and of every partition on it, then posts `/api/v1/cleaned` (contract v4.4 §4.7, §9.3). The cleaning token is accepted there and on `/api/v1/clean-failed` only; it never reaches bootstrap data.
 4. On `/cleaned` the controller clears the boot override, forces the host off, removes the run's credentials and makes the host `Available` (`HostCleaned=True`).
 
-This is not a secure erase: it removes the partition tables, their GPT backups and `COS_OEM`, not the data blocks.
+This is not a secure erase. It removes the partition tables, their GPT backups and the filesystem, RAID and LVM signatures, so nothing stale boots or assembles. The data blocks, including the previous join secret in `/oem/99_beskar7.yaml`, stay on the disk and are recoverable.
 
 A run that reports `/clean-failed`, or nothing within `--cleaning-timeout` (default `20m`), leaves the host in `Error` with `HostCleaned=False` (`CleaningFailed` or `CleaningTimedOut`), and the controller holds it there: it is never made `Available` with its disks unwiped. To go on, either set `spec.cleaning.request` to a new non-empty value to run the cleaning again, or set `spec.cleaning.mode: Disabled` to release it as it is (`HostCleaned=False`, `CleaningSkipped`). Setting `Disabled` while the host is `Cleaning` stops the run the same way.
 
@@ -107,6 +107,8 @@ A run that reports `/clean-failed`, or nothing within `--cleaning-timeout` (defa
 ```sh
 kubectl patch physicalhost <host> --type merge -p '{"spec":{"cleaning":{"request":"retry-'"$(date +%s)"'"}}}'
 ```
+
+An unclaimed host with `Metadata` and no state at all is wiped too. That covers a host created with the field set, which is wiped once before it is first `Available`, and a host moved by `clusterctl move`, which drops `status`: a host that was `Cleaning` or held in `Error` on the source would otherwise arrive unwiped and become `Available`.
 
 Without `--cleaning-image-url` (chart value `cleaning.imageURL`), hosts that opted in wait in `Cleaning` with `HostCleaned=False`, `CleaningNotConfigured`.
 
@@ -147,7 +149,7 @@ Native `metav1.Condition` (`status.conditions[]`) — no `severity` field, and a
 | `RedfishConnectionReady` | BMC reachable and authenticating successfully. | `RedfishConnected` | `BMCUnreachable` (the BMC cannot be reached at the network level; retried every 15 s and clears by itself, so a `Beskar7Machine` holding the host waits for it), `CredentialsNotAuthorized` (the credentials Secret does not [authorise the address, or the CA Secret](#binding-the-credentials-to-their-bmc); no request is made, and a `Beskar7Machine` holding the host waits for the Secret to be annotated), `MissingCredentials` (the credentials Secret is missing, unreadable, or lacks `username`/`password`), `RedfishConnectionFailed`, `RedfishQueryFailed`, `InsecureCABundleConflict`, `CABundleFetchFailed`. |
 | `HostAvailable` | No consumer holds the host (`spec.consumerRef` is unset). Follows the claim only; BMC health is `RedfishConnectionReady`. | `HostAvailable` | `HostClaimed` (a consumer holds the host; back to `True` once the claim is released), `HostCleaning` (released and being wiped), `CleaningFailed` and `CleaningTimedOut` (held after a failed wipe). |
 | `HostInspected` | An inspection report has been persisted. | `HostInspected` | `HostReleased` (host went back to `Available`; the prior run's inspection no longer describes it). |
-| `HostCleaned` | The disks of a released host with `cleaning.mode: Metadata` were wiped. Present once such a host has been released. | `HostCleaned` | `CleaningPending`, `CleaningInProgress`, `CleaningFailed`, `CleaningTimedOut`, `CleaningNotConfigured`, `CleaningSkipped`. See [Disk cleaning on release](#disk-cleaning-on-release). |
+| `HostCleaned` | The disks of a released host with `cleaning.mode: Metadata` were wiped. Present from that host's release until its next claim, which removes it. | `HostCleaned` | `CleaningPending`, `CleaningInProgress`, `CleaningFailed`, `CleaningTimedOut`, `CleaningNotConfigured`, `CleaningSkipped`. See [Disk cleaning on release](#disk-cleaning-on-release). |
 
 ## Deletion
 

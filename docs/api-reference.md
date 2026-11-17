@@ -168,7 +168,7 @@ Per-host bootstrap fetch coordinates, a read-only mirror of the host's callback 
 
 #### Conditions
 
-`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes these three, plus `NetworkDataReady` while `spec.networkDataSecretRef` is set and `HostCleaned` once a host with `spec.cleaning.mode: Metadata` has been released, each with a `reason` on both `True` and `False`:
+`PhysicalHost` is not a CAPI contract resource: it has no `Ready` summary condition and no `Paused` condition (see [Conditions and the CAPI mirror](#conditions-and-the-capi-mirror)). It publishes these three, plus `NetworkDataReady` while `spec.networkDataSecretRef` is set and `HostCleaned` from the release of a host with `spec.cleaning.mode: Metadata` until its next claim, each with a `reason` on both `True` and `False`:
 
 | Type | Set by | True reason | False reasons |
 |---|---|---|---|

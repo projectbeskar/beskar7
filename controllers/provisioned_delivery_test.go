@@ -461,6 +461,7 @@ var _ = Describe("A deployment reported while the controllers were away, with bo
 			RedfishClientFactory:   gate.factory(),
 			TransientRetryInterval: time.Second,
 			BootstrapURLBase:       "https://example.com:8082",
+			CleaningTimeout:        DefaultCleaningTimeout,
 		}).SetupWithManager(mgr)).To(Succeed())
 		Expect((&Beskar7MachineReconciler{
 			Client:               mgr.GetClient(),

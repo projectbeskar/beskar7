@@ -25,6 +25,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stmcginnis/gofish/schemas"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,6 +37,7 @@ import (
 
 	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
 	"github.com/projectbeskar/beskar7/internal/auth"
+	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
 	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
 )
 
@@ -141,6 +143,7 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 		Expect(creds.cleaningImage).To(Equal(fixtureCleaningImageURL))
 		Expect(creds.token).NotTo(Equal(claimToken), "the released claim's token must not survive into the cleaning run")
 		Expect(creds.tokenExpiresAt).To(BeTemporally("~", time.Now().Add(auth.CleaningTokenLifetime), time.Minute))
+		Expect(creds.nonceExpiresAt).To(BeTemporally("~", time.Now().Add(r.CleaningTimeout), 10*time.Second))
 		Expect(host.Status.Bootstrap.TokenHash).To(Equal(auth.Hash(creds.token)))
 	})
 
@@ -172,6 +175,22 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 		Expect(creds.nonce).To(BeEmpty())
 		Expect(creds.purpose).To(BeEmpty())
 		Expect(host.Status.Bootstrap.TokenHash).To(BeEmpty())
+	})
+
+	It("removes HostCleaned when the wiped host is claimed again", func() {
+		r := newReconciler()
+		key := bootedHost(r, "clean-reclaim")
+		bindCleaningReport(key, CleanedRequestAnnotation, cleanedRequestValue)
+		reconcile(r, key)
+		Expect(conditions.IsTrue(getPhysicalHost(key), infrav1.HostCleanedCondition)).To(BeTrue())
+
+		current := getPhysicalHost(key)
+		claimed := current.DeepCopy()
+		claimed.Spec.ConsumerRef = claimedPhysicalHost(ns.Name, key.Name, "next-machine").Spec.ConsumerRef
+		Expect(k8sClient.Patch(ctx, claimed, client.MergeFrom(current))).To(Succeed())
+		reconcile(r, key)
+
+		Expect(conditions.Has(getPhysicalHost(key), infrav1.HostCleanedCondition)).To(BeFalse())
 	})
 
 	It("ignores a /cleaned report bound to the released claim's credentials", func() {
@@ -305,6 +324,29 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 		Expect(readBootstrapCredentials(getCredentialSecret(key)).token).To(BeEmpty())
 	})
 
+	It("releases a host held after a failed run when the owner sets spec.cleaning.mode Disabled", func() {
+		r := newReconciler()
+		key := bootedHost(r, "clean-held-skip")
+		failRun(r, key)
+		recorder := events.NewFakeRecorder(100)
+		r.Recorder = recorder
+		current := getPhysicalHost(key)
+		Expect(current.Status.State).To(Equal(infrav1.StateError))
+		disabled := current.DeepCopy()
+		disabled.Spec.Cleaning.Mode = infrav1.CleaningModeDisabled
+		Expect(k8sClient.Patch(ctx, disabled, client.MergeFrom(current))).To(Succeed())
+		reconcile(r, key)
+
+		host := getPhysicalHost(key)
+		Expect(host.Status.State).To(Equal(infrav1.StateAvailable))
+		Expect(conditions.GetReason(host, infrav1.HostCleanedCondition)).To(Equal(infrav1.CleaningSkippedReason))
+		runs := digestMetric(internalmetrics.PhysicalHostCleaningTotal, ns.Name, func(m *dto.Metric) float64 {
+			return m.GetCounter().GetValue()
+		})
+		Expect(runs).To(HaveKeyWithValue(string(internalmetrics.CleaningOutcomeSkipped), 1.0))
+		Expect(recorder.Events).To(Receive(ContainSubstring(eventCleaningSkipped)))
+	})
+
 	It("waits in Cleaning when the manager has no cleaning image", func() {
 		r := newReconciler()
 		r.CleaningImageURL = ""
@@ -337,6 +379,130 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 		Expect(host.Status.State).To(Equal(infrav1.StateAvailable))
 		Expect(conditions.Has(host, infrav1.HostCleanedCondition)).To(BeFalse())
 		Expect(bmc.SetBootSourcePXECalled).To(BeFalse())
+	})
+
+	// clusterctl move recreates the host without status, so a host that was
+	// Cleaning or held in Error arrives with no state.
+	It("wipes an unclaimed host that has no state yet, as after clusterctl move", func() {
+		host := claimedPhysicalHost(ns.Name, "clean-moved", "")
+		host.Spec.ConsumerRef = nil
+		host.Spec.Cleaning = &infrav1.CleaningSpec{Mode: infrav1.CleaningModeMetadata}
+		host.Finalizers = []string{PhysicalHostFinalizer}
+		Expect(k8sClient.Create(ctx, host)).To(Succeed())
+		key := client.ObjectKeyFromObject(host)
+
+		reconcile(newReconciler(), key)
+
+		moved := getPhysicalHost(key)
+		Expect(moved.Status.State).To(Equal(infrav1.StateCleaning))
+		Expect(conditions.GetReason(moved, infrav1.HostAvailableCondition)).To(Equal(infrav1.HostCleaningReason))
+		Expect(bmc.SetBootSourcePXECalled).To(BeTrue())
+	})
+
+	Describe("BMC outage", func() {
+		// unreachable makes r's BMC unreachable at the network level.
+		unreachable := func(r *PhysicalHostReconciler) {
+			r.RedfishClientFactory = (&bmcGate{reachable: false}).factory()
+			r.TransientRetryInterval = time.Second
+		}
+
+		It("keeps a booted Cleaning host in its run", func() {
+			r := newReconciler()
+			key := bootedHost(r, "clean-booted-bmc-down")
+			startedAt := getPhysicalHost(key).CleaningStartedAt()
+			unreachable(r)
+
+			reconcile(r, key)
+
+			host := getPhysicalHost(key)
+			Expect(host.Status.State).To(Equal(infrav1.StateCleaning))
+			Expect(host.CleaningStartedAt().Equal(startedAt)).To(BeTrue(), "the run's clock is not reset")
+			Expect(conditions.GetReason(host, infrav1.HostCleanedCondition)).To(Equal(infrav1.CleaningInProgressReason))
+		})
+
+		It("keeps a held host held, and still held once the BMC is back", func() {
+			r := newReconciler()
+			key := bootedHost(r, "clean-held-bmc-down")
+			failRun(r, key)
+			failedMessage := getPhysicalHost(key).Status.ErrorMessage
+			unreachable(r)
+
+			reconcile(r, key)
+
+			host := getPhysicalHost(key)
+			Expect(host.Status.State).To(Equal(infrav1.StateError))
+			Expect(host.Status.ErrorMessage).To(Equal(failedMessage), "the BMC error does not replace the wipe failure")
+			Expect(conditions.GetReason(host, infrav1.HostCleanedCondition)).To(Equal(infrav1.CleaningFailedReason))
+
+			By("reaching the BMC again")
+			r.RedfishClientFactory = fixedBMC(bmc)
+			reconcile(r, key)
+			Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+		})
+	})
+
+	Describe("runs that must not start", func() {
+		// optIn sets spec.cleaning on the host to Metadata with the given request.
+		optIn := func(key client.ObjectKey, request string) {
+			current := getPhysicalHost(key)
+			changed := current.DeepCopy()
+			changed.Spec.Cleaning = &infrav1.CleaningSpec{Mode: infrav1.CleaningModeMetadata, Request: request}
+			Expect(k8sClient.Patch(ctx, changed, client.MergeFrom(current))).To(Succeed())
+		}
+
+		It("starts no run when mode and request change on a claimed host", func() {
+			key := provisioningHost(ns.Name, "claimed-opt-in", "claimed-opt-in-machine", infrav1.StateReady, nil)
+			optIn(key, "now")
+
+			reconcile(newReconciler(), key)
+
+			host := getPhysicalHost(key)
+			Expect(host.Status.State).To(Equal(infrav1.StateReady))
+			Expect(host.ObservedCleaningRequest()).To(Equal("now"))
+			Expect(conditions.Has(host, infrav1.HostCleanedCondition)).To(BeFalse())
+			Expect(bmc.SetBootSourcePXECalled).To(BeFalse())
+		})
+
+		It("starts no run when the request changes on a host held by a failed provisioning run", func() {
+			report := sanitizeFailureReason("COS_OEM partition not found")
+			key := provisioningHost(ns.Name, "provision-failed", "provision-failed-machine", infrav1.StateDeploying,
+				map[string]string{ProvisionFailedRequestAnnotation: report})
+			r := newReconciler()
+			reconcile(r, key)
+			Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateError))
+
+			optIn(key, "retry")
+			reconcile(r, key)
+
+			host := getPhysicalHost(key)
+			Expect(host.Status.State).To(Equal(infrav1.StateError))
+			Expect(host.Status.ErrorMessage).To(Equal(report))
+			Expect(host.ObservedCleaningRequest()).To(Equal("retry"))
+			Expect(conditions.Has(host, infrav1.HostCleanedCondition)).To(BeFalse())
+		})
+
+		It("ignores a /cleaned report bound to an earlier cleaning run", func() {
+			r := newReconciler()
+			key := bootedHost(r, "clean-stale-run")
+			firstRun := readBootstrapCredentials(getCredentialSecret(key))
+			failRun(r, key)
+			setCleaningRequest(key, "retry-1")
+			reconcile(r, key)
+			Expect(getPhysicalHost(key).CleaningStartedAt()).NotTo(BeNil(), "the retry has booted")
+
+			current := getPhysicalHost(key)
+			binder, err := newCallbackBinder(current, firstRun)
+			Expect(err).NotTo(HaveOccurred())
+			stale := current.DeepCopy()
+			binder.setAnnotation(stale, CleanedRequestAnnotation, cleanedRequestValue, "")
+			Expect(k8sClient.Patch(ctx, stale, client.MergeFrom(current))).To(Succeed())
+
+			reconcile(r, key)
+
+			host := getPhysicalHost(key)
+			Expect(host.Status.State).To(Equal(infrav1.StateCleaning))
+			Expect(conditions.IsTrue(host, infrav1.HostCleanedCondition)).To(BeFalse())
+		})
 	})
 
 	Describe("credential separation", func() {

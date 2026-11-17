@@ -179,6 +179,7 @@ var _ = BeforeSuite(func() {
 		// server is not started in this suite (we simulate the inspector
 		// directly), but the URL must be non-empty to pass validateAndDefault.
 		BootstrapURLBase: testBootstrapURLBase,
+		CleaningTimeout:  controllers.DefaultCleaningTimeout,
 	}
 	Expect(phReconciler.SetupWithManager(mgr)).To(Succeed())
 

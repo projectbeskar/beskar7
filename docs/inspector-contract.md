@@ -255,7 +255,8 @@ HTTPS listener (default `:8082`, `controllers/inspection_handler.go`
   the inspector from `--cleaning-image-url` with only `beskar7.api`,
   `beskar7.namespace`, `beskar7.host`, `beskar7.token`, `beskar7.mode=clean`,
   `beskar7.ca` and the optional `BOOTIF`. No target image, digest, disk,
-  static IP or provider ID is rendered.
+  static IP or provider ID is rendered. The cleaning run's nonce lives as
+  long as `--cleaning-timeout`, not the 10 minutes of a claim's.
 
 **Rendered output** (`Content-Type: text/plain`): a complete iPXE script that
 boots the inspector image with the §5 parameters on the kernel cmdline:
@@ -1056,8 +1057,9 @@ With `beskar7.mode=clean` on the cmdline the inspector:
    running ramdisk), zeroes at least the first and the last 8 MiB of the disk
    and of every partition on it. The disk's last range removes the GPT backup
    header, and the partition ranges remove filesystem, RAID and LVM signatures.
-   This removes the partition table, `COS_OEM` and `/oem/99_beskar7.yaml` with
-   the previous join secret. No eligible disk at all is a failure. It is **not** a secure
+   Nothing stale boots or assembles afterwards, but the data blocks, including
+   `/oem/99_beskar7.yaml` with the previous join secret, stay on the disk and
+   are recoverable. No eligible disk at all is a failure. It is **not** a secure
    erase and MUST NOT be described as one.
 3. Calls `/cleaned` (§4.7) when every disk was wiped, or `/clean-failed`
    (§4.8) when any was not.

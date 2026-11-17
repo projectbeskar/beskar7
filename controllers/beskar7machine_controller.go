@@ -839,7 +839,7 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 
 	var changed bool
 	switch {
-	case creds.purpose != "":
+	case creds.purpose != credentialPurposeClaim:
 		// A cleaning run's credentials never carry into a claim.
 		logger.Info("Bootstrap credentials were minted for a cleaning run; minting fresh ones",
 			"host", physicalHost.Name)

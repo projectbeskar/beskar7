@@ -174,10 +174,11 @@ one beyond what is described:
   tenant's OS — including the injected bootstrap config, which may carry a cluster
   join secret at `/oem/99_beskar7.yaml` — remains until the host is re-provisioned.
   Set `spec.cleaning.mode: Metadata` on hosts that move between trust boundaries:
-  the inspector then wipes the partition tables, their GPT backups and `COS_OEM`
-  before the host is `Available` again, and a failed wipe holds the host in `Error`
+  the inspector then wipes the partition tables, their GPT backups and the
+  filesystem signatures before the host is `Available` again, so nothing stale
+  boots, and a failed wipe holds the host in `Error`
   ([docs/physicalhost.md](docs/physicalhost.md#disk-cleaning-on-release)). That is
-  **not a secure erase**: the data blocks stay on the disk. Wipe hosts yourself
-  where that matters.
+  **not a secure erase**: the data blocks, including the previous join secret,
+  stay on the disk and are recoverable. Wipe hosts yourself where that matters.
 - **`insecureSkipVerify`** on `redfishConnection` disables BMC TLS verification.
   It is opt-in, mutually exclusive with `caBundleSecretRef`, and intended for labs.

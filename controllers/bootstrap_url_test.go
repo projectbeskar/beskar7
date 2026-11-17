@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -177,10 +178,27 @@ var _ = Describe("PhysicalHostReconciler.validateAndDefault", func() {
 		Expect(r.validateAndDefault()).To(MatchError(ContainSubstring("BootstrapURLBase is empty")))
 	})
 
-	It("should succeed when BootstrapURLBase is set", func() {
-		r := &PhysicalHostReconciler{RedfishClientFactory: reachableBMC(), BootstrapURLBase: "https://example.com:8082"}
+	It("should succeed when BootstrapURLBase and CleaningTimeout are set", func() {
+		r := &PhysicalHostReconciler{
+			RedfishClientFactory: reachableBMC(),
+			BootstrapURLBase:     "https://example.com:8082",
+			CleaningTimeout:      DefaultCleaningTimeout,
+		}
 		Expect(r.validateAndDefault()).To(Succeed())
 	})
+
+	DescribeTable("should fail on a cleaning timeout of zero or less instead of using the default",
+		func(timeout time.Duration) {
+			r := &PhysicalHostReconciler{
+				RedfishClientFactory: reachableBMC(),
+				BootstrapURLBase:     "https://example.com:8082",
+				CleaningTimeout:      timeout,
+			}
+			Expect(r.validateAndDefault()).To(MatchError(ContainSubstring("must be above zero")))
+		},
+		Entry("zero", time.Duration(0)),
+		Entry("negative", -time.Minute),
+	)
 })
 
 var _ = Describe("bootstrapURL", func() {

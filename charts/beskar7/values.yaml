@@ -183,7 +183,7 @@ nodeProviderID:
 
 # Disk cleaning of released hosts (PhysicalHost spec.cleaning.mode: Metadata).
 cleaning:
-  # HTTPS base URL serving the inspector vmlinuz and initrd.img a released host
+  # HTTP(S) base URL serving the inspector vmlinuz and initrd.img a released host
   # boots in clean mode, rendered as --cleaning-image-url. Usually the same
   # inspector your Beskar7Machines boot. Empty leaves hosts that opted in
   # Cleaning with HostCleaned=False (CleaningNotConfigured).

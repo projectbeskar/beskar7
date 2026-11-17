@@ -88,13 +88,14 @@ func hostStateHeld(host *infrav1.PhysicalHost) bool {
 	return inProvisioningSubState(host) || host.Status.State == infrav1.StateCleaning || cleaningHeld(host)
 }
 
-// releasedForCleaning reports whether an unclaimed host still carries a claim's state or HostClaimed marker and must be wiped first.
+// releasedForCleaning reports whether an unclaimed host must be wiped first: it carries a claim's state or
+// HostClaimed marker, or it has no state at all (new, or moved by clusterctl, which drops status).
 func releasedForCleaning(host *infrav1.PhysicalHost) bool {
 	if host.Spec.ConsumerRef != nil || !cleaningEnabled(host) {
 		return false
 	}
 	switch host.Status.State {
-	case infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady:
+	case infrav1.StateNone, infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady:
 		return true
 	}
 	c := conditions.Get(host, infrav1.HostAvailableCondition)
@@ -116,10 +117,18 @@ func (r *PhysicalHostReconciler) startCleaningOnRelease(logger logr.Logger, host
 	if !releasedForCleaning(host) {
 		return
 	}
-	logger.Info("Host released with spec.cleaning.mode Metadata; wiping its disks before it is Available",
+	logger.Info("Unclaimed host with spec.cleaning.mode Metadata; wiping its disks before it is Available",
 		"previousState", host.Status.State)
 	enterCleaning(host)
-	r.event(host, corev1.EventTypeNormal, eventCleaningStarted, "Host released; cleaning its disks before it is Available")
+	r.event(host, corev1.EventTypeNormal, eventCleaningStarted, "Cleaning the host's disks before it is Available")
+}
+
+// forgetCleaningOnClaim removes HostCleaned from a claimed host, since it describes a run that served an earlier claim.
+func forgetCleaningOnClaim(host *infrav1.PhysicalHost) {
+	if host.Spec.ConsumerRef == nil {
+		return
+	}
+	conditions.Delete(host, infrav1.HostCleanedCondition)
 }
 
 // applyCleaningRequest records a changed spec.cleaning.request and, on a held host, starts one new cleaning run.
@@ -301,7 +310,7 @@ func (r *PhysicalHostReconciler) powerOnForCleaning(ctx context.Context, pass cl
 func (r *PhysicalHostReconciler) watchCleaningRun(ctx context.Context, pass cleaningPass) (ctrl.Result, error) {
 	host := pass.Host
 	elapsed := cleaningElapsed(host)
-	timeout := r.cleaningTimeout()
+	timeout := r.CleaningTimeout
 	if elapsed < timeout {
 		return ctrl.Result{RequeueAfter: min(cleaningPollInterval, timeout-elapsed)}, nil
 	}
@@ -334,7 +343,8 @@ func (r *PhysicalHostReconciler) finishCleaning(ctx context.Context, pass cleani
 	return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
 }
 
-// skipCleaning ends a run the owner disabled and makes the host Available without a wipe.
+// skipCleaning ends a run, or the hold after a failed one, that the owner disabled, and makes the host Available
+// without a wipe.
 func (r *PhysicalHostReconciler) skipCleaning(ctx context.Context, pass cleaningPass) (ctrl.Result, error) {
 	host := pass.Host
 	if host.CleaningStartedAt() != nil {
@@ -347,7 +357,7 @@ func (r *PhysicalHostReconciler) skipCleaning(ctx context.Context, pass cleaning
 	}
 	internalmetrics.RecordPhysicalHostCleaning(host.Namespace, internalmetrics.CleaningOutcomeSkipped, cleaningElapsed(host))
 	releaseUncleaned(host)
-	pass.Logger.Info("spec.cleaning.mode set to Disabled during the cleaning run; host is Available without a wipe")
+	pass.Logger.Info("spec.cleaning.mode set to Disabled; host is Available without a wipe")
 	r.event(host, corev1.EventTypeWarning, eventCleaningSkipped,
 		"spec.cleaning.mode set to Disabled; host is Available without a wipe")
 	return ctrl.Result{RequeueAfter: cleaningIdleRequeue}, nil
@@ -402,7 +412,8 @@ func (r *PhysicalHostReconciler) mintCleaningCredentials(ctx context.Context, ho
 		tokenIssuedAt:  now,
 		tokenExpiresAt: now.Add(auth.CleaningTokenLifetime),
 		nonce:          nonce,
-		nonceExpiresAt: auth.NonceLifetimeFor(now).Time,
+		// The run's nonce lasts as long as the run may, so a slow POST does not fail the boot.
+		nonceExpiresAt: now.Add(r.CleaningTimeout),
 		purpose:        credentialPurposeClean,
 		cleaningImage:  r.CleaningImageURL,
 	}
@@ -453,19 +464,15 @@ func (r *PhysicalHostReconciler) bootstrapTokenSecret(ctx context.Context, host 
 	return secret, nil
 }
 
-// cleaningTimeout returns CleaningTimeout, or DefaultCleaningTimeout when unset.
-func (r *PhysicalHostReconciler) cleaningTimeout() time.Duration {
-	if r.CleaningTimeout > 0 {
-		return r.CleaningTimeout
-	}
-	return DefaultCleaningTimeout
-}
-
 // validateCleaningConfig checks the cleaning flags at setup.
 func (r *PhysicalHostReconciler) validateCleaningConfig() error {
-	if r.cleaningTimeout() >= auth.CleaningTokenLifetime {
+	if r.CleaningTimeout <= 0 {
+		return fmt.Errorf("PhysicalHostReconciler: cleaning timeout %s must be above zero; set --cleaning-timeout",
+			r.CleaningTimeout)
+	}
+	if r.CleaningTimeout >= auth.CleaningTokenLifetime {
 		return fmt.Errorf("PhysicalHostReconciler: cleaning timeout %s must be below the cleaning token lifetime %s",
-			r.cleaningTimeout(), auth.CleaningTokenLifetime)
+			r.CleaningTimeout, auth.CleaningTokenLifetime)
 	}
 	if r.CleaningImageURL == "" {
 		return nil
