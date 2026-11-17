@@ -48,18 +48,18 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `Metadata` goes to the new `Cleaning` state instead of `Available`: the PhysicalHost controller mints credentials for
   the run alone, sets a one-time PXE boot and powers the host on, and `/boot` renders the inspector from the new
   `--cleaning-image-url` with `beskar7.mode=clean` and none of a claim's parameters. The inspector wipes every disk's
-  metadata (the first and last 8 MiB of every disk and partition, so the GPT backup goes too) and reports through the new
-  `POST /api/v1/cleaned/{namespace}/{hostName}` or `POST /api/v1/clean-failed/{namespace}/{hostName}`, which accept the
-  cleaning token only; the cleaning token is accepted nowhere else, so a cleaning boot never reaches bootstrap data. On
-  `/cleaned` the host is powered off and becomes `Available`. A failed or timed-out run (`--cleaning-timeout`, default
-  `20m`) holds the host in `Error` until the operator sets a new `spec.cleaning.request` (one new run) or
+  metadata (the first and last 8 MiB of every disk and partition, so the GPT backup goes too) and reports through the
+  new `POST /api/v1/cleaned/{namespace}/{hostName}` or `POST /api/v1/clean-failed/{namespace}/{hostName}`, which accept
+  the cleaning token only; the cleaning token is accepted nowhere else, so a cleaning boot never reaches bootstrap data.
+  On `/cleaned` the host is powered off and becomes `Available`. A failed or timed-out run (`--cleaning-timeout`,
+  default `20m`) holds the host in `Error` until the operator sets a new `spec.cleaning.request` (one new run) or
   `spec.cleaning.mode: Disabled`. A request changed in any other state is only recorded in
   `status.cleaning.observedRequest`, so it never retries a later failure on its own. New `HostCleaned` condition,
-  `status.cleaning.startedAt`, and metrics `beskar7_controller_physicalhost_cleaning_total` / `_duration_seconds`.
-  Chart values `cleaning.imageURL` and `cleaning.timeout`. Not a secure erase: the data blocks stay on the disk and
-  are recoverable. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean` simulates one. RBAC: the PhysicalHost controller may now create and update Secrets (its own host's
-  bootstrap-token Secret, which the manager could already write). See
-  [`docs/physicalhost.md`](docs/physicalhost.md#disk-cleaning-on-release).
+  `status.cleaning.startedAt`, and metrics `beskar7_controller_physicalhost_cleaning_total` / `_duration_seconds`. Chart
+  values `cleaning.imageURL` and `cleaning.timeout`. Not a secure erase: the data blocks stay on the disk and are
+  recoverable. Needs an inspector that implements v4.4; `cmd/mock-inspector --mode clean` simulates one. RBAC: the
+  PhysicalHost controller may now create and update Secrets (its own host's bootstrap-token Secret, which the manager
+  could already write). See [`docs/physicalhost.md`](docs/physicalhost.md#disk-cleaning-on-release).
 
 ### Changed
 
