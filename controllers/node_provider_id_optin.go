@@ -138,7 +138,10 @@ func nodeProviderIDAnnotationChanged() predicate.Funcs {
 }
 
 // ClusterToBeskar7Machines maps a Cluster to the Beskar7Machines labelled with its name.
-func (r *Beskar7MachineReconciler) ClusterToBeskar7Machines(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *NodeProviderIDReconciler) ClusterToBeskar7Machines(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
 	cluster, ok := obj.(*clusterv1.Cluster)
 	if !ok {
 		return nil

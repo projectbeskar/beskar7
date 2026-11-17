@@ -45,7 +45,6 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
@@ -166,8 +165,6 @@ type Beskar7MachineReconciler struct {
 	// nil; it is the seam through which tests trust an httptest server, the way
 	// RedfishClientFactory is the seam for the BMC.
 	ChecksumRootCAs *x509.CertPool
-	// ClusterCache gives clients for workload clusters; nil turns off setting the Node providerID (#297).
-	ClusterCache clustercache.ClusterCache
 
 	// checksumHTTPClient is the client for the checksum fetch, built on first use
 	// from ChecksumRootCAs (checksumClient).
@@ -346,7 +343,6 @@ func (r *Beskar7MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			infrav1.InfrastructureReadyCondition,
 			infrav1.PhysicalHostAssociatedCondition,
 			infrav1.BootstrapDataReadyCondition,
-			infrav1.NodeProviderIDReadyCondition,
 		}}); err != nil {
 			if deletedBeforePatch(b7machine, err) {
 				log.V(1).Info("Beskar7Machine was already deleted; nothing left to patch")
@@ -1236,7 +1232,8 @@ func (r *Beskar7MachineReconciler) handleReadyHost(ctx context.Context, logger l
 	if firstProvisioning {
 		logger.Info("Beskar7Machine infrastructure is ready")
 	}
-	return r.reconcileNodeProviderID(ctx, logger, b7machine)
+	// NodeProviderIDReconciler links the Node in its own queue; the Ready path never calls a workload cluster.
+	return ctrl.Result{}, nil
 }
 
 // limitBootstrapTokenAfterReady ends the bearer token's life auth.TokenReadyGrace
@@ -2153,12 +2150,6 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.AvailablePhysicalHostToWaitingBeskar7Machines),
 			builder.WithPredicates(hostBecameClaimable()),
-		).
-		// Flipping setNodeProviderID reaches the Cluster as an annotation; a Ready machine has no timer to notice it.
-		Watches(
-			&clusterv1.Cluster{},
-			handler.EnqueueRequestsFromMapFunc(r.ClusterToBeskar7Machines),
-			builder.WithPredicates(nodeProviderIDAnnotationChanged()),
 		).
 		WithOptions(controller.Options{
 			MaxConcurrentReconciles: maxConcurrentOrDefault(r.MaxConcurrentReconciles),

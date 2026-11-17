@@ -112,6 +112,7 @@ type npidReconcileEnv struct {
 	mgrClient   client.Client
 	clusterRec  *Beskar7ClusterReconciler
 	machineRec  *Beskar7MachineReconciler
+	npidRec     *NodeProviderIDReconciler
 	stopManager context.CancelFunc
 }
 
@@ -241,10 +242,14 @@ func (env *npidReconcileEnv) seedReadyMachine() {
 	mockRf := internalredfish.NewMockClient()
 	env.machineRec = &Beskar7MachineReconciler{
 		Client: k8sClient, Scheme: k8sClient.Scheme(), Log: ctrl.Log.WithName("npid-machine"),
-		ClusterCache: env.cache,
 		RedfishClientFactory: func(context.Context, string, string, string, bool, []byte) (internalredfish.Client, error) {
 			return mockRf, nil
 		},
+	}
+	env.npidRec = &NodeProviderIDReconciler{
+		Client:       k8sClient,
+		Log:          ctrl.Log.WithName("npid-node-provider-id"),
+		ClusterCache: env.cache,
 	}
 }
 
@@ -271,8 +276,19 @@ func (env *npidReconcileEnv) reconcileCluster(want bool) {
 	}, npidEventually, npidPoll).Should(Succeed())
 }
 
-// reconcileMachine runs one real Beskar7Machine reconcile and returns the stored machine.
+// reconcileMachine runs one real Beskar7Machine reconcile, then one NodeProviderID reconcile, as the manager's
+// two queues would, and returns the stored machine.
 func (env *npidReconcileEnv) reconcileMachine(g Gomega) *infrav1.Beskar7Machine {
+	env.reconcileMachineOnly(g)
+	_, err := env.npidRec.Reconcile(ctx, ctrl.Request{NamespacedName: env.b7machine})
+	g.Expect(err).NotTo(HaveOccurred())
+	b7m := &infrav1.Beskar7Machine{}
+	g.Expect(k8sClient.Get(ctx, env.b7machine, b7m)).To(Succeed())
+	return b7m
+}
+
+// reconcileMachineOnly runs one real Beskar7Machine reconcile and returns the stored machine.
+func (env *npidReconcileEnv) reconcileMachineOnly(g Gomega) *infrav1.Beskar7Machine {
 	_, err := env.machineRec.Reconcile(ctx, ctrl.Request{NamespacedName: env.b7machine})
 	g.Expect(err).NotTo(HaveOccurred())
 	b7m := &infrav1.Beskar7Machine{}
@@ -357,6 +373,31 @@ var _ = Describe("Node providerID through Reconcile with the real ClusterCache (
 		env.reconcileCluster(true)
 
 		env.expectNodeLinked()
+	})
+
+	It("links the Node only from its own controller, and the Beskar7Machine reconcile keeps its condition", func() {
+		env = newNPIDReconcileEnv(true)
+		env.reconcileCluster(true)
+
+		By("running only the Beskar7Machine reconcile, which never calls the workload cluster")
+		Eventually(func(g Gomega) {
+			g.Expect(env.reconcileMachineOnly(g).Status.Ready).To(BeTrue())
+		}, npidEventually, npidPoll).Should(Succeed())
+		Consistently(func(g Gomega) {
+			b7m := env.reconcileMachineOnly(g)
+			g.Expect(conditions.Has(b7m, infrav1.NodeProviderIDReadyCondition)).To(BeFalse())
+			g.Expect(env.nodeProviderID(g)).To(BeEmpty())
+		}, npidConsistently, npidPoll).Should(Succeed())
+
+		By("letting the NodeProviderID controller link it")
+		env.expectNodeLinked()
+
+		By("running the Beskar7Machine reconcile again, which leaves NodeProviderIDReady alone")
+		Consistently(func(g Gomega) {
+			b7m := env.reconcileMachineOnly(g)
+			g.Expect(conditions.IsTrue(b7m, infrav1.NodeProviderIDReadyCondition)).To(BeTrue())
+			g.Expect(conditions.IsTrue(b7m, infrav1.InfrastructureReadyCondition)).To(BeTrue())
+		}, npidConsistently, npidPoll).Should(Succeed())
 	})
 
 	It("never connects to a cluster that did not opt in, and sets no condition", func() {

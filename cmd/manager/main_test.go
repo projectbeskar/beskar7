@@ -272,7 +272,7 @@ func TestSetupManager(t *testing.T) {
 	})
 
 	// Without --enable-node-provider-id no ClusterCache exists, so no workload cluster is ever connected to.
-	t.Run("all registers the three controllers and the webhook, and no ClusterCache", func(t *testing.T) {
+	t.Run("all registers the four controllers and the webhook, and no ClusterCache", func(t *testing.T) {
 		callbackPort := freePort(t)
 		cfg := baseConfig(callbackPort)
 		cfg.controllers = controllersAll
@@ -282,8 +282,9 @@ func TestSetupManager(t *testing.T) {
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
 		}
-		if n := mgr.controllerCount(); n != 3 {
-			t.Fatalf("all mode registered %d controllers, want 3 (Beskar7Machine, Beskar7Cluster, PhysicalHost)", n)
+		if n := mgr.controllerCount(); n != 4 {
+			t.Fatalf("all mode registered %d controllers, want 4 "+
+				"(Beskar7Machine, NodeProviderID, Beskar7Cluster, PhysicalHost)", n)
 		}
 		if !mgr.webhookRequested {
 			t.Fatal("all mode with --enable-webhook did not register the webhook")
@@ -302,8 +303,8 @@ func TestSetupManager(t *testing.T) {
 		if err := setupManager(mgr, cfg); err != nil {
 			t.Fatalf("setupManager: %v", err)
 		}
-		if n := mgr.controllerCount(); n != 4 {
-			t.Fatalf("all mode registered %d controllers, want 4 (the three and the ClusterCache)", n)
+		if n := mgr.controllerCount(); n != 5 {
+			t.Fatalf("all mode registered %d controllers, want 5 (the four and the ClusterCache)", n)
 		}
 		startManager(t, mgr)
 	})

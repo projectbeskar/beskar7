@@ -271,7 +271,7 @@ The operator has to allow it first: the manager flag `--enable-node-provider-id`
 
 The `Beskar7Cluster` controller mirrors the switch onto the owner `Cluster` as the annotation `beskar7.infrastructure.cluster.x-k8s.io/set-node-provider-id: "true"`, and removes it when the switch is off. The annotation only wakes the ClusterCache up: Cluster API's ClusterCache only connects to a `Cluster` whose `infrastructureRef` names a `Beskar7Cluster` with `spec.setNodeProviderID: true`, and an annotation set by hand does not count, so the manager never reads the kubeconfig of, or health-checks, any other cluster, including clusters of other infrastructure providers on the same management cluster. Flipping the switch on a running cluster takes effect without a restart, and flipping it off disconnects and removes the `NodeProviderIDReady` condition.
 
-Once the host is `Ready`, and until the owner `Machine` has a `nodeRef`, it reads the workload cluster Node **named after the `Machine`** and:
+A separate controller does this, with its own queue and `--max-concurrent-reconciles` workers, so a slow workload API server never holds the workers that claim, power and release hosts. Each call to a workload API server has a 5 second deadline. Once the host is `Ready`, and until the owner `Machine` has a `nodeRef`, it reads the workload cluster Node **named after the `Machine`** and:
 
 - the Node's `spec.providerID` is empty: it patches it to `b7://<namespace>/<host-name>`. The API server allows setting it once while empty, so this works on any image whose kubelet registers without `--provider-id` (kubeadm does, unless told otherwise);
 - it is already equal: nothing to do;

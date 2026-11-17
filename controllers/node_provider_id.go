@@ -26,6 +26,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/cluster-api/util"
+	"sigs.k8s.io/cluster-api/util/annotations"
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +49,9 @@ const (
 
 	// workloadValueCutMarker ends a value cut at workloadValueMaxLen.
 	workloadValueCutMarker = "..."
+
+	// workloadCallTimeout bounds each call to a workload API server, below ClusterCache's 10s client timeout.
+	workloadCallTimeout = 5 * time.Second
 )
 
 // boundWorkloadValue cuts s to workloadValueMaxLen bytes without splitting a rune; callers quote it with %q.
@@ -58,14 +62,19 @@ func boundWorkloadValue(s string) string {
 	return strings.ToValidUTF8(s[:workloadValueMaxLen], "") + workloadValueCutMarker
 }
 
-// reconcileNodeProviderID sets the machine's ProviderID on the workload Node named after the owner Machine while that Node has none (#297).
-func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine) (ctrl.Result, error) {
+// reconcileNodeProviderID sets the machine's ProviderID on the workload Node named after the owner Machine
+// while that Node has none (#297).
+func (r *NodeProviderIDReconciler) reconcileNodeProviderID(
+	ctx context.Context,
+	logger logr.Logger,
+	b7machine *infrav1.Beskar7Machine,
+) (ctrl.Result, error) {
 	// No ClusterCache means --enable-node-provider-id is off; a condition left from when it was on would never change.
 	if r.ClusterCache == nil {
 		conditions.Delete(b7machine, infrav1.NodeProviderIDReadyCondition)
 		return ctrl.Result{}, nil
 	}
-	if b7machine.Spec.ProviderID == "" {
+	if !b7machine.Status.Ready || b7machine.Spec.ProviderID == "" {
 		return ctrl.Result{}, nil
 	}
 
@@ -80,6 +89,10 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	cluster, err := util.GetClusterFromMetadata(ctx, r.Client, machine.ObjectMeta)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("get Cluster of Machine %q: %w", machine.Name, err)
+	}
+	// Pausing stops this controller like the Beskar7Machine controller; that one owns the Paused condition.
+	if annotations.IsPaused(cluster, b7machine) {
+		return ctrl.Result{}, nil
 	}
 	// Same check as the ClusterCache filter, so an opted-out cluster is never asked for and carries no condition.
 	optedIn, err := nodeProviderIDOptedIn(ctx, r.Client, cluster)
@@ -108,7 +121,10 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	}
 
 	node := &corev1.Node{}
-	if err := workloadClient.Get(ctx, client.ObjectKey{Name: machine.Name}, node); err != nil {
+	getCtx, cancelGet := context.WithTimeout(ctx, workloadCallTimeout)
+	err = workloadClient.Get(getCtx, client.ObjectKey{Name: machine.Name}, node)
+	cancelGet()
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			setFalse(b7machine, infrav1.NodeProviderIDReadyCondition, infrav1.NodeNotFoundReason,
 				"Node %q has not registered in workload cluster %q yet", machine.Name, cluster.Name)
@@ -141,7 +157,9 @@ func (r *Beskar7MachineReconciler) reconcileNodeProviderID(ctx context.Context, 
 	// The lock makes a racing writer win even without the API server's providerID immutability rule.
 	before := node.DeepCopy()
 	node.Spec.ProviderID = want
-	err = workloadClient.Patch(ctx, node, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	patchCtx, cancelPatch := context.WithTimeout(ctx, workloadCallTimeout)
+	err = workloadClient.Patch(patchCtx, node, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+	cancelPatch()
 	if apierrors.IsConflict(err) {
 		logger.V(1).Info("Node changed since it was read; reading it again", "node", node.Name)
 		return ctrl.Result{RequeueAfter: requeueShortly}, nil

@@ -413,7 +413,7 @@ func setupNodeProviderIDClusterCache(mgr ctrl.Manager, cfg managerConfig) (clust
 	return clusterCache, nil
 }
 
-// setupControllers registers the three reconcilers. The two that talk to BMCs
+// setupControllers registers the four reconcilers. The two that talk to BMCs
 // get their Redfish client factory here, from --bmc-proxy (D-035): with no
 // proxy it is internalredfish.NewClient, which connects directly, and either
 // way the environment's proxy is never used.
@@ -435,9 +435,18 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 		RedfishClientFactory:    redfishFactory,
-		ClusterCache:            clusterCache,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
+	}
+
+	// Registered even with the flag off, so it can clear a NodeProviderIDReady condition left from when it was on.
+	if err := (&controllers.NodeProviderIDReconciler{
+		Client:                  mgr.GetClient(),
+		Log:                     ctrl.Log.WithName("controllers").WithName("NodeProviderID"),
+		ClusterCache:            clusterCache,
+		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller %s: %w", "NodeProviderID", err)
 	}
 
 	if err := (&controllers.Beskar7ClusterReconciler{

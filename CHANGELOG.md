@@ -18,7 +18,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   first. With NetworkPolicy on, the chart then also allows egress to `nodeProviderID.apiServerPorts` (default
   `6443`). The tenant's is a new `Beskar7Cluster` field, `spec.setNodeProviderID`
   (also on `Beskar7ClusterTemplate`), which turns this on per cluster. Then, once the host is
-  `Ready` and until the `Machine` has a `nodeRef`, the `Beskar7Machine` controller reads the Node named after the
+  `Ready` and until the `Machine` has a `nodeRef`, a new controller reads the Node named after the
   `Machine` through Cluster API's ClusterCache and, if its `spec.providerID` is empty, sets it to
   `b7://<namespace>/<host>`. It never changes a non-empty value. Progress shows on a new `Beskar7Machine`
   condition, `NodeProviderIDReady` (`NodeProviderIDSet`, or `False` with `NodeNotFound`, `NodeProviderIDMismatch`
@@ -35,9 +35,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   unchanged, remain the default, and are still needed where the Node is not named after the `Machine` (k3s, k0s
   on Kairos) or registers its own providerID (k3s). See
   [`docs/beskar7machine.md`](docs/beskar7machine.md#providerid--node-association).
+- **Workload cluster calls run in their own controller.** The Node providerID work above runs in a controller with
+  its own queue and `--max-concurrent-reconciles` workers, and each call to a workload API server has a 5 second
+  deadline, so a slow or hostile one never holds the `Beskar7Machine` workers that claim, power and release hosts.
+  The two controllers write their own conditions only. The manager now runs four controllers.
 - **Quieter `Ready` path.** The `Ready` path's "deployment complete", "marking infrastructure as ready" and
   "Copied network addresses" lines log at `V(1)`, and "infrastructure is ready" logs at `Info` only on the pass
-  that makes the machine Ready.
+  that makes the machine Ready. It no longer requeues while the Node joins.
 
 ### Changed
 

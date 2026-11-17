@@ -236,7 +236,7 @@ func TestClusterToBeskar7Machines(t *testing.T) {
 		labelled("mine-b", nodeProviderIDTestCluster),
 		labelled("theirs", "other-cluster"),
 	).Build()
-	r := &Beskar7MachineReconciler{Client: c, Log: ctrl.Log.WithName("npid-map")}
+	r := &NodeProviderIDReconciler{Client: c, Log: ctrl.Log.WithName("npid-map")}
 
 	requests := r.ClusterToBeskar7Machines(context.Background(), clusterWith(beskar7ClusterRef("x"), nil))
 

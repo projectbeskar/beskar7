@@ -19,6 +19,7 @@ package controllers
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -87,7 +88,8 @@ func newNodeProviderIDFixture(namespace string) nodeProviderIDFixture {
 				Name: machine.Name, UID: machine.UID,
 			}},
 		},
-		Spec: infrav1.Beskar7MachineSpec{ProviderID: providerID(namespace, nodeProviderIDTestHost)},
+		Spec:   infrav1.Beskar7MachineSpec{ProviderID: providerID(namespace, nodeProviderIDTestHost)},
+		Status: infrav1.Beskar7MachineStatus{Ready: true},
 	}
 	b7cluster := &infrav1.Beskar7Cluster{
 		ObjectMeta: metav1.ObjectMeta{Name: nodeProviderIDTestCluster, Namespace: namespace},
@@ -136,7 +138,7 @@ func (c nodeProviderIDCase) run(t *testing.T) (ctrl.Result, error) {
 	t.Helper()
 	management := fake.NewClientBuilder().WithScheme(nodeProviderIDScheme(t)).
 		WithObjects(c.fixture.cluster, c.fixture.b7cluster, c.fixture.machine).Build()
-	r := &Beskar7MachineReconciler{Client: management, ClusterCache: c.cache, Log: ctrl.Log.WithName("npid")}
+	r := &NodeProviderIDReconciler{Client: management, ClusterCache: c.cache, Log: ctrl.Log.WithName("npid")}
 	return r.reconcileNodeProviderID(context.Background(), r.Log, c.fixture.b7machine)
 }
 
@@ -350,13 +352,60 @@ func TestReconcileNodeProviderID_ConcurrentNodeChangeIsNotOverwritten(t *testing
 	g.Expect(node.Spec.ProviderID).To(Equal(foreignProviderID))
 }
 
+// A slow workload API server holds a worker for at most workloadCallTimeout per call.
+func TestReconcileNodeProviderID_WorkloadCallsHaveADeadline(t *testing.T) {
+	g := NewWithT(t)
+	f := newNodeProviderIDFixture(nodeProviderIDTestNamespace)
+	var left []time.Duration
+	record := func(ctx context.Context) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			left = append(left, 0)
+			return
+		}
+		left = append(left, time.Until(deadline))
+	}
+	workload := interceptor.NewClient(workloadWith(t, registeredNode("")).(client.WithWatch), interceptor.Funcs{
+		Get: func(
+			ctx context.Context,
+			c client.WithWatch,
+			key client.ObjectKey,
+			obj client.Object,
+			opts ...client.GetOption,
+		) error {
+			record(ctx)
+			return c.Get(ctx, key, obj, opts...)
+		},
+		Patch: func(
+			ctx context.Context,
+			c client.WithWatch,
+			obj client.Object,
+			patch client.Patch,
+			opts ...client.PatchOption,
+		) error {
+			record(ctx)
+			return c.Patch(ctx, obj, patch, opts...)
+		},
+	})
+	cache := clustercache.NewFakeClusterCache(workload, f.clusterKey())
+
+	_, err := nodeProviderIDCase{fixture: f, workload: workload, cache: cache}.run(t)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(left).To(HaveLen(2), "one Node GET and one Node PATCH")
+	for _, d := range left {
+		g.Expect(d).To(BeNumerically(">", 0), "every workload call has a deadline")
+		g.Expect(d).To(BeNumerically("<=", workloadCallTimeout))
+	}
+}
+
 // The suite's API server stands in for the workload cluster, so the Node immutability rules are real.
 var _ = Describe("Node providerID on the workload cluster (#297)", func() {
 	var (
 		testNs *corev1.Namespace
 		f      nodeProviderIDFixture
 		node   *corev1.Node
-		r      *Beskar7MachineReconciler
+		r      *NodeProviderIDReconciler
 	)
 
 	BeforeEach(func() {
@@ -372,8 +421,9 @@ var _ = Describe("Node providerID on the workload cluster (#297)", func() {
 		f.b7machine.OwnerReferences[0].Name = f.machine.Name
 		f.b7machine.OwnerReferences[0].UID = f.machine.UID
 		node = &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: f.machine.Name}}
-		r = &Beskar7MachineReconciler{
-			Client: k8sClient, Scheme: k8sClient.Scheme(), Log: ctrl.Log.WithName("node-provider-id"),
+		r = &NodeProviderIDReconciler{
+			Client:       k8sClient,
+			Log:          ctrl.Log.WithName("node-provider-id"),
 			ClusterCache: clustercache.NewFakeClusterCache(k8sClient, f.clusterKey()),
 		}
 	})
