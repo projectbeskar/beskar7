@@ -7,6 +7,7 @@ The current maintainers of the Beskar7 project are listed below. The project cov
 | Name | GitHub ID | Company/Organization |
 | ---- | --------- | -------------------- |
 | William Rizzo | [wrkode](https://github.com/wrkode) | Independent |
+| Bohdan Leshchenko | [thebhdn](https://github.com/thebhdn) | Clastix |
 
 ## What maintainers do
 
