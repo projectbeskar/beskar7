@@ -205,14 +205,17 @@ func TestCallbackOnlyRoleServesEveryRoute(t *testing.T) {
 		{"cleaned", controllers.CleanedRequestAnnotation},
 		{"clean-failed", controllers.CleanFailedRequestAnnotation},
 	} {
-		// The handler ignores a host its cache does not show Cleaning yet, so poll.
+		// Until the callback-only cache shows the host Cleaning, the cleaning
+		// token verifier refuses the token (401) and the handler ignores the
+		// report (202 without the annotation), so poll through both.
 		deadline := time.Now().Add(10 * time.Second)
 		for host().Annotations[report.annotation] == "" {
-			if status, _ := callbackRequest(t, c, http.MethodPost, fx.route(base, report.route), cleaningToken, ""); status != http.StatusAccepted {
+			status, _ := callbackRequest(t, c, http.MethodPost, fx.route(base, report.route), cleaningToken, "")
+			if status != http.StatusAccepted && status != http.StatusUnauthorized {
 				t.Fatalf("POST /%s: status %d, want 202", report.route, status)
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("POST /%s never annotated the host", report.route)
+				t.Fatalf("POST /%s never annotated the host (last status %d)", report.route, status)
 			}
 			time.Sleep(200 * time.Millisecond)
 		}
