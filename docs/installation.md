@@ -10,7 +10,7 @@ This page covers installing Beskar7 into an existing Kubernetes cluster. For bui
 - Cluster API v1.11+ — the controller reads the `cluster.x-k8s.io/v1beta2` API ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 - cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 - iPXE infrastructure — DHCP server + HTTP boot server accessible by bare-metal hosts ([setup guide](ipxe-setup.md))
-- `beskar7-inspector` image hosted on your boot server ([inspector repository](https://github.com/projectbeskar/beskar7-inspector))
+- `beskar7-inspector` image hosted on your boot server ([inspector repository](https://github.com/beskar7/beskar7-inspector))
 
 ### Install cert-manager
 
@@ -30,7 +30,7 @@ kubectl get pods -n cert-manager
 ## Install via Helm (recommended)
 
 ```bash
-helm repo add beskar7 https://projectbeskar.github.io/beskar7
+helm repo add beskar7 https://beskar7.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
   --namespace capb7-system --create-namespace
@@ -70,7 +70,7 @@ Until beskar7 is in clusterctl's built-in provider list, declare it in `~/.clust
 providers:
   - name: beskar7
     type: InfrastructureProvider
-    url: https://github.com/projectbeskar/beskar7/releases/latest/infrastructure-components.yaml
+    url: https://github.com/beskar7/beskar7/releases/latest/infrastructure-components.yaml
 ```
 
 Then initialise the management cluster (clusterctl installs cert-manager and the core providers itself):
@@ -95,7 +95,7 @@ To install a build of the current tree instead of a release, publish it into a c
 ## Install via release manifests
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 ```
 
 This applies CRDs, RBAC, and the controller deployment in a single manifest. The release manifest always uses the `capb7-system` namespace and the default `bootstrap.urlBase`. It is the clusterctl components file with the variables above resolved to their defaults; do not `kubectl apply` `infrastructure-components.yaml` itself — it keeps the `${…}` placeholders for `clusterctl init` to fill in.
@@ -152,7 +152,7 @@ Verify an image before deploying it:
 IMAGE=ghcr.io/projectbeskar/beskar7/beskar7:<tag>   # a release from alpha.9 onward
 
 cosign verify "$IMAGE" \
-  --certificate-identity-regexp '^https://github.com/projectbeskar/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
+  --certificate-identity-regexp '^https://github\.com/(projectbeskar|beskar7)/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -160,9 +160,12 @@ Inspect the SBOM attestation:
 
 ```bash
 cosign verify-attestation --type spdxjson "$IMAGE" \
-  --certificate-identity-regexp '^https://github.com/projectbeskar/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
+  --certificate-identity-regexp '^https://github\.com/(projectbeskar|beskar7)/beskar7/\.github/workflows/release\.yml@refs/tags/.*$' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
+
+The identity regexp accepts both orgs: releases up to v0.12.0 were signed from
+`github.com/projectbeskar/beskar7`, later releases from `github.com/beskar7/beskar7`.
 
 A failed verification means the image was not produced by this project's release
 workflow — do not deploy it.

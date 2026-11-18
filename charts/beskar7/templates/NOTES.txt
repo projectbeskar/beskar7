@@ -10,7 +10,7 @@
    kubectl get crd | grep infrastructure.cluster.x-k8s.io
 
 5. Create your first PhysicalHost:
-   Check the documentation at: https://github.com/projectbeskar/beskar7/tree/main/docs
+   Check the documentation at: https://github.com/beskar7/beskar7/tree/main/docs
 
 {{- if .Values.webhook.enabled }}
 6. Webhook is enabled - ensure cert-manager is installed and running:
@@ -41,4 +41,4 @@ NOTE: bootstrap.urlBase is "{{ include "beskar7.bootstrapURLBase" . }}".
    to the public internet. Use loadBalancerSourceRanges / a NetworkPolicy / firewall.
 {{- end }}
 
-For more information, visit: https://github.com/projectbeskar/beskar7
+For more information, visit: https://github.com/beskar7/beskar7

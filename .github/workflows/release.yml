@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/beskar7
+  IMAGE_NAME: ${{ github.repository_owner }}/manager
   # build-push-action v6+ uploads a .dockerbuild build record per build as an
   # artifact; v5 did not. Keep the artifact list as it was.
   DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -113,7 +113,7 @@ jobs:
       packages: write
       id-token: write
     env:
-      IMAGE_NAME: ${{ github.repository }}/mock-redfish
+      IMAGE_NAME: ${{ github.repository_owner }}/mock-redfish
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -178,7 +178,7 @@ jobs:
       packages: write
       id-token: write
     env:
-      IMAGE_NAME: ${{ github.repository }}/mock-inspector
+      IMAGE_NAME: ${{ github.repository_owner }}/mock-inspector
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -253,7 +253,7 @@ jobs:
       matrix:
         image:
           - name: manager
-            repo: beskar7
+            repo: manager
           - name: mock-redfish
             repo: mock-redfish
           - name: mock-inspector
@@ -263,7 +263,7 @@ jobs:
     # daemon, so the released image is pulled and handed over as an archive.
     - name: Pull and export ${{ matrix.image.name }}
       run: |
-        image="${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image.repo }}:${{ github.ref_name }}"
+        image="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image.repo }}:${{ github.ref_name }}"
         docker pull "${image}"
         docker save -o osv-image.tar "${image}"
         echo "IMAGE_REF=${image}" >> "$GITHUB_ENV"
@@ -325,6 +325,8 @@ jobs:
   generate-artifacts:
     name: Generate Release Artifacts  
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -492,7 +494,7 @@ jobs:
         echo "providers:" >> release-notes.md
         echo "  - name: beskar7" >> release-notes.md
         echo "    type: InfrastructureProvider" >> release-notes.md
-        echo "    url: https://github.com/projectbeskar/beskar7/releases/latest/infrastructure-components.yaml" >> release-notes.md
+        echo "    url: ${{ github.server_url }}/${{ github.repository }}/releases/latest/infrastructure-components.yaml" >> release-notes.md
         echo "\`\`\`" >> release-notes.md
         echo "\`\`\`bash" >> release-notes.md
         echo "clusterctl init --infrastructure beskar7:$VERSION" >> release-notes.md
@@ -500,7 +502,7 @@ jobs:
         echo "" >> release-notes.md
         echo "### Using Kubectl" >> release-notes.md
         echo "\`\`\`bash" >> release-notes.md
-        echo "kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/$VERSION/beskar7-manifests-$VERSION.yaml" >> release-notes.md
+        echo "kubectl apply -f ${{ github.server_url }}/${{ github.repository }}/releases/download/$VERSION/beskar7-manifests-$VERSION.yaml" >> release-notes.md
         echo "\`\`\`" >> release-notes.md
         echo "" >> release-notes.md
         echo "### Using Helm" >> release-notes.md
@@ -547,50 +549,20 @@ jobs:
           osv-scanner-report.txt
         token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Job 7: Update Documentation
-  update-docs:
-    name: Update Documentation
-    runs-on: ubuntu-latest
-    needs: release
-    if: ${{ !contains(github.ref_name, '-') }} # Only for stable releases
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        
-    - name: Update README with latest version
-      run: |
-        VERSION=${{ github.ref_name }}
-        # Update installation examples: the release path and the manifest name
-        # carry the version (the old pattern left `releases/download/<old>/` behind).
-        sed -i -E "s|releases/download/v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?/beskar7-manifests-v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?\.yaml|releases/download/$VERSION/beskar7-manifests-$VERSION.yaml|g" README.md docs/installation.md
-        
-    - name: Commit changes
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add README.md docs/installation.md
-        if git diff --staged --quiet; then
-          echo "No changes to commit"
-        else
-          git commit -m "docs: update installation examples to ${{ github.ref_name }}"
-          git push
-        fi
-
   # Job 8: Notify on Success/Failure
   notify:
     name: Notify Release Status
     runs-on: ubuntu-latest
-    needs: [build-and-push, security-scan, generate-artifacts, release, update-docs]
+    needs: [build-and-push, security-scan, generate-artifacts, release]
     if: always()
+    permissions: {}
     steps:
     - name: Notify success
       if: ${{ needs.release.result == 'success' }}
       run: |
         echo "✅ Release ${{ github.ref_name }} created successfully!"
         echo "🐳 Container image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}"
-        echo "Release URL: https://github.com/projectbeskar/beskar7/releases/tag/${{ github.ref_name }}"
+        echo "Release URL: ${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
         
     - name: Notify failure
       if: ${{ needs.release.result == 'failure' }}

@@ -39,7 +39,7 @@ serving certificate. Two modes:
 ## Installation
 
 ```bash
-helm repo add beskar7 https://projectbeskar.github.io/beskar7
+helm repo add beskar7 https://beskar7.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
   --namespace capb7-system --create-namespace
@@ -65,7 +65,7 @@ All configurable values with their defaults:
 | Key | Default | Description |
 |---|---|---|
 | `controllerManager.replicas` | `1` | Number of controller-manager replicas. |
-| `controllerManager.image.repository` | `ghcr.io/projectbeskar/beskar7/beskar7` | Manager image repository. |
+| `controllerManager.image.repository` | `ghcr.io/beskar7/manager` | Manager image repository. |
 | `controllerManager.image.tag` | `""` (uses `Chart.appVersion`) | Image tag. Empty string defers to `Chart.appVersion`. |
 | `controllerManager.image.pullPolicy` | `IfNotPresent` | Image pull policy. |
 | `controllerManager.resources.limits.cpu` | `500m` | CPU limit for the manager container. |
@@ -135,7 +135,7 @@ Before running `helm upgrade`, check [CHANGELOG.md](../../CHANGELOG.md) for vers
 **CRDs are not upgraded automatically by Helm.** The CRDs bundled in `charts/beskar7/crds/` are installed on first `helm install` but Helm does not update them on subsequent `helm upgrade` runs (this is a Helm convention for CRDs). If a Beskar7 upgrade changes CRD schemas, apply the updated CRDs manually before upgrading the chart:
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/<version>/beskar7-manifests-<version>.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/<version>/beskar7-manifests-<version>.yaml
 ```
 
 Or from a local clone:

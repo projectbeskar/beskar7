@@ -38,7 +38,7 @@ spec:
         # and overrides this field on apply. The literal below is only used
         # when the runner is bypassed (e.g. plain `kubectl apply -f hack/smoke/manifests/`).
         # Bump it in lockstep with each release as a sane fallback.
-        image: ghcr.io/projectbeskar/beskar7/mock-redfish:v0.4.0-alpha.3
+        image: ghcr.io/beskar7/mock-redfish:v0.4.0-alpha.3
         imagePullPolicy: IfNotPresent
         args:
         - --listen-addr=:8443

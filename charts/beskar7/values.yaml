@@ -14,7 +14,7 @@ fullnameOverride: "capb7"
 controllerManager:
   replicas: 1
   image:
-    repository: ghcr.io/projectbeskar/beskar7/beskar7
+    repository: ghcr.io/beskar7/manager
     tag: "" # Will be set to Chart.appVersion by default
     pullPolicy: IfNotPresent
   resources:

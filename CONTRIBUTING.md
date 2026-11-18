@@ -16,7 +16,7 @@ different expectations, described below.
 ## Development setup
 
 ```bash
-git clone https://github.com/projectbeskar/beskar7.git
+git clone https://github.com/beskar7/beskar7.git
 cd beskar7
 make build
 make test        # unit + envtest; needs KUBEBUILDER_ASSETS
@@ -59,7 +59,7 @@ chart-bundled CRDs stay byte-identical — CI fails if they drift.
 
 **The controller↔inspector contract.** `docs/inspector-contract.md` is a versioned
 wire contract shared with a separate repository
-([`beskar7-inspector`](https://github.com/projectbeskar/beskar7-inspector)). The
+([`beskar7-inspector`](https://github.com/beskar7/beskar7-inspector)). The
 golden fixtures in `test/contract/` are the machine-checked half, and the inspector
 vendors byte-identical copies pinned to an immutable `contract/<version>` tag.
 Changing the cmdline, an endpoint, or the report schema means a coordinated change

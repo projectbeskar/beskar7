@@ -962,7 +962,7 @@ curl -k -u admin:password https://BMC_IP/redfish/v1/ > redfish-test.json
 
 ### 2. Open an Issue
 
-https://github.com/projectbeskar/beskar7/issues
+https://github.com/beskar7/beskar7/issues
 
 Include:
 - Beskar7 version
@@ -975,7 +975,7 @@ Include:
 
 ### 3. Community Support
 
-- GitHub Discussions: https://github.com/projectbeskar/beskar7/discussions
+- GitHub Discussions: https://github.com/beskar7/beskar7/discussions
 - Check existing issues for similar problems
 - Join community chat (if available)
 
@@ -1028,4 +1028,4 @@ A: Remove the `--zap-log-level` override, or set it back to `info`.
 
 ---
 
-**Still stuck?** Open an issue: https://github.com/projectbeskar/beskar7/issues
+**Still stuck?** Open an issue: https://github.com/beskar7/beskar7/issues

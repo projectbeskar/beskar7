@@ -44,7 +44,7 @@ spec:
         # Default image. hack/smoke/run.sh substitutes the tag derived from the
         # installed controller before the first apply. Keep this literal in
         # lockstep with 10-mock-redfish.yaml.
-        image: ghcr.io/projectbeskar/beskar7/mock-redfish:v0.4.0-alpha.3
+        image: ghcr.io/beskar7/mock-redfish:v0.4.0-alpha.3
         imagePullPolicy: IfNotPresent
         args:
         - --listen-addr=:8443

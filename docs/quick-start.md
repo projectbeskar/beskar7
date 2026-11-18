@@ -22,7 +22,7 @@ The `Beskar7Machine` in this file stays put: a `Beskar7Machine` is driven by the
 
 ## 2. Provision it
 
-`examples/kairos-k3s-node.yaml` is the whole single-node flow: a namespace, credentials and bootstrap Secrets, a `PhysicalHost`, a `Beskar7Cluster`, a Cluster API `Cluster`, a standalone `Machine` and its `Beskar7Machine`. It needs a working iPXE setup (see [iPXE Setup](ipxe-setup.md)), the [inspector](https://github.com/projectbeskar/beskar7-inspector) served from your boot server, and a Kairos k3s image with its `sha256` digest. Replace every `<...>` placeholder, then:
+`examples/kairos-k3s-node.yaml` is the whole single-node flow: a namespace, credentials and bootstrap Secrets, a `PhysicalHost`, a `Beskar7Cluster`, a Cluster API `Cluster`, a standalone `Machine` and its `Beskar7Machine`. It needs a working iPXE setup (see [iPXE Setup](ipxe-setup.md)), the [inspector](https://github.com/beskar7/beskar7-inspector) served from your boot server, and a Kairos k3s image with its `sha256` digest. Replace every `<...>` placeholder, then:
 
 ```bash
 kubectl apply -f examples/kairos-k3s-node.yaml

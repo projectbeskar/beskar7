@@ -261,7 +261,7 @@ tolerations:
 **Using Helm (Recommended):**
 ```bash
 # Add Helm repository
-helm repo add beskar7 https://projectbeskar.github.io/beskar7
+helm repo add beskar7 https://beskar7.github.io/beskar7
 helm repo update
 
 # Install with production values

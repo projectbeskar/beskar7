@@ -13,7 +13,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/beskar7
+  IMAGE_NAME: ${{ github.repository_owner }}/manager
   # build-push-action v6+ uploads a .dockerbuild build record per build as an
   # artifact; v5 did not. Keep the artifact list as it was.
   DOCKER_BUILD_RECORD_UPLOAD: "false"
@@ -383,10 +383,9 @@ jobs:
         file: Dockerfile.mock-redfish
         platforms: linux/amd64
         push: false
-        # IMAGE_NAME is "<repo>/beskar7" (with the /beskar7 suffix); the mock
-        # image lives at "<repo>/mock-redfish". Build using github.repository
-        # directly to avoid string surgery on IMAGE_NAME.
-        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci
+        # IMAGE_NAME is "<owner>/manager"; the mock image lives beside it at
+        # "<owner>/mock-redfish".
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-redfish:smoke-ci
         load: true
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -398,7 +397,7 @@ jobs:
         file: Dockerfile.mock-inspector
         platforms: linux/amd64
         push: false
-        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-inspector:smoke-ci
         load: true
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -406,8 +405,8 @@ jobs:
     - name: Load images into kind
       run: |
         kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci --name beskar7-smoke
-        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci --name beskar7-smoke
-        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci --name beskar7-smoke
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-redfish:smoke-ci --name beskar7-smoke
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-inspector:smoke-ci --name beskar7-smoke
 
     - name: Install cert-manager
       run: |
@@ -590,7 +589,7 @@ jobs:
         file: Dockerfile.mock-redfish
         platforms: linux/amd64
         push: false
-        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-redfish:smoke-ci
         load: true
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -602,7 +601,7 @@ jobs:
         file: Dockerfile.mock-inspector
         platforms: linux/amd64
         push: false
-        tags: ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci
+        tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-inspector:smoke-ci
         load: true
         cache-from: type=gha
         cache-to: type=gha,mode=max
@@ -610,8 +609,8 @@ jobs:
     - name: Load images into kind
       run: |
         kind load docker-image ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:smoke-ci --name beskar7-clusterctl
-        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-redfish:smoke-ci --name beskar7-clusterctl
-        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}/mock-inspector:smoke-ci --name beskar7-clusterctl
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-redfish:smoke-ci --name beskar7-clusterctl
+        kind load docker-image ${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-inspector:smoke-ci --name beskar7-clusterctl
 
     - name: Install Cluster API core via clusterctl
       env:
@@ -651,10 +650,10 @@ jobs:
         providers:
           - name: beskar7
             type: InfrastructureProvider
-            url: https://github.com/projectbeskar/beskar7/releases/${OVERRIDE_VERSION}/infrastructure-components.yaml
+            url: ${{ github.server_url }}/${{ github.repository }}/releases/${OVERRIDE_VERSION}/infrastructure-components.yaml
         images:
           infrastructure-beskar7:
-            repository: ${{ env.REGISTRY }}/${{ github.repository }}
+            repository: ${{ env.REGISTRY }}/${{ github.repository_owner }}
             tag: smoke-ci
         EOF
         cat /tmp/clusterctl.yaml

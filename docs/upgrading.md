@@ -145,7 +145,7 @@ helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.12.0 --reset-th
 
 ```bash
 # Release-manifest install: the manifest lists the five CRDs before the Deployment, so one apply does both.
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 ```
 
 Upgrade each callback-only instance (`--controllers=none`) to `v0.12.0` as well. Its Role is unchanged, so the order
@@ -1148,7 +1148,7 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
 #    v0.9.x → v0.10.0 section above, installing v0.12.0 where it names v0.10.0, and then the sections after it.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
 helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.12.0 --reset-then-reuse-values
 
@@ -1466,7 +1466,7 @@ helm repo update
 helm upgrade beskar7 beskar7/beskar7 -n beskar7-system --version 0.4.0
 
 # 4. Inspector artifacts on your boot server
-REL=https://github.com/projectbeskar/beskar7-inspector/releases/latest/download
+REL=https://github.com/beskar7/beskar7-inspector/releases/latest/download
 curl -fsSLO $REL/vmlinuz && curl -fsSLO $REL/initrd.img && curl -fsSLO $REL/sha256sums.txt
 sha256sum -c sha256sums.txt --ignore-missing
 

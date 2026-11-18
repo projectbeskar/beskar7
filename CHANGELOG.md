@@ -6,6 +6,16 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Changed
+
+- The repositories moved to `github.com/beskar7` (`beskar7/beskar7` and `beskar7/beskar7-inspector`); the old URLs
+  redirect. From the next release the images are `ghcr.io/beskar7/manager`, `ghcr.io/beskar7/mock-redfish` and
+  `ghcr.io/beskar7/mock-inspector`, the Helm repository is `https://beskar7.github.io/beskar7`, the clusterctl
+  provider URL is `https://github.com/beskar7/beskar7/releases/...`, and release signatures carry the
+  `github.com/beskar7/beskar7` workflow identity (the cosign identity regexp in
+  [`docs/installation.md`](docs/installation.md) accepts both). Releases up to `v0.12.0` stay where they are
+  (`ghcr.io/projectbeskar/beskar7/*`, and the old Helm URL keeps serving charts up to `0.12.0`).
+
 ## [v0.12.0] - 2026-11-17
 
 An opt-in disk wipe when a `PhysicalHost` is released (contract `v4.4`), an opt-in `Node.spec.providerID` on the

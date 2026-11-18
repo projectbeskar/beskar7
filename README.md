@@ -28,7 +28,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 **Version:** v0.12.0 — an opt-in disk wipe when a `PhysicalHost` is released (`spec.cleaning.mode: Metadata`, contract `v4.4`; it needs inspector `v0.5.0` behind the new `--cleaning-image-url`), an opt-in `Node.spec.providerID` on the workload cluster (`--enable-node-provider-id` plus `Beskar7Cluster.spec.setNodeProviderID`), and the PhysicalHost controller's events on `events.k8s.io`. Both features are off by default. The CRD changes add optional fields only: apply the CRDs before the controller. A hand-maintained manager Role needs the `events.k8s.io` events rule. Upgrade every callback-only instance too before you turn the wipe on. Coming from `v0.10.2` or earlier, the steps of the releases in between apply too (from `v0.10.2`: upgrade a callback-only instance before its tightened Role): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
-**Contract:** controller↔inspector wire contract **v4.4, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.4` [inspector release](https://github.com/projectbeskar/beskar7-inspector/releases).  
+**Contract:** controller↔inspector wire contract **v4.4, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.4` [inspector release](https://github.com/beskar7/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
 
 ## Installation
@@ -39,14 +39,14 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 2. Cluster API v1.11+ — the controller reads the `cluster.x-k8s.io/v1beta2` API ([install with clusterctl](https://cluster-api.sigs.k8s.io/user/quick-start.html))
 3. cert-manager v1.16+ ([installation guide](https://cert-manager.io/docs/installation/))
 4. iPXE infrastructure - DHCP + HTTP server ([setup guide](docs/ipxe-setup.md))
-5. Inspection image - `vmlinuz` + `initrd.img` from [beskar7-inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases), served by your boot server. Match the inspector to the contract version your controller speaks (see [iPXE Setup](docs/ipxe-setup.md)).
+5. Inspection image - `vmlinuz` + `initrd.img` from [beskar7-inspector releases](https://github.com/beskar7/beskar7-inspector/releases), served by your boot server. Match the inspector to the contract version your controller speaks (see [iPXE Setup](docs/ipxe-setup.md)).
 
 ### Quick Install
 
 **Using Helm (Recommended):**
 
 ```bash
-helm repo add beskar7 https://projectbeskar.github.io/beskar7
+helm repo add beskar7 https://beskar7.github.io/beskar7
 helm repo update
 helm install beskar7 beskar7/beskar7 \
   --namespace capb7-system --create-namespace
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/projectbeskar/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.
@@ -146,7 +146,7 @@ physical vendor BMC has been validated yet**, so pilot before committing a fleet
 ## Development
 
 ```bash
-git clone https://github.com/projectbeskar/beskar7.git
+git clone https://github.com/beskar7/beskar7.git
 cd beskar7
 make build
 make test
@@ -169,9 +169,9 @@ Apache License 2.0 - See [LICENSE](LICENSE) file for details.
 
 ## Support
 
-- **Issues:** https://github.com/projectbeskar/beskar7/issues
-- **Discussions:** https://github.com/projectbeskar/beskar7/discussions
-- **Documentation:** https://github.com/projectbeskar/beskar7/tree/main/docs
+- **Issues:** https://github.com/beskar7/beskar7/issues
+- **Discussions:** https://github.com/beskar7/beskar7/discussions
+- **Documentation:** https://github.com/beskar7/beskar7/tree/main/docs
 
 ## Acknowledgments
 

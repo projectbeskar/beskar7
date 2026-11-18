@@ -18,7 +18,7 @@ This page covers building Beskar7 from source and deploying it into a developmen
 ## Clone and install tools
 
 ```bash
-git clone https://github.com/projectbeskar/beskar7.git
+git clone https://github.com/beskar7/beskar7.git
 cd beskar7
 make install-controller-gen
 ```
@@ -31,7 +31,7 @@ kustomize is pulled by the Makefile when needed.
 make docker-build docker-push IMG=my-registry/my-repo:dev
 ```
 
-The default `IMG` value in the Makefile is `ghcr.io/projectbeskar/beskar7/beskar7:v0.12.0`. Override it to push to your own registry.
+The default `IMG` value in the Makefile is `ghcr.io/beskar7/manager:v0.12.0`. Override it to push to your own registry.
 
 ## Regenerate CRDs and RBAC
 

@@ -742,7 +742,7 @@ prebuilt release artifacts exist at a public URL.
 
 ```bash
 # Clone and build
-git clone https://github.com/projectbeskar/beskar7-inspector.git
+git clone https://github.com/beskar7/beskar7-inspector.git
 cd beskar7-inspector
 
 # Build vmlinuz + initrd.img (requires Docker with buildx)

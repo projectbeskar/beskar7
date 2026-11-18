@@ -123,12 +123,12 @@ jobs:
         if [ "$RESET_INDEX" != "true" ] && [ -f "gh-pages-repo/index.yaml" ]; then
           echo "Merging with previous index"
           helm repo index .helm-repo \
-            --url https://projectbeskar.github.io/beskar7 \
+            --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }} \
             --merge gh-pages-repo/index.yaml
         else
           echo "Generating a fresh index (no merge)"
           helm repo index .helm-repo \
-            --url https://projectbeskar.github.io/beskar7
+            --url https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}
         fi
 
         echo "Charts in repository:"

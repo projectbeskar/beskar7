@@ -101,7 +101,7 @@ validation, so the table above is unchanged:
   read through `Systems()` failed with `json: cannot unmarshal object into Go
   struct field .OperatingSystem of type string`, and the `PhysicalHost` went to
   `Error` before inspection could start. Fixed in
-  [#218](https://github.com/projectbeskar/beskar7/issues/218) by moving to a
+  [#218](https://github.com/beskar7/beskar7/issues/218) by moving to a
   client that treats it as a link; a link-shaped `OperatingSystem` now has a
   regression test. Nothing about this is vendor-specific — any BMC returning the
   property the way the spec describes would have hit it.
@@ -123,14 +123,14 @@ General Redfish guidance, not Beskar7 findings:
 
 Validation reports are welcome and are the fastest way to move a row from
 "Not yet" to a real result — please
-[open an issue](https://github.com/projectbeskar/beskar7/issues) with the vendor,
+[open an issue](https://github.com/beskar7/beskar7/issues) with the vendor,
 BMC model, firmware revision, and what did or did not work.
 
 ## Host hardware: NICs and storage
 
 The BMC only powers the host and points it at the network. Everything after
 that runs inside the
-[inspector](https://github.com/projectbeskar/beskar7-inspector): it brings up a
+[inspector](https://github.com/beskar7/beskar7-inspector): it brings up a
 NIC to call the controller back, reports the hardware, and writes the OS image to
 a disk. It can only use the hardware it ships drivers for.
 
@@ -138,19 +138,19 @@ a disk. It can only use the hardware it ships drivers for.
 `v0.3.3` shipped only the `virtio`, `e1000` and `e1000e` NIC drivers and neither
 `nvme` nor `sd_mod`. On most physical servers they found no NIC at all, and SATA,
 SAS, RAID and NVMe disks stayed invisible
-([beskar7-inspector#54](https://github.com/projectbeskar/beskar7-inspector/issues/54)).
+([beskar7-inspector#54](https://github.com/beskar7/beskar7-inspector/issues/54)).
 `v0.3.4` also reports a missing target disk to the controller at once, instead of
 leaving the machine to time out (see [When a driver is missing](#when-a-driver-is-missing)).
 Your boot server serves its own copy of `vmlinuz` and `initrd.img`, so an
 older copy keeps booting until you replace it. Take the new pair from the
-[inspector releases](https://github.com/projectbeskar/beskar7-inspector/releases)
+[inspector releases](https://github.com/beskar7/beskar7-inspector/releases)
 or from the image `ghcr.io/projectbeskar/beskar7-inspector:contract-v4.4`, which
 tracks the newest `v4.4` release.
 
 ### Supported drivers
 
 As of inspector `v0.3.4` (the set is unchanged since `v0.3.3`). The authoritative list is the inspector's
-[`modules.list`](https://github.com/projectbeskar/beskar7-inspector/blob/main/modules.list).
+[`modules.list`](https://github.com/beskar7/beskar7-inspector/blob/main/modules.list).
 
 | Kind | Families | Drivers |
 |---|---|---|
@@ -198,7 +198,7 @@ script passes the host's MAC (`BOOTIF`), the inspector uses only that NIC, even
 if another one came up.
 
 Please
-[open an inspector issue](https://github.com/projectbeskar/beskar7-inspector/issues)
+[open an inspector issue](https://github.com/beskar7/beskar7-inspector/issues)
 with the output of `lspci -nn` and `lspci -k` from the host.
 
 ## What's Different from Other Bare-Metal Tools?
@@ -440,7 +440,7 @@ If your hardware doesn't work with Beskar7, please report it!
    - Power management?
    - Boot source setting?
 
-Submit to: https://github.com/projectbeskar/beskar7/issues
+Submit to: https://github.com/beskar7/beskar7/issues
 
 ## Feature Support Matrix
 
@@ -499,7 +499,7 @@ Before deploying to production:
 After verifying hardware compatibility:
 
 1. Set up iPXE infrastructure - See [iPXE Setup Guide](ipxe-setup.md)
-2. Deploy inspector image (`v0.3.4` or later for physical servers) - See [beskar7-inspector](https://github.com/projectbeskar/beskar7-inspector)
+2. Deploy inspector image (`v0.3.4` or later for physical servers) - See [beskar7-inspector](https://github.com/beskar7/beskar7-inspector)
 3. Register hosts - See [examples](../examples/)
 4. Start provisioning - See [README](../README.md)
 

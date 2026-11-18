@@ -50,7 +50,7 @@ spec:
         # Default image; hack/smoke/run.sh overrides this via `kubectl set
         # image` to match the installed controller's tag (same auto-derive
         # logic as the mock-redfish Deployment).
-        image: ghcr.io/projectbeskar/beskar7/mock-inspector:v0.4.0-alpha.3
+        image: ghcr.io/beskar7/mock-inspector:v0.4.0-alpha.3
         imagePullPolicy: IfNotPresent
         args:
         - --namespace=beskar7-smoke

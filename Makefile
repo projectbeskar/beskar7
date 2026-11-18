@@ -13,8 +13,8 @@ KUSTOMIZE ?= kustomize
 
 # Image URL to use all building/pushing image targets
 VERSION ?= v0.12.0
-IMAGE_REGISTRY ?= ghcr.io/projectbeskar/beskar7
-IMAGE_REPO ?= beskar7
+IMAGE_REGISTRY ?= ghcr.io/beskar7
+IMAGE_REPO ?= manager
 IMG ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO):$(VERSION)
 
 # clusterctl variable syntax (${VAR:=default}, drone/envsubst) resolved to the

@@ -212,8 +212,8 @@ resolve_component_image() {
 
   controller_img="$(kubectl -n "${OPERATOR_NS}" get deploy "${OPERATOR_DEPLOY}" \
     -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-  if [[ "${controller_img}" =~ ^(.+)/beskar7:(.+)$ ]]; then
-    RESOLVED_IMAGE="${BASH_REMATCH[1]}/${component}:${BASH_REMATCH[2]}"
+  if [[ "${controller_img}" =~ ^(.+)/(manager|beskar7):(.+)$ ]]; then
+    RESOLVED_IMAGE="${BASH_REMATCH[1]}/${component}:${BASH_REMATCH[3]}"
     info "  ${component} image: ${RESOLVED_IMAGE} (auto-derived from ${OPERATOR_DEPLOY})"
   else
     info "  ${component} image: <manifest default> (could not parse controller image '${controller_img}')"
@@ -236,7 +236,7 @@ render_component_manifest() {
   local manifest="$1" component="$2"
   local script=""
   if [[ -n "${RESOLVED_IMAGE}" ]]; then
-    script+="s|image: ghcr.io/projectbeskar/beskar7/${component}:.*|image: ${RESOLVED_IMAGE}|;"
+    script+="s|image: [^ ]*/${component}:.*|image: ${RESOLVED_IMAGE}|;"
   fi
   if [[ -n "${RESOLVED_PULL_POLICY}" ]]; then
     script+="s|imagePullPolicy: .*|imagePullPolicy: ${RESOLVED_PULL_POLICY}|;"
