@@ -163,6 +163,9 @@ hand-maintained copies, and CAPI failure semantics).
 
 Found a security issue? Please report it privately — see [SECURITY.md](SECURITY.md).
 
+This project follows a [Code of Conduct](CODE_OF_CONDUCT.md). See [MAINTAINERS.md](MAINTAINERS.md) for who maintains it. If you use
+Beskar7, please add your organization to [ADOPTERS.md](ADOPTERS.md).
+
 ## License
 
 Apache License 2.0 - See [LICENSE](LICENSE) file for details.
