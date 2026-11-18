@@ -11,7 +11,7 @@
 > deprecation window, and are not permitted inside the GA `v0.4.x` line.
 
 This document is the single source of truth for the wire contract between the
-Beskar7 controller (`github.com/projectbeskar/beskar7`) and the inspection
+Beskar7 controller (`github.com/beskar7/beskar7`) and the inspection
 ramdisk (`beskar7-inspector`). Both repositories pin to a contract version; a
 change to the wire format, auth, endpoints, or cmdline parameters is a contract
 version bump and requires updating this document and the golden fixture

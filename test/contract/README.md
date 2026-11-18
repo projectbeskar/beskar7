@@ -3,7 +3,7 @@
 This directory holds the **canonical golden fixtures** for the controller ↔
 inspector wire contract — the inbound inspection-report body and the outbound
 deploy-path artifacts. They are the anti-drift guardrail between this repo and
-[`beskar7-inspector`](https://github.com/projectbeskar/beskar7-inspector).
+[`beskar7-inspector`](https://github.com/beskar7/beskar7-inspector).
 
 The authoritative prose spec is [`docs/inspector-contract.md`](../../docs/inspector-contract.md);
 these fixtures are the machine-checked half of it.

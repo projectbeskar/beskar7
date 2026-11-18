@@ -5,7 +5,7 @@
 **Please do not open a public issue for a security vulnerability.**
 
 Report it privately through
-[GitHub Security Advisories](https://github.com/projectbeskar/beskar7/security/advisories/new),
+[GitHub Security Advisories](https://github.com/beskar7/beskar7/security/advisories/new),
 which creates a private channel visible only to the maintainers.
 
 Please include:

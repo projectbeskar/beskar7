@@ -8,7 +8,7 @@
 per `Cluster` from it.
 
 Without this CRD a `ClusterClass` naming Beskar7 cannot be created at all — which is the whole reason it exists
-([#209](https://github.com/projectbeskar/beskar7/issues/209)).
+([#209](https://github.com/beskar7/beskar7/issues/209)).
 
 There is **no** Beskar7ClusterTemplate controller, **no** webhook, and **no** immutability enforcement. Templates are
 inert: Cluster API reads them and nothing in Beskar7 reconciles them.

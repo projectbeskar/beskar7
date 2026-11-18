@@ -315,7 +315,7 @@ The inspection workflow is the core innovation in Beskar7. It provides reliable 
 
 ### Inspection Image
 
-The inspection image (`beskar7-inspector`) is a static, single-purpose binary written in Rust and statically linked against musl, used directly as the initramfs `/init` — no shell, no package manager, no external tools. It is maintained in a separate repository: https://github.com/projectbeskar/beskar7-inspector
+The inspection image (`beskar7-inspector`) is a static, single-purpose binary written in Rust and statically linked against musl, used directly as the initramfs `/init` — no shell, no package manager, no external tools. It is maintained in a separate repository: https://github.com/beskar7/beskar7-inspector
 
 **Components:**
 - A curated, dependency-resolved set of kernel modules (NIC, disk, filesystem drivers) loaded natively via `finit_module(2)` — no `udev`/`modprobe`/`busybox`
