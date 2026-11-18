@@ -61,10 +61,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/controllers"
-	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/controllers"
+	internalmetrics "github.com/beskar7/beskar7/internal/metrics"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // testBootstrapURLBase is the --bootstrap-url-base the suite's PhysicalHost

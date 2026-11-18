@@ -51,10 +51,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/controllers"
-	"github.com/projectbeskar/beskar7/internal/auth"
-	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/controllers"
+	"github.com/beskar7/beskar7/internal/auth"
+	internalmetrics "github.com/beskar7/beskar7/internal/metrics"
 )
 
 // recordingManager wraps a real manager and records what setupManager

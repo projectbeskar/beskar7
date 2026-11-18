@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // A host released in the middle of a run is still running the inspector, which

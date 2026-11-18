@@ -1,4 +1,4 @@
-module github.com/projectbeskar/beskar7
+module github.com/beskar7/beskar7
 
 go 1.27.0
 
@@ -106,4 +106,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 )
 
-replace github.com/projectbeskar/beskar7 => ./
+replace github.com/beskar7/beskar7 => ./

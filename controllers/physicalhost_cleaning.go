@@ -32,10 +32,10 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
-	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
+	internalmetrics "github.com/beskar7/beskar7/internal/metrics"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // Cleaning run of a released host: released -> Cleaning -> Available, or -> Error (held).

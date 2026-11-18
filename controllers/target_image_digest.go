@@ -36,8 +36,8 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalmetrics "github.com/beskar7/beskar7/internal/metrics"
 )
 
 // Resolving spec.targetImageDigestURL (D-038).

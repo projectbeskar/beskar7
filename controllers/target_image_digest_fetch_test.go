@@ -36,7 +36,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	internalmetrics "github.com/projectbeskar/beskar7/internal/metrics"
+	internalmetrics "github.com/beskar7/beskar7/internal/metrics"
 )
 
 // The checksum fetch behind spec.targetImageDigestURL (D-038): what it reads,

@@ -22,7 +22,7 @@ import (
 	"github.com/go-logr/logr"
 	"sigs.k8s.io/cluster-api/util/conditions"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 )
 
 // reconcileNetworkData publishes NetworkDataReady for the host's network data
