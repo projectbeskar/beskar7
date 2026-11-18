@@ -1,4 +1,7 @@
-# Host pools: keep a control plane and a worker pool on disjoint inventory.
+# Host selection: keep the control plane and the workers on disjoint hosts.
+#
+# This splits the hosts of ONE namespace by label. To share hosts across
+# namespaces, see examples/physicalhost-pool.yaml (PhysicalHostPool).
 #
 # Without a hostSelector every Beskar7Machine claims the first Available
 # PhysicalHost in the namespace, in list order. On a lab with five identical
@@ -22,7 +25,7 @@
 # addresses its beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses
 # annotation lists (D-030), so that annotation must name both BMCs below,
 # for example "<bmc-of-cp-01>, <bmc-of-worker-01>", or a CIDR or *.suffix
-# entry that covers the whole pool. A host whose BMC is not listed is
+# entry that covers all these hosts. A host whose BMC is not listed is
 # refused with CredentialsNotAuthorized and never contacted.
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -83,7 +86,7 @@ spec:
       targetImageURL: "http://<image-server>/kairos-<distro>-<version>.raw"
       targetImageDigest: "sha256:<sha256-of-the-image>"
       hostSelector:
-        # matchExpressions work as well; this keeps the pool off anything
+        # matchExpressions work as well; this keeps the workers off anything
         # that is not explicitly a worker.
         matchExpressions:
           - key: node-role

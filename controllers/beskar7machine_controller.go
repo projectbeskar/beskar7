@@ -164,6 +164,8 @@ type Beskar7MachineReconciler struct {
 	// nil; it is the seam through which tests trust an httptest server, the way
 	// RedfishClientFactory is the seam for the BMC.
 	ChecksumRootCAs *x509.CertPool
+	// HostPools is --enable-host-pools: claims through a PhysicalHostPool and its watches.
+	HostPools bool
 
 	// checksumHTTPClient is the client for the checksum fetch, built on first use
 	// from ChecksumRootCAs (checksumClient).
@@ -434,6 +436,23 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 	}
 
 	physicalHost, result, err := r.findAndClaimOrGetAssociatedHost(ctx, logger, b7machine, placement)
+	if errors.Is(err, errPoolNotAvailable) {
+		// Not terminal: the administrator can create the pool or grant the namespace.
+		logger.Info("PhysicalHostPool is not available to this namespace, requeuing", "pool", b7machine.Spec.PoolRef)
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PoolNotAvailableReason,
+			"PhysicalHostPool %q does not exist or does not grant this namespace", b7machine.Spec.PoolRef)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
+	if errors.Is(err, errPoolHostMissing) {
+		// Not terminal: the host comes back when its namespace is moved too, and
+		// the host watch then re-enqueues the machine.
+		logger.Info("The PhysicalHost named by providerID is not found, waiting for it",
+			"providerID", b7machine.Spec.ProviderID)
+		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.WaitingForPhysicalHostReason,
+			"PhysicalHost %s is not found or not claimed by this machine; a machine claiming through a pool "+
+				"never claims a second host once it has a providerID", b7machine.Spec.ProviderID)
+		return ctrl.Result{RequeueAfter: time.Minute}, nil
+	}
 	if err != nil {
 		logger.Error(err, "Failed to find, claim, or get associated PhysicalHost")
 		setFalse(b7machine, infrav1.PhysicalHostAssociatedCondition, infrav1.PhysicalHostAssociationFailedReason, "Failed to associate with PhysicalHost: %v", err)
@@ -448,11 +467,22 @@ func (r *Beskar7MachineReconciler) reconcileNormal(ctx context.Context, logger l
 		// PhysicalHostAssociated=True as its only input it would publish
 		// Ready=True. The state machine further down sets InfrastructureReady
 		// on a full pass; this covers every return before it (the pass that
-		// claims the host, an error on the way), including one working from a
-		// cached copy that predates the previous pass's write.
+		// claims the host, a revoked pool claim, an error on the way), including
+		// one working from a cached copy that predates the previous pass's write.
 		if !conditions.Has(b7machine, infrav1.InfrastructureReadyCondition) {
 			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.PhysicalHostNotReadyReason,
 				"PhysicalHost %q is claimed and not provisioned yet", physicalHost.Name)
+		}
+		valid, err := r.markPoolClaim(ctx, b7machine, physicalHost)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !valid {
+			// A revoked grant starts nothing new for the claim: no boot, no state step.
+			// Pool and namespace label changes re-enqueue the machine; the minute is a backstop.
+			logger.Info("Pool claim no longer valid, holding the host as it is",
+				"host", client.ObjectKeyFromObject(physicalHost), "pool", physicalHost.Spec.ConsumerPool)
+			return ctrl.Result{RequeueAfter: time.Minute}, nil
 		}
 	} else if placement != nil || claimTimeHardwareMatching(b7machine) {
 		// Distinct from an empty inventory: hosts may well be Available, just
@@ -559,7 +589,7 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 			// watch; the requeue is only a backstop.
 			logger.Info("PhysicalHost cannot use its BMC; waiting for it to recover", "errorMessage", physicalHost.Status.ErrorMessage)
 			setFalse(b7machine, infrav1.InfrastructureReadyCondition, infrav1.WaitingForBMCReason,
-				"Waiting for PhysicalHost %q: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
+				"Waiting for PhysicalHost %q: %s", physicalHost.Name, hostErrorForMachine(b7machine, physicalHost))
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		logger.Error(nil, "PhysicalHost is in error state", "errorMessage", physicalHost.Status.ErrorMessage)
@@ -581,7 +611,7 @@ func (r *Beskar7MachineReconciler) handlePhysicalHostState(ctx context.Context, 
 		case physicalHost.Status.ErrorMessage == inspectionTimedOutMessage:
 			reason = infrav1.InspectionTimedOutReason
 		}
-		msg := fmt.Sprintf("PhysicalHost %q in error state: %s", physicalHost.Name, physicalHost.Status.ErrorMessage)
+		msg := fmt.Sprintf("PhysicalHost %q in error state: %s", physicalHost.Name, hostErrorForMachine(b7machine, physicalHost))
 		// markTerminalFailure sets Phase=Failed, Ready=false and
 		// InfrastructureReady=False with this reason in one call.
 		r.markTerminalFailure(b7machine, reason, msg)
@@ -763,7 +793,7 @@ func (r *Beskar7MachineReconciler) triggerInspection(ctx context.Context, logger
 			if err := r.Get(ctx, client.ObjectKeyFromObject(physicalHost), physicalHost); err != nil {
 				return err
 			}
-			if key, ok := resolveConsumerBeskar7Machine(physicalHost); !ok || key != client.ObjectKeyFromObject(b7machine) {
+			if !r.claimedBy(physicalHost, b7machine) {
 				return fmt.Errorf("PhysicalHost %s is no longer claimed by this machine", physicalHost.Name)
 			}
 			if physicalHost.Status.State != infrav1.StateInUse {
@@ -849,6 +879,11 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 	case creds.consumer != "" && creds.consumer != b7machine.Name:
 		logger.Info("Bootstrap credentials belong to an earlier claim of the host; minting fresh ones",
 			"host", physicalHost.Name)
+	case creds.consumer == b7machine.Name && creds.consumerKey(physicalHost).Namespace != b7machine.Namespace:
+		// A same-named machine in another namespace claimed the host through a pool before.
+		logger.Info("Bootstrap credentials belong to a same-named machine in another namespace; minting fresh ones",
+			"host", physicalHost.Name)
+		creds.consumer = ""
 	case creds.consumer == b7machine.Name && creds.consumerUID != string(b7machine.UID):
 		// Verification binds by name only, so it survives clusterctl move; a
 		// machine recreated under the same name is still a new claim and must
@@ -877,7 +912,7 @@ func (r *Beskar7MachineReconciler) ensureBootstrapCredentials(
 		logger.V(1).Info("Bootstrap credentials still valid and bound to this machine; skipping mint", "host", physicalHost.Name)
 		return creds, nil
 	}
-	creds.consumer, creds.consumerUID = b7machine.Name, string(b7machine.UID)
+	creds.consumer, creds.consumerUID, creds.consumerNS = b7machine.Name, string(b7machine.UID), b7machine.Namespace
 	if err := r.writeBootstrapCredentials(ctx, logger, physicalHost, secret, creds); err != nil {
 		return bootstrapCredentials{}, fmt.Errorf("store bootstrap credentials: %w", err)
 	}
@@ -1108,8 +1143,7 @@ func (r *Beskar7MachineReconciler) validateInspectionReport(ctx context.Context,
 	}
 	if shortfall != nil {
 		logger.Info("Hardware validation failed (terminal)", "check", shortfall.check, "found", shortfall.found, "required", shortfall.required)
-		r.markTerminalFailure(b7machine, infrav1.HardwareRequirementsNotMetReason, shortfall.message())
-		return ctrl.Result{}, nil
+		return r.failHardwareRequirements(ctx, logger, b7machine, physicalHost, shortfall.message())
 	}
 
 	logger.Info("Hardware validation passed")
@@ -1329,33 +1363,55 @@ func (r *Beskar7MachineReconciler) cutBootstrapToken(
 // property of the spec, not of the cluster, so the caller treats it as terminal.
 var errInvalidHostSelector = errors.New("invalid hostSelector")
 
-// availableHostListOptions lists the Available hosts a machine may claim.
-func availableHostListOptions(b7machine *infrav1.Beskar7Machine, placement labels.Selector) []client.ListOption {
+// errPoolNotAvailable marks a machine whose poolRef cannot be used for a new claim.
+var errPoolNotAvailable = errors.New("PhysicalHostPool not available")
+
+// errPoolHostMissing marks a pool machine whose providerID names a host it no
+// longer finds, for example after clusterctl move before the host namespace moved.
+var errPoolHostMissing = errors.New("the PhysicalHost named by providerID is not found")
+
+// availableHostListOptions lists the Available hosts in namespace that match selector.
+func availableHostListOptions(namespace string, selector labels.Selector) []client.ListOption {
 	opts := []client.ListOption{
-		client.InNamespace(b7machine.Namespace),
+		client.InNamespace(namespace),
 		client.MatchingFields{PhysicalHostStateIndex: string(infrav1.StateAvailable)},
 	}
-	if placement == nil || placement.Empty() {
+	if selector == nil || selector.Empty() {
 		return opts
 	}
 	// Applied together with the field index: the cache resolves the index
 	// first and filters labels in memory, so this stays bounded by the number
 	// of free hosts.
-	return append(opts, client.MatchingLabelsSelector{Selector: placement})
+	return append(opts, client.MatchingLabelsSelector{Selector: selector})
 }
 
 // noClaimableHostNote says how many Available hosts the claim skipped and why,
 // so the operator looks at the host's NetworkDataReady condition or inspection
 // report. Empty when none was skipped or the hosts cannot be listed.
-func (r *Beskar7MachineReconciler) noClaimableHostNote(ctx context.Context, b7machine *infrav1.Beskar7Machine, placement labels.Selector) string {
-	hosts := &infrav1.PhysicalHostList{}
-	if err := r.List(ctx, hosts, availableHostListOptions(b7machine, placement)...); err != nil {
+func (r *Beskar7MachineReconciler) noClaimableHostNote(
+	ctx context.Context,
+	b7machine *infrav1.Beskar7Machine,
+	placement labels.Selector,
+) string {
+	search, ok, err := r.claimSearch(ctx, b7machine)
+	if err != nil || !ok {
 		return ""
 	}
-	var network, noReport, short int
-	for i := range hosts.Items {
-		h := &hosts.Items[i]
-		if h.Spec.ConsumerRef != nil {
+	selector, err := search.claimSelector(placement)
+	if err != nil {
+		return ""
+	}
+	hosts, err := r.listClaimCandidates(ctx, search, selector)
+	if err != nil {
+		return ""
+	}
+	var unwiped, network, noReport, short int
+	for i := range hosts {
+		h := &hosts[i]
+		if search.unwiped(h) {
+			unwiped++
+		}
+		if !search.claimable(h) {
 			continue
 		}
 		switch skip, _ := claimSkip(b7machine, h); skip {
@@ -1368,6 +1424,10 @@ func (r *Beskar7MachineReconciler) noClaimableHostNote(ctx context.Context, b7ma
 		}
 	}
 	var note string
+	if unwiped > 0 {
+		note += fmt.Sprintf("; %d Available pool member(s) skipped because their disks were not wiped since the last "+
+			"claim, see their %s condition", unwiped, infrav1.HostCleanedCondition)
+	}
 	if network > 0 {
 		note += fmt.Sprintf("; %d Available PhysicalHost(s) skipped because their network data is not ready, see their %s condition",
 			network, infrav1.NetworkDataReadyCondition)
@@ -1424,6 +1484,12 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 			// stop a node that must keep serving, for no benefit — the
 			// source object is going away either way.
 			logger.Info("Beskar7Machine carries the clusterctl delete-for-move annotation; leaving its PhysicalHost claimed and powered as-is", "host", host.Name)
+			if host.Namespace != b7machine.Namespace {
+				// A pool host lives in another namespace, so this move does not take it along.
+				logger.Info("The PhysicalHost is in another namespace and is not moved with this machine; "+
+					"move its namespace too, and the moved machine finds it again by its providerID",
+					"host", client.ObjectKeyFromObject(host), "pool", host.Spec.ConsumerPool)
+			}
 		} else {
 			forceRelease := b7machine.Annotations[ForceReleaseAnnotation] == "true"
 			if forceRelease {
@@ -1431,9 +1497,10 @@ func (r *Beskar7MachineReconciler) reconcileDelete(ctx context.Context, logger l
 			} else if wait := r.releaseHostPower(ctx, logger, b7machine, host); wait > 0 {
 				return ctrl.Result{RequeueAfter: wait}, nil
 			}
-			// Always clear ConsumerRef on the host spec.
+			// Always clear ConsumerRef, and the pool it was claimed through, on the host spec.
 			base := host.DeepCopy()
 			host.Spec.ConsumerRef = nil
+			host.Spec.ConsumerPool = ""
 			if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				if apierrors.IsConflict(err) {
 					return ctrl.Result{RequeueAfter: requeueShortly}, nil
@@ -1530,7 +1597,7 @@ func (r *Beskar7MachineReconciler) setInspectionRequestAnnotation(ctx context.Co
 // Secret, one the host does not own, one minted for another machine) is an error: the
 // request would only be removed unread.
 func (r *Beskar7MachineReconciler) setInspectionRequestWithCurrentCredentials(ctx context.Context, logger logr.Logger, physicalHost *infrav1.PhysicalHost, value string) error {
-	signer, err := newRequestSigner(ctx, r.Client, physicalHost)
+	signer, err := newRequestSigner(ctx, r.claims(), physicalHost)
 	if err != nil {
 		return fmt.Errorf("cannot sign inspection-request %q for PhysicalHost %s: %w", value, physicalHost.Name, err)
 	}
@@ -1577,7 +1644,7 @@ func (r *Beskar7MachineReconciler) writeInspectionRequest(ctx context.Context, l
 			case getErr != nil:
 				return getErr
 			default:
-				reason = inspectionRequestMootReason(b7machine, current, extra)
+				reason = r.inspectionRequestMootReason(b7machine, current, extra)
 			}
 			if reason != "" {
 				logger.V(1).Info("Not writing the inspection request: it no longer applies",
@@ -1598,8 +1665,8 @@ func (r *Beskar7MachineReconciler) writeInspectionRequest(ctx context.Context, l
 
 // inspectionRequestMootReason returns why a request b7machine sends from an
 // Inspecting host no longer applies to host, or "" when it still does.
-func inspectionRequestMootReason(b7machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost, extra func(*infrav1.PhysicalHost) string) string {
-	if key, ok := resolveConsumerBeskar7Machine(host); !ok || key != client.ObjectKeyFromObject(b7machine) {
+func (r *Beskar7MachineReconciler) inspectionRequestMootReason(b7machine *infrav1.Beskar7Machine, host *infrav1.PhysicalHost, extra func(*infrav1.PhysicalHost) string) string {
+	if !r.claimedBy(host, b7machine) {
 		return "the host is no longer claimed by this machine"
 	}
 	if host.Status.State != infrav1.StateInspecting {
@@ -1756,8 +1823,32 @@ func (r *Beskar7MachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	); err != nil {
 		return fmt.Errorf("failed to index PhysicalHost.status.state: %w", err)
 	}
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrav1.Beskar7Machine{}).
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&infrav1.Beskar7Machine{},
+		Beskar7MachinePoolRefIndex,
+		func(obj client.Object) []string {
+			m, ok := obj.(*infrav1.Beskar7Machine)
+			if !ok || m.Spec.PoolRef == "" {
+				return nil
+			}
+			return []string{m.Spec.PoolRef}
+		},
+	); err != nil {
+		return fmt.Errorf("failed to index Beskar7Machine.spec.poolRef: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &infrav1.PhysicalHost{}, PhysicalHostConsumerIndex, physicalHostConsumer); err != nil {
+		return fmt.Errorf("failed to index PhysicalHost.spec.consumerRef: %w", err)
+	}
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(&infrav1.Beskar7Machine{})
+	if r.HostPools {
+		// A pool or namespace label change can grant a waiting machine or revoke a held claim.
+		b = b.Watches(&infrav1.PhysicalHostPool{}, handler.EnqueueRequestsFromMapFunc(r.poolToBeskar7Machines)).
+			Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.namespaceToPoolBeskar7Machines),
+				builder.WithPredicates(predicate.LabelChangedPredicate{}))
+	}
+	return b.
 		Watches(
 			&infrav1.PhysicalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.PhysicalHostToBeskar7Machine),
@@ -1838,9 +1929,20 @@ func (r *Beskar7MachineReconciler) AvailablePhysicalHostToWaitingBeskar7Machines
 		r.Log.Error(err, "Failed to list Beskar7Machines waiting for a PhysicalHost", "namespace", host.Namespace)
 		return nil
 	}
+	// Machines in any namespace whose pool this host is labelled into.
+	poolMachines, err := r.waitingPoolMachines(ctx, host)
+	if err != nil {
+		r.Log.Error(err, "Failed to list Beskar7Machines waiting on the pools of a PhysicalHost", "host", client.ObjectKeyFromObject(host))
+	}
+	candidates := append(machines.Items, poolMachines...)
+	seen := make(map[types.NamespacedName]bool, len(candidates))
 	var requests []reconcile.Request
-	for i := range machines.Items {
-		m := &machines.Items[i]
+	for i := range candidates {
+		m := &candidates[i]
+		if seen[client.ObjectKeyFromObject(m)] {
+			continue
+		}
+		seen[client.ObjectKeyFromObject(m)] = true
 		if !m.DeletionTimestamp.IsZero() || isTerminallyFailed(m) ||
 			conditions.IsTrue(m, infrav1.PhysicalHostAssociatedCondition) {
 			continue

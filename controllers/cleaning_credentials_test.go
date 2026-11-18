@@ -58,13 +58,13 @@ var _ = Describe("Cleaning credentials on a claimed host", func() {
 		token := ensureCallbackCredentials(key)
 		markForCleaning(key)
 
-		_, _, err := boundBootstrapCredentials(ctx, k8sClient, getPhysicalHost(key))
+		_, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: k8sClient}, getPhysicalHost(key))
 		Expect(err).To(MatchError(ContainSubstring("not a claim")))
 
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/"+key.Namespace+"/"+key.Name, nil)
 		req.SetPathValue("namespace", key.Namespace)
 		req.SetPathValue("hostName", key.Name)
-		Expect(newBearerTokenVerifier(k8sClient, ctrl.Log)(token, req)).NotTo(Succeed())
+		Expect(newBearerTokenVerifier(claimReader{Reader: k8sClient}, ctrl.Log)(token, req)).NotTo(Succeed())
 	})
 
 	It("are replaced with fresh claim credentials when the machine mints", func() {

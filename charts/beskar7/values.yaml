@@ -181,6 +181,15 @@ nodeProviderID:
   apiServerPorts:
     - 6443
 
+# PhysicalHostPool claims: a Beskar7Machine claims a PhysicalHost in another
+# namespace through a cluster-scoped pool (spec.poolRef). Rendered as the
+# manager's --enable-host-pools flag, and only when on is the host pool
+# ClusterRole rendered (read pools and namespaces cluster-wide). Off (the
+# default), every claim stays in the machine's own namespace.
+# See docs/physicalhostpool.md.
+hostPools:
+  enabled: false
+
 # Disk cleaning of released hosts (PhysicalHost spec.cleaning.mode: Metadata).
 cleaning:
   # HTTP(S) base URL serving the inspector vmlinuz and initrd.img a released host

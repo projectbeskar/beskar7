@@ -6,6 +6,33 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Added
+
+- **Share `PhysicalHost`s across namespaces with a cluster-scoped `PhysicalHostPool` (#305).** Off by default:
+  start the manager with the new `--enable-host-pools` (Helm `hostPools.enabled`, kustomize component
+  `config/host-pools`; rejected with `--controllers=none`). Hosts join a pool with the label
+  `pool.beskar7.infrastructure.cluster.x-k8s.io/<pool>` and stay, with their BMC Secrets, in an admin namespace. The
+  pool lists the namespaces it takes members from (`hostNamespaces`) and the namespaces that may claim
+  (`namespaceSelector`, required). A `Beskar7Machine` opts in with the new immutable `spec.poolRef`, and the
+  controller records the pool on the host in the new `spec.consumerPool`, in the same update as `consumerRef`. A
+  `consumerRef` in another namespace (SEC-12) is valid only while that pool still holds the host and grants the
+  consumer's namespace, and the machine proves the claim (its `poolRef`, and its UID or a `providerID` naming the
+  host). The callback server checks this on every request, and the callback credentials are bound to the
+  consumer's namespace (new `consumer-namespace` key in the bootstrap-token Secret) and UID; a release proves the
+  claim the same way. Pool claims take only hosts whose last release ended in a wipe (`HostCleaned=True`); an
+  `Available` host with `spec.cleaning.mode: Metadata` that was never wiped is now wiped once. A pool member's
+  inspection report is dropped when its wipe starts, so `hardwareRequirements.matchAt: Claim` never matches a pool
+  member. A revoked grant releases and powers off nothing, and starts nothing new for the claim:
+  `PoolClaimValid=False (PoolGrantRevoked)` on the machine, `ClaimsValid=False` on the pool. A machine in another
+  namespace gets a generic message instead of the host's error. New reason `PoolNotAvailable`; pool deletion waits
+  for the claims on hosts in its `hostNamespaces`. Also: pool status (`members`, `available`, `claimed`), release of
+  a pool host on a hardware mismatch, and a pool machine that has a `providerID` finds its host again after
+  `clusterctl move` and never claims a second one. Works in the cluster-wide and the namespace-scoped install; with
+  `--watch-namespaces` watch both the host and the tenant namespaces. A pool is not an isolation boundary between
+  tenants. **RBAC:** a new ClusterRole, only with pools on, `config/host-pools/host_pool_role.yaml` (Helm
+  `rbac-host-pools.yaml`): read `physicalhostpools` and `namespaces`, the pool finalizer and status.
+  `examples/host-pools.yaml` is now `examples/host-selector.yaml`. See [`docs/physicalhostpool.md`](docs/physicalhostpool.md).
+
 ## [v0.13.0] - 2026-11-18
 
 The first release from `github.com/beskar7`. The repositories moved there from `github.com/projectbeskar`, and this

@@ -45,6 +45,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -274,6 +275,43 @@ func loadGeneratedManagerRole(t *testing.T, root string) map[ruleTriple]struct{}
 	return triplesFromRules(crs[0].Rules)
 }
 
+// loadHostPoolRole loads config/host-pools/host_pool_role.yaml, the hand-maintained
+// PhysicalHostPool ClusterRole, and returns its rule set as triples.
+func loadHostPoolRole(t *testing.T, root string) map[ruleTriple]struct{} {
+	t.Helper()
+	crs, _ := collectRoles(t, mustReadFile(t, filepath.Join(root, "config", "host-pools", "host_pool_role.yaml")))
+	if len(crs) != 1 {
+		t.Fatalf("config/host-pools/host_pool_role.yaml: expected exactly 1 ClusterRole, found %d", len(crs))
+	}
+	return triplesFromRules(crs[0].Rules)
+}
+
+// TestHelmChartHostPoolRBACMatchesKustomize pins that the chart renders the
+// PhysicalHostPool ClusterRole only with hostPools.enabled, with or without
+// watchNamespaces, with the rules of config/host-pools/host_pool_role.yaml.
+func TestHelmChartHostPoolRBACMatchesKustomize(t *testing.T) {
+	if !helmAvailable() {
+		t.Skip("helm not found on PATH; skipping chart host-pool RBAC check")
+	}
+	root := repoRoot(t)
+	want := loadHostPoolRole(t, root)
+	enabled := []string{"--set", "hostPools.enabled=true"}
+	for label, args := range map[string][]string{
+		"watchNamespaces empty":                     enabled,
+		"watchNamespaces=[rbac-driftguard-test-ns]": append(slices.Clone(enabled), "--set", "watchNamespaces={rbac-driftguard-test-ns}"),
+	} {
+		crs, _ := collectRoles(t, renderHelmTemplate(t, root, args...))
+		cr := findClusterRoleBySuffix(t, crs, "-host-pool-role")
+		assertTriplesEqual(t, "Helm chart ("+label+") ClusterRole *-host-pool-role", want, triplesFromRules(cr.Rules))
+	}
+	crs, _ := collectRoles(t, renderHelmTemplate(t, root))
+	for _, cr := range crs {
+		if strings.HasSuffix(cr.Name, "-host-pool-role") {
+			t.Errorf("the chart renders ClusterRole %s with hostPools.enabled off", cr.Name)
+		}
+	}
+}
+
 // TestManagerRoleGrantsNoRBACAPIAccess pins that the manager holds no
 // permission on rbac.authorization.k8s.io. Nothing in the manager reads
 // ClusterRoles or bindings; a scaffolding marker in cmd/manager/main.go once
@@ -422,10 +460,12 @@ func TestHelmChartNamespacedRBACMatchesGeneratedRole(t *testing.T) {
 	assertTriplesEqual(t, "Helm chart namespaced branch (watchNamespaces=[rbac-driftguard-test-ns]: *-manager-leaderelection + *-manager-watch)", want, got)
 
 	for _, cr := range crs {
-		if strings.HasSuffix(cr.Name, "-metrics-auth-role") || strings.HasSuffix(cr.Name, "-metrics-reader") {
+		if strings.HasSuffix(cr.Name, "-metrics-auth-role") || strings.HasSuffix(cr.Name, "-metrics-reader") ||
+			strings.HasSuffix(cr.Name, "-host-pool-role") {
 			continue
 		}
-		t.Errorf("Helm chart namespaced branch renders ClusterRole %s; with watchNamespaces set the manager must hold no cluster-scoped role", cr.Name)
+		t.Errorf("Helm chart namespaced branch renders ClusterRole %s; with watchNamespaces set the manager "+
+			"must hold no cluster-scoped role but the metrics and PhysicalHostPool ones", cr.Name)
 	}
 }
 

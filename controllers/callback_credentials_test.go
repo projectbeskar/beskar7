@@ -190,7 +190,7 @@ func consumerWithBootstrapData(namespace, name, marker string) (*infrav1.Beskar7
 // them, below TLS.
 func newCallbackTestServer() *httptest.Server {
 	log := ctrl.Log.WithName("callback-credentials")
-	verifier := newBearerTokenVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, &InspectionHandler{Client: k8sClient, Log: log}))

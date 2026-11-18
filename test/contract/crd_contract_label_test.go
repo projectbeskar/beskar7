@@ -22,12 +22,12 @@ var (
 	crdDirs         = []string{generatedCRDDir, chartCRDDir}
 )
 
-// crdFiles returns the five beskar7 CRD manifests in dir.
+// crdFiles returns the six beskar7 CRD manifests in dir.
 func crdFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "infrastructure.cluster.x-k8s.io_*.yaml"))
-	if err != nil || len(files) != 5 {
-		t.Fatalf("%s: expected the five beskar7 CRDs, got %d (%v)", dir, len(files), err)
+	if err != nil || len(files) != 6 {
+		t.Fatalf("%s: expected the six beskar7 CRDs, got %d (%v)", dir, len(files), err)
 	}
 	return files
 }
@@ -70,6 +70,7 @@ func TestCRDsClaimTheV1Beta2Contract(t *testing.T) {
 		"infrastructure.cluster.x-k8s.io_beskar7machines.yaml":         true,
 		"infrastructure.cluster.x-k8s.io_beskar7machinetemplates.yaml": true,
 		"infrastructure.cluster.x-k8s.io_physicalhosts.yaml":           false,
+		"infrastructure.cluster.x-k8s.io_physicalhostpools.yaml":       false,
 	}
 
 	for _, dir := range crdDirs {

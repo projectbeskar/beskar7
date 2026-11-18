@@ -63,6 +63,13 @@ var metricsClusterScoped = []string{
 	"capb7-metrics-reader",
 }
 
+// hostPoolClusterScoped is the PhysicalHostPool role and binding the
+// config/host-pools component adds: pools and namespaces are cluster-scoped.
+var hostPoolClusterScoped = []string{
+	"capb7-host-pool-role",
+	"capb7-host-pool-rolebinding",
+}
+
 func requireKustomize(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("kustomize"); err != nil {
@@ -337,11 +344,12 @@ func TestNamespaceScopedInstallOverlayFromTheReadme(t *testing.T) {
 	built := kustomizeBuild(t, dir)
 	assertWatchRBAC(t, "kustomize build of the README's install overlay", built, watched, metricsClusterScoped)
 
-	// The cluster-wide manager role and binding the overlay replaces are gone.
+	// The cluster-wide manager role and binding the overlay replaces are gone,
+	// and without the host-pools component there is no PhysicalHostPool role.
 	crs, _ := collectRoles(t, built)
 	for _, cr := range crs {
-		if cr.Name == "capb7-manager-role" {
-			t.Errorf("the install overlay still ships the cluster-wide ClusterRole %s", cr.Name)
+		if cr.Name == "capb7-manager-role" || cr.Name == hostPoolClusterScoped[0] {
+			t.Errorf("the install overlay ships the cluster-scoped ClusterRole %s", cr.Name)
 		}
 	}
 

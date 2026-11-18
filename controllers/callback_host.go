@@ -24,7 +24,6 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 	"github.com/beskar7/beskar7/internal/auth"
@@ -68,7 +67,7 @@ func writeNoStore(w http.ResponseWriter, data []byte) error {
 // machine the host's credentials were minted for is returned (SEC-12, D-029).
 // Both endpoints go through this one function, so a change to who may call
 // them changes both at once.
-func boundCallbackHost(c client.Reader, r *http.Request) (*infrav1.PhysicalHost, types.NamespacedName, error) {
+func boundCallbackHost(c claimReader, r *http.Request) (*infrav1.PhysicalHost, types.NamespacedName, error) {
 	namespace := r.PathValue("namespace")
 	hostName := r.PathValue("hostName")
 	if namespace == "" || hostName == "" {
@@ -96,5 +95,5 @@ func boundCallbackHost(c client.Reader, r *http.Request) (*infrav1.PhysicalHost,
 // failed read rather than a refusal, so the caller may answer 5xx and let the
 // inspector retry.
 func callbackReadFailed(err error) bool {
-	return errors.Is(err, errCallbackHostUnreadable) || errors.Is(err, errBootstrapSecretUnreadable)
+	return errors.Is(err, errCallbackHostUnreadable) || consumerUnreadable(err)
 }

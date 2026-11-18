@@ -76,7 +76,7 @@ func callbackTokenOf(host client.ObjectKey) string {
 // stands now.
 func callbackBinderFor(host client.ObjectKey) *callbackBinder {
 	h := getPhysicalHost(host)
-	creds, _, err := boundBootstrapCredentials(ctx, k8sClient, h)
+	creds, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: k8sClient}, h)
 	Expect(err).NotTo(HaveOccurred())
 	binder, err := newCallbackBinder(h, creds)
 	Expect(err).NotTo(HaveOccurred())

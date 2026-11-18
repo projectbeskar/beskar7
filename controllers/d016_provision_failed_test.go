@@ -61,7 +61,7 @@ func buildProvisionFailedMux() (*http.ServeMux, *ProvisionFailedHandler) {
 		Client: k8sClient,
 		Log:    log,
 	}
-	verifier := newBearerTokenVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/v1/provision-failed/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, handler))

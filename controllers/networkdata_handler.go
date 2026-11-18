@@ -51,6 +51,13 @@ type NetworkDataHandler struct {
 	// (§4.6). Unset, the handler reads through Client.
 	APIReader client.Reader
 	Log       logr.Logger
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *NetworkDataHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // secretReader returns the reader the network data Secret is checked with.
@@ -65,7 +72,7 @@ func (h *NetworkDataHandler) secretReader() client.Reader {
 func (h *NetworkDataHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log := h.Log.WithValues("method", r.Method, "namespace", r.PathValue("namespace"), "host", r.PathValue("hostName"), "remote", r.RemoteAddr)
 
-	ph, _, err := boundCallbackHost(h.Client, r)
+	ph, _, err := boundCallbackHost(h.claims(), r)
 	if err != nil && callbackReadFailed(err) {
 		log.Error(err, "network-data GET: host could not be resolved")
 		http.Error(w, "internal server error", http.StatusInternalServerError)

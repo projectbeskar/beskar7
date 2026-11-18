@@ -58,6 +58,13 @@ const (
 type ProvisionedHandler struct {
 	Client client.Client
 	Log    logr.Logger
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *ProvisionedHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // ServeHTTP handles provisioning-complete callbacks from the inspector.
@@ -156,7 +163,7 @@ func (h *ProvisionedHandler) signalProvisioned(ctx context.Context, log logr.Log
 		return nil
 	}
 
-	signer, err := newCallbackSigner(ctx, h.Client, ph, token, time.Now())
+	signer, err := newCallbackSigner(ctx, h.claims(), ph, token, time.Now())
 	if err != nil {
 		return fmt.Errorf("bind provisioned report to the host's credentials: %w", err)
 	}

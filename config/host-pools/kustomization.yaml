@@ -1,0 +1,22 @@
+# PhysicalHostPool claims, off by default. Add this component to an install
+# overlay to turn them on: it adds the cluster-scoped pool ClusterRole and its
+# binding, and starts the manager with --enable-host-pools=true.
+#
+#   resources:
+#   - ../../config/default
+#   components:
+#   - ../../config/host-pools
+#
+# See docs/physicalhostpool.md.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+- host_pool_role.yaml
+patches:
+- target:
+    kind: Deployment
+    name: capb7-controller-manager
+  patch: |-
+    - op: add
+      path: /spec/template/spec/containers/0/args/-
+      value: --enable-host-pools=true

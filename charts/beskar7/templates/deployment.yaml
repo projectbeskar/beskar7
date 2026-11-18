@@ -56,6 +56,9 @@ spec:
         {{- if (.Values.nodeProviderID | default dict).enabled }}
         - --enable-node-provider-id=true
         {{- end }}
+        {{- if (.Values.hostPools | default dict).enabled }}
+        - --enable-host-pools=true
+        {{- end }}
         {{- with (.Values.callback | default dict).trustedProxies }}
         - --trusted-proxies={{ join "," . }}
         {{- end }}

@@ -67,6 +67,13 @@ const maxBootstrapDataSize = 1 << 20
 type BootstrapHandler struct {
 	Client client.Client
 	Log    logr.Logger
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *BootstrapHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // ServeHTTP serves the bootstrap data Secret bytes for the host identified by
@@ -81,7 +88,7 @@ func (h *BootstrapHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// namespace A can never serve namespace B's bootstrap data, and a
 	// ConsumerRef re-pointed after the verifier ran cannot reach another
 	// machine's data.
-	_, consumerKey, err := boundCallbackHost(h.Client, r)
+	_, consumerKey, err := boundCallbackHost(h.claims(), r)
 	if err != nil {
 		log.V(1).Info("bootstrap GET: refused", "err", err.Error())
 		http.Error(w, "not found", http.StatusNotFound)

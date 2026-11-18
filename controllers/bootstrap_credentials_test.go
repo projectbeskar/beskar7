@@ -164,7 +164,7 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 		}
 
 		It("returns the credentials and the consumer when the host's claim names the machine they are bound to", func() {
-			creds, key, err := boundBootstrapCredentials(ctx, reader(secretFor("bound")...), claimed(machine, ns))
+			creds, key, err := boundBootstrapCredentials(ctx, claimReader{Reader: reader(secretFor("bound")...)}, claimed(machine, ns))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(key).To(Equal(types.NamespacedName{Namespace: ns, Name: machine}))
 			Expect(creds.token).To(Equal("t"))
@@ -173,7 +173,7 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 
 		DescribeTable("refuses",
 			func(consumer, consumerNamespace, secret string) {
-				_, _, err := boundBootstrapCredentials(ctx, reader(secretFor(secret)...), claimed(consumer, consumerNamespace))
+				_, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: reader(secretFor(secret)...)}, claimed(consumer, consumerNamespace))
 				Expect(err).To(HaveOccurred())
 			},
 			Entry("a host nobody claims", "", "", "bound"),
@@ -190,16 +190,16 @@ var _ = Describe("bootstrap-token Secret credentials", func() {
 
 		It("accepts the Secret once clusterctl move has rewritten its owner to the moved host, and only then", func() {
 			moved := ownedBy("uid-on-the-target-cluster")
-			_, _, err := boundBootstrapCredentials(ctx, reader(credentialSecret(moved, bound())), moved)
+			_, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: reader(credentialSecret(moved, bound()))}, moved)
 			Expect(err).NotTo(HaveOccurred(), "the mover rewrites ownerRef UIDs to the recreated owner's")
 
-			_, _, err = boundBootstrapCredentials(ctx, reader(credentialSecret(claimed(machine, ns), bound())), moved)
+			_, _, err = boundBootstrapCredentials(ctx, claimReader{Reader: reader(credentialSecret(claimed(machine, ns), bound()))}, moved)
 			Expect(err).To(HaveOccurred(), "an ownerRef still naming the source host's UID names another object")
 		})
 
 		It("refuses a host without a UID, whatever the Secret's owner says", func() {
 			host := ownedBy("")
-			_, _, err := boundBootstrapCredentials(ctx, reader(credentialSecret(host, bound())), host)
+			_, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: reader(credentialSecret(host, bound()))}, host)
 			Expect(err).To(HaveOccurred())
 		})
 	})

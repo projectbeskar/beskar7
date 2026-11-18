@@ -92,7 +92,7 @@ func hostPlacementSelector(b7machine *infrav1.Beskar7Machine, machine *clusterv1
 func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.Context, logger logr.Logger, b7machine *infrav1.Beskar7Machine, placement labels.Selector) (*infrav1.PhysicalHost, ctrl.Result, error) {
 	claimStart := time.Now()
 
-	// (1) ProviderID lookup.
+	// (1) ProviderID lookup, own namespace only; a pool host is found by (2).
 	if b7machine.Spec.ProviderID != "" {
 		ns, name, err := parseProviderID(b7machine.Spec.ProviderID)
 		if err == nil && ns == b7machine.Namespace {
@@ -105,43 +105,56 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 		}
 	}
 
-	// (2) ConsumerRef lookup: find any host in our namespace already claimed by
-	// this Beskar7Machine. List all hosts in the namespace (no field index for
-	// Spec.ConsumerRef — it's a nested pointer; an index would not save much
-	// because the host count per namespace is bounded by physical inventory).
-	allHosts := &infrav1.PhysicalHostList{}
-	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
+	// (2) ConsumerRef lookup: find any host already claimed by this
+	// Beskar7Machine, in its namespace or, for a pool machine, through its pool.
+	// A held host stays found even when its pool stops granting.
+	held, err := r.findHeldHost(ctx, b7machine, false)
+	if err != nil {
 		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
 		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
 	}
-	for i := range allHosts.Items {
-		h := &allHosts.Items[i]
-		// resolveConsumerBeskar7Machine also rejects a ConsumerRef naming a
-		// different namespace than h's own (SEC-12): a host claimed "by" a
-		// same-named machine in another namespace must not re-find as ours.
-		if key, ok := resolveConsumerBeskar7Machine(h); ok && key == client.ObjectKeyFromObject(b7machine) {
-			internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
-			internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
-			return h, ctrl.Result{}, nil
-		}
+	if held != nil {
+		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, internalmetrics.ConflictReasonNone)
+		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeSuccess, time.Since(claimStart))
+		return held, ctrl.Result{}, nil
+	}
+
+	// A pool machine that already ran on a host waits for that host, never claims a second one.
+	if b7machine.Spec.PoolRef != "" && b7machine.Spec.ProviderID != "" {
+		return nil, ctrl.Result{}, errPoolHostMissing
+	}
+
+	// A new claim needs the pool to exist and grant this namespace.
+	search, available, err := r.claimSearch(ctx, b7machine)
+	if err != nil {
+		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
+		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
+		return nil, ctrl.Result{}, err
+	}
+	if !available {
+		return nil, ctrl.Result{}, errPoolNotAvailable
+	}
+	selector, err := search.claimSelector(placement)
+	if err != nil {
+		return nil, ctrl.Result{}, err
 	}
 
 	// (3) No existing claim — list StateAvailable hosts and try to claim one.
 	// The field index filters server-side to StateAvailable so the result set
 	// is bounded by the count of free hosts.
-	hostList := &infrav1.PhysicalHostList{}
-	if placement != nil && !placement.Empty() {
-		logger.V(1).Info("Restricting the host claim to a placement constraint", "placement", placement.String())
+	if selector != nil && !selector.Empty() {
+		logger.V(1).Info("Restricting the host claim to a placement constraint", "placement", selector.String())
 	}
-	if err := r.List(ctx, hostList, availableHostListOptions(b7machine, placement)...); err != nil {
+	hosts, err := r.listClaimCandidates(ctx, search, selector)
+	if err != nil {
 		internalmetrics.RecordHostClaimAttempt(b7machine.Namespace, internalmetrics.ClaimOutcomeError, internalmetrics.ConflictReasonNone)
 		internalmetrics.RecordHostClaimDuration(b7machine.Namespace, internalmetrics.ClaimOutcomeError, time.Since(claimStart))
 		return nil, ctrl.Result{}, err
 	}
 
-	for i := range hostList.Items {
-		host := &hostList.Items[i]
+	for i := range hosts {
+		host := &hosts[i]
 		// A host whose network data cannot be served would only hold this
 		// machine in WaitingForNetworkData while a usable host sits idle.
 		switch skip, why := claimSkip(b7machine, host); skip {
@@ -149,13 +162,14 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 			logger.V(1).Info("Skipping PhysicalHost whose network data is not ready", "host", host.Name, "reason", why)
 			continue
 		case claimSkipNoReport, claimSkipHardware:
-			logger.V(1).Info("Skipping PhysicalHost that does not meet the hardware requirements at claim", "host", host.Name, "reason", why)
+			logger.V(1).Info("Skipping PhysicalHost that does not meet the hardware requirements at claim",
+				"host", host.Name, "reason", why)
 			continue
 		}
 		// ConsumerRef is on Spec (not indexed); keep the in-loop guard defensively.
 		// A host can be Available in the index but have a stale ConsumerRef that has
 		// not yet been cleared, so this check prevents a double-claim.
-		if host.Spec.ConsumerRef == nil {
+		if search.claimable(host) {
 			// Claim this host. The List above is filtered server-side via the
 			// status.state field index. The Patch uses MergeFromWithOptimisticLock
 			// so a concurrent claim from another Beskar7Machine fails fast with a
@@ -173,6 +187,7 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 				Namespace:  b7machine.Namespace,
 				UID:        b7machine.UID,
 			}
+			host.Spec.ConsumerPool = search.pool
 			if err := r.Patch(ctx, host, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 				if apierrors.IsConflict(err) {
 					// Another reconciler won the race; requeue and try again.
@@ -197,6 +212,23 @@ func (r *Beskar7MachineReconciler) findAndClaimOrGetAssociatedHost(ctx context.C
 	return nil, ctrl.Result{}, nil
 }
 
+// listClaimCandidates lists the Available hosts matching selector in every namespace search covers.
+func (r *Beskar7MachineReconciler) listClaimCandidates(
+	ctx context.Context,
+	search hostSearch,
+	selector labels.Selector,
+) ([]infrav1.PhysicalHost, error) {
+	var hosts []infrav1.PhysicalHost
+	for _, ns := range search.namespaces {
+		list := &infrav1.PhysicalHostList{}
+		if err := r.List(ctx, list, availableHostListOptions(ns, selector)...); err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, list.Items...)
+	}
+	return hosts, nil
+}
+
 // findClaimedHostForRelease locates the PhysicalHost currently claimed by this
 // Beskar7Machine so reconcileDelete can release it. ConsumerRef ownership is the
 // source of truth: a machine deleted before inspection completes has a claimed
@@ -219,10 +251,9 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 			err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, host)
 			switch {
 			case err == nil:
-				// ProviderID can name a host in any namespace; only a host whose
-				// consumer resolves to this very machine, namespace included, is
-				// ours to release (SEC-12).
-				if key, ok := resolveConsumerBeskar7Machine(host); ok && key == client.ObjectKeyFromObject(b7machine) {
+				// ProviderID can name a host in any namespace; only a host claimed
+				// by this very machine, namespace included, is ours to release (SEC-12).
+				if r.claimedBy(host, b7machine) {
 					return host, nil
 				}
 				// ProviderID points at a host not claimed by us; fall through to scan.
@@ -234,22 +265,9 @@ func (r *Beskar7MachineReconciler) findClaimedHostForRelease(ctx context.Context
 		}
 	}
 
-	// Fallback: scan the namespace for any host whose ConsumerRef names us. This
-	// covers the claimed-but-not-yet-provisioned window where ProviderID is unset.
-	allHosts := &infrav1.PhysicalHostList{}
-	if err := r.List(ctx, allHosts, client.InNamespace(b7machine.Namespace)); err != nil {
-		return nil, err
-	}
-	for i := range allHosts.Items {
-		h := &allHosts.Items[i]
-		// resolveConsumerBeskar7Machine also rejects a ConsumerRef naming a
-		// different namespace than h's own (SEC-12): a host claimed "by" a
-		// same-named machine in another namespace must not be released by us.
-		if key, ok := resolveConsumerBeskar7Machine(h); ok && key == client.ObjectKeyFromObject(b7machine) {
-			return h, nil
-		}
-	}
-	return nil, nil
+	// Fallback: scan for any host whose ConsumerRef names us. This covers the
+	// claimed-but-not-yet-provisioned window where ProviderID is unset.
+	return r.findHeldHost(ctx, b7machine, true)
 }
 
 // releaseHostPower issues ClearBootSourceOverride and a power-off against the

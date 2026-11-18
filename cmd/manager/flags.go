@@ -171,6 +171,8 @@ type managerConfig struct {
 
 	// enableNodeProviderID is --enable-node-provider-id; without it no workload cluster is ever connected to.
 	enableNodeProviderID bool
+	// enableHostPools is --enable-host-pools; without it no claim crosses a namespace.
+	enableHostPools bool
 
 	bootstrapURLBase  string
 	inspectionPort    int
@@ -183,6 +185,14 @@ type managerConfig struct {
 
 	cleaningImageURL string
 	cleaningTimeout  time.Duration
+}
+
+// hostPools reports whether PhysicalHostPool claims are on: --enable-host-pools
+// in a manager that runs the controllers (validate rejects it in callback-only
+// mode). Pools and namespaces are cluster-scoped, so even a --watch-namespaces
+// cache reads them cluster-wide.
+func (c managerConfig) hostPools() bool {
+	return c.enableHostPools && c.controllers == controllersAll
 }
 
 // validate rejects flag combinations that contradict each other. It runs
@@ -205,6 +215,11 @@ func (c managerConfig) validate() error {
 	if c.enableNodeProviderID {
 		return errors.New("--enable-node-provider-id contradicts --controllers=none: a callback-only " +
 			"instance runs no reconciler, so no Node would ever be patched; drop --enable-node-provider-id")
+	}
+	if c.enableHostPools {
+		return errors.New("--enable-host-pools contradicts --controllers=none: a callback-only " +
+			"instance would refuse every pool claim's callbacks, since it has no access to pools " +
+			"or namespaces; serve pool hosts from a manager that runs the controllers")
 	}
 	if c.leaderElectSet && c.enableLeaderElection {
 		return errors.New("--leader-elect=true contradicts --controllers=none: a callback-only " +

@@ -87,6 +87,13 @@ const (
 type ProvisionFailedHandler struct {
 	Client client.Client
 	Log    logr.Logger
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *ProvisionFailedHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // provisionFailedBody is the JSON payload shape for the provision-failed callback.
@@ -268,7 +275,7 @@ func (h *ProvisionFailedHandler) signalProvisionFailed(ctx context.Context, log 
 		return nil
 	}
 
-	signer, err := newCallbackSigner(ctx, h.Client, ph, token, time.Now())
+	signer, err := newCallbackSigner(ctx, h.claims(), ph, token, time.Now())
 	if err != nil {
 		return fmt.Errorf("bind provision-failed report to the host's credentials: %w", err)
 	}

@@ -117,7 +117,7 @@ func newCallbackBinder(host *infrav1.PhysicalHost, creds bootstrapCredentials) (
 // token with the new claim, and sign a callback of the old cycle into the new
 // one, so the token is checked again against the credentials this binder is
 // built from, as the bootstrap handler does.
-func newCallbackSigner(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost, presentedToken string, now time.Time) (*callbackBinder, error) {
+func newCallbackSigner(ctx context.Context, c claimReader, host *infrav1.PhysicalHost, presentedToken string, now time.Time) (*callbackBinder, error) {
 	creds, _, err := boundBootstrapCredentials(ctx, c, host)
 	if err != nil {
 		return nil, fmt.Errorf("read the credentials to bind the callback to: %w", err)
@@ -153,7 +153,7 @@ func newCleaningCallbackSigner(ctx context.Context, c client.Reader, host *infra
 // Secret made through a cache that may not have seen the mint. This one is for
 // the requests in the middle of a run, when nothing has changed the token, the
 // nonce or the consumer for longer than any cache lags.
-func newRequestSigner(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (*callbackBinder, error) {
+func newRequestSigner(ctx context.Context, c claimReader, host *infrav1.PhysicalHost) (*callbackBinder, error) {
 	creds, _, err := boundBootstrapCredentials(ctx, c, host)
 	if err != nil {
 		return nil, fmt.Errorf("read the credentials to bind the request to: %w", err)
@@ -254,7 +254,7 @@ const (
 //
 // The log line names the host and the key and nothing else: no token, no
 // binding, no value.
-func verifyCallbackAnnotation(ctx context.Context, c client.Reader, logger logr.Logger, host *infrav1.PhysicalHost, key, digest string) callbackVerdict {
+func verifyCallbackAnnotation(ctx context.Context, c claimReader, logger logr.Logger, host *infrav1.PhysicalHost, key, digest string) callbackVerdict {
 	creds, _, err := boundBootstrapCredentials(ctx, c, host)
 	return checkCallbackAnnotation(callbackCheck{Logger: logger, Host: host, Key: key, Digest: digest, Creds: creds, CredsErr: err})
 }
@@ -273,8 +273,8 @@ type callbackCheck struct {
 func checkCallbackAnnotation(in callbackCheck) callbackVerdict {
 	logger, host, key, digest, creds, err := in.Logger, in.Host, in.Key, in.Digest, in.Creds, in.CredsErr
 	if err != nil {
-		if errors.Is(err, errBootstrapSecretUnreadable) {
-			logger.Error(err, "Cannot read the host's bootstrap-token Secret to check a callback annotation; leaving it for the next reconcile",
+		if consumerUnreadable(err) {
+			logger.Error(err, "Cannot read what a callback annotation is checked against; leaving it for the next reconcile",
 				"host", host.Name, "annotation", key)
 			return callbackUnverifiable
 		}

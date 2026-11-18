@@ -43,7 +43,7 @@ func buildNetworkDataMux() *http.ServeMux {
 	log := ctrl.Log.WithName("network-data-handler-test")
 	handler := &NetworkDataHandler{Client: k8sClient, Log: log}
 	mux := http.NewServeMux()
-	mux.Handle(networkDataRoute, auth.RequireBearer(log, newBearerTokenVerifier(k8sClient, log), handler))
+	mux.Handle(networkDataRoute, auth.RequireBearer(log, newBearerTokenVerifier(claimReader{Reader: k8sClient}, log), handler))
 	return mux
 }
 

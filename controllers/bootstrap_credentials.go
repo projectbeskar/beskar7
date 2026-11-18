@@ -67,6 +67,8 @@ const (
 	// the same name is a new claim and gets fresh credentials (contract §12)
 	// instead of inheriting the earlier machine's.
 	bootstrapConsumerUIDSecretKey = "consumer-uid"
+	// bootstrapConsumerNamespaceSecretKey is that machine's namespace; absent means the host's own (before pools).
+	bootstrapConsumerNamespaceSecretKey = "consumer-namespace"
 	// bootstrapPurposeSecretKey is empty for a claim's credentials and credentialPurposeClean for a cleaning run's.
 	bootstrapPurposeSecretKey = "purpose"
 	// cleaningImageURLSecretKey holds --cleaning-image-url so the /boot handler needs no flag of its own.
@@ -99,6 +101,16 @@ type bootstrapCredentials struct {
 	consumerUID    string
 	purpose        string
 	cleaningImage  string
+	consumerNS     string
+}
+
+// consumerKey is the machine the credentials are bound to; a missing namespace means host's own.
+func (c bootstrapCredentials) consumerKey(host *infrav1.PhysicalHost) types.NamespacedName {
+	ns := c.consumerNS
+	if ns == "" {
+		ns = host.Namespace
+	}
+	return types.NamespacedName{Namespace: ns, Name: c.consumer}
 }
 
 // readBootstrapCredentials parses secret, which may be nil.
@@ -116,6 +128,7 @@ func readBootstrapCredentials(secret *corev1.Secret) bootstrapCredentials {
 		consumerUID:    string(secret.Data[bootstrapConsumerUIDSecretKey]),
 		purpose:        string(secret.Data[bootstrapPurposeSecretKey]),
 		cleaningImage:  string(secret.Data[cleaningImageURLSecretKey]),
+		consumerNS:     string(secret.Data[bootstrapConsumerNamespaceSecretKey]),
 	}
 }
 
@@ -139,6 +152,7 @@ func (c bootstrapCredentials) writeTo(secret *corev1.Secret) {
 	put(bootNonceExpiresAtSecretKey, formatCredentialTime(c.nonceExpiresAt))
 	put(bootstrapConsumerSecretKey, c.consumer)
 	put(bootstrapConsumerUIDSecretKey, c.consumerUID)
+	put(bootstrapConsumerNamespaceSecretKey, c.consumerNS)
 	put(bootstrapPurposeSecretKey, c.purpose)
 	put(cleaningImageURLSecretKey, c.cleaningImage)
 }
@@ -216,9 +230,10 @@ var errBootstrapSecretUnreadable = errors.New("bootstrap-token Secret could not 
 // boundBootstrapCredentials returns the credentials in host's bootstrap-token
 // Secret together with the Beskar7Machine they are bound to, but only while
 // host is claimed and its claim names that machine: host.Spec.ConsumerRef must
-// resolve to a Beskar7Machine in host's own namespace
-// (resolveConsumerBeskar7Machine) whose name is the Secret's consumer. The
-// Secret itself must be the host's (bootstrapSecretOwnedBy).
+// resolve to a Beskar7Machine in host's own namespace, or in a namespace the
+// claim's pool still grants and that proves the claim (resolveConsumer), whose
+// name, and for a pool claim UID, is the Secret's consumer. The Secret itself
+// must be the host's (bootstrapSecretOwnedBy).
 //
 // A host nobody claims, a claim naming a different machine than the one the
 // credentials were minted for (a re-pointed ConsumerRef, or a re-claim the new
@@ -226,8 +241,12 @@ var errBootstrapSecretUnreadable = errors.New("bootstrap-token Secret could not 
 // existed, and a Secret the host does not own all fail here, so none of them
 // authenticates a callback. The error is for server-side logs only and
 // carries no credential material.
-func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
-	consumer, ok := resolveConsumerBeskar7Machine(host)
+func boundBootstrapCredentials(ctx context.Context, c claimReader, host *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
+	consumer, ok, err := resolveConsumer(ctx, c, host)
+	if err != nil {
+		return bootstrapCredentials{}, types.NamespacedName{},
+			fmt.Errorf("resolve the consumer of host %s/%s: %w", host.Namespace, host.Name, err)
+	}
 	if !ok {
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("host %s/%s has no valid Beskar7Machine consumer", host.Namespace, host.Name)
 	}
@@ -246,10 +265,12 @@ func boundBootstrapCredentials(ctx context.Context, c client.Reader, host *infra
 	if creds.purpose != credentialPurposeClaim {
 		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("bootstrap-token Secret %s holds credentials for a %s run, not a claim", key.Name, creds.purpose)
 	}
-	if creds.consumer == "" || creds.consumer != consumer.Name {
-		return bootstrapCredentials{}, types.NamespacedName{}, fmt.Errorf("bootstrap-token Secret %s is not bound to the host's current consumer", key.Name)
+	if creds.consumer == "" || creds.consumerKey(host) != consumer.key ||
+		(consumer.uid != "" && creds.consumerUID != string(consumer.uid)) {
+		return bootstrapCredentials{}, types.NamespacedName{},
+			fmt.Errorf("bootstrap-token Secret %s is not bound to the host's current consumer", key.Name)
 	}
-	return creds, consumer, nil
+	return creds, consumer.key, nil
 }
 
 // errNotCleaning is returned by boundCleaningCredentials for a host that is not
