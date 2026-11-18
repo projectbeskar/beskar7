@@ -103,5 +103,6 @@ plausible-looking existing sentence is not evidence.
 
 ## Code of conduct
 
-Be decent to other contributors. Assume good faith, keep review comments about the
-code, and expect the same in return.
+Everyone taking part in this project is expected to follow the
+[Code of Conduct](CODE_OF_CONDUCT.md). In short: be decent to other contributors,
+assume good faith, keep review comments about the code, and expect the same in return.
