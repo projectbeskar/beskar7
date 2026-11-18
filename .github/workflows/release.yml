@@ -457,6 +457,8 @@ jobs:
         # Extract version from tag
         VERSION=${{ github.ref_name }}
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+        # Helm chart versions carry no leading v (see helm-publish.yml)
+        CHART_VERSION="${VERSION#v}"
         
         # Start with the header
         echo "# Beskar7 $VERSION" > release-notes.md
@@ -506,13 +508,16 @@ jobs:
         echo "\`\`\`" >> release-notes.md
         echo "" >> release-notes.md
         echo "### Using Helm" >> release-notes.md
-        echo "Helm chart support is planned for a future release." >> release-notes.md
+        echo "\`\`\`bash" >> release-notes.md
+        echo "helm repo add beskar7 https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" >> release-notes.md
+        echo "helm repo update" >> release-notes.md
+        echo "helm install beskar7 beskar7/beskar7 --version $CHART_VERSION --namespace capb7-system --create-namespace" >> release-notes.md
+        echo "\`\`\`" >> release-notes.md
         echo "" >> release-notes.md
         echo "## 📋 Prerequisites" >> release-notes.md
         echo "" >> release-notes.md
-        echo "- Kubernetes 1.19+" >> release-notes.md
-        echo "- cert-manager (required)" >> release-notes.md
-        echo "- Cluster API v1.4.0+" >> release-notes.md
+        # Link to the docs at this tag rather than repeating minimum versions here, where they go stale.
+        echo "Kubernetes, Cluster API, cert-manager, iPXE boot infrastructure and the \`beskar7-inspector\` image. The [installation guide](${{ github.server_url }}/${{ github.repository }}/blob/$VERSION/docs/installation.md#prerequisites) lists the versions this release requires." >> release-notes.md
         echo "" >> release-notes.md
         echo "## 🔒 Security" >> release-notes.md
         echo "" >> release-notes.md
@@ -522,7 +527,11 @@ jobs:
         echo "" >> release-notes.md
         echo "\`\`\`" >> release-notes.md
         echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:$VERSION" >> release-notes.md
+        echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-redfish:$VERSION" >> release-notes.md
+        echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/mock-inspector:$VERSION" >> release-notes.md
         echo "\`\`\`" >> release-notes.md
+        echo "" >> release-notes.md
+        echo "\`mock-redfish\` and \`mock-inspector\` are test doubles for the smoke tests and are not part of a production install." >> release-notes.md
         echo "" >> release-notes.md
         echo "Available for:" >> release-notes.md
         echo "- linux/amd64" >> release-notes.md
@@ -531,7 +540,7 @@ jobs:
         echo "" >> release-notes.md
         echo "## 🔐 Verification" >> release-notes.md
         echo "" >> release-notes.md
-        echo "All release artifacts are signed and include SBOMs for supply chain security." >> release-notes.md
+        echo "All three container images are signed with keyless cosign. The manager image also carries a signed SPDX SBOM attestation, and the same SBOM is attached to this release as \`sbom.spdx.json\`. The manifests and metadata are not signed: \`checksums.txt\` lists their SHA-256 sums." >> release-notes.md
         
     - name: Create Release
       uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
