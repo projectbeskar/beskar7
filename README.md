@@ -26,7 +26,7 @@ A Kubernetes operator that implements the Cluster API infrastructure provider fo
 
 ## Current Status
 
-**Version:** v0.12.0 — an opt-in disk wipe when a `PhysicalHost` is released (`spec.cleaning.mode: Metadata`, contract `v4.4`; it needs inspector `v0.5.0` behind the new `--cleaning-image-url`), an opt-in `Node.spec.providerID` on the workload cluster (`--enable-node-provider-id` plus `Beskar7Cluster.spec.setNodeProviderID`), and the PhysicalHost controller's events on `events.k8s.io`. Both features are off by default. The CRD changes add optional fields only: apply the CRDs before the controller. A hand-maintained manager Role needs the `events.k8s.io` events rule. Upgrade every callback-only instance too before you turn the wipe on. Coming from `v0.10.2` or earlier, the steps of the releases in between apply too (from `v0.10.2`: upgrade a callback-only instance before its tightened Role): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
+**Version:** v0.13.0 — the first release from `github.com/beskar7`. The images move to `ghcr.io/beskar7/manager` (and `ghcr.io/beskar7/mock-redfish`, `ghcr.io/beskar7/mock-inspector`), the Helm repository to `https://beskar7.github.io/beskar7`, releases are signed by the `github.com/beskar7/beskar7` workflow, and the Go module is `github.com/beskar7/beskar7`. No API, CRD, RBAC, contract or behaviour changes: pair it with inspector `v0.5.1`, the first published at `ghcr.io/beskar7/beskar7-inspector`. Before you upgrade, point Helm at the new repository and check that nothing pins the old image path (Helm values, mirrors, registry allow-lists, callback-only instances). Releases up to `v0.12.0` stay at their old paths. Coming from `v0.11.0` or earlier, the steps of the releases in between apply too (from `v0.11.0`: CRDs before the controller, and the `events.k8s.io` rule for a hand-maintained Role): read [upgrading](docs/upgrading.md). Coming from `v0.5.0` or earlier, `v0.6.0` was breaking too.  
 **API:** `infrastructure.cluster.x-k8s.io/v1beta2` is the only served version — the `v1beta1` schema renamed in place, with no conversion webhook: `v1beta1` CRDs and objects must be recreated (see [Upgrading](docs/upgrading.md)). From here the schema evolves **additive-only**.  
 **Contract:** controller↔inspector wire contract **v4.4, frozen** ([contract](docs/inspector-contract.md)). Pair with a `contract-v4.4` [inspector release](https://github.com/beskar7/beskar7-inspector/releases).  
 **Upgrading:** v0.4.0 is **not** compatible with v0.3.x, and the alpha series contains breaking API changes — see [Upgrading](docs/upgrading.md) and the [CHANGELOG](CHANGELOG.md).
@@ -62,7 +62,7 @@ clusterctl init --infrastructure beskar7   # v0.5.0 and later publish the cluste
 **Using Release Manifests:**
 
 ```bash
-kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.13.0/beskar7-manifests-v0.13.0.yaml
 ```
 
 See [Installation](docs/installation.md) for detailed install steps, or the [Quick Start](docs/quick-start.md) for the first provisioning flow.

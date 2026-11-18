@@ -6,16 +6,46 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+## [v0.13.0] - 2026-11-18
+
+The first release from `github.com/beskar7`. The repositories moved there from `github.com/projectbeskar`, and this
+release is published from the new org: the images are `ghcr.io/beskar7/manager`, `ghcr.io/beskar7/mock-redfish` and
+`ghcr.io/beskar7/mock-inspector`, the chart is at `https://beskar7.github.io/beskar7`, releases are signed by the
+`github.com/beskar7/beskar7` workflow, and the Go module is `github.com/beskar7/beskar7`. There are no API, CRD, RBAC,
+contract or behaviour changes. The contract stays `v4.4`: pair it with inspector **`v0.5.1`**, which behaves exactly
+like `v0.5.0` and is the first published at `ghcr.io/beskar7/beskar7-inspector` (`v0.5.0` keeps working). Releases up
+to `v0.12.0` stay where they were published. No security fixes: like `v0.12.0`, it is built with Go 1.27.4, and an OSV
+scan of the release-candidate image found no advisories.
+
+> **Upgrade notes.** Details and commands are in
+> [`docs/upgrading.md`](https://github.com/beskar7/beskar7/blob/v0.13.0/docs/upgrading.md#v0120--v0130--moved-to-githubcombeskar7),
+> section `v0.12.0` → `v0.13.0`.
+>
+> 1. **Helm: switch to the new repository** with
+>    `helm repo add beskar7 https://beskar7.github.io/beskar7 --force-update`. The old URL keeps serving charts up to
+>    `0.12.0` but gets no new ones.
+> 2. **Check that nothing pins the old image path**, where `v0.13.0` is not published: a Helm value
+>    `controllerManager.image.repository` you set (`--reset-then-reuse-values` keeps it), a kustomize `images:`
+>    override, a mirror, an admission policy that allows registries by name, or a callback-only instance deployed from
+>    your own manifests.
+> 3. **clusterctl:** the old provider URL keeps working through GitHub's redirect, but point
+>    `~/.cluster-api/clusterctl.yaml` at `https://github.com/beskar7/beskar7/releases/latest/infrastructure-components.yaml`.
+> 4. **Signature checks** need the new identity: the regexp in
+>    [`docs/installation.md`](https://github.com/beskar7/beskar7/blob/v0.13.0/docs/installation.md#verify-release-artifacts-supply-chain)
+>    accepts both orgs.
+> 5. **Go code importing this module** changes `github.com/projectbeskar/beskar7/…` imports to
+>    `github.com/beskar7/beskar7/…`.
+
 ### Changed
 
-- The repositories moved to `github.com/beskar7` (`beskar7/beskar7` and `beskar7/beskar7-inspector`); the old URLs
-  redirect. From the next release the images are `ghcr.io/beskar7/manager`, `ghcr.io/beskar7/mock-redfish` and
+- **The repositories moved to `github.com/beskar7`** (`beskar7/beskar7` and `beskar7/beskar7-inspector`); the old
+  URLs redirect. From this release the images are `ghcr.io/beskar7/manager`, `ghcr.io/beskar7/mock-redfish` and
   `ghcr.io/beskar7/mock-inspector`, the Helm repository is `https://beskar7.github.io/beskar7`, the clusterctl
   provider URL is `https://github.com/beskar7/beskar7/releases/...`, and release signatures carry the
   `github.com/beskar7/beskar7` workflow identity (the cosign identity regexp in
   [`docs/installation.md`](docs/installation.md) accepts both). Releases up to `v0.12.0` stay where they are
   (`ghcr.io/projectbeskar/beskar7/*`, and the old Helm URL keeps serving charts up to `0.12.0`).
-- The Go module path is now `github.com/beskar7/beskar7` (the repository moved to the `beskar7` GitHub org). Code that imports the old
+- **The Go module path is now `github.com/beskar7/beskar7`.** Code that imports the old
   `github.com/projectbeskar/beskar7/...` path, for example `api/v1beta2`, must update its imports.
 
 ## [v0.12.0] - 2026-11-17
@@ -2711,7 +2741,8 @@ For detailed implementation information, see the examples directory and document
 - CI: lint, tests, container build, CRD generation, Kind sanity checks.
 - Core controllers and CRDs for `PhysicalHost`, `Beskar7Machine`, `Beskar7Cluster`.
 
-[Unreleased]: https://github.com/projectbeskar/beskar7/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/beskar7/beskar7/compare/v0.13.0...HEAD
+[v0.13.0]: https://github.com/beskar7/beskar7/compare/v0.12.0...v0.13.0
 [v0.12.0]: https://github.com/projectbeskar/beskar7/compare/v0.11.0...v0.12.0
 [v0.11.0]: https://github.com/projectbeskar/beskar7/compare/v0.10.2...v0.11.0
 [v0.10.2]: https://github.com/projectbeskar/beskar7/compare/v0.10.1...v0.10.2

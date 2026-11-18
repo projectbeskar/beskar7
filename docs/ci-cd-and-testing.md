@@ -226,7 +226,7 @@ archive, so each is a separate matrix leg with its own SARIF category. The relea
 # Run the same scans locally
 go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
 osv-scanner scan source -r .
-osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
+osv-scanner scan image ghcr.io/beskar7/manager:latest
 ```
 
 ## Development Workflow
@@ -271,7 +271,7 @@ osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
    make docker-build
    
    # Test container locally
-  docker run --rm ghcr.io/projectbeskar/beskar7/beskar7:${VERSION}
+  docker run --rm ghcr.io/beskar7/manager:${VERSION}
    ```
 
 ### Pull Request Workflow
@@ -294,10 +294,10 @@ osv-scanner scan image ghcr.io/projectbeskar/beskar7/beskar7:latest
 
 ### Release Process
 
-1. **Create Release Tag** — the current release line is `v0.12.x`. Before 1.0, bump the minor for a release that changes operator-visible behaviour and the patch for the rest; a new minor also needs its `releaseSeries` entry in `metadata.yaml`. Use a `vX.Y.Z` (or `vX.Y.Z-pre`) format the `release.yml` workflow recognises.
+1. **Create Release Tag** — the current release line is `v0.13.x`. Before 1.0, bump the minor for a release that changes operator-visible behaviour and the patch for the rest; a new minor also needs its `releaseSeries` entry in `metadata.yaml`. Use a `vX.Y.Z` (or `vX.Y.Z-pre`) format the `release.yml` workflow recognises.
    ```bash
-   git tag v0.12.0
-   git push origin v0.12.0
+   git tag v0.13.0
+   git push origin v0.13.0
    ```
 
 2. **Automated Release** - GitHub Actions automatically:

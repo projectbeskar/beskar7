@@ -46,7 +46,7 @@ hack/smoke/
 - Boot source override (PXE / CD / virtual media)
 - BIOS attribute read
 
-It generates a self-signed RSA cert in memory at startup (configurable via `--tls-cert` / `--tls-key` or disable with `--tls=false`), listens on `:8443` by default, and supports Basic auth (`admin` / `password123` by default). The image is published as `ghcr.io/projectbeskar/beskar7/mock-redfish:<tag>` alongside the controller, on the same git-tag push.
+It generates a self-signed RSA cert in memory at startup (configurable via `--tls-cert` / `--tls-key` or disable with `--tls=false`), listens on `:8443` by default, and supports Basic auth (`admin` / `password123` by default). The image is published as `ghcr.io/beskar7/mock-redfish:<tag>` alongside the controller, on the same git-tag push (`ghcr.io/projectbeskar/beskar7/mock-redfish` for releases up to `v0.12.0`).
 
 ### The mock inspector
 
@@ -58,7 +58,7 @@ Flags:
 - `--insecure-skip-verify` (default true): the controller's callback cert covers `capb7-webhook-service`, not the controller-manager service the bootstrap URL points at
 - `--ca-bundle-file`: alternative to insecure-skip-verify, PEM CA(s) to trust
 
-The image is published as `ghcr.io/projectbeskar/beskar7/mock-inspector:<tag>` alongside the controller. Smoke runs it as a one-shot `batch/v1` Job (`hack/smoke/manifests/50-mock-inspector-job.yaml`) with a namespaced Role that only allows reading the PhysicalHost and its bootstrap-token Secret.
+The image is published as `ghcr.io/beskar7/mock-inspector:<tag>` alongside the controller (`ghcr.io/projectbeskar/beskar7/mock-inspector` for releases up to `v0.12.0`). Smoke runs it as a one-shot `batch/v1` Job (`hack/smoke/manifests/50-mock-inspector-job.yaml`) with a namespaced Role that only allows reading the PhysicalHost and its bootstrap-token Secret.
 
 The plaintext token is never logged. Only the first 12 chars of the hex hashes appear in diagnostics.
 

@@ -38,7 +38,8 @@ without conversion (see `docs/upgrading.md`).
 
 | Version | Supported |
 |---|---|
-| `v0.12.0` (latest) | ✅ |
+| `v0.13.0` (latest) | ✅ |
+| `v0.12.0` | ✅ |
 | `v0.11.0` | ✅ |
 | `v0.10.2` | ✅ |
 | `v0.10.1` | ✅ |
