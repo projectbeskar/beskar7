@@ -24,7 +24,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.12.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.12.0.tgz
     version: 0.12.0
   - annotations:
       category: Infrastructure
@@ -49,7 +49,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.11.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.11.0.tgz
     version: 0.11.0
   - annotations:
       category: Infrastructure
@@ -74,7 +74,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.10.2.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.10.2.tgz
     version: 0.10.2
   - annotations:
       category: Infrastructure
@@ -99,7 +99,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.10.1.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.10.1.tgz
     version: 0.10.1
   - annotations:
       category: Infrastructure
@@ -124,7 +124,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.10.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.10.0.tgz
     version: 0.10.0
   - annotations:
       category: Infrastructure
@@ -149,7 +149,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.9.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.9.0.tgz
     version: 0.9.0
   - annotations:
       category: Infrastructure
@@ -174,7 +174,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.8.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.8.0.tgz
     version: 0.8.0
   - annotations:
       category: Infrastructure
@@ -199,7 +199,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.7.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.7.0.tgz
     version: 0.7.0
   - annotations:
       category: Infrastructure
@@ -224,7 +224,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.6.2.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.6.2.tgz
     version: 0.6.2
   - annotations:
       category: Infrastructure
@@ -249,7 +249,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.6.1.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.6.1.tgz
     version: 0.6.1
   - annotations:
       category: Infrastructure
@@ -274,7 +274,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.6.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.6.0.tgz
     version: 0.6.0
   - annotations:
       category: Infrastructure
@@ -299,7 +299,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.5.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.5.0.tgz
     version: 0.5.0
   - annotations:
       category: Infrastructure
@@ -324,7 +324,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.4.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.4.tgz
     version: 0.4.4
   - annotations:
       category: Infrastructure
@@ -349,7 +349,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.3.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.3.tgz
     version: 0.4.3
   - annotations:
       category: Infrastructure
@@ -374,7 +374,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.2.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.2.tgz
     version: 0.4.2
   - annotations:
       category: Infrastructure
@@ -399,7 +399,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.1.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.1.tgz
     version: 0.4.1
   - annotations:
       category: Infrastructure
@@ -424,7 +424,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0.tgz
     version: 0.4.0
   - annotations:
       category: Infrastructure
@@ -449,7 +449,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.9.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.9.tgz
     version: 0.4.0-alpha.9
   - annotations:
       category: Infrastructure
@@ -474,7 +474,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.8.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.8.tgz
     version: 0.4.0-alpha.8
   - annotations:
       category: Infrastructure
@@ -499,7 +499,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.7.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.7.tgz
     version: 0.4.0-alpha.7
   - annotations:
       category: Infrastructure
@@ -524,7 +524,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.6.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.6.tgz
     version: 0.4.0-alpha.6
   - annotations:
       category: Infrastructure
@@ -549,7 +549,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.5.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.5.tgz
     version: 0.4.0-alpha.5
   - annotations:
       category: Infrastructure
@@ -574,7 +574,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.4.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.4.tgz
     version: 0.4.0-alpha.4
   - annotations:
       category: Infrastructure
@@ -599,7 +599,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.3.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.3.tgz
     version: 0.4.0-alpha.3
   - annotations:
       category: Infrastructure
@@ -624,7 +624,7 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.2.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.2.tgz
     version: 0.4.0-alpha.2
   - annotations:
       category: Infrastructure
@@ -649,6 +649,6 @@ entries:
     - https://github.com/projectbeskar/beskar7
     type: application
     urls:
-    - https://projectbeskar.github.io/beskar7/beskar7-0.4.0-alpha.1.tgz
+    - https://beskar7.github.io/beskar7/beskar7-0.4.0-alpha.1.tgz
     version: 0.4.0-alpha.1
 generated: "2026-11-17T22:16:41.57251111Z"
