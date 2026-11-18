@@ -23,7 +23,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	"github.com/projectbeskar/beskar7/internal/http1only"
+	"github.com/beskar7/beskar7/internal/http1only"
 )
 
 // buildWebhookOptions returns the webhook server's options. The server speaks

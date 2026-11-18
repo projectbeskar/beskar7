@@ -34,7 +34,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 	//+kubebuilder:scaffold:imports

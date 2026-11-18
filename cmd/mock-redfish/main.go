@@ -39,7 +39,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/projectbeskar/beskar7/internal/redfishmock"
+	"github.com/beskar7/beskar7/internal/redfishmock"
 )
 
 // knownVendors maps lower-case CLI input to the canonical VendorType constant.

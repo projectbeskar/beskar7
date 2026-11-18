@@ -40,9 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/yaml"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/controllers"
-	"github.com/projectbeskar/beskar7/internal/auth"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/controllers"
+	"github.com/beskar7/beskar7/internal/auth"
 )
 
 // callbackOnlyRBACDir is the opt-in RBAC component for a --controllers=none

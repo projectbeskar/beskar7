@@ -1138,7 +1138,7 @@ own `cluster.x-k8s.io/paused` annotation only.
 
 `spec.providerID` changed from `*string` to `string` in the Go API (`api/v1beta2`). The JSON/YAML
 shape and the `b7://<namespace>/<name>` format are unchanged — this only matters if you import
-`github.com/projectbeskar/beskar7/api/v1beta2` as a Go module and dereferenced the pointer.
+`github.com/beskar7/beskar7/api/v1beta2` as a Go module and dereferenced the pointer.
 
 ### Procedure
 

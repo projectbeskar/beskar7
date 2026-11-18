@@ -32,8 +32,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // RELEASE-POWER. A host released soon after its OS booted can lose the graceful

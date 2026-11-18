@@ -33,8 +33,8 @@ import (
 	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // The provisioning-readiness spec failed one run in twelve with the host stuck

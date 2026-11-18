@@ -42,9 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/config"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // The Beskar7Machine controller drives a provisioning run through three values

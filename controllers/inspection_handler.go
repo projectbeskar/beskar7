@@ -40,9 +40,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
-	"github.com/projectbeskar/beskar7/internal/http1only"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
+	"github.com/beskar7/beskar7/internal/http1only"
 )
 
 const (

@@ -33,8 +33,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
 )
 
 // infoOnlySink is a logCaptureSink that drops everything above V(0), so a spec

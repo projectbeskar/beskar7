@@ -25,8 +25,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
 )
 
 // Fixtures for the annotations the PhysicalHost reconciler acts on (SEC-15,

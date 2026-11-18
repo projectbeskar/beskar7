@@ -29,7 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 )
 
 const (

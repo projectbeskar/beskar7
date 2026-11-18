@@ -15,6 +15,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
   `github.com/beskar7/beskar7` workflow identity (the cosign identity regexp in
   [`docs/installation.md`](docs/installation.md) accepts both). Releases up to `v0.12.0` stay where they are
   (`ghcr.io/projectbeskar/beskar7/*`, and the old Helm URL keeps serving charts up to `0.12.0`).
+- The Go module path is now `github.com/beskar7/beskar7` (the repository moved to the `beskar7` GitHub org). Code that imports the old
+  `github.com/projectbeskar/beskar7/...` path, for example `api/v1beta2`, must update its imports.
 
 ## [v0.12.0] - 2026-11-17
 

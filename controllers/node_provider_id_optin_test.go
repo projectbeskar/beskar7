@@ -32,7 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 )
 
 // clusterWith copies annotations, since the mirror under test edits them in place.

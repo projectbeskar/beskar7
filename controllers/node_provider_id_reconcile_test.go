@@ -46,8 +46,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 const (

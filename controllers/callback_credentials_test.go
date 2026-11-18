@@ -42,9 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	"github.com/projectbeskar/beskar7/internal/auth"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	"github.com/beskar7/beskar7/internal/auth"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // Callback credentials used to be read from PhysicalHost.Status.Bootstrap, and

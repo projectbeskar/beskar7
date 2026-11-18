@@ -28,8 +28,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
-	internalredfish "github.com/projectbeskar/beskar7/internal/redfish"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
+	internalredfish "github.com/beskar7/beskar7/internal/redfish"
 )
 
 // A host that is powered off cannot be running the inspector. That state is

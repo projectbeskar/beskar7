@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 )
 
 // CA bundle Secret data keys, in lookup-precedence order: "ca.crt" wins if both

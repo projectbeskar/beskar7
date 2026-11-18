@@ -30,7 +30,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrav1 "github.com/projectbeskar/beskar7/api/v1beta2"
+	infrav1 "github.com/beskar7/beskar7/api/v1beta2"
 )
 
 // Regression test for a contradiction observed on real hardware: a
