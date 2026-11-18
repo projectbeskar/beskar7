@@ -9,7 +9,7 @@
 **alpha series before `v0.4.0` contains breaking changes**. Read the section
 for your starting version before upgrading.
 
-**Target `v0.12.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
+**Target `v0.13.0`, not `v0.6.0`.** `v0.6.0` cannot patch objects written by
 `v0.5.0` and freezes their status; `v0.6.1` fixed that, and every release since
 carries the fix.
 
@@ -62,6 +62,7 @@ from the release you deployed:
 
 | beskar7 release | contract |
 |---|---|
+| `v0.13.0` | `v4.4` **frozen** |
 | `v0.12.0` | `v4.4` **frozen** |
 | `v0.11.0` | `v4.3` **frozen** |
 | `v0.10.2` | `v4.2` **frozen** |
@@ -89,6 +90,7 @@ From a source checkout of the matching tag:
 git show v0.4.0:test/contract/VERSION      # -> v4.2
 git show v0.11.0:test/contract/VERSION     # -> v4.3
 git show v0.12.0:test/contract/VERSION     # -> v4.4
+git show v0.13.0:test/contract/VERSION     # -> v4.4
 
 # earlier tags predate that file — read the contract doc header instead:
 git show v0.4.0-alpha.8:docs/inspector-contract.md | head -5
@@ -101,12 +103,107 @@ Each inspector release states its contract version, ships it as
 `contract-version.txt`, and tags its image accordingly:
 
 ```bash
-docker pull ghcr.io/projectbeskar/beskar7-inspector:contract-v4.4
+docker pull ghcr.io/beskar7/beskar7-inspector:contract-v4.4   # inspector v0.5.1 and later; up to v0.5.0: ghcr.io/projectbeskar/beskar7-inspector
 ```
 
 Within a frozen `v4.x` line the changes are additive, so a controller tolerates an
 inspector one minor version behind — it simply does not get the newer capability
 (see `docs/inspector-contract.md` §14). Do not rely on that across a major bump.
+
+## `v0.12.0` → `v0.13.0` — moved to `github.com/beskar7`
+
+`v0.13.0` is the first release from `github.com/beskar7`. The repositories moved there from `github.com/projectbeskar`
+on 2026-11-18, and this release changes where things are published, nothing else. There are no API, CRD, RBAC,
+contract or behaviour changes. The old repository URLs redirect, and every release up to `v0.12.0` stays where it was
+published: its images, its signatures and the old Helm repository keep working.
+
+Coming from `v0.11.0` or earlier, do the
+[`v0.11.0` → `v0.12.0`](#v0110--v0120--opt-in-disk-wipe-and-node-providerid-events-on-eventsk8sio) steps too,
+installing `v0.13.0` wherever that section names `v0.12.0`, and switch the Helm repository (step 1) before you start.
+
+### What moved
+
+| | Up to `v0.12.0` | From `v0.13.0` |
+|---|---|---|
+| Manager image | `ghcr.io/projectbeskar/beskar7/beskar7` | `ghcr.io/beskar7/manager` |
+| Mock images | `ghcr.io/projectbeskar/beskar7/mock-redfish`, `…/mock-inspector` | `ghcr.io/beskar7/mock-redfish`, `ghcr.io/beskar7/mock-inspector` |
+| Inspector image | `ghcr.io/projectbeskar/beskar7-inspector` (inspector up to `v0.5.0`) | `ghcr.io/beskar7/beskar7-inspector` (inspector `v0.5.1` and later) |
+| Helm repository | `https://projectbeskar.github.io/beskar7` (no charts after `0.12.0`) | `https://beskar7.github.io/beskar7` |
+| clusterctl provider URL | `https://github.com/projectbeskar/beskar7/releases/latest/infrastructure-components.yaml` (still works) | `https://github.com/beskar7/beskar7/releases/latest/infrastructure-components.yaml` |
+| Signing identity | the `github.com/projectbeskar/beskar7` release workflow | the `github.com/beskar7/beskar7` release workflow |
+| Go module | `github.com/projectbeskar/beskar7` | `github.com/beskar7/beskar7` |
+
+### 1. Helm: switch to the new repository
+
+The old repository URL keeps serving charts up to `0.12.0`, but `0.13.0` and later are published only at the new
+one. Replace the repository entry, then upgrade. This release has no CRD changes, so the CRD step of other sections
+is not needed:
+
+```bash
+helm repo add beskar7 https://beskar7.github.io/beskar7 --force-update
+helm repo update
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.13.0 --reset-then-reuse-values
+```
+
+If your values set `controllerManager.image.repository`, change it to `ghcr.io/beskar7/manager` (or your mirror of
+it) first: `--reset-then-reuse-values` keeps a value you set, and `v0.13.0` is not published at the old path, so the
+new pod could not pull its image. `helm get values beskar7 -n capb7-system` shows what you set.
+
+### 2. Release-manifest and kustomize installs
+
+```bash
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.13.0/beskar7-manifests-v0.13.0.yaml
+```
+
+The manifest names `ghcr.io/beskar7/manager:v0.13.0`. An overlay of your own whose `images:` entry sets
+`newName: ghcr.io/projectbeskar/beskar7/beskar7` needs the new name.
+
+### 3. Check what else names the old path
+
+- **Callback-only instances** (`--controllers=none`) that you run from your own manifests: set their image to
+  `ghcr.io/beskar7/manager:v0.13.0`. Their Role is unchanged.
+- **Mirrors and pull-through caches** that copy `ghcr.io/projectbeskar/…`: add `ghcr.io/beskar7/manager`, and
+  `ghcr.io/beskar7/beskar7-inspector` if you mirror the inspector image.
+- **Admission policies** that allow images by registry path or verify signatures: allow `ghcr.io/beskar7/…`, and
+  accept the new signing identity (step 5).
+- **The inspector.** Its boot files are served from your boot server, so `inspectionImageURL` and
+  `--cleaning-image-url` do not change. If you take `vmlinuz` and `initrd.img` from the inspector image rather than
+  the release assets, `ghcr.io/beskar7/beskar7-inspector:contract-v4.4` has them from inspector `v0.5.1` on.
+  Inspector `v0.5.1` behaves exactly like `v0.5.0`, and `v0.5.0` keeps working with `v0.13.0`.
+
+### 4. clusterctl
+
+The old provider URL keeps working: clusterctl reads releases through the GitHub API, which redirects the old
+repository. Update it anyway, so the install does not depend on that redirect:
+
+```yaml
+# ~/.cluster-api/clusterctl.yaml
+providers:
+  - name: beskar7
+    type: InfrastructureProvider
+    url: https://github.com/beskar7/beskar7/releases/latest/infrastructure-components.yaml
+```
+
+### 5. Verifying signatures
+
+`v0.13.0` and later are signed by the `github.com/beskar7/beskar7` release workflow. The identity regexp in
+[Verify release artifacts](installation.md#verify-release-artifacts-supply-chain) accepts both orgs. A policy pinned to
+the old identity rejects `v0.13.0`.
+
+### 6. Go code that imports this module
+
+Code that imports this module, for example `api/v1beta2`, changes its import paths from
+`github.com/projectbeskar/beskar7/…` to `github.com/beskar7/beskar7/…`, then runs
+`go get github.com/beskar7/beskar7@v0.13.0` and `go mod tidy`.
+
+### 7. Check the result
+
+```bash
+# Every image is ghcr.io/beskar7/manager:v0.13.0 (callback-only instances too; run it in each instance's cluster and namespace).
+kubectl -n capb7-system get deploy -o jsonpath='{range .items[*]}{.spec.template.spec.containers[*].image}{"\n"}{end}'
+# The chart repository is the new one:
+helm repo list | grep beskar7
+```
 
 ## `v0.11.0` → `v0.12.0` — opt-in disk wipe and Node providerID; events on `events.k8s.io`
 
@@ -1143,14 +1240,14 @@ shape and the `b7://<namespace>/<name>` format are unchanged — this only matte
 ### Procedure
 
 ```bash
-# 0. These commands install the current release, v0.12.0. From v0.8.x or earlier, stop on v0.9.x first:
+# 0. These commands install the current release, v0.13.0. From v0.8.x or earlier, stop on v0.9.x first:
 #    do the v0.8.0 → v0.9.0 steps (annotate BMC credentials Secrets, set the control-plane endpoint),
 #    run step 1 with v0.9.0 (the v0.9.0 manifest, --version 0.9.0), then follow the
-#    v0.9.x → v0.10.0 section above, installing v0.12.0 where it names v0.10.0, and then the sections after it.
+#    v0.9.x → v0.10.0 section above, installing v0.13.0 where it names v0.10.0, and then the sections after it.
 # 1. CRDs (status schema changed; Helm never touches CRDs on upgrade).
-kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.12.0/beskar7-manifests-v0.12.0.yaml
+kubectl apply -f https://github.com/beskar7/beskar7/releases/download/v0.13.0/beskar7-manifests-v0.13.0.yaml
 # or, for a chart install: apply charts/beskar7/crds/*.yaml, then
-helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.12.0 --reset-then-reuse-values
+helm upgrade beskar7 beskar7/beskar7 -n capb7-system --version 0.13.0 --reset-then-reuse-values
 
 # 2. Convert any MachineHealthCheck you maintain by hand to the v1beta2 schema and
 #    raise its timeouts (see examples/machinehealthcheck.yaml).

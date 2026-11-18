@@ -199,7 +199,7 @@ checked against `config/rbac/role.yaml` rule for rule.
 controllerManager:
   replicas: 3
   image:
-    repository: ghcr.io/projectbeskar/beskar7/beskar7
+    repository: ghcr.io/beskar7/manager
     tag: "${VERSION}"
     pullPolicy: IfNotPresent
   resources:
@@ -289,7 +289,7 @@ The repository ships three size overlays on top of `config/default`:
 Only one replica is the leader; the others take over when it goes away, and every replica serves the webhook and the inspector callbacks. Deploy one with `make deploy`, which also resolves the `${BESKAR7_BOOTSTRAP_URL_BASE:=…}` default in the manager's args — a plain `kubectl apply -k` would hand the manager that string verbatim:
 
 ```bash
-make deploy IMG=ghcr.io/projectbeskar/beskar7/beskar7:<version> DEPLOY_KUSTOMIZATION=config/overlays/large
+make deploy IMG=ghcr.io/beskar7/manager:<version> DEPLOY_KUSTOMIZATION=config/overlays/large
 ```
 
 To write your own, copy one of them. An overlay may add objects and change replicas, resources, scheduling and manager flags, and nothing else (`test/contract/overlays_test.go` enforces this for the shipped ones):
