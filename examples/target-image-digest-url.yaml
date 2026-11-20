@@ -34,7 +34,7 @@
 # redirects, all to the same host. The URL must not contain user:password@.
 #
 # Replace every <...> placeholder. Use this template from a KubeadmControlPlane
-# or MachineDeployment infrastructureRef as in examples/host-pools.yaml.
+# or MachineDeployment infrastructureRef as in examples/host-selector.yaml.
 #
 # The same checksum file for the same image, with the digest pasted instead
 # (the only change is these two lines):

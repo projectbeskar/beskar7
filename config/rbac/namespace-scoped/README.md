@@ -111,6 +111,31 @@ The Helm chart automates all of this via `.Values.watchNamespaces`; see
 `charts/beskar7/values.yaml` and `charts/beskar7/templates/rbac.yaml` for
 the templated equivalent.
 
+## PhysicalHostPools
+
+Pools work in this topology too, and are off by default. Pools and namespaces
+are cluster-scoped, so no Role here can grant them: to turn pools on, add the
+`config/host-pools` component to the install overlay above:
+
+```yaml
+components:
+- ../../config/host-pools
+```
+
+It adds `capb7-host-pool-role` and its binding
+(`config/host-pools/host_pool_role.yaml`) and starts the manager with
+`--enable-host-pools=true`. The role grants reads on `physicalhostpools` and
+`namespaces`, the pool finalizer and status, and nothing on hosts, machines,
+Secrets or ConfigMaps, which stay per namespace.
+
+For each pool, watch and give a watch Role to both:
+
+- every namespace in its `hostNamespaces` (hosts, BMC Secrets, bootstrap-token
+  Secrets, inspection ConfigMaps)
+- every namespace whose `Beskar7Machine`s claim through it
+
+See [PhysicalHostPool](../../../docs/physicalhostpool.md#namespace-scoped-install).
+
 ## Why there is no `namespace:`
 
 A kustomize `namespace:` field rewrites the namespace of every namespaced object

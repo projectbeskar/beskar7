@@ -53,7 +53,7 @@ func buildInspectionMux() (*http.ServeMux, *InspectionHandler) {
 		Client: k8sClient,
 		Log:    log,
 	}
-	verifier := newBearerTokenVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/v1/inspection/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, handler))
@@ -226,7 +226,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		setHostBootstrap(plaintext, 30*time.Minute)
 
 		sink := &infoOnlySink{}
-		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
+		verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, logWithSink(sink))
 		req := httptest.NewRequest(http.MethodPost,
 			fmt.Sprintf("/api/v1/inspection/%s/%s", physicalHost.Namespace, physicalHost.Name), nil)
 		req.SetPathValue("namespace", physicalHost.Namespace)
@@ -250,7 +250,7 @@ var _ = Describe("Inspection HTTP handler (PR-5.2)", func() {
 		setHostBootstrap(plaintext, 30*time.Minute)
 
 		sink := &infoOnlySink{}
-		verifier := newBearerTokenVerifier(k8sClient, logWithSink(sink))
+		verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, logWithSink(sink))
 		req := httptest.NewRequest(http.MethodPost,
 			fmt.Sprintf("/api/v1/inspection/%s/%s", physicalHost.Namespace, physicalHost.Name), nil)
 		req.SetPathValue("namespace", physicalHost.Namespace)

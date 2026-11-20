@@ -7,8 +7,9 @@
 # wanting tightened RBAC swap the base to this directory in their own
 # overlay.
 #
-# What's here (nothing cluster-scoped: every manager permission is
-# namespaced in this topology):
+# What's here (nothing cluster-scoped; the only other cluster-scoped manager
+# role, the PhysicalHostPool one, comes from the config/host-pools component,
+# see README.md):
 #   - leader-election-role.yaml     Role + RoleBinding in capb7-system for
 #                                   leader-election leases + operator events.
 #   - watch-role.template.yaml      TEMPLATE for the per-namespace Role +

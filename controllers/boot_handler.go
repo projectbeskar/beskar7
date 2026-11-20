@@ -147,11 +147,18 @@ type BootHandler struct {
 	Client client.Client
 	Log    logr.Logger
 	Config BootHandlerConfig
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
 
 	// ipLimiters holds per-source-IP rate limiters. Protected by ipLimitersMu.
 	// Entries are evicted after bootIPRateLimiterTTL of inactivity.
 	ipLimitersMu sync.Mutex
 	ipLimiters   map[string]*ipEntry
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *BootHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // ServeHTTP handles GET /api/v1/boot/{namespace}/{hostName}/{nonce}.
@@ -204,7 +211,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Beskar7Machine the Secret was minted for, and the nonce must be the
 	// Secret's, unexpired, compared in constant time. Any failure is opaque —
 	// no oracle for "unclaimed" vs "bad nonce" vs "expired" vs "consumed".
-	creds, consumerKey, err := bootCredentials(ctx, h.Client, ph)
+	creds, consumerKey, err := bootCredentials(ctx, h.claims(), ph)
 	if err != nil {
 		log.V(1).Info("boot GET: no credentials bound to the host's claim or cleaning run", "err", err.Error())
 		h.opaqueFailure(w)
@@ -279,7 +286,7 @@ func (h *BootHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// anything else is judged: the conflict may come with a newer mint
 			// (or a changed claim), and the fresh consume record would then
 			// describe that nonce, not this one.
-			creds, consumerKey, err = bootCredentials(ctx, h.Client, ph)
+			creds, consumerKey, err = bootCredentials(ctx, h.claims(), ph)
 			if err != nil || !verifyBootNonce(nonce, creds, time.Now()) {
 				log.V(1).Info("boot GET: nonce no longer valid after conflict re-get")
 				h.opaqueFailure(w)
@@ -724,7 +731,7 @@ func buildBootIPXEScript(
 }
 
 // bootCredentials returns the cleaning run's credentials on a Cleaning host and the claim's on any other.
-func bootCredentials(ctx context.Context, c client.Reader, ph *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
+func bootCredentials(ctx context.Context, c claimReader, ph *infrav1.PhysicalHost) (bootstrapCredentials, types.NamespacedName, error) {
 	if ph.Status.State != infrav1.StateCleaning {
 		return boundBootstrapCredentials(ctx, c, ph)
 	}

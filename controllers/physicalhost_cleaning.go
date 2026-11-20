@@ -89,7 +89,8 @@ func hostStateHeld(host *infrav1.PhysicalHost) bool {
 }
 
 // releasedForCleaning reports whether an unclaimed host must be wiped first: it carries a claim's state or
-// HostClaimed marker, or it has no state at all (new, or moved by clusterctl, which drops status).
+// HostClaimed marker, it has no state at all (new, or moved by clusterctl, which drops status), or it is
+// Available without a wipe behind it (mode set while Available, or Available from before the wipe existed).
 func releasedForCleaning(host *infrav1.PhysicalHost) bool {
 	if host.Spec.ConsumerRef != nil || !cleaningEnabled(host) {
 		return false
@@ -97,13 +98,21 @@ func releasedForCleaning(host *infrav1.PhysicalHost) bool {
 	switch host.Status.State {
 	case infrav1.StateNone, infrav1.StateInUse, infrav1.StateInspecting, infrav1.StateDeploying, infrav1.StateReady:
 		return true
+	case infrav1.StateAvailable:
+		return !conditions.IsTrue(host, infrav1.HostCleanedCondition)
 	}
 	c := conditions.Get(host, infrav1.HostAvailableCondition)
 	return c != nil && c.Status == metav1.ConditionFalse && c.Reason == infrav1.HostClaimedReason
 }
 
-// enterCleaning puts host at the start of a cleaning run.
+// enterCleaning puts host at the start of a cleaning run. A pool member drops its
+// inspection report: the claim run's inspector was the claimant's choice, and the
+// next claim, which may come from another namespace, matches hardware on it
+// (matchAt: Claim).
 func enterCleaning(host *infrav1.PhysicalHost) {
+	if len(hostPools(host)) > 0 {
+		host.Status.InspectionReport = nil
+	}
 	host.Status.State = infrav1.StateCleaning
 	host.Status.Ready = false
 	host.Status.ErrorMessage = ""

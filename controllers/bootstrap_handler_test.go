@@ -42,12 +42,18 @@ import (
 // does, but bound to an httptest.Server we can drive directly. The handler
 // behaviour under test is everything below TLS.
 func buildBootstrapMux() *http.ServeMux {
+	return buildBootstrapMuxWith(false)
+}
+
+// buildBootstrapMuxWith is buildBootstrapMux with the --enable-host-pools switch set to hostPools.
+func buildBootstrapMuxWith(hostPools bool) *http.ServeMux {
 	log := ctrl.Log.WithName("bootstrap-handler-test")
 	handler := &BootstrapHandler{
-		Client: k8sClient,
-		Log:    log,
+		Client:    k8sClient,
+		Log:       log,
+		HostPools: hostPools,
 	}
-	verifier := newBearerTokenVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient, hostPools: hostPools}, log)
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/v1/bootstrap/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, handler))

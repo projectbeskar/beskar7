@@ -11,7 +11,7 @@
 #
 # Prerequisites, same as any Beskar7 cluster: PhysicalHost objects registered and
 # Available, with the node-role labels the machine templates select on. See
-# examples/host-pools.yaml.
+# examples/host-selector.yaml.
 #
 # Beskar7 does not discover a control-plane endpoint (see docs/beskar7cluster.md).
 # Every cluster built from this class needs its own, so it is supplied per-Cluster

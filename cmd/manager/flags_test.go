@@ -128,6 +128,25 @@ func TestParseControllersMode(t *testing.T) {
 	}
 }
 
+func TestManagerConfigHostPools(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  managerConfig
+		want bool
+	}{
+		{name: "off by default", cfg: managerConfig{controllers: controllersAll}},
+		{name: "on with the flag", cfg: managerConfig{controllers: controllersAll, enableHostPools: true}, want: true},
+		{name: "off in callback-only mode", cfg: managerConfig{controllers: controllersNone, enableHostPools: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.hostPools(); got != tc.want {
+				t.Fatalf("hostPools() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestManagerConfigValidate(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -168,6 +187,15 @@ func TestManagerConfigValidate(t *testing.T) {
 			name:    "callback-only rejects --enable-node-provider-id",
 			cfg:     managerConfig{controllers: controllersNone, enableNodeProviderID: true},
 			wantErr: "--enable-node-provider-id contradicts --controllers=none",
+		},
+		{
+			name: "all mode accepts --enable-host-pools",
+			cfg:  managerConfig{controllers: controllersAll, enableLeaderElection: true, enableHostPools: true},
+		},
+		{
+			name:    "callback-only rejects --enable-host-pools",
+			cfg:     managerConfig{controllers: controllersNone, enableHostPools: true},
+			wantErr: "--enable-host-pools contradicts --controllers=none",
 		},
 	}
 

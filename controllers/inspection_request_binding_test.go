@@ -541,11 +541,11 @@ var _ = Describe("The Beskar7Machine controller's inspection requests are bound 
 				"no Secret at all": frozenSecretClient(key, nil),
 			} {
 				host := getPhysicalHost(key)
-				Expect(verifyCallbackAnnotation(ctx, stale, ctrl.Log, host, InspectionRequestAnnotation, "")).To(Equal(callbackRejected), name)
+				Expect(verifyCallbackAnnotation(ctx, claimReader{Reader: stale}, ctrl.Log, host, InspectionRequestAnnotation, "")).To(Equal(callbackRejected), name)
 				Expect(host.Annotations).NotTo(HaveKey(InspectionRequestAnnotation), name)
 			}
 			fresh := getPhysicalHost(key)
-			Expect(verifyCallbackAnnotation(ctx, k8sClient, ctrl.Log, fresh, InspectionRequestAnnotation, "")).To(Equal(callbackBound))
+			Expect(verifyCallbackAnnotation(ctx, claimReader{Reader: k8sClient}, ctrl.Log, fresh, InspectionRequestAnnotation, "")).To(Equal(callbackBound))
 		})
 
 		It("reads the Secret through APIReader, not through Client", func() {
@@ -910,7 +910,7 @@ var _ = Describe("newRequestSigner", func() {
 			Kind: "Beskar7Machine", APIVersion: InfrastructureAPIVersion, Name: "machine", Namespace: host.Namespace,
 		}
 
-		signer, err := newRequestSigner(ctx, reader, host)
+		signer, err := newRequestSigner(ctx, claimReader{Reader: reader}, host)
 		Expect(err).NotTo(HaveOccurred())
 		signed := host.DeepCopy()
 		signer.setAnnotation(signed, InspectionRequestAnnotation, "timeout", "")
@@ -921,22 +921,22 @@ var _ = Describe("newRequestSigner", func() {
 
 		unclaimed := host.DeepCopy()
 		unclaimed.Spec.ConsumerRef = nil
-		_, err = newRequestSigner(ctx, reader, unclaimed)
+		_, err = newRequestSigner(ctx, claimReader{Reader: reader}, unclaimed)
 		Expect(err).To(HaveOccurred(), "a host nobody claims has no credentials to sign with")
 
 		foreign := host.DeepCopy()
 		foreign.UID = "another-uid"
-		_, err = newRequestSigner(ctx, reader, foreign)
+		_, err = newRequestSigner(ctx, claimReader{Reader: reader}, foreign)
 		Expect(err).To(MatchError(errBootstrapSecretNotOwned))
 
 		another := host.DeepCopy()
 		another.Spec.ConsumerRef.Name = "another-machine"
-		_, err = newRequestSigner(ctx, reader, another)
+		_, err = newRequestSigner(ctx, claimReader{Reader: reader}, another)
 		Expect(err).To(HaveOccurred(), "credentials minted for another machine do not sign for this claim")
 
 		noNonce := secret.DeepCopy()
 		delete(noNonce.Data, bootNonceSecretKey)
-		_, err = newRequestSigner(ctx, fakeSecretReader{noNonce}, host)
+		_, err = newRequestSigner(ctx, claimReader{Reader: fakeSecretReader{noNonce}}, host)
 		Expect(err).To(MatchError(errCallbackBindingUnavailable))
 	})
 })

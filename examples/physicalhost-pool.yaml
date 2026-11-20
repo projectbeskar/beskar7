@@ -1,0 +1,67 @@
+# Shared hosts: a PhysicalHostPool lets clusters in other namespaces claim
+# hosts that stay, with their BMC credentials, in an admin namespace.
+#
+# Needs the manager started with --enable-host-pools (Helm: hostPools.enabled;
+# kustomize: the config/host-pools component). Works in the cluster-wide and the
+# namespace-scoped install; with --watch-namespaces, watch both beskar7-hosts and
+# the tenant namespace. A pool shares hosts between namespaces that trust each
+# other; it is not an isolation boundary. See docs/physicalhostpool.md.
+#
+# Admin side: the pool, the host and its BMC Secret. Only admins may write
+# beskar7-hosts. The host joins the pool with one label per pool; it is claimed
+# only after a wipe (cleaning.mode Metadata, HostCleaned=True), because the
+# previous claim can come from another namespace.
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: PhysicalHostPool
+metadata:
+  name: default
+spec:
+  hostNamespaces:
+  - beskar7-hosts             # members only from here
+  namespaceSelector:           # required; name the exact namespaces that may claim
+    matchExpressions:
+    - key: kubernetes.io/metadata.name   # set by the API server, cannot be relabelled
+      operator: In
+      values: [team-a]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: node-07-bmc
+  namespace: beskar7-hosts
+  annotations:
+    beskar7.infrastructure.cluster.x-k8s.io/bmc-addresses: "<bmc-address>"
+type: Opaque
+stringData:
+  username: "<bmc-username>"
+  password: "<bmc-password>"
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: PhysicalHost
+metadata:
+  name: node-07
+  namespace: beskar7-hosts
+  labels:
+    pool.beskar7.infrastructure.cluster.x-k8s.io/default: ""
+spec:
+  cleaning:
+    mode: Metadata
+  redfishConnection:
+    address: "https://<bmc-address>"
+    credentialsSecretRef: node-07-bmc
+---
+# Cluster owner side: only the poolRef line is new. No PhysicalHost and no BMC
+# Secret in this namespace.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: Beskar7MachineTemplate
+metadata:
+  name: workers
+  namespace: team-a
+spec:
+  template:
+    spec:
+      poolRef: default
+      inspectionImageURL: "https://<boot-server>/inspector"
+      targetImageURL: "http://<image-server>/kairos-<distro>-<version>.raw"
+      targetImageDigest: "sha256:<sha256-of-the-image>"

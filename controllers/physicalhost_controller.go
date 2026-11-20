@@ -114,6 +114,8 @@ type PhysicalHostReconciler struct {
 	CleaningImageURL string
 	// CleaningTimeout bounds a cleaning run (--cleaning-timeout); required, above zero.
 	CleaningTimeout time.Duration
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
 }
 
 // NewPhysicalHostReconciler creates a new PhysicalHostReconciler
@@ -561,9 +563,9 @@ func inProvisioningSubState(physicalHost *infrav1.PhysicalHost) bool {
 //
 // Adopts only a host that is claimed and still at State "" or InUse — never
 // Inspecting, Deploying, Ready or Error, which are driven by the annotation
-// handlers and must not be second-guessed here — whose ConsumerRef names a
-// Beskar7Machine in this host's own namespace (resolveConsumerBeskar7Machine:
-// claims are always same-namespace, SEC-12) and whose
+// handlers and must not be second-guessed here — whose ConsumerRef resolves to
+// a Beskar7Machine in this host's own namespace or in one its claim's pool
+// grants (resolveConsumer, SEC-12) and whose
 // Spec.ProviderID equals this host's own b7://<namespace>/<name> form. That
 // form is produced only by handleReadyHost once this exact host reached
 // Ready, so the match is proof the consumer already provisioned this host,
@@ -573,15 +575,19 @@ func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logg
 	if physicalHost.Status.State != infrav1.StateNone && physicalHost.Status.State != infrav1.StateInUse {
 		return
 	}
-	key, ok := resolveConsumerBeskar7Machine(physicalHost)
+	consumer, ok, err := resolveConsumer(ctx, claimReader{Reader: r.Client, hostPools: r.HostPools}, physicalHost)
+	if err != nil {
+		logger.Error(err, "Failed to resolve the consumer of the PhysicalHost for adoption")
+		return
+	}
 	if !ok {
 		return
 	}
 
 	b7machine := &infrav1.Beskar7Machine{}
-	if err := r.Get(ctx, key, b7machine); err != nil {
+	if err := r.Get(ctx, consumer.key, b7machine); err != nil {
 		if !apierrors.IsNotFound(err) {
-			logger.Error(err, "Failed to get consumer Beskar7Machine for adoption", "beskar7machine", key)
+			logger.Error(err, "Failed to get consumer Beskar7Machine for adoption", "beskar7machine", consumer.key)
 		}
 		// NotFound is the ordinary case right after a move: the mover creates
 		// PhysicalHost well before the Beskar7Machine that claims it. The
@@ -594,13 +600,13 @@ func (r *PhysicalHostReconciler) adoptProvisionedClaim(ctx context.Context, logg
 		return
 	}
 
-	logger.Info("Adopting Ready: consumer already holds this host by ProviderID", "beskar7machine", key.Name)
+	logger.Info("Adopting Ready: consumer already holds this host by ProviderID", "beskar7machine", consumer.key.Name)
 	physicalHost.Status.State = infrav1.StateReady
 	physicalHost.Status.Ready = true
 	physicalHost.Status.ErrorMessage = ""
 	if r.Recorder != nil {
 		r.Recorder.Eventf(physicalHost, nil, corev1.EventTypeNormal, "AdoptedProvisionedClaim", "Adopt",
-			"Adopted Ready: consumer %s already holds this host by ProviderID", key.Name)
+			"Adopted Ready: consumer %s already holds this host by ProviderID", consumer.key.Name)
 	}
 }
 
@@ -795,7 +801,7 @@ func (r *PhysicalHostReconciler) applyInspectionRequest(ctx context.Context, log
 		dropCallbackAnnotation(physicalHost, InspectionRequestAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, InspectionRequestAnnotation, "") != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingClaims(), logger, physicalHost, InspectionRequestAnnotation, "") != callbackBound {
 		return
 	}
 
@@ -1052,7 +1058,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 		dropCallbackAnnotation(physicalHost, InspectionResultAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, InspectionResultAnnotation, contentDigest(raw)) != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingClaims(), logger, physicalHost, InspectionResultAnnotation, contentDigest(raw)) != callbackBound {
 		return
 	}
 
@@ -1066,7 +1072,7 @@ func (r *PhysicalHostReconciler) applyInspectionResultAnnotation(ctx context.Con
 	}
 
 	// Persist to Status. This is the SOLE place Status.InspectionReport is
-	// written by the controller — D-005 invariant.
+	// set by the controller (D-005); enterCleaning only clears a pool member's.
 	physicalHost.Status.InspectionReport = report
 	physicalHost.Status.InspectionPhase = infrav1.InspectionPhaseComplete
 	setTrue(physicalHost, infrav1.HostInspectedCondition, infrav1.HostInspectedReason)
@@ -1125,7 +1131,7 @@ func (r *PhysicalHostReconciler) applyProvisionedRequestAnnotation(ctx context.C
 		dropCallbackAnnotation(physicalHost, ProvisionedRequestAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, ProvisionedRequestAnnotation, "") != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingClaims(), logger, physicalHost, ProvisionedRequestAnnotation, "") != callbackBound {
 		return
 	}
 	if val != "provisioned" {
@@ -1199,7 +1205,7 @@ func (r *PhysicalHostReconciler) applyProvisionFailedRequestAnnotation(ctx conte
 		dropCallbackAnnotation(physicalHost, ProvisionFailedRequestAnnotation)
 		return
 	}
-	if verifyCallbackAnnotation(ctx, r.bindingReader(), logger, physicalHost, ProvisionFailedRequestAnnotation, "") != callbackBound {
+	if verifyCallbackAnnotation(ctx, r.bindingClaims(), logger, physicalHost, ProvisionFailedRequestAnnotation, "") != callbackBound {
 		return
 	}
 
@@ -1311,6 +1317,11 @@ func (r *PhysicalHostReconciler) bindingReader() client.Reader {
 		return r.APIReader
 	}
 	return r.Client
+}
+
+// bindingClaims is bindingReader with the host pool switch, for checking a claim's callbacks.
+func (r *PhysicalHostReconciler) bindingClaims() claimReader {
+	return claimReader{Reader: r.bindingReader(), hostPools: r.HostPools}
 }
 
 // validateAndDefault defaults the RedfishClientFactory and validates that
@@ -1441,9 +1452,9 @@ func beskar7MachineProviderIDLanded() predicate.Funcs {
 // Beskar7MachineToPhysicalHost maps a Beskar7Machine to the PhysicalHost its
 // Spec.ProviderID names, so a host adopts as soon as its consumer lands
 // (D-028) instead of waiting for its own next resync. parseProviderID rejects
-// anything not shaped b7://<namespace>/<name>; the namespace segment is
-// compared against the machine's own namespace defensively — this controller
-// never produces a cross-namespace ProviderID — rather than trusted alone.
+// anything not shaped b7://<namespace>/<name>; the namespace segment must be
+// the machine's own unless the machine claims through a pool. The mapping only
+// wakes the host; adoption still checks the claim (resolveConsumer).
 func (r *PhysicalHostReconciler) Beskar7MachineToPhysicalHost(ctx context.Context, obj client.Object) []reconcile.Request {
 	m, ok := obj.(*infrav1.Beskar7Machine)
 	if !ok {
@@ -1454,7 +1465,11 @@ func (r *PhysicalHostReconciler) Beskar7MachineToPhysicalHost(ctx context.Contex
 		return nil
 	}
 	ns, name, err := parseProviderID(m.Spec.ProviderID)
-	if err != nil || ns != m.Namespace {
+	if err != nil {
+		return nil
+	}
+	// A host in another namespace is only ever claimed through the machine's pool.
+	if ns != m.Namespace && (m.Spec.PoolRef == "" || !r.HostPools) {
 		return nil
 	}
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}}

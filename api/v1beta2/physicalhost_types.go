@@ -173,6 +173,15 @@ type PhysicalHostSpec struct {
 	// When unset, the disks are left as they are.
 	// +optional
 	Cleaning *CleaningSpec `json:"cleaning,omitempty"`
+
+	// ConsumerPool is the PhysicalHostPool the current claim was made through.
+	// Set and cleared by the controller together with ConsumerRef; a ConsumerRef
+	// in another namespace is valid only while this pool still holds the host
+	// and grants that namespace.
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	// +optional
+	ConsumerPool string `json:"consumerPool,omitempty"`
 }
 
 // InspectionPhase represents the current phase of hardware inspection

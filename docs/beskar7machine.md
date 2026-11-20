@@ -90,7 +90,9 @@ By default a Beskar7Machine claims the first `Available` PhysicalHost in its nam
             node-role: control-plane
   ```
 
-  `matchExpressions` work too (`In`, `NotIn`, `Exists`, `DoesNotExist`). An absent or empty selector means any host, so existing deployments are unaffected. See [`examples/host-pools.yaml`](../examples/host-pools.yaml).
+  `matchExpressions` work too (`In`, `NotIn`, `Exists`, `DoesNotExist`). An absent or empty selector means any host, so existing deployments are unaffected. See [`examples/host-selector.yaml`](../examples/host-selector.yaml).
+
+To claim hosts that live in another namespace, set `spec.poolRef` to a `PhysicalHostPool` that grants this namespace. See [PhysicalHostPool](physicalhostpool.md).
 - **`Machine.spec.failureDomain`** — CAPI's placement. `Beskar7Cluster` publishes failure domains from the `topology.kubernetes.io/zone` label on hosts; when CAPI assigns a Machine to one, the claim only considers hosts carrying that zone label.
 
 Placement applies to a **fresh claim only**: a host the machine already holds is never re-evaluated, so labelling or relabelling hosts moves future claims, not running nodes. By default `hardwareRequirements` does **not** steer the claim — it is validated after inspection, and a mismatch is terminal — so on a mixed inventory use a selector to land on the right class of host in the first place, or opt in to [claim-time matching](#matching-hardware-at-claim-hardwarerequirementsmatchat-claim).
@@ -112,7 +114,7 @@ spec:
     minMemoryGB: 64
 ```
 
-A report outlives the claim that produced it: releasing a host clears the run state (`inspectionPhase`, timestamps) but keeps `status.inspectionReport` until the next run replaces it. So `Claim` only matches hosts that an earlier claim has already inspected; a host that has never been claimed has no report and is skipped. A pool of untouched hosts therefore stays unmatched until something else inspects them.
+A report outlives the claim that produced it: releasing a host clears the run state (`inspectionPhase`, timestamps) but keeps `status.inspectionReport` until the next run replaces it. So `Claim` only matches hosts that an earlier claim has already inspected; a host that has never been claimed has no report and is skipped. A set of untouched hosts therefore stays unmatched until something else inspects them. A member of a `PhysicalHostPool` never matches: its report is dropped when its wipe starts, since the claimant chose the inspector that produced it (see [PhysicalHostPool](physicalhostpool.md)).
 
 When no host qualifies the machine waits, which is **not** terminal: `PhysicalHostAssociated=False` with reason `NoMatchingPhysicalHost` and a requeue every minute, sooner when a host becomes `Available`. The message names the hardware constraint and says how many `Available` hosts were skipped for having no report, and how many for a report that falls short. An empty inventory reports `NoMatchingPhysicalHost` too, with the same constraint named, so the reason does not change when the first host appears.
 

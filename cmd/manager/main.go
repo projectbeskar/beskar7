@@ -91,6 +91,7 @@ func main() {
 	var controllersRaw string
 	var bmcProxyRaw string
 	var enableNodeProviderID bool
+	var enableHostPools bool
 	var cleaningImageURL string
 	var cleaningTimeout time.Duration
 
@@ -190,6 +191,11 @@ func main() {
 			"to a workload API server, whatever a Beskar7Cluster says. When on, a user who can "+
 			"create a Cluster, a Beskar7Cluster and that Secret chooses a server the manager "+
 			"connects to from its own network position. Rejected with --controllers=none.")
+	flag.BoolVar(&enableHostPools, "enable-host-pools", false,
+		"Let a Beskar7Machine claim a PhysicalHost in another namespace through a cluster-scoped "+
+			"PhysicalHostPool (spec.poolRef). Needs the PhysicalHostPool CRD and the host pool "+
+			"ClusterRole (read pools and namespaces cluster-wide). Off (the default) watches neither, "+
+			"and every claim stays in the machine's own namespace. Rejected with --controllers=none.")
 
 	// Default to production-safe zap config: structured JSON output, no stack
 	// traces below Error, level-based encoding. Operators who want
@@ -249,6 +255,7 @@ func main() {
 		trustedProxies:          parsedTrustedProxies,
 		bmcProxy:                parsedBMCProxy,
 		enableNodeProviderID:    enableNodeProviderID,
+		enableHostPools:         enableHostPools,
 		inspectionTimeout:       inspectionTimeout,
 		deploymentTimeout:       deploymentTimeout,
 		maxConcurrentReconciles: maxConcurrentReconciles,
@@ -380,7 +387,13 @@ func setupManager(mgr ctrl.Manager, cfg managerConfig) error {
 	// Certificate via cert-manager).
 	// bootstrapURLBase is passed so the /boot handler can render beskar7.api=
 	// into the iPXE cmdline (§5). It must be externally reachable from bare metal.
-	if err := controllers.SetupCallbackServer(mgr, cfg.inspectionPort, cfg.inspectionCertDir, cfg.bootstrapURLBase, cfg.trustedProxies); err != nil {
+	if err := controllers.SetupCallbackServer(mgr, controllers.CallbackServerParams{
+		Port:             cfg.inspectionPort,
+		CertDir:          cfg.inspectionCertDir,
+		BootstrapURLBase: cfg.bootstrapURLBase,
+		TrustedProxies:   cfg.trustedProxies,
+		HostPools:        cfg.hostPools(),
+	}); err != nil {
 		return fmt.Errorf("unable to setup callback server: %w", err)
 	}
 
@@ -447,6 +460,7 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
 		RedfishClientFactory:    redfishFactory,
+		HostPools:               cfg.hostPools(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "Beskar7Machine", err)
 	}
@@ -480,8 +494,17 @@ func setupControllers(mgr ctrl.Manager, cfg managerConfig) error {
 		CleaningTimeout:         cfg.cleaningTimeout,
 		Recorder:                mgr.GetEventRecorder("beskar7-physicalhost-controller"),
 		MaxConcurrentReconciles: cfg.maxConcurrentReconciles,
+		HostPools:               cfg.hostPools(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller %s: %w", "PhysicalHost", err)
+	}
+
+	if cfg.hostPools() {
+		if err := (&controllers.PhysicalHostPoolReconciler{
+			Client: mgr.GetClient(),
+		}).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("unable to create controller %s: %w", "PhysicalHostPool", err)
+		}
 	}
 	return nil
 }

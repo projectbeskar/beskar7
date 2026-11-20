@@ -310,6 +310,21 @@ func TestSetupManager(t *testing.T) {
 		startManager(t, mgr)
 	})
 
+	t.Run("all with --enable-host-pools also registers the PhysicalHostPool controller", func(t *testing.T) {
+		cfg := baseConfig(freePort(t))
+		cfg.controllers = controllersAll
+		cfg.enableHostPools = true
+		mgr := newManager(t, "0", cfg)
+
+		if err := setupManager(mgr, cfg); err != nil {
+			t.Fatalf("setupManager: %v", err)
+		}
+		if n := mgr.controllerCount(); n != 5 {
+			t.Fatalf("all mode registered %d controllers, want 5 (the four and PhysicalHostPool)", n)
+		}
+		startManager(t, mgr)
+	})
+
 	// D-035: --bmc-proxy reaches the Redfish client factory of the reconcilers
 	// that connect to BMCs. The BMC's name is under .invalid, which never
 	// resolves, so the only way its host:port can appear at the proxy is a

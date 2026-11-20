@@ -319,7 +319,7 @@ var _ = Describe("clusterctl move: a Ready PhysicalHost / Provisioned Beskar7Mac
 		Expect(final.consumerUID).To(Equal(seeded.consumerUID))
 
 		By("the moved Secret, its owner rewritten to the recreated host, still being the host's credential (D-031)")
-		_, _, err = boundBootstrapCredentials(ctx, k8sClient, finalHost)
+		_, _, err = boundBootstrapCredentials(ctx, claimReader{Reader: k8sClient}, finalHost)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(final.tokenExpiresAt).To(BeTemporally("<=", time.Now().Add(5*time.Minute)),
 			"the Ready machine cuts the moved token to the post-Ready grace like any other")

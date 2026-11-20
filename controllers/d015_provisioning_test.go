@@ -56,7 +56,7 @@ func buildProvisionedMux() (*http.ServeMux, *ProvisionedHandler) {
 		Client: k8sClient,
 		Log:    log,
 	}
-	verifier := newBearerTokenVerifier(k8sClient, log)
+	verifier := newBearerTokenVerifier(claimReader{Reader: k8sClient}, log)
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/v1/provisioned/{namespace}/{hostName}",
 		auth.RequireBearer(log, verifier, handler))

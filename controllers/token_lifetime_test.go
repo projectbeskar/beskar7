@@ -126,7 +126,7 @@ var _ = Describe("Bearer token lifetime and the bootstrap-token Secret's owner (
 			_, err := r.handleReadyHost(ctx, r.Log, machine, readyHost())
 			Expect(err).NotTo(HaveOccurred())
 
-			verify := newBearerTokenVerifier(k8sClient, ctrl.Log.WithName("token-lifetime-verifier"))
+			verify := newBearerTokenVerifier(claimReader{Reader: k8sClient}, ctrl.Log.WithName("token-lifetime-verifier"))
 			req, err := http.NewRequestWithContext(ctx, http.MethodPost, "/api/v1/provisioned/"+hostKey.Namespace+"/"+hostKey.Name, nil)
 			Expect(err).NotTo(HaveOccurred())
 			req.SetPathValue("namespace", hostKey.Namespace)

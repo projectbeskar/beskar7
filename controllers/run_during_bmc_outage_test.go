@@ -204,13 +204,13 @@ var _ = Describe("A claimed PhysicalHost's provisioning run while its BMC is unr
 		Expect(inspecting.Annotations).NotTo(HaveKey(InspectionRequestAnnotation))
 
 		By("the callback server accepting the credentials, which the BMC has nothing to do with")
-		creds, _, err := boundBootstrapCredentials(ctx, k8sClient, inspecting)
+		creds, _, err := boundBootstrapCredentials(ctx, claimReader{Reader: k8sClient}, inspecting)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(verifyBootNonce(nonce, creds, time.Now())).To(BeTrue(), "/boot accepts the nonce in the inspector's iPXE script")
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/"+key.Namespace+"/"+key.Name, nil)
 		req.SetPathValue("namespace", key.Namespace)
 		req.SetPathValue("hostName", key.Name)
-		Expect(newBearerTokenVerifier(k8sClient, ctrl.Log.WithName("outage-run-verifier"))(token, req)).To(Succeed(),
+		Expect(newBearerTokenVerifier(claimReader{Reader: k8sClient}, ctrl.Log.WithName("outage-run-verifier"))(token, req)).To(Succeed(),
 			"the callbacks accept the inspector's bearer token")
 
 		By("mirroring them into status during the outage")

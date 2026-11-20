@@ -399,6 +399,71 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 		Expect(bmc.SetBootSourcePXECalled).To(BeTrue())
 	})
 
+	// The claim run's inspector was the claimant's choice, so a pool member's
+	// report must not steer the next namespace's claim (matchAt: Claim).
+	It("drops a pool member's inspection report at the wipe and keeps another host's", func() {
+		withReport := func(key client.ObjectKey, pool string) {
+			current := getPhysicalHost(key)
+			labelled := current.DeepCopy()
+			if pool != "" {
+				labelled.Labels = map[string]string{poolLabelKey(pool): ""}
+			}
+			Expect(k8sClient.Patch(ctx, labelled, client.MergeFrom(current))).To(Succeed())
+			current = getPhysicalHost(key)
+			reported := current.DeepCopy()
+			reported.Status.InspectionReport = &infrav1.InspectionReport{Timestamp: metav1.Now(), Manufacturer: "fixture"}
+			Expect(k8sClient.Status().Patch(ctx, reported, client.MergeFrom(current))).To(Succeed())
+		}
+		r := newReconciler()
+		member := releasedHost("clean-member", infrav1.CleaningModeMetadata)
+		withReport(member, "shared")
+		own := releasedHost("clean-own", infrav1.CleaningModeMetadata)
+		withReport(own, "")
+
+		reconcile(r, member)
+		reconcile(r, own)
+
+		Expect(getPhysicalHost(member).Status.InspectionReport).To(BeNil())
+		Expect(getPhysicalHost(own).Status.InspectionReport).NotTo(BeNil())
+	})
+
+	// A pool claims only a host with HostCleaned=True, so an Available host that
+	// was never wiped is wiped once instead of staying out of every pool.
+	It("wipes an Available host once when spec.cleaning.mode becomes Metadata", func() {
+		r := newReconciler()
+		key := releasedHost("clean-later", infrav1.CleaningModeDisabled)
+		reconcile(r, key)
+		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateAvailable))
+		bmc.SetBootSourcePXECalled = false
+
+		current := getPhysicalHost(key)
+		withMode := current.DeepCopy()
+		withMode.Spec.Cleaning = &infrav1.CleaningSpec{Mode: infrav1.CleaningModeMetadata}
+		Expect(k8sClient.Patch(ctx, withMode, client.MergeFrom(current))).To(Succeed())
+		reconcile(r, key)
+
+		host := getPhysicalHost(key)
+		Expect(host.Status.State).To(Equal(infrav1.StateCleaning))
+		Expect(conditions.GetReason(host, infrav1.HostAvailableCondition)).To(Equal(infrav1.HostCleaningReason))
+		Expect(bmc.SetBootSourcePXECalled).To(BeTrue())
+	})
+
+	It("leaves an Available host alone once it has been wiped", func() {
+		r := newReconciler()
+		key := bootedHost(r, "clean-done")
+		bindCleaningReport(key, CleanedRequestAnnotation, cleanedRequestValue)
+		reconcile(r, key)
+		Expect(getPhysicalHost(key).Status.State).To(Equal(infrav1.StateAvailable))
+		bmc.SetBootSourcePXECalled = false
+
+		reconcile(r, key)
+
+		host := getPhysicalHost(key)
+		Expect(host.Status.State).To(Equal(infrav1.StateAvailable))
+		Expect(conditions.IsTrue(host, infrav1.HostCleanedCondition)).To(BeTrue())
+		Expect(bmc.SetBootSourcePXECalled).To(BeFalse())
+	})
+
 	Describe("BMC outage", func() {
 		// unreachable makes r's BMC unreachable at the network level.
 		unreachable := func(r *PhysicalHostReconciler) {
@@ -518,8 +583,8 @@ var _ = Describe("Cleaning a released PhysicalHost (spec.cleaning.mode Metadata)
 				return req
 			}
 			Expect(newCleaningTokenVerifier(k8sClient, ctrl.Log)(cleaningToken, request("cleaned"))).To(Succeed())
-			Expect(newBearerTokenVerifier(k8sClient, ctrl.Log)(cleaningToken, request("provisioned"))).NotTo(Succeed())
-			Expect(newBearerTokenVerifier(k8sClient, ctrl.Log)(cleaningToken, request("bootstrap"))).NotTo(Succeed())
+			Expect(newBearerTokenVerifier(claimReader{Reader: k8sClient}, ctrl.Log)(cleaningToken, request("provisioned"))).NotTo(Succeed())
+			Expect(newBearerTokenVerifier(claimReader{Reader: k8sClient}, ctrl.Log)(cleaningToken, request("bootstrap"))).NotTo(Succeed())
 			Expect(newCleaningTokenVerifier(k8sClient, ctrl.Log)("not-the-token", request("cleaned"))).NotTo(Succeed())
 		})
 

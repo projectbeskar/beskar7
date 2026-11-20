@@ -84,6 +84,13 @@ const (
 type InspectionHandler struct {
 	Client client.Client
 	Log    logr.Logger
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
+// claims is what this handler checks a host's claim with.
+func (h *InspectionHandler) claims() claimReader {
+	return claimReader{Reader: h.Client, hostPools: h.HostPools}
 }
 
 // InspectionReportRequest represents the JSON payload from inspection image.
@@ -243,7 +250,7 @@ func (h *InspectionHandler) processInspectionReport(
 
 	// Before the ConfigMap is written, so a callback that cannot be bound leaves
 	// nothing behind.
-	signer, err := newCallbackSigner(ctx, h.Client, physicalHost, token, time.Now())
+	signer, err := newCallbackSigner(ctx, h.claims(), physicalHost, token, time.Now())
 	if err != nil {
 		return fmt.Errorf("bind inspection report to the host's credentials: %w", err)
 	}
@@ -440,6 +447,21 @@ func readCallbackCA(certDir string) ([]byte, error) {
 	return nil, fmt.Errorf("no readable CA file found in cert dir %q (tried ca.crt, tls.crt)", certDir)
 }
 
+// CallbackServerParams are the settings of the callback server.
+type CallbackServerParams struct {
+	Port    int
+	CertDir string
+	// BootstrapURLBase is the externally-reachable HTTPS base URL of this server
+	// (e.g. "https://beskar7.example.com:8082"). It is rendered into the
+	// beskar7.api= kernel cmdline parameter by the /boot handler. Must be non-empty.
+	BootstrapURLBase string
+	// TrustedProxies are the networks whose X-Forwarded-For the /boot rate limiter
+	// will believe. Empty means the header is ignored and the peer address is used.
+	TrustedProxies []*net.IPNet
+	// HostPools is --enable-host-pools: without it no claim in another namespace is valid.
+	HostPools bool
+}
+
 // SetupCallbackServer wires the host-callback HTTPS server into the manager.
 //
 // The server hosts six host-scoped endpoints:
@@ -468,13 +490,9 @@ func readCallbackCA(certDir string) ([]byte, error) {
 // dir defaults to the webhook cert dir (same Pod, same DNS name, one cert via
 // cert-manager).
 //
-// bootstrapURLBase is the externally-reachable HTTPS base URL of this server
-// (e.g. "https://beskar7.example.com:8082"). It is rendered into the
-// beskar7.api= kernel cmdline parameter by the /boot handler. Must be non-empty.
-//
-// trustedProxies are the networks whose X-Forwarded-For the /boot rate limiter
-// will believe. Empty means the header is ignored and the peer address is used.
-func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapURLBase string, trustedProxies []*net.IPNet) error {
+// See CallbackServerParams for the settings.
+func SetupCallbackServer(mgr ctrl.Manager, params CallbackServerParams) error {
+	port, certDir, bootstrapURLBase, trustedProxies := params.Port, params.CertDir, params.BootstrapURLBase, params.TrustedProxies
 	if certDir == "" {
 		return fmt.Errorf("callback server cert dir is empty; set --inspection-cert-dir")
 	}
@@ -552,14 +570,16 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 
 	inspectionLog := ctrl.Log.WithName("inspection-handler")
 	inspectionHandler := &InspectionHandler{
-		Client: mgr.GetClient(),
-		Log:    inspectionLog,
+		Client:    mgr.GetClient(),
+		HostPools: params.HostPools,
+		Log:       inspectionLog,
 	}
 
 	bootstrapLog := ctrl.Log.WithName("bootstrap-handler")
 	bootstrapHandler := &BootstrapHandler{
-		Client: mgr.GetClient(),
-		Log:    bootstrapLog,
+		Client:    mgr.GetClient(),
+		HostPools: params.HostPools,
+		Log:       bootstrapLog,
 	}
 
 	networkDataLog := ctrl.Log.WithName("network-data-handler")
@@ -567,18 +587,21 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Log:       networkDataLog,
+		HostPools: params.HostPools,
 	}
 
 	provisionedLog := ctrl.Log.WithName("provisioned-handler")
 	provisionedHandler := &ProvisionedHandler{
-		Client: mgr.GetClient(),
-		Log:    provisionedLog,
+		Client:    mgr.GetClient(),
+		HostPools: params.HostPools,
+		Log:       provisionedLog,
 	}
 
 	provisionFailedLog := ctrl.Log.WithName("provision-failed-handler")
 	provisionFailedHandler := &ProvisionFailedHandler{
-		Client: mgr.GetClient(),
-		Log:    provisionFailedLog,
+		Client:    mgr.GetClient(),
+		HostPools: params.HostPools,
+		Log:       provisionFailedLog,
 	}
 
 	cleanedLog := ctrl.Log.WithName("cleaned-handler")
@@ -588,8 +611,9 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 
 	bootLog := ctrl.Log.WithName("boot-handler")
 	bootHandler := &BootHandler{
-		Client: mgr.GetClient(),
-		Log:    bootLog,
+		Client:    mgr.GetClient(),
+		HostPools: params.HostPools,
+		Log:       bootLog,
 		Config: BootHandlerConfig{
 			APIBase:        bootstrapURLBase,
 			CA:             func() ([]byte, error) { return readCallbackCA(certDir) },
@@ -601,11 +625,12 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 	// authorises requests for a specific PhysicalHost, regardless of which
 	// host-scoped endpoint is being called. We construct one verifier per route
 	// so the log handle reflects the route.
-	inspectionVerifier := newBearerTokenVerifier(mgr.GetClient(), inspectionLog)
-	bootstrapVerifier := newBearerTokenVerifier(mgr.GetClient(), bootstrapLog)
-	networkDataVerifier := newBearerTokenVerifier(mgr.GetClient(), networkDataLog)
-	provisionedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionedLog)
-	provisionFailedVerifier := newBearerTokenVerifier(mgr.GetClient(), provisionFailedLog)
+	claims := claimReader{Reader: mgr.GetClient(), hostPools: params.HostPools}
+	inspectionVerifier := newBearerTokenVerifier(claims, inspectionLog)
+	bootstrapVerifier := newBearerTokenVerifier(claims, bootstrapLog)
+	networkDataVerifier := newBearerTokenVerifier(claims, networkDataLog)
+	provisionedVerifier := newBearerTokenVerifier(claims, provisionedLog)
+	provisionFailedVerifier := newBearerTokenVerifier(claims, provisionFailedLog)
 
 	mux := http.NewServeMux()
 	// Go 1.22+ pattern matching: bind path values for the verifier and handler.
@@ -704,7 +729,7 @@ func SetupCallbackServer(mgr ctrl.Manager, port int, certDir string, bootstrapUR
 // authenticate — a stale cmdline, an expired token, a claim that moved on —
 // and at default verbosity the machine would otherwise just time out in
 // Inspecting with nothing in the manager log to say why.
-func newBearerTokenVerifier(c client.Client, log logr.Logger) auth.Verifier {
+func newBearerTokenVerifier(c claimReader, log logr.Logger) auth.Verifier {
 	verify := func(token string, r *http.Request) error {
 		namespace := r.PathValue("namespace")
 		hostName := r.PathValue("hostName")
