@@ -10,13 +10,18 @@ the maintainers understand how the project is used.
 | End user | Uses Beskar7 to run its own infrastructure, and does not sell it as a service |
 | Service provider | Offers Beskar7 as a core part of a service, such as a managed platform or bare-metal cloud |
 | Project | An open source project that integrates with or depends on Beskar7 |
+| Vendor | A commercial project that embeds Beskar7 in its core offering |
 | Consultancy | Helps other organizations build solutions with Beskar7 |
 
 **Adoption levels:** Production, Dev/Test, Trialing, Evaluating.
 
 ## Adopters list
 
-No organizations are listed yet. If you use Beskar7, please add yours.
+```markdown
+| Organization | Type | Adoption level | Description |
+| ------------ | ---- | -------------- | ----------- |
+| [CLASTIX](https://clastix.io) | Vendor | Production | Engine for the Bare Metal management in kMetal, the enterprise offering leveraging the concept of Kubernetes Hosted Control Planes |
+```
 
 ## Adding your organization
 
